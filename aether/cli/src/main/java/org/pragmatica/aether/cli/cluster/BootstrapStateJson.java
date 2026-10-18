@@ -19,6 +19,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.utils.Causes;
 
 import tools.jackson.databind.JsonNode;
 
@@ -184,23 +188,31 @@ sealed interface BootstrapStateJson {
         var resources = new ArrayList<CreatedResource>();
 
         for (var element : node) {
-            var resource = parseSingleResourceNode(element, clusterName);
-
-            if (resource != null) {
-                resources.add(resource);
-            }
+            resources.add(parseSingleResourceNode(element, clusterName));
         }
 
         return List.copyOf(resources);
     }
 
+    /// Every entry either parses into a [CreatedResource] or fails the load; none is skipped. An entry is
+    /// a handle on a resource that may be billing, so the cases that cannot be interpreted are refused
+    /// for the reason an unusable `CloudFirewall` is (see [#parseCloudFirewall]): a skipped entry leaves
+    /// a file that still parses, and the next `BootstrapStatePersistence#appendResource` re-saves it
+    /// WITHOUT the entry, so destroy would report success while the resource keeps billing.
+    ///
+    ///  - an unknown or missing `"type"` — an older CLI reading a ledger a newer one wrote;
+    ///  - a blank `resourceId` / `containerId` on the two variants whose id is what destroy hands to the
+    ///    provider (`asText()` turns an absent field into `""`, and `""` would reach `terminate("")`).
+    ///
+    /// No schema-version field marks the file's generation (a format decision, not made here); the type
+    /// name is the only discriminator the reader has.
     @SuppressWarnings("JBCT-PAT-01")
     static CreatedResource parseSingleResourceNode(JsonNode node, ClusterName clusterName) {
         var type = node.path("type").asText("");
 
         return switch (type) {
             case "ProvisionedVm" -> CreatedResource.ProvisionedVm.provisionedVm(node.path("provider").asText(),
-                                                                                node.path("resourceId").asText(),
+                                                                                requiredId(node, type, "resourceId"),
                                                                                 node.path("sourceName").asText(),
                                                                                 node.path("role").asText());
             case "CloudFirewall" -> parseCloudFirewall(node, clusterName);
@@ -208,15 +220,31 @@ sealed interface BootstrapStateJson {
                                                                                                      node.path("floatingIp").asText(),
                                                                                                      node.path("targetNodeId").asText());
             case "DockerNetwork" -> CreatedResource.DockerNetwork.dockerNetwork(node.path("networkName").asText());
-            case "DockerContainer" -> CreatedResource.DockerContainer.dockerContainer(node.path("containerId").asText(),
+            case "DockerContainer" -> CreatedResource.DockerContainer.dockerContainer(requiredId(node,
+                                                                                                 type,
+                                                                                                 "containerId"),
                                                                                       node.path("sourceName").asText());
             case "SshDeployedConfig" -> CreatedResource.SshDeployedConfig.sshDeployedConfig(node.path("host").asText(),
                                                                                             node.path("remotePath").asText());
             case "SshKeyResource" -> CreatedResource.SshKeyResource.sshKeyResource(node.path("provider").asText(),
                                                                                    node.path("sshKeyId").asLong(),
                                                                                    node.path("name").asText());
-            default -> null;
+            default -> refuse(UnknownResourceType.FACTORY.apply(type));
         };
+    }
+
+    private static String requiredId(JsonNode node, String type, String field) {
+        return Verify.ensure(node.path(field).asText(),
+                             Verify.Is::present,
+                             BlankResourceId.FACTORY.apply(type, field))
+                     .fold(BootstrapStateJson::refuse, id -> id);
+    }
+
+    /// Raised inside [#liftedParse]'s `Result.lift`, which turns it into the failed load — the same
+    /// channel [#firewallId] uses for an unusable firewall id.
+    @SuppressWarnings("JBCT-EX-01")
+    private static <T> T refuse(Cause cause) {
+        throw new IllegalStateException(cause.message());
     }
 
     /// `firewallId` is read with `asText()`, which yields `"12345"` for a LEGACY unquoted number and
@@ -460,6 +488,19 @@ sealed interface BootstrapStateJson {
                     .replace("\n", "\\n")
                     .replace("\r", "\\r")
                     .replace("\t", "\\t");
+    }
+
+    /// An entry whose `"type"` this CLI cannot interpret. `type` is empty when the field is absent. The
+    /// operator's way out is the CLI version that wrote the file, or repairing the entry by hand.
+    record UnknownResourceType(String type, String message) implements Cause {
+        static final Fn1<UnknownResourceType, String> FACTORY = Causes.forOneValue("Unknown or missing resource type '%s' in bootstrap-state.json; refusing to load a ledger entry this CLI cannot interpret, since re-saving would drop the handle on a resource that may still be billing",
+                                                                                   UnknownResourceType::new);
+    }
+
+    /// An entry of a known `type` whose id field is absent or blank.
+    record BlankResourceId(String type, String field, String message) implements Cause {
+        static final Fn2<BlankResourceId, String, String> FACTORY = Causes.forTwoValues("Unusable %s entry in bootstrap-state.json; refusing to load a ledger entry with no %s, since destroy would hand an empty id to the provider",
+                                                                                        BlankResourceId::new);
     }
 
     record ParseError(Throwable cause) implements Cause {

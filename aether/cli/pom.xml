@@ -125,6 +125,17 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- The CLI keeps its ledgers and registry under <user.home>/.aether, resolved once at class
+                         load. Tests must never touch the real one (a probe once wrote ~/.aether/clusters/x/apply-state.json
+                         and the real clusters directory still holds hundreds of leftover test directories), so the
+                         forked JVM gets a home under target/. CliTestHomeIsolationTest fails if this stops holding. -->
+                    <argLine>${vthread.argLine} -Duser.home=${project.build.directory}/test-home</argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>

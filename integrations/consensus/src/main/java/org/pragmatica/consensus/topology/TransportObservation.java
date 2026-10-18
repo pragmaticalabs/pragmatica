@@ -80,7 +80,9 @@ public sealed interface TransportObservation extends Message.Local {
 
     /// THIS node observed itself shutting down. Self-emit only. Topology is empty because the
     /// local view is collapsing.
-    /// Fires from QUIC SHUTDOWN with self.id().
+    /// No producer emits it: the QUIC stop path does not, and the node's router is quiesced before the
+    /// transport stops; the self-departure signal is `ClusterStateNotification.passive()`. The type and its
+    /// consumers remain until the deployment state machine sources self-departure from the stop path.
     record SelfShutdown(NodeId nodeId, List<NodeId> topology, ObservationSource source) implements TransportObservation {}
 
     /// The transport layer that produced this observation.

@@ -18,20 +18,43 @@ package org.pragmatica.cloud.aws.api;
 
 import java.util.List;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Verify;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// EC2 DescribeSecurityGroups XML response wrapper.
 @JacksonXmlRootElement(localName = "DescribeSecurityGroupsResponse")
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record DescribeSecurityGroupsResponse(@JacksonXmlProperty(localName = "securityGroupInfo") SecurityGroupInfo securityGroupInfo) {
+public record DescribeSecurityGroupsResponse(@JacksonXmlProperty(localName = "securityGroupInfo") SecurityGroupInfo securityGroupInfo,
+                                             @JacksonXmlProperty(localName = "nextToken") String nextToken) implements Paged<SecurityGroup> {
     /// Container for described security groups.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record SecurityGroupInfo(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<SecurityGroup> items) {}
+
+    /// A page holding `groups` and no continuation.
+    public static DescribeSecurityGroupsResponse describeSecurityGroupsResponse(List<SecurityGroup> groups) {
+        return new DescribeSecurityGroupsResponse(new SecurityGroupInfo(groups), "");
+    }
+
+    @Override
+    public List<SecurityGroup> items() {
+        return securityGroups();
+    }
+
+    /// The token that asks EC2 for the page after this one, absent on the last page (an empty element
+    /// reads as absent).
+    @Override
+    public Option<String> continuation() {
+        return option(nextToken).filter(Verify.Is::present);
+    }
 
     /// Returns the described groups, tolerating an empty group set
     /// (`<securityGroupInfo />` deserializes with a null item list — a filter that matched nothing).
