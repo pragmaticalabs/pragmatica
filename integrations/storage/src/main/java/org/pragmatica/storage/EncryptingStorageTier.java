@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -114,6 +115,33 @@ public final class EncryptingStorageTier implements StorageTier {
             return pendingKeyId.map(keyId -> writeMarker(markerPath, keyId))
                                .or(Result.success(unit()));
         }
+
+        /// #1170: the inverse of [#commitMarker], for a boot refused AFTER the commit (the DHT marker
+        /// check cannot run before cluster formation). BER: compensate by inverse, and only for what
+        /// this boot did. A marker that was already present (`pendingKeyId` empty) belongs to an
+        /// earlier boot and stays. A directory that holds any block beside the marker stays stamped:
+        /// the marker is what stops a plain boot handing back framed ciphertext as content, so it is
+        /// never removed from a directory that may hold ciphertext. The guarantee earned is "a refused
+        /// boot over a still-empty directory leaves the operator's back-out to `encrypted = false`
+        /// bootable". BOUND: the empty-directory check and the delete are not atomic against a
+        /// concurrent block write; the boot being rolled back is already failing, so the window is
+        /// the interval before its node is stopped.
+        public Result<Unit> rollbackMarker() {
+            return pendingKeyId.map(_ -> removeMarkerIfDirectoryEmpty(markerPath))
+                               .or(Result.success(unit()));
+        }
+    }
+
+    private static Result<Unit> removeMarkerIfDirectoryEmpty(Path markerPath) {
+        return FileOps.walk(markerPath.getParent(),
+                            EncryptingStorageTier::isBlockFile)
+                      .flatMap(existing -> deleteMarkerUnlessBlocks(markerPath, existing));
+    }
+
+    private static Result<Unit> deleteMarkerUnlessBlocks(Path markerPath, List<Path> blocks) {
+        return blocks.isEmpty()
+               ? FileOps.deleteIfExists(markerPath).mapToUnit()
+               : Result.success(unit());
     }
 
     /// The guard half of [#wrapLocalDisk]: refuses over pre-existing plaintext, otherwise returns the

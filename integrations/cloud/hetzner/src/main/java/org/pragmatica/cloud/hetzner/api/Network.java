@@ -38,5 +38,10 @@ public record Network(long id, String name, @JsonProperty("ip_range") String ipR
 
     /// Wrapper for network list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record NetworkListResponse(List<Network> networks) {}
+    public record NetworkListResponse(List<Network> networks, Pagination.Meta meta) implements Pagination.Paged<Network> {
+        @Override
+        public List<Network> items() {
+            return networks;
+        }
+    }
 }

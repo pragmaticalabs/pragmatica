@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -116,7 +117,30 @@ public final class StorageFactory {
                                MetadataStore metadataStore,
                                DemotionManager demotionManager,
                                StorageGarbageCollector garbageCollector,
-                               Option<DhtMarkerCheck> dhtMarkerCheck) {
+                               Option<DhtMarkerCheck> dhtMarkerCheck,
+                               Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker) {
+        /// #1170: the disk marker [#createAll] committed for this instance, kept so a boot refused
+        /// AFTER formation (the DHT marker check, [#admitDhtMarkers]) can take back what it stamped.
+        /// Empty until [#createAll] commits, and for an instance with no encrypted disk tier.
+        public StorageSetup(String name,
+                            StorageInstance instance,
+                            SnapshotManager snapshotManager,
+                            StorageReadinessGate readinessGate,
+                            MetadataStore metadataStore,
+                            DemotionManager demotionManager,
+                            StorageGarbageCollector garbageCollector,
+                            Option<DhtMarkerCheck> dhtMarkerCheck) {
+            this(name,
+                 instance,
+                 snapshotManager,
+                 readinessGate,
+                 metadataStore,
+                 demotionManager,
+                 garbageCollector,
+                 dhtMarkerCheck,
+                 Option.empty());
+        }
+
         /// #858: pre-#858 call sites that build a `StorageSetup` with no DHT tier involved (e.g.
         /// `StorageRoutesTest`'s direct `new StorageSetup(...)`) keep compiling unchanged, delegating
         /// to the canonical constructor with an empty marker check.
@@ -179,6 +203,23 @@ public final class StorageFactory {
             return dhtMarkerCheck.map(check -> !check.readGate()
                                                      .isResolved())
                                  .or(false);
+        }
+
+        private Result<Unit> rollbackDiskMarker() {
+            return committedDiskMarker.map(EncryptingStorageTier.ArmedLocalDisk::rollbackMarker)
+                                      .or(Result.success(unit()));
+        }
+
+        private StorageSetup withCommittedDiskMarker(Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+            return new StorageSetup(name,
+                                    instance,
+                                    snapshotManager,
+                                    readinessGate,
+                                    metadataStore,
+                                    demotionManager,
+                                    garbageCollector,
+                                    dhtMarkerCheck,
+                                    armedDisk);
         }
     }
 
@@ -578,13 +619,17 @@ public final class StorageFactory {
     /// empty directories.
     private static Result<List<StorageSetup>> commitDiskMarkers(List<PendingSetup> pending) {
         return Result.allOf(pending.stream().map(PendingSetup::commitDiskMarker).toList()).map(_ -> pending.stream()
-                                                                                                           .map(PendingSetup::setup)
+                                                                                                           .map(PendingSetup::committed)
                                                                                                            .toList());
     }
 
     /// #852: a fully assembled [StorageSetup] plus the disk-marker write [#createAll] has not yet
     /// performed for it.
     private record PendingSetup(StorageSetup setup, Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+        private StorageSetup committed() {
+            return setup.withCommittedDiskMarker(armedDisk);
+        }
+
         private Result<Unit> commitDiskMarker() {
             return armedDisk.map(disk -> disk.commitMarker()
                                              .mapError(cause -> Causes.cause("Failed to create storage '" + setup.name()
@@ -1166,7 +1211,30 @@ public final class StorageFactory {
     /// cancelled sibling's output promise resolves at once, but its retry loop keeps attempting until
     /// `stopped` fires, because core `Retry` does not observe its output. On a refusal that happens
     /// immediately: `Main#exitWithError` in production, `abortStart`'s stop in Ember.
+    ///
+    /// #1170 round 2: two phases, the DHT counterpart of [#createAll]'s guard-then-commit. A check with no
+    /// keyring only READS the namespace marker and can refuse; a check with a keyring WRITES it. Written
+    /// alongside a sibling's refusal, the marker outlives the refused boot, and backing that instance out
+    /// to `encrypted = false` is then refused by it. So every refusing check runs first and the writes
+    /// follow only once all of them have admitted: design-out, nothing to take back. BOUND: a write that
+    /// itself fails terminally (the node stopping mid-way) can leave markers its earlier siblings wrote.
+    /// The writes' gates are resolved with the refusal, so a caller racing them fails with the real cause
+    /// instead of waiting out the admission timeout.
     static Promise<Unit> verifyDhtMarkers(DHTClient client, List<DhtMarkerCheck> checks, BooleanSupplier stopped) {
+        var writes = checks.stream().filter(StorageFactory::writesMarker).toList();
+        var guards = checks.stream().filter(check -> !writesMarker(check)).toList();
+
+        return verifyEach(client, guards, stopped).flatMap(_ -> verifyEach(client, writes, stopped))
+                         .onFailure(cause -> writes.forEach(check -> check.readGate()
+                                                                          .resolve(cause.result())));
+    }
+
+    private static boolean writesMarker(DhtMarkerCheck check) {
+        return check.effectiveKeyring()
+                    .isPresent();
+    }
+
+    private static Promise<Unit> verifyEach(DHTClient client, List<DhtMarkerCheck> checks, BooleanSupplier stopped) {
         if (checks.isEmpty()) {
             return Promise.UNIT;
         }
@@ -1181,6 +1249,31 @@ public final class StorageFactory {
 
         return Promise.allOfOrCancel(verifications).flatMap(results -> Result.firstFailureOf(results).fold(cause -> Promise.<Unit> failure(cause),
                                                                                                            _ -> Promise.UNIT));
+    }
+
+    /// #1170: [#verifyDhtMarkers] over every instance in `setups`, as `AetherNode.start()` runs it
+    /// post-formation, plus the compensation for what [#createAll] committed before it. The DHT check
+    /// cannot run before formation (#858), so it can refuse a boot whose disk markers are already
+    /// stamped; without the rollback the operator's back-out to `encrypted = false` trips the reverse
+    /// guard on a marker no ciphertext justified (#852's symptom, one boundary out). BER, see
+    /// [EncryptingStorageTier.ArmedLocalDisk#rollbackMarker] for what it removes and what it refuses
+    /// to. The failure itself is returned unchanged -- a rollback that fails is logged, never
+    /// substituted for the refusal the operator has to act on.
+    static Promise<Unit> admitDhtMarkers(DHTClient client, Map<String, StorageSetup> setups, BooleanSupplier stopped) {
+        return verifyDhtMarkers(client,
+                                setups.values()
+                                      .stream()
+                                      .map(StorageSetup::dhtMarkerCheck)
+                                      .flatMap(Option::stream)
+                                      .toList(),
+                                stopped).onFailure(_ -> rollbackDiskMarkers(setups.values()));
+    }
+
+    private static Result<Unit> rollbackDiskMarkers(Collection<StorageSetup> setups) {
+        return Result.allOf(setups.stream().map(StorageSetup::rollbackDiskMarker).toList())
+                     .mapToUnit()
+                     .onFailure(cause -> log.warn("Boot refused after formation; disk encryption marker rollback failed: {}",
+                                                  cause.message()));
     }
 
     /// #1052: succeeds once EVERY DHT-backed instance in `setups` has been admitted by its

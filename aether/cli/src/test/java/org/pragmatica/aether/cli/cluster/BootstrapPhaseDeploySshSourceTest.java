@@ -15,7 +15,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
@@ -94,22 +93,19 @@ class BootstrapPhaseDeploySshSourceTest {
                                            Option<org.pragmatica.config.toml.TomlDocument> nodeConfig) {
         var roles = workerHosts.isEmpty()
                     ? Map.of(NodeRole.CORE,
-                             RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                       Option.empty(),
+                             RoleSubTable.roleSubTable(Option.empty(),
                                                        Option.some(coreHosts),
                                                        Option.empty(),
                                                        Option.empty(),
                                                        runtimeRef))
                     : Map.of(NodeRole.CORE,
-                             RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                       Option.empty(),
+                             RoleSubTable.roleSubTable(Option.empty(),
                                                        Option.some(coreHosts),
                                                        Option.empty(),
                                                        Option.empty(),
                                                        runtimeRef),
                              NodeRole.WORKER,
-                             RoleSubTable.roleSubTable(NodeRole.WORKER,
-                                                       Option.empty(),
+                             RoleSubTable.roleSubTable(Option.empty(),
                                                        Option.some(workerHosts),
                                                        Option.empty(),
                                                        Option.empty(),
@@ -138,16 +134,15 @@ class BootstrapPhaseDeploySshSourceTest {
                                             List<ProvisionedNode> nodes) {
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
-                                                    TimeoutsConfig.timeoutsConfig("3s", "10s", "10s"),
+                                                    TimeoutsConfig.timeoutsConfig("3s", "10s"),
                                                     PortMapping.defaultPortMapping());
-        var config = ClusterBootstrapConfig.clusterBootstrapConfig(VERSION,
-                                                                   ClusterIdentity.clusterIdentity(CLUSTER.value(),
+        var config = ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity(CLUSTER.value(),
                                                                                                    VERSION)
                                                                                   .unwrap(),
                                                                    CoreTopology.defaultCoreTopology(),
                                                                    sources,
                                                                    runtimes,
-                                                                   InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                                   InfrastructureConfig.infrastructureConfig(),
                                                                    ops, java.util.Map.of());
         var addresses = nodes.stream()
                              .map(n -> NodeAddress.nodeAddress(n.nodeId(),
@@ -179,8 +174,7 @@ class BootstrapPhaseDeploySshSourceTest {
     @Test
     void sshSource_launchesTheResolvedImage_neverLatest() {
         var runtimes = Map.of("pinned",
-                              RuntimeProfile.runtimeProfile("pinned",
-                                                            RuntimeType.CONTAINER,
+                              RuntimeProfile.runtimeProfile(RuntimeType.CONTAINER,
                                                             Option.some("ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4"),
                                                             Option.empty()));
         var ctx = context(Map.of("dc",
@@ -233,8 +227,7 @@ class BootstrapPhaseDeploySshSourceTest {
     @Test
     void sshSource_imagePlaceholder_isSubstitutedWithTheClusterVersion() {
         var runtimes = Map.of("tracking",
-                              RuntimeProfile.runtimeProfile("tracking",
-                                                            RuntimeType.CONTAINER,
+                              RuntimeProfile.runtimeProfile(RuntimeType.CONTAINER,
                                                             Option.some("registry/aether-node:{version}"),
                                                             Option.empty()));
         var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "tracking")),
@@ -381,7 +374,7 @@ class BootstrapPhaseDeploySshSourceTest {
     @Test
     void sshSource_nonContainerRuntime_isRefusedByName_notSilentlyRunAsAContainer() {
         var runtimes = Map.of("jvm",
-                              RuntimeProfile.runtimeProfile("jvm", RuntimeType.JVM, Option.empty(), Option.empty()));
+                              RuntimeProfile.runtimeProfile(RuntimeType.JVM, Option.empty(), Option.empty()));
         var ctx = context(Map.of("dc",
                                  sshSource("dc", List.of("10.0.0.1"), List.of(), "jvm")),
                           runtimes,

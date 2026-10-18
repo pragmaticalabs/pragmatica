@@ -1,0 +1,3 @@
+### Fixed (2026-10-18 — #2233: AWS `listInstances(Map)` applied one arbitrary tag of a multi-tag filter)
+- **A multi-tag filter returned a superset on AWS.** The provider queried EC2 by the first entry of the filter map and returned the result unnarrowed, so which tag applied depended on map iteration order; Hetzner and the SPI default require every tag to match.
+- The result is now narrowed on every translated tag (the `aether.node-id` key is translated first). `[verified: aether/environment/aws/src/test/java/org/pragmatica/aether/environment/aws/AwsComputeProviderTest.java ListInstancesTests, both filter orders]`
