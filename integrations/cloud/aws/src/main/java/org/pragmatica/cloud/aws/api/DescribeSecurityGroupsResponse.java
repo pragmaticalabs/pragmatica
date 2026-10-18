@@ -39,6 +39,11 @@ public record DescribeSecurityGroupsResponse(@JacksonXmlProperty(localName = "se
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record SecurityGroupInfo(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<SecurityGroup> items) {}
 
+    /// A page holding `groups` and no continuation.
+    public static DescribeSecurityGroupsResponse describeSecurityGroupsResponse(List<SecurityGroup> groups) {
+        return new DescribeSecurityGroupsResponse(new SecurityGroupInfo(groups), "");
+    }
+
     @Override
     public List<SecurityGroup> items() {
         return securityGroups();

@@ -205,10 +205,7 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     public Promise<List<SecurityGroup>> describeSecurityGroups(Map<String, String> tagFilters) {
         var formBody = buildDescribeSecurityGroupsForm(tagFilters);
 
-        return listAll("DescribeSecurityGroups",
-                       token -> signAndSendQuery(EC2_SERVICE,
-                                                 config.ec2Url(),
-                                                 withToken(formBody, token)).flatMap(this::parseSecurityGroupsPage));
+        return listAll("DescribeSecurityGroups", token -> fetchGroupsPage(formBody, token));
     }
 
     @Override
@@ -273,12 +270,15 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     /// Reads DescribeInstances to its end (see [#listAll]); the reservations of every page are
     /// concatenated in order into one response with no token.
     private Promise<DescribeInstancesResponse> describeAll(String formBody) {
-        return listAll("DescribeInstances",
-                       token -> postQuery(EC2_SERVICE,
-                                          config.ec2Url(),
-                                          withToken(formBody, token),
-                                          DescribeInstancesResponse.class)).map(all -> new DescribeInstancesResponse(new ReservationSet(all),
-                                                                                                                     null));
+        return listAll("DescribeInstances", token -> fetchInstancesPage(formBody, token)).map(AwsClientRecord::mergedInstances);
+    }
+
+    private Promise<DescribeInstancesResponse> fetchInstancesPage(String formBody, String token) {
+        return postQuery(EC2_SERVICE, config.ec2Url(), withToken(formBody, token), DescribeInstancesResponse.class);
+    }
+
+    private static DescribeInstancesResponse mergedInstances(List<DescribeInstancesResponse.Reservation> all) {
+        return new DescribeInstancesResponse(new ReservationSet(all), "");
     }
 
     /// Reads a paged EC2 listing to its end. EC2 pages the result and signals more with `nextToken`; a
@@ -296,12 +296,14 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
                                                               int page,
                                                               Set<String> sent,
                                                               List<T> collected) {
-        return fetchPage.apply(token).flatMap(response -> continueWith(action,
-                                                                       fetchPage,
-                                                                       page,
-                                                                       sent,
-                                                                       concat(collected, response.items()),
-                                                                       response.continuation()));
+        return fetchPage.apply(token)
+                        .flatMap(response -> continueWith(action,
+                                                          fetchPage,
+                                                          page,
+                                                          sent,
+                                                          concat(collected,
+                                                                 response.items()),
+                                                          response.continuation()));
     }
 
     private <T, P extends Paged<T>> Promise<List<T>> continueWith(String action,
@@ -332,7 +334,9 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     private static Set<String> withSent(Set<String> sent, String token) {
-        return Stream.concat(sent.stream(), Stream.of(token)).collect(Collectors.toUnmodifiableSet());
+        return Stream.concat(sent.stream(),
+                             Stream.of(token))
+                     .collect(Collectors.toUnmodifiableSet());
     }
 
     private static <T> Promise<List<T>> paginationFailed(String action, int pages, String reason) {
@@ -340,7 +344,9 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     private static <T> List<T> concat(List<T> head, List<T> tail) {
-        return Stream.concat(head.stream(), tail.stream()).toList();
+        return Stream.concat(head.stream(),
+                             tail.stream())
+                     .toList();
     }
 
     private static String withToken(String formBody, String token) {
@@ -360,9 +366,7 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     /// Like [#postQueryDiscarding] but resolves the listed AWS error codes as success — see
     /// [#RULE_ALREADY_PRESENT] for why that is design-out rather than error recovery.
     private Promise<Unit> postQueryTolerating(String service, String url, String formBody, Set<String> toleratedCodes) {
-        return signAndSendQuery(service,
-                                url,
-                                formBody).flatMap(result -> checkSuccessTolerating(result, toleratedCodes));
+        return signAndSendQuery(service, url, formBody).flatMap(result -> checkSuccessTolerating(result, toleratedCodes));
     }
 
     private Promise<HttpResult<String>> signAndSendQuery(String service, String url, String formBody) {
@@ -378,7 +382,9 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
                              .flatMap(signedHeaders -> sendFormRequest(url, formBody, signedHeaders));
     }
 
-    private Promise<HttpResult<String>> sendFormRequest(String url, String formBody, Map<String, String> signedHeaders) {
+    private Promise<HttpResult<String>> sendFormRequest(String url,
+                                                        String formBody,
+                                                        Map<String, String> signedHeaders) {
         var builder = HttpRequest.newBuilder()
                                  .uri(URI.create(url))
                                  .timeout(REQUEST_TIMEOUT)
@@ -466,6 +472,10 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
                : error.promise();
     }
 
+    private Promise<DescribeSecurityGroupsResponse> fetchGroupsPage(String formBody, String token) {
+        return signAndSendQuery(EC2_SERVICE, config.ec2Url(), withToken(formBody, token)).flatMap(this::parseSecurityGroupsPage);
+    }
+
     private Promise<DescribeSecurityGroupsResponse> parseSecurityGroupsPage(HttpResult<String> result) {
         if (result.isSuccess()) {
             return xmlMapper.readString(result.body(), DescribeSecurityGroupsResponse.class).async();
@@ -474,7 +484,7 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
         var error = AwsError.fromResponse(result.statusCode(), result.body());
 
         return isTolerated(error, GROUP_ALREADY_ABSENT)
-               ? Promise.success(new DescribeSecurityGroupsResponse(null, null))
+               ? Promise.success(DescribeSecurityGroupsResponse.describeSecurityGroupsResponse(List.of()))
                : error.promise();
     }
 

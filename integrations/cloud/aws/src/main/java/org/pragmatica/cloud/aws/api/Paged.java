@@ -12,6 +12,5 @@ import org.pragmatica.lang.Option;
 /// asks for the next one, absent on the last page.
 public interface Paged<T> {
     List<T> items();
-
     Option<String> continuation();
 }
