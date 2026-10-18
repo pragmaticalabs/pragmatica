@@ -31,7 +31,7 @@ class KnownUnwiredSurfacesTest {
     /// #686 (CTO ruling 2026-09-14, option (b)): plain `aether cluster apply` is scale-only, actuated by
     /// the LEADER from KV desired counts. `ApplyOrchestrator.apply` / `WaveExecutor.execute` are a
     /// complete client-side wave rollout that actuates through the CLI's `ComputeProvider` — a second
-    /// actuation authority over the same fleet — entered only via `--resume`/`--rollback`, and
+    /// actuation authority over the same fleet — entered only via `--resume` (`--rollback` is refused as not implemented), and
     /// evidenced only by their own unit tests. They stay unwired until the server-side wave design
     /// (the ticket drafted in the #686 fix report) lands; wiring plain `apply` to them is the change
     /// that ruling refused.
@@ -73,7 +73,7 @@ class KnownUnwiredSurfacesTest {
                    + "defaults skipConfirmation and delegates to the three-argument one, so it reaches the same "
                    + "client-side wave rollout the ruling refused. Retire this entry only with the server-side wave design.");
         assertTrue(reachability.isReachable(waves),
-                   "control: WaveExecutor.execute IS reachable — through ApplyOrchestrator.resume/rollback (--resume/--rollback), "
+                   "control: WaveExecutor.execute IS reachable — through ApplyOrchestrator.resume (--resume), "
                   + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
     }
 

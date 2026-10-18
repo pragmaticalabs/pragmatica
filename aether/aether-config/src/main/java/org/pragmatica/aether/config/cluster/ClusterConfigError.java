@@ -561,7 +561,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     ///
     /// The message deliberately does NOT tell the operator to destroy and re-bootstrap: unlike
     /// `ImmutableFieldChange`, these actions are not actually unsupportable — `aether cluster apply
-    /// --resume`/`--rollback` route through `WaveExecutor`, which DOES provision/destroy/roll these
+    /// --resume` routes through `WaveExecutor`, which DOES provision/destroy/roll these
     /// kinds live. The plain `aether cluster apply <file>` invocation just never reaches that engine;
     /// it POSTs straight to this endpoint instead. That dispatch gap is a separate, structural finding
     /// (flagged for its own fix, not asserted here as a working workaround) — this cause only

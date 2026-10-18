@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.blueprint.StreamConfigParser.PartitionedStrea
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.RefusedSection;
 import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
 import org.pragmatica.aether.slice.blueprint.StreamSourceError;
+import org.pragmatica.aether.slice.resource.ResourceName;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError;
 import org.pragmatica.aether.slice.resource.ResourceVersion.ResourceVersionError;
@@ -226,6 +227,7 @@ public sealed interface StreamResourceValidator {
         var inert = new ArrayList<StreamValidationFailure>();
 
         if (resource instanceof StreamResource.Owned owned) {
+            guardOwnedName(alias, inert);
             guardCoreCount(alias, owned.config(), replication, inert);
             guardStreamConfig(alias, owned.config(), inert);
             resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, inert));
@@ -392,6 +394,18 @@ public sealed interface StreamResourceValidator {
                : RULE_REPLICATION_POLICY_INVALID;
     }
 
+    /// #1377: the alias of an OWNED section names the stream the blueprint creates, so it must be a valid
+    /// [ResourceName]. The parser never checked it; `BlueprintService` then lost the binding silently and the
+    /// slice failed at load with `UnboundStreamAlias`. Reported under [#RULE_STREAM_NAME_INVALID] (or the
+    /// reserved-name variant of it), like a source address whose name part is refused.
+    private static void guardOwnedName(String alias, List<StreamValidationFailure> failures) {
+        ResourceName.resourceName(alias).onFailure(cause -> failures.add(StreamValidationFailure.streamValidationFailure("[streams." + alias
+                                                                                                                        + "]",
+                                                                                                                         RULE_STREAM_NAME_INVALID,
+                                                                                                                         "Stream resource '" + alias
+                                                                                                                        + "': " + cause.message())));
+    }
+
     /// #1564 R7: an owned stream whose `replication_factor` exceeds the cluster's DESIRED core count could never
     /// hold its copies; the section is rejected, named by rule, like any other per-section refusal.
     private static void guardCoreCount(String alias,
@@ -460,6 +474,7 @@ public sealed interface StreamResourceValidator {
                                          List<StreamValidationFailure> failures) {
         resources.forEach((alias, resource) -> {
             if (resource instanceof StreamResource.Owned owned) {
+                guardOwnedName(alias, failures);
                 guardStreamConfig(alias, owned.config(), failures);
                 resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, failures));
             }

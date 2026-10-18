@@ -50,12 +50,14 @@ FLAGS
 
 ENVIRONMENT
     HCLOUD_TOKEN     Required. Hetzner Cloud API token.
-    AETHER_SSH_KEY   Required. Path to SSH private key. Public key derived from
+    AETHER_SSH_KEY   Required, except for --destroy and --print-only. Path to SSH private key. Public key derived from
                      ${AETHER_SSH_KEY}.pub or via `ssh-keygen -y -f`.
     AETHER_SSH_USER  Optional. SSH user for VM access (default: root).
     PG_VM_TYPE       Optional. Hetzner server type (default: cx23).
     PG_VM_LOCATION   Optional. Hetzner location (default: fsn1).
     PG_VM_IMAGE      Optional. Hetzner image (default: ubuntu-22.04).
+    PG_ENV_FILE      Optional. Where the PG_URL env file is written and removed
+                     (default: /tmp/aether-test-pg.env).
 
 OUTPUT
     On success, prints to stdout and to /tmp/aether-test-pg.env (mode 0600):
@@ -84,7 +86,7 @@ readonly API="https://api.hetzner.cloud/v1"
 readonly CLUSTER_LABEL="test-pg"
 readonly ROLE_LABEL="postgres"
 readonly SELECTOR="aether-cluster=${CLUSTER_LABEL}"
-readonly ENV_FILE="/tmp/aether-test-pg.env"
+readonly ENV_FILE="${PG_ENV_FILE:-/tmp/aether-test-pg.env}"
 readonly VM_NAME_PREFIX="aether-test-pg"
 readonly SSH_KEY_NAME="aether-test-pg-key"
 
@@ -134,8 +136,9 @@ if [ -z "${HCLOUD_TOKEN:-}" ]; then
 fi
 
 # AETHER_SSH_KEY is needed for everything except --print-only and --destroy
-# (destroy may still want it for the SSH key cleanup, but not strictly required).
-if [ "$MODE" != "print-only" ] && [ -z "${AETHER_SSH_KEY:-}" ]; then
+# (destroy deletes labelled servers and SSH keys over the API and never reads the key; a
+# teardown must not refuse for an input it does not use, #2193).
+if [ "$MODE" != "print-only" ] && [ "$MODE" != "destroy" ] && [ -z "${AETHER_SSH_KEY:-}" ]; then
     log_err "AETHER_SSH_KEY is not set."
     log_err "Export the path to your SSH private key:"
     log_err "    export AETHER_SSH_KEY=~/.ssh/aether_test"

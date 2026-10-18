@@ -1,0 +1,3 @@
+### Fixed (2026-10-18 — a demoted core that loses and regains quorum no longer comes back active, #1799)
+- **`RabiaEngine` resumes from a quorum-loss pause to `Observing` when the node is not a voter** (`observerMode` set, or self absent from the installed roster). Before, `doResumeFromPause` set `Idle` unconditionally: a core removed from the electorate that lost and regained quorum reported itself active and the consensus bridge published `ACTIVE` for a node that was no longer a voter, so its app routing and deployment manager treated it as a full member again until it was drained.
+- Pinned by `RabiaEnginePauseResumeTest#demotedObserverStaysObservingAfterResume` (demote, lose quorum, regain; red before the fix).
