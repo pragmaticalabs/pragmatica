@@ -46,9 +46,16 @@ public record S3Config(String endpoint,
         return new S3Config(endpoint, bucket, region, accessKeyId, secretAccessKey, true);
     }
 
+    /// Endpoint, bucket and addressing style only, for a client whose credentials come from an
+    /// [org.pragmatica.cloud.aws.AwsCredentialsProvider] rather than from this record: the static key
+    /// fields stay empty and are never read by such a client.
+    public static S3Config s3Endpoint(String endpoint, String bucket, String region, boolean pathStyle) {
+        return new S3Config(endpoint, bucket, region, "", "", pathStyle);
+    }
+
     /// Builds the full URL for an object key.
     /// Path style: http://minio:9000/bucket/key
-    /// Virtual-hosted: https://bucket.s3.region.amazonaws.com/key
+    /// Virtual-hosted: https://bucket.s3.region.amazonaws.com/key (the bucket prefixed to the endpoint's host)
     public String objectUrl(String key) {
         return pathStyle
                ? endpoint + "/" + bucket + "/" + key
@@ -68,7 +75,7 @@ public record S3Config(String endpoint,
     public String signingHost() {
         return pathStyle
                ? extractHost(endpoint)
-               : bucket + ".s3." + region + ".amazonaws.com";
+               : bucket + "." + extractHost(endpoint);
     }
 
     /// Converts to AwsConfig for SigV4 signing.
@@ -76,8 +83,16 @@ public record S3Config(String endpoint,
         return AwsConfig.awsConfig(accessKeyId, secretAccessKey, region);
     }
 
+    /// The endpoint with the bucket prefixed to its host. For the AWS factory's endpoint
+    /// (`https://s3.<region>.amazonaws.com`) that is `https://<bucket>.s3.<region>.amazonaws.com`, as before;
+    /// for another provider's endpoint it is that provider's virtual-hosted form instead of an AWS host.
     private String virtualHostedBase() {
-        return "https://" + bucket + ".s3." + region + ".amazonaws.com";
+        var schemeEnd = endpoint.indexOf("://");
+        var scheme = schemeEnd >= 0
+                     ? endpoint.substring(0, schemeEnd + 3)
+                     : "https://";
+
+        return scheme + bucket + "." + extractHost(endpoint);
     }
 
     private static String extractHost(String url) {

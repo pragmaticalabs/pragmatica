@@ -129,4 +129,37 @@ class AwsSigV4SignerTest {
     private static void assertAmzDateCorrect(Map<String, String> headers) {
         assertThat(headers.get("X-Amz-Date")).isEqualTo("20150830T123600Z");
     }
+
+    /// #249: the signed host must equal the sent `Host` header. Mutation that reddens it: sign `URI#getHost`
+    /// alone again (MinIO on :9000 then answers SignatureDoesNotMatch).
+    /// #249: mutation that reddens it: sign the raw query in request order again.
+    @Nested
+    class CanonicalQuery {
+        @Test
+        void canonicalQuery_sortsByName_andFillsBareNames() {
+            assertThat(AwsSigV4Signer.canonicalQuery("list-type=2&prefix=a%2F&max-keys=10"))
+                .isEqualTo("list-type=2&max-keys=10&prefix=a%2F");
+            assertThat(AwsSigV4Signer.canonicalQuery("uploads")).isEqualTo("uploads=");
+            assertThat(AwsSigV4Signer.canonicalQuery("")).isEmpty();
+        }
+    }
+
+    @Nested
+    class CanonicalHost {
+        @Test
+        void canonicalHost_nonDefaultPort_isIncluded() {
+            assertThat(AwsSigV4Signer.canonicalHost("http://localhost:9000/bucket/key"))
+                                           .isEqualTo("localhost:9000");
+        }
+
+        @Test
+        void canonicalHost_defaultOrAbsentPort_isOmitted() {
+            assertThat(AwsSigV4Signer.canonicalHost("https://s3.eu-central-1.amazonaws.com/k"))
+                                           .isEqualTo("s3.eu-central-1.amazonaws.com");
+            assertThat(AwsSigV4Signer.canonicalHost("https://s3.example.com:443/k"))
+                                           .isEqualTo("s3.example.com");
+            assertThat(AwsSigV4Signer.canonicalHost("http://minio:80/k"))
+                                           .isEqualTo("minio");
+        }
+    }
 }
