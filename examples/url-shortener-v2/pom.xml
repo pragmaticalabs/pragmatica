@@ -17,7 +17,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
         <jbct.skip>false</jbct.skip>
-        <platform.version>1.0.0-rc4</platform.version>
+        <platform.version>1.0.0-rc5</platform.version>
     </properties>
 
     <dependencies>

@@ -77,12 +77,12 @@ becomes a gate; see the `MODE` line in that test.
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>serialization-api</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>serialization-codec-processor</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
     <scope>provided</scope>
 </dependency>
 ```

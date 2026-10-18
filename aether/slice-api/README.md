@@ -44,7 +44,7 @@ public interface Slice {
 
 ## Dependencies
 
-Artifact: `org.pragmatica-lite.aether:slice-api:1.0.0-rc4`. Depends on (from `pom.xml`):
+Artifact: `org.pragmatica-lite.aether:slice-api:1.0.0-rc5`. Depends on (from `pom.xml`):
 
 - `org.pragmatica-lite:core`
 - `org.pragmatica-lite:serialization-api`
