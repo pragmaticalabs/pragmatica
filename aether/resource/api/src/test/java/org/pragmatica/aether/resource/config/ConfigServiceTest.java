@@ -248,18 +248,34 @@ class ConfigServiceTest {
 
     /// #1455: a present-but-wrong-typed key used to read as an absent one.
     @Test
-    void typedReads_wrongTypedValue_failsNamingKeyAndValue() {
+    void typedReads_wrongTypedValue_failsNamingKeyValueAndExpectedType() {
         configService.loadToml(ConfigScope.GLOBAL, "[db]\nport = \"80x\"\nssl = \"yes\"\nratio = \"half\"\ntags = \"a\"\n")
                      .onFailureRun(Assertions::fail);
 
-        assertFails(configService.getInt("db", "port").await(), "db.port", "80x");
-        assertFails(configService.getBoolean("db", "ssl").await(), "db.ssl", "yes");
-        assertFails(configService.getDouble("db", "ratio").await(), "db.ratio", "half");
-        assertFails(configService.getStringList("db", "tags").await(), "db.tags", "a");
-        assertFails(configService.getInt(ConfigScope.GLOBAL, "db", "port").await(), "db.port", "80x");
-        assertFails(configService.getBoolean(ConfigScope.GLOBAL, "db", "ssl").await(), "db.ssl", "yes");
-        assertFails(configService.getDouble(ConfigScope.GLOBAL, "db", "ratio").await(), "db.ratio", "half");
-        assertFails(configService.getStringList(ConfigScope.GLOBAL, "db", "tags").await(), "db.tags", "a");
+        assertFails(configService.getInt("db", "port").await(), "db.port", "80x", "integer");
+        assertFails(configService.getBoolean("db", "ssl").await(), "db.ssl", "yes", "boolean");
+        assertFails(configService.getDouble("db", "ratio").await(), "db.ratio", "half", "float");
+        assertFails(configService.getStringList("db", "tags").await(), "db.tags", "a", "array of strings");
+        assertFails(configService.getInt(ConfigScope.GLOBAL, "db", "port").await(), "db.port", "80x", "integer");
+        assertFails(configService.getBoolean(ConfigScope.GLOBAL, "db", "ssl").await(), "db.ssl", "yes", "boolean");
+        assertFails(configService.getDouble(ConfigScope.GLOBAL, "db", "ratio").await(), "db.ratio", "half", "float");
+        assertFails(configService.getStringList(ConfigScope.GLOBAL, "db", "tags").await(), "db.tags", "a", "array of strings");
+        assertThat(configService.getDocument(ConfigScope.GLOBAL).typeMismatches()).describedAs("stored document's ledger").isEmpty();
+    }
+
+    @Test
+    void typedReads_wellTypedValue_isReadThroughEveryAccessor() {
+        configService.loadToml(ConfigScope.GLOBAL, "[ok]\nport = 5432\nssl = true\nratio = 1.5\ntags = [\"a\", \"b\"]\n")
+                     .onFailureRun(Assertions::fail);
+
+        assertThat(configService.getInt("ok", "port").await().unwrap()).isEqualTo(Option.some(5432));
+        assertThat(configService.getBoolean("ok", "ssl").await().unwrap()).isEqualTo(Option.some(true));
+        assertThat(configService.getDouble("ok", "ratio").await().unwrap()).isEqualTo(Option.some(1.5));
+        assertThat(configService.getStringList("ok", "tags").await().unwrap()).isEqualTo(Option.some(java.util.List.of("a", "b")));
+        assertThat(configService.getInt(ConfigScope.GLOBAL, "ok", "port").await().unwrap()).isEqualTo(Option.some(5432));
+        assertThat(configService.getBoolean(ConfigScope.GLOBAL, "ok", "ssl").await().unwrap()).isEqualTo(Option.some(true));
+        assertThat(configService.getDouble(ConfigScope.GLOBAL, "ok", "ratio").await().unwrap()).isEqualTo(Option.some(1.5));
+        assertThat(configService.getStringList(ConfigScope.GLOBAL, "ok", "tags").await().unwrap()).isEqualTo(Option.some(java.util.List.of("a", "b")));
     }
 
     @Test
@@ -277,9 +293,10 @@ class ConfigServiceTest {
                      .onSuccess(opt -> assertThat(opt).isEqualTo(Option.some(5432)));
     }
 
-    private static void assertFails(org.pragmatica.lang.Result<?> result, String key, String raw) {
+    private static void assertFails(org.pragmatica.lang.Result<?> result, String key, String raw, String expected) {
         result.onSuccess(value -> Assertions.fail(key + " must fail, read " + value))
               .onFailure(cause -> assertThat(cause.message()).contains(key)
-                                                             .contains(raw));
+                                                             .contains(raw)
+                                                             .contains(expected));
     }
 }
