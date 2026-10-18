@@ -4467,6 +4467,14 @@ _restore_slices_gate() {
     local body report missing failed starved failed_streak=0
     while :; do
         body=$(api_get "/api/v1/slices" 2>/dev/null) || body=""
+        # #1972: the management API serialises with NON_EMPTY (JsonCodecAdapter), so "no slices deployed" is the body `{}`, not
+        # `{"slices":[]}`. A suite that deleted its own blueprint leaves exactly that, and there is no slice left to gate on:
+        # it is vacuously at baseline. ONLY the empty object counts; an empty body, an error body or anything else stays the
+        # failure below (an unreadable /api/v1/slices is never a pass).
+        if printf '%s' "$body" | tr -d '[:space:]' | grep -qx '{}'; then
+            log_info "restore_cluster_baseline: /api/v1/slices is {} (no blueprint deployed), so there is no slice to gate on"
+            return 0
+        fi
         if printf '%s' "$body" | grep -q '"slices"'; then
             report=$(printf '%s' "$body" | _slices_by_artifact)
             missing=$(_slices_missing_active "$report")
