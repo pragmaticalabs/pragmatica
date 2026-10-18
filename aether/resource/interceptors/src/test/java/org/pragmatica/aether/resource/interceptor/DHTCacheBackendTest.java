@@ -27,6 +27,10 @@ import static org.pragmatica.lang.Unit.unit;
 
 class DHTCacheBackendTest {
 
+    /// A pre-envelope value: tag 3 (one VLQ byte), then payload; long enough to hold a header, so only the
+    /// header check (not the length guard) can reject it.
+    static final byte[] LEGACY_ONE_BYTE_TAG = {3, 0, 0, 0, 5, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'};
+
     private ConcurrentHashMap<String, byte[]> storage;
     private FakeDHTClient dhtClient;
     private DHTCacheBackend backend;
@@ -166,7 +170,7 @@ class DHTCacheBackendTest {
 
     @Test
     void legacyEntry_tagBelow128_isMissAndRemoved() {
-        storage.put("test-ns:key1", new byte[] {3, 0, 0, 0, 5, 'h', 'e', 'l', 'l', 'o'});
+        storage.put("test-ns:key1", LEGACY_ONE_BYTE_TAG);
 
         var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
 

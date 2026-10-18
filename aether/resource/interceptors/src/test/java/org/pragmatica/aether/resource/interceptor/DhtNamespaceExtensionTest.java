@@ -100,7 +100,7 @@ class DhtNamespaceExtensionTest {
         Fn1<Promise<String>, String> method = request -> Promise.success("done-" + request + "-" + runs.incrementAndGet());
         interceptor.intercept(method).apply("call-1").await().unwrap();
         var storedKey = replicated.storage.keySet().iterator().next();
-        replicated.storage.put(storedKey, new byte[] {3, 0, 0, 0, 5, 'h', 'e', 'l', 'l', 'o'});
+        replicated.storage.put(storedKey, DHTCacheBackendTest.LEGACY_ONE_BYTE_TAG);
 
         var rerun = interceptor.intercept(method).apply("call-1").await();
         var deduped = interceptor.intercept(method).apply("call-1").await();
