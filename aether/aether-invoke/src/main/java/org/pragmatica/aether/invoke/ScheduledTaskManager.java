@@ -80,6 +80,50 @@ public interface ScheduledTaskManager {
     default void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {}
 
     int activeTimerCount();
+
+    /// Why `task` is NOT firing on this node right now, or empty when it is eligible and its timer is armed (#1469).
+    /// `activeTimerCount()` is one scalar and reads 0 for every cause below; this tells them apart. Default empty so the
+    /// route-test stubs that implement this interface stay compilable; the real manager answers from its state machine.
+    default Option<Ineligibility> ineligibilityOf(ScheduledTask task) {
+        return Option.none();
+    }
+
+    /// The scheduler state machine's current state on this node (#1469). Default [SchedulerPhase#LEADING] only for the
+    /// route-test stubs; the real manager reports its own.
+    default SchedulerPhase schedulerPhase() {
+        return SchedulerPhase.LEADING;
+    }
+
+    /// The state the scheduler state machine is in. `DORMANT` is the initial state and the one entered when quorum
+    /// disappears: nothing fires there, and every other surface of the manager reads zero.
+    enum SchedulerPhase {
+        DORMANT,
+        FOLLOWING,
+        LEADING,
+        STOPPED
+    }
+
+    /// The reason a registered task is not firing on this node (#1469), in the order they are checked: the scheduler's own
+    /// state first, then the task, then this node's relation to it.
+    enum Ineligibility {
+        /// The scheduler is Dormant: no quorum has been reported, or it was lost. Nothing fires.
+        SCHEDULER_DORMANT,
+        /// The scheduler was stopped (node shutdown).
+        SCHEDULER_STOPPED,
+        /// The operator paused the task.
+        PAUSED,
+        /// The task's execution mode could not be read; it runs nowhere (#964).
+        UNKNOWN_MODE,
+        /// A SINGLE-mode task, and this node is not the leader.
+        NOT_LEADER,
+        /// An ALL-mode task, and this node does not host the slice.
+        NOT_HOSTING,
+        /// An ALL-mode task, and this node is draining.
+        DRAINING,
+        /// Everything above holds in the task's favour and still no timer is armed: arming failed or has not happened.
+        TIMER_ARM_FAILED
+    }
+
     void stop();
     /// Atomic try-claim against the SAME in-flight guard `TaskOps` uses for automatic fires
     /// (fixed-rate ticks and cron), so a manual trigger and an automatic fire can never run
@@ -165,6 +209,7 @@ public interface ScheduledTaskManager {
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
 
+        ctx.dormant.onEntry();
         registry.setChangeListener(new RegistryListener(ctx, fsm)::onChange);
 
         return new ScheduledTaskManagerAdapter(ctx, fsm);
@@ -382,6 +427,14 @@ public interface ScheduledTaskManager {
     record Dormant(Context ctx) implements SchedulerState {
         private static final Logger log = LoggerFactory.getLogger(Dormant.class);
 
+        /// #1469: Dormant fires nothing, and `activeTimers` reads 0 exactly as it does for a cluster with nothing
+        /// scheduled, so entering it is said out loud. The initial state's `onEntry` is not run by the state machine
+        /// (`Fsm.fsm` with a state factory), so the factory calls this for the boot case.
+        @Override
+        public void onEntry() {
+            log.warn("Node {} scheduler is Dormant — no scheduled task fires until the cluster reports quorum", ctx.self);
+        }
+
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
             switch (event) {
@@ -526,6 +579,50 @@ public interface ScheduledTaskManager {
                 case SINGLE -> leader;
                 case UNKNOWN -> false;
             };
+        }
+
+        /// #1469: the first reason `task` is not firing on this node in `state`, or empty when it is eligible AND its timer
+        /// is armed. The checks mirror [#eligible] term for term, so a task reported eligible here is one `eligible` lets
+        /// through; the scheduler's own state comes first because nothing else matters while it is Dormant or Stopped.
+        static Option<Ineligibility> ineligibility(Context ctx, ScheduledTask task, SchedulerState state) {
+            return switch (state) {
+                case Dormant _ -> Option.some(Ineligibility.SCHEDULER_DORMANT);
+                case Stopped _ -> Option.some(Ineligibility.SCHEDULER_STOPPED);
+                case Following _ -> taskIneligibility(ctx, task, false);
+                case Leading _ -> taskIneligibility(ctx, task, true);
+            };
+        }
+
+        private static Option<Ineligibility> taskIneligibility(Context ctx, ScheduledTask task, boolean leader) {
+            if (task.paused()) {
+                return Option.some(Ineligibility.PAUSED);
+            }
+
+            return switch (task.executionMode()) {
+                case UNKNOWN -> Option.some(Ineligibility.UNKNOWN_MODE);
+                case SINGLE -> leader
+                               ? timerArmed(ctx, task)
+                               : Option.some(Ineligibility.NOT_LEADER);
+                case ALL -> allModeIneligibility(ctx, task);
+            };
+        }
+
+        private static Option<Ineligibility> allModeIneligibility(Context ctx, ScheduledTask task) {
+            if (ctx.draining.get()) {
+                return Option.some(Ineligibility.DRAINING);
+            }
+
+            return ctx.invoker.hasLocalSlice(task.artifact())
+                   ? timerArmed(ctx, task)
+                   : Option.some(Ineligibility.NOT_HOSTING);
+        }
+
+        private static Option<Ineligibility> timerArmed(Context ctx, ScheduledTask task) {
+            var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+
+            return ctx.activeTimers.containsKey(key)
+                   ? Option.none()
+                   : Option.some(Ineligibility.TIMER_ARM_FAILED);
         }
 
         static boolean hostingAndNotDraining(Context ctx, ScheduledTask task) {
@@ -985,6 +1082,8 @@ public interface ScheduledTaskManager {
     }
 
     record ScheduledTaskManagerAdapter(Context ctx, Fsm<SchedulerState, ClusterFsmEvent> fsm) implements ScheduledTaskManager {
+        private static final Logger log = LoggerFactory.getLogger(ScheduledTaskManagerAdapter.class);
+
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));
@@ -993,14 +1092,43 @@ public interface ScheduledTaskManager {
         @Override
         public void onQuorumStateChange(ClusterStateNotification notification) {
             if (!notification.advanceSequence(ctx.quorumSequence)) {
+                log.info("Node {} scheduler ignoring stale ClusterStateNotification: {}", ctx.self, notification);
+
                 return;
             }
 
+            logQuorumNotification(notification);
             if (notification.state() == ClusterStateNotification.State.ACTIVE) {
                 fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
             } else {
                 fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
+        }
+
+        /// #1469: a notification that is not ACTIVE leaves (or keeps) the scheduler Dormant, where nothing fires.
+        private void logQuorumNotification(ClusterStateNotification notification) {
+            if (notification.state() == ClusterStateNotification.State.ACTIVE) {
+                log.info("Node {} scheduler received ClusterStateNotification: {}", ctx.self, notification);
+            } else {
+                log.warn("Node {} scheduler received ClusterStateNotification: {} — no quorum, no scheduled task fires",
+                         ctx.self,
+                         notification);
+            }
+        }
+
+        @Override
+        public Option<Ineligibility> ineligibilityOf(ScheduledTask task) {
+            return TaskOps.ineligibility(ctx, task, fsm.current());
+        }
+
+        @Override
+        public SchedulerPhase schedulerPhase() {
+            return switch (fsm.current()) {
+                case Dormant _ -> SchedulerPhase.DORMANT;
+                case Following _ -> SchedulerPhase.FOLLOWING;
+                case Leading _ -> SchedulerPhase.LEADING;
+                case Stopped _ -> SchedulerPhase.STOPPED;
+            };
         }
 
         @Override

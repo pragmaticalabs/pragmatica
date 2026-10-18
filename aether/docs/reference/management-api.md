@@ -4767,12 +4767,30 @@ List all registered scheduled tasks with active timer count and execution state.
       "lastOutcome": "SUCCESS",
       "completionTimeouts": 0,
       "lateResolutions": 0,
-      "skippedOverlaps": 0
+      "skippedOverlaps": 0,
+      "eligibleHere": true,
+      "ineligibleReason": ""
     }
   ],
-  "activeTimers": 1
+  "activeTimers": 1,
+  "schedulerState": "LEADING"
 }
 ```
+
+`activeTimers` is one scalar, and `0` there can mean several different things. `schedulerState` (this node's scheduler state machine: `DORMANT`, `FOLLOWING`, `LEADING` or `STOPPED`) and each task's `eligibleHere` / `ineligibleReason` tell them apart. Both describe the node that answers the request, not the cluster. `ineligibleReason` is empty when the task is eligible here and its timer is armed, otherwise the first of:
+
+| `ineligibleReason` | Meaning |
+|---|---|
+| `SCHEDULER_DORMANT` | No quorum has been reported (or it was lost); nothing fires on this node. |
+| `SCHEDULER_STOPPED` | The scheduler on this node was stopped. |
+| `PAUSED` | The task is paused. |
+| `UNKNOWN_MODE` | The task's execution mode could not be read; it runs nowhere. |
+| `NOT_LEADER` | A `single`-mode task, and this node is not the leader. |
+| `NOT_HOSTING` | An `all`-mode task, and this node does not host the slice. |
+| `DRAINING` | An `all`-mode task, and this node is draining. |
+| `TIMER_ARM_FAILED` | Eligible in every other respect, but no timer is armed. |
+
+A scheduler that enters `DORMANT` logs a WARN naming it, as does every quorum notification that is not `ACTIVE`.
 
 For an `execution_mode = "all"` task, `lastExecutionAt`/`nextFireAt`/`consecutiveFailures`/`totalExecutions` are aggregated across every node's own execution row rather than read from a single shared entry (`totalExecutions` summed, `consecutiveFailures`/`lastExecutionAt` max, `nextFireAt` min). A `single`-mode task's fields still come from the one node that ever executes it
 [mechanism: `ScheduledTaskRoutes.toSummary` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`, the same per-node scan `executions-by-node` uses; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#ListSummary` — component-level against a real `KVStore`, not a live multi-node run].
@@ -4785,7 +4803,8 @@ Get scheduled tasks filtered by config section.
 ```json
 {
   "tasks": [...],
-  "configSection": "scheduling.cleanup"
+  "configSection": "scheduling.cleanup",
+  "schedulerState": "LEADING"
 }
 ```
 

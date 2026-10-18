@@ -132,6 +132,68 @@ class ScheduledTaskRoutesOrderingTest {
         }
     }
 
+    /// #1469: the list and filtered responses carry the scheduler state and, per task, whether it fires on this node
+    /// and why not, so `activeTimers == 0` no longer stands for six different causes.
+    @Nested
+    class Eligibility {
+        @Test
+        void listResponse_carriesSchedulerStateAndEachTasksReason() {
+            var registry = new ShufflingRegistry(List.of(task(SECTION, "org.example:alpha:1.0.0", METHOD),
+                                                         task(SECTION, "org.example:beta:1.0.0", METHOD)));
+            var routes = routesWith(registry, reasoningManager("org.example:beta:1.0.0"));
+
+            var response = routes.buildTasksResponseForTest();
+
+            assertThat(response.schedulerState()).isEqualTo("FOLLOWING");
+            assertThat(response.tasks()).extracting(ScheduledTaskRoutes.TaskSummary::artifact,
+                                                    ScheduledTaskRoutes.TaskSummary::eligibleHere,
+                                                    ScheduledTaskRoutes.TaskSummary::ineligibleReason)
+                                        .containsExactly(org.assertj.core.api.Assertions.tuple("org.example:alpha:1.0.0", true, ""),
+                                                         org.assertj.core.api.Assertions.tuple("org.example:beta:1.0.0", false, "NOT_LEADER"));
+        }
+
+        @Test
+        void filteredResponse_carriesSchedulerState() {
+            var registry = new ShufflingRegistry(List.of(task(SECTION, "org.example:alpha:1.0.0", METHOD)));
+            var routes = routesWith(registry, reasoningManager("org.example:alpha:1.0.0"));
+
+            var response = routes.buildFilteredResponseForTest(SECTION)
+                                 .onFailure(cause -> fail("Filtered response must succeed: " + cause.message()))
+                                 .await()
+                                 .or(new ScheduledTaskRoutes.FilteredTasksResponse(List.of(), SECTION, ""));
+
+            assertThat(response.schedulerState()).isEqualTo("FOLLOWING");
+            assertThat(response.tasks()).singleElement().extracting(ScheduledTaskRoutes.TaskSummary::ineligibleReason).isEqualTo("NOT_LEADER");
+        }
+    }
+
+    private ScheduledTaskRoutes routesWith(ShufflingRegistry registry, ScheduledTaskManager manager) {
+        return ScheduledTaskRoutes.scheduledTaskRoutes(registry,
+                                                       manager,
+                                                       () -> nodeProxy(),
+                                                       stubInvoker(),
+                                                       stubStateRegistry(),
+                                                       () -> true);
+    }
+
+    /// A manager that reports the scheduler FOLLOWING and refuses exactly the task of `notLeaderArtifact` as NOT_LEADER.
+    private static ScheduledTaskManager reasoningManager(String notLeaderArtifact) {
+        return new ScheduledTaskManager() {
+            @Override public void onLeaderChange(org.pragmatica.consensus.leader.LeaderNotification.LeaderChange leaderChange) {}
+            @Override public void onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification notification) {}
+            @Override public int activeTimerCount() { return 0; }
+            @Override public void stop() {}
+            @Override public boolean tryClaim(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { return true; }
+            @Override public void release(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) {}
+            @Override public SchedulerPhase schedulerPhase() { return SchedulerPhase.FOLLOWING; }
+            @Override public Option<Ineligibility> ineligibilityOf(ScheduledTask task) {
+                return task.artifact().asString().equals(notLeaderArtifact)
+                       ? Option.some(Ineligibility.NOT_LEADER)
+                       : Option.none();
+            }
+        };
+    }
+
     private List<String> artifactsOf(ScheduledTaskRoutes routes) {
         return routes.buildTasksResponseForTest()
                      .tasks()
@@ -144,7 +206,7 @@ class ScheduledTaskRoutesOrderingTest {
         return routes.buildFilteredResponseForTest(SECTION)
                      .onFailure(cause -> fail("Filtered response must succeed: " + cause.message()))
                      .await()
-                     .or(new ScheduledTaskRoutes.FilteredTasksResponse(List.of(), SECTION))
+                     .or(new ScheduledTaskRoutes.FilteredTasksResponse(List.of(), SECTION, ""))
                      .tasks()
                      .stream()
                      .map(ScheduledTaskRoutes.TaskSummary::artifact)
