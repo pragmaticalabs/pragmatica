@@ -186,12 +186,68 @@ class PresenceSamplerTest {
             assertThat(crossings).isEmpty();
 
             sampleTimes(sampler, 1); // K_DOWN-th consecutive absent → DOWN crossing
-            sampleTimes(sampler, 3); // further absent samples must NOT re-fire
+            sampleTimes(sampler, K_DOWN - 1); // further absent samples inside the window must NOT re-fire
 
             assertThat(crossings).containsExactly(A); // exactly once, with A's id
             // Existing presence-sensor removal + reconcile-trigger behaviour unchanged.
             assertThat(sampler.currentMembers()).containsExactly(SELF);
             assertThat(reconcileInvocations.get()).isEqualTo(2); // join + departure
+        }
+
+        /// R1: the FSM promotes on one healthy sample, the sampler admits on `K_UP`. A peer that dies
+        /// inside that window was never in `stableMembers`, yet the FSM still needs the crossing to
+        /// move it Suspect to Departing.
+        @Test
+        void advanceOne_neverAdmittedPeer_firesDownCrossing() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(C);
+            sampleTimes(sampler, K_UP - 1); // below K_UP: C is never admitted
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
+
+            absent(C);
+            sampleTimes(sampler, K_DOWN - 1);
+            assertThat(crossings).isEmpty();
+
+            sampleTimes(sampler, 1); // K_DOWN-th consecutive absent sample
+
+            assertThat(crossings).containsExactly(C);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
+            assertThat(reconcileInvocations.get()).isZero(); // never-admitted C adds no reconcile trigger
+        }
+
+        /// A single edge is lost when the FSM is still Member as it fires (Member ignores the event),
+        /// so a continuing absence re-delivers once per `K_DOWN` window, not on every sample.
+        @Test
+        void advanceOne_sustainedAbsence_refiresOncePerDownWindow() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(A);
+            sampleTimes(sampler, K_UP);
+            absent(A);
+
+            sampleTimes(sampler, K_DOWN * 3);
+
+            assertThat(crossings).containsExactly(A, A, A);
+        }
+
+        @Test
+        void advanceOne_presentSampleInsideWindow_resetsRefireCadence() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(C);
+            sampleTimes(sampler, 1);
+            absent(C);
+            sampleTimes(sampler, K_DOWN - 1);
+            healthy(C);
+            sampleTimes(sampler, 1); // direction flip resets the streak
+            absent(C);
+            sampleTimes(sampler, K_DOWN - 1);
+
+            assertThat(crossings).isEmpty();
         }
     }
 

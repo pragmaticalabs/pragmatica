@@ -116,10 +116,11 @@ public final class PresenceSampler {
     private final int downHysteresis;
     private final LongSupplier nowNanos;
     private final Runnable onReconcileNeeded;
-    /// Injected callback fired exactly at the DOWN-hysteresis crossing edge for a node
-    /// (mirrors `onReconcileNeeded`). Routes the crossing to the membership FSM; defaults
-    /// to a no-op so callers/tests that don't supply it are unaffected. Additive to — not a
-    /// replacement for — the presence-sensor `stableMembers.remove(node)` at that edge.
+    /// Injected callback fired at the DOWN-hysteresis crossing for a node and then once per
+    /// `downHysteresis` window while the absence continues (see [`#crossDownHysteresis`]).
+    /// Routes the crossing to the membership FSM; defaults to a no-op so callers/tests that
+    /// don't supply it are unaffected. Additive to — not a replacement for — the
+    /// presence-sensor `stableMembers.remove(node)` at that edge.
     ///
     /// `volatile` (not `final`): the [`MembershipFsm`] is constructed AFTER this sampler (it
     /// needs the sampler), so production cannot pass `membershipFsm::onDownHysteresisMet` into
@@ -411,17 +412,22 @@ public final class PresenceSampler {
         if (present && next >= upHysteresis) {
             stableMembers.add(node);
         } else if (!present && (-next) >= downHysteresis) {
-            crossDownHysteresis(node);
+            crossDownHysteresis(node, -next);
         }
     }
 
-    /// DOWN-hysteresis crossing edge: remove the node from the stable set (presence-sensor
-    /// removal, unchanged) and route the crossing to the FSM callback. The callback fires
-    /// ONLY on the genuine member→removed transition (gated on `stableMembers.remove`
-    /// returning true), so it does not re-fire
-    /// on every subsequent absent sample once the streak stays past the threshold.
-    private void crossDownHysteresis(NodeId node) {
-        if (stableMembers.remove(node)) {
+    /// DOWN-hysteresis crossing: remove the node from the stable set (presence-sensor removal,
+    /// unchanged; a no-op for a peer that was never admitted) and route the crossing to the FSM
+    /// callback. The callback fires for ANY peer whose absent streak reaches the threshold, not
+    /// only for one that was in `stableMembers`: the FSM promotes on one healthy sample while
+    /// this sampler admits on `upHysteresis`, so a peer that dies inside that window must still
+    /// reach the FSM. It then fires once per `downHysteresis` window while the absence
+    /// continues, because the FSM consumes the event only in SUSPECT and ignores it elsewhere
+    /// (`MembershipState`: MEMBER, OBSERVED, DEPARTING and DEAD absorb it); a single edge that
+    /// landed on a MEMBER would otherwise be lost. The callback is idempotent.
+    private void crossDownHysteresis(NodeId node, int absentStreak) {
+        stableMembers.remove(node);
+        if (absentStreak % downHysteresis == 0) {
             onDownHysteresisCrossing.accept(node);
         }
     }
