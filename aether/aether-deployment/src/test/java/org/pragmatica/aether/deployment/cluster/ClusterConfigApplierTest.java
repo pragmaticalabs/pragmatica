@@ -132,16 +132,15 @@ class ClusterConfigApplierTest {
     /// telling the operator the apply failed).
     @Nested
     class UnsupportedActions {
-        /// 7 of the 8 unimplemented kinds share one cause — `ImmutableFieldChange` is covered
+        /// 6 of the 9 unimplemented kinds share one cause — `ImmutableFieldChange` is covered
         /// separately below because it has its own dedicated, pre-existing `Cause` (409, not 501).
-        static Stream<Arguments> theSevenGenericallyUnsupportedKinds() {
+        static Stream<Arguments> theSixGenericallyUnsupportedKinds() {
             var source = sourceNameOrDefault("extra");
 
             return Stream.of(Arguments.of(new DiffAction.AddSource(source)),
                              Arguments.of(new DiffAction.RemoveSource(source)),
                              Arguments.of(new DiffAction.AddRole(source, NodeRole.WORKER, 2)),
                              Arguments.of(new DiffAction.RemoveRole(source, NodeRole.WORKER, 2)),
-                             Arguments.of(new DiffAction.RuntimeChange(source, NodeRole.WORKER, "jvm", "container")),
                              Arguments.of(new DiffAction.SourceFieldChange(source, "image")),
                              Arguments.of(new DiffAction.ClusterLevelChange("distribution.strategy", "balanced", "manual")));
         }
@@ -162,8 +161,36 @@ class ClusterConfigApplierTest {
             assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
         }
 
+        /// #1966: a runtime-ref change is a deliberate refusal (the supported path is replacement by upgrade), so it is a typed
+        /// 409 naming that path, not the generic 501 "escalate rather than retry".
+        @Test
+        void apply_runtimeRefChange_isRefusedWith409_pointingAtUpgrade() {
+            var result = applier.validate(List.of(new DiffAction.RuntimeChange(sourceNameOrDefault("extra"), NodeRole.WORKER, "jvm", "container"))).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ClusterConfigError.RuntimeChangeViaApply.class);
+                assertThat(((ClusterConfigError) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                assertThat(cause.message()).contains("aether cluster upgrade");
+            });
+            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
+        }
+
+        @Test
+        void apply_runtimeProfileContentChange_isRefusedWith409_namingTheProfile() {
+            var result = applier.validate(List.of(new DiffAction.RuntimeProfileChange("app", "image"))).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ClusterConfigError.RuntimeProfileChangeViaApply.class);
+                assertThat(((ClusterConfigError) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                assertThat(cause.message()).contains("'app'").contains("image");
+            });
+            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
+        }
+
         @ParameterizedTest
-        @MethodSource("theSevenGenericallyUnsupportedKinds")
+        @MethodSource("theSixGenericallyUnsupportedKinds")
         void apply_eachGenericallyUnsupportedKind_failsWithUnsupportedApplyAction_noTopologyWrite(DiffAction action) {
             var result = applier.validate(List.of(action)).await();
 

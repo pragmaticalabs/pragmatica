@@ -355,4 +355,45 @@ class ClusterBootstrapConfigDiffTest {
             assertThat(output).contains("~ forge.core  count: 3 -> 5");
         }
     }
+
+    /// #1966: profile CONTENT was never diffed, so an edit to a profile both configs declare was an empty plan.
+    @Nested
+    class RuntimeProfileContent {
+        private ClusterBootstrapConfig withProfile(RuntimeProfile profile) {
+            var base = forgeConfig(3);
+
+            return clusterBootstrapConfig("1", clusterIdentity("test-cluster", "1.0").unwrap(),
+                                          defaultCoreTopology(), base.sources(),
+                                          Map.of(RUNTIME_REF, profile),
+                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig(), Map.of());
+        }
+
+        @Test
+        void diff_profileImageChanged_producesRuntimeProfileChange() {
+            var stored = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, some("img:1"), none()));
+            var desired = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, some("img:2"), none()));
+
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).containsExactly(new DiffAction.RuntimeProfileChange(RUNTIME_REF, "image"));
+        }
+
+        @Test
+        void diff_profileFieldsChanged_namesEveryChangedField() {
+            var stored = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), some("-Xmx1g"), none()));
+            var desired = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, none(), some("-Xmx2g"), some("http://x/a.jar")));
+
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).containsExactly(new DiffAction.RuntimeProfileChange(RUNTIME_REF, "type, jvm_args, jar_url"));
+        }
+
+        @Test
+        void diff_identicalProfile_emptyPlan() {
+            var config = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, some("img:1"), none()));
+
+            assertThat(diff(config, config).isEmpty()).isTrue();
+        }
+    }
 }

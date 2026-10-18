@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeSet;
 
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
@@ -32,6 +33,7 @@ public final class ClusterBootstrapConfigDiff {
             modifications.add(new DiffAction.CommunityPlacementChange());
         }
 
+        diffRuntimeProfiles(stored.runtimes(), desired.runtimes(), modifications);
         diffSources(stored.sources(), desired.sources(), additions, modifications, removals);
 
         return diffPlan(additions, modifications, removals, immutable);
@@ -63,6 +65,37 @@ public final class ClusterBootstrapConfigDiff {
             modifications.add(new DiffAction.ClusterLevelChange("version",
                                                                 stored.cluster().version(),
                                                                 desired.cluster().version()));
+        }
+    }
+
+    /// #1966: profile CONTENT was never diffed, so editing `image` or `jvm_args` of a profile that both configs declare
+    /// produced an empty plan and `apply` reported nothing to do. Profiles present on one side only are not content
+    /// changes: an unreferenced new profile is inert and a referenced one surfaces as a role `RuntimeChange`.
+    private static void diffRuntimeProfiles(Map<String, RuntimeProfile> storedProfiles,
+                                            Map<String, RuntimeProfile> desiredProfiles,
+                                            List<DiffAction> modifications) {
+        new TreeSet<>(storedProfiles.keySet()).stream()
+                                              .filter(desiredProfiles::containsKey)
+                                              .map(name -> profileChange(name, storedProfiles.get(name), desiredProfiles.get(name)))
+                                              .flatMap(Option::stream)
+                                              .forEach(modifications::add);
+    }
+
+    private static Option<DiffAction> profileChange(String name, RuntimeProfile stored, RuntimeProfile desired) {
+        var fields = new ArrayList<String>();
+
+        addIfChanged(fields, "type", stored.type(), desired.type());
+        addIfChanged(fields, "image", stored.image(), desired.image());
+        addIfChanged(fields, "jvm_args", stored.jvmArgs(), desired.jvmArgs());
+        addIfChanged(fields, "jar_url", stored.jarUrl(), desired.jarUrl());
+        return fields.isEmpty()
+               ? Option.none()
+               : Option.some(new DiffAction.RuntimeProfileChange(name, String.join(", ", fields)));
+    }
+
+    private static void addIfChanged(List<String> fields, String field, Object stored, Object desired) {
+        if (!Objects.equals(stored, desired)) {
+            fields.add(field);
         }
     }
 

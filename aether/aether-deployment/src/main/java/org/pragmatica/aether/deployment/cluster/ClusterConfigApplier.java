@@ -63,7 +63,13 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
             case DiffAction.ImmutableFieldChange change -> Option.some(new ClusterConfigError.ImmutableFieldChange(change.field()));
             case DiffAction.ClusterLevelChange change when VERSION_FIELD.equals(change.field()) -> Option.some(new ClusterConfigError.VersionChangeViaApply(change.from(),
                                                                                                                                                             change.to()));
-            case DiffAction.AddSource _, DiffAction.RemoveSource _, DiffAction.AddRole _, DiffAction.RemoveRole _, DiffAction.RuntimeChange _, DiffAction.SourceFieldChange _, DiffAction.ClusterLevelChange _ -> Option.some(new ClusterConfigError.UnsupportedApplyAction(action));
+            case DiffAction.RuntimeChange change -> Option.some(new ClusterConfigError.RuntimeChangeViaApply(change.sourceName().value(),
+                                                                                                             change.role().value(),
+                                                                                                             change.fromRuntime(),
+                                                                                                             change.toRuntime()));
+            case DiffAction.RuntimeProfileChange change -> Option.some(new ClusterConfigError.RuntimeProfileChangeViaApply(change.profileName(),
+                                                                                                                         change.fields()));
+            case DiffAction.AddSource _, DiffAction.RemoveSource _, DiffAction.AddRole _, DiffAction.RemoveRole _, DiffAction.SourceFieldChange _, DiffAction.ClusterLevelChange _ -> Option.some(new ClusterConfigError.UnsupportedApplyAction(action));
         };
     }
 }

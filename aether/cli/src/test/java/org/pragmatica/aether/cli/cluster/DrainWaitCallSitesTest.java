@@ -119,6 +119,23 @@ class DrainWaitCallSitesTest {
         }
     }
 
+    /// #1966: a runtime-profile content change is refused by name, not logged and counted as zero modifications.
+    @Test
+    void aRuntimeProfileChange_isRefused_namingTheProfile_andTouchesNoNode() {
+        var http = drainsThenHalts();
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        var config = config(SourceType.SSH, "unused-host");
+        var plan = DiffPlan.diffPlan(List.of(),
+                                     List.of(new DiffAction.RuntimeProfileChange("app", "image")),
+                                     List.of(),
+                                     List.of());
+
+        var result = WaveExecutor.execute(plan, config, config);
+
+        assertThat(failureText(result)).contains("Runtime profile 'app' changed (image)");
+        assertThat(http.drainPosts()).as("no drain requested").isZero();
+    }
+
     /// A refusal that outlasts the bound still ends the drain, naming the slice.
     @Test
     void sliceFloorRefusal_thatPersists_endsAtTheBound_namingTheSlice() {
