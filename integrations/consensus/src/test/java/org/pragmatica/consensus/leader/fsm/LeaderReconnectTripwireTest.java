@@ -72,6 +72,10 @@ class LeaderReconnectTripwireTest {
         final AtomicInteger sends = new AtomicInteger();
 
         Follower() {
+            this(true);
+        }
+
+        Follower(boolean led) {
             var router = MessageRouter.mutable();
             var holder = new java.util.concurrent.atomic.AtomicReference<LeaderElectionContext>();
 
@@ -107,7 +111,11 @@ class LeaderReconnectTripwireTest {
             harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
             harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL));
             harness.dispatch(new ConsensusReady());
-            harness.dispatch(new LeaderCommitted(N1, 1L));
+            if (led) {
+                harness.dispatch(new LeaderCommitted(N1, 1L));
+            } else {
+                harness.dispatch(new LeaderElectionEvents.KvSyncGraceTimeout());
+            }
         }
 
         boolean followsTheLeader() {
@@ -136,6 +144,48 @@ class LeaderReconnectTripwireTest {
 
         assertThat(follower.sends.get()).as("a reconnect is a join, not a loss of the leader: no pre-vote round").isZero();
         assertThat(follower.followsTheLeader()).isTrue();
+    }
+
+    @Test
+    void leaderManager_storesOnlyEligibleNodes_whenAReconnectRestoresTheView() {
+        follower = new Follower();
+        follower.ctx.installVoters(List.of(N1, N2));
+        follower.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2, N3), ObservationSource.QUIC));
+
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+        follower.ctx.installVoters(ALL);
+
+        assertThat(follower.ctx.currentTopology()).as("node-3 was not a voter when the view was stored").containsExactlyInAnyOrder(N1, N2);
+    }
+
+    @Test
+    void leaderManager_leavesAnElectingNodesTickAlone_whenAReconnectChangesNothing() {
+        var electing = anElectingRankTwoNode();
+        var tickBefore = electing.tickFuture().get();
+
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+
+        assertThat((Object) electing.tickFuture().get()).as("the rank staircase tick is not rescheduled by an unchanged-view reconnect").isSameAs(tickBefore);
+    }
+
+    @Test
+    void leaderManager_restoresTheView_whenAnElectingNodeReconnectsAPeerItLacked() {
+        var electing = anElectingRankTwoNode();
+        var tickBefore = electing.tickFuture().get();
+
+        follower.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC));
+        var tickAfterDisconnect = electing.tickFuture().get();
+        follower.manager.peerReconnected(new PeerReconnected(N3, ALL, ObservationSource.QUIC));
+
+        assertThat((Object) tickAfterDisconnect).as("control: a changed view does reschedule").isNotSameAs(tickBefore);
+        assertThat(follower.ctx.currentTopology()).as("the reconnected peer is back in the view").contains(N3);
+    }
+
+    /// Node 2, rank 1 of three, driven into `Electing` with a proposal that never settles.
+    private LeaderElectionState.Electing anElectingRankTwoNode() {
+        follower = new Follower(false);
+
+        return (LeaderElectionState.Electing) follower.harness.state();
     }
 
     @Test

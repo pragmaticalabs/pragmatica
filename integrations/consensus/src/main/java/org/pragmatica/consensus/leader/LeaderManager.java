@@ -513,7 +513,17 @@ public interface LeaderManager {
             // A peer evicted and re-attached was removed from the stored topology by the eviction's NodeGone, and the
             // FSM replaces its topology wholesale from the last event, so a reconnect must restore it the way a join
             // does; otherwise a follower keeps suspecting a leader whose link is back (leader not in topology).
-            dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology());
+            // A reconnect that changes nothing (supersede, stale replace) dispatches nothing: an event would
+            // reschedule an Electing node's rank staircase for no reason.
+            if (restoresTheView(peerReconnected.nodeId(), peerReconnected.topology())) {
+                dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology());
+            }
+        }
+
+        private boolean restoresTheView(NodeId nodeId, List<NodeId> topology) {
+            var stored = context.currentTopology();
+
+            return !stored.contains(nodeId) || !stored.equals(topology.stream().filter(context::isEligible).sorted().toList());
         }
 
         private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology) {
