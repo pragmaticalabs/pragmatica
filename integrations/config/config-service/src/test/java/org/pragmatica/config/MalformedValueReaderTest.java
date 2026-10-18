@@ -140,6 +140,26 @@ class MalformedValueReaderTest {
                                            "yes");
         }
 
+        record OptionalTimeouts(String name, Option<org.pragmatica.lang.parse.TimeSpan> timeout, Option<java.time.Duration> window) {}
+
+        /// An optional duration component that does not parse bound `none()` and the record was built (#1455).
+        @Test
+        void config_unparseableOptionalDuration_isRefusedNamingKeyValueAndExpected() {
+            for (var key : java.util.List.of("timeout", "window")) {
+                var result = toml("[test]\nname = \"n\"\n" + key + " = \"soon\"\n").config("test", OptionalTimeouts.class);
+
+                assertThat(result.isFailure()).describedAs("%s = \"soon\" must refuse, bound %s", key, result).isTrue();
+                result.onFailure(cause -> assertThat(cause.message()).contains("test." + key)
+                                                                     .contains("soon")
+                                                                     .contains("a duration such as 30s"));
+            }
+
+            var bound = toml("[test]\nname = \"n\"\ntimeout = \"5s\"\nwindow = \"1m\"\n").config("test", OptionalTimeouts.class).unwrap();
+
+            assertThat(bound.timeout().isPresent()).isTrue();
+            assertThat(bound.window().isPresent()).isTrue();
+        }
+
         record OptionalPort(String name, Option<Integer> port) {}
 
         /// The record binder reads through TomlDocument's typed getters; a mistyped optional component
