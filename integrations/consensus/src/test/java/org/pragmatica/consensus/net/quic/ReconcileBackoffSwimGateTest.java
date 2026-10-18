@@ -20,7 +20,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -32,16 +34,16 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 /// NT-A12 (cluster T, PR-A3): the per-peer reconcile backoff follows the raw-SWIM liveness gate. While the gate
 /// reports the peer HEALTHY or SUSPECTED the backoff is evaluated with its cap equal to its initial value (5 s), so
 /// the delay stays at the initial value and every 5 s tick may dial; while it does not, the delay doubles to the
-/// 60 s cap as before. An unwired gate reads as not alive. All clocks are injected (`overrideWallClockForTests`
+/// 60 s cap as before. An unwired gate reads as not alive. The gate clocks are injected (`overrideWallClockForTests`
 /// and the `nowMs` argument of [PeerState#reconcileBackoffAllowsWhileAlive]); nothing waits on a timed window for
-/// a negative assertion. Mutation MT-A9: leave the backoff uncapped when the gate reports alive.
+/// a negative assertion. The tick-offset tests run the scheduler entry for real, because the offset is a
+/// scheduling delay. Mutation MT-A9: leave the backoff uncapped when the gate reports alive.
 @Timeout(60)
 class ReconcileBackoffSwimGateTest {
     private static final long TICK_MS = 5_000;
     private static final long INITIAL_MS = 5_000;
     private static final long CAP_MS = 60_000;
     private static final long ALIVE_SPACING_MS = 4_000;
-    private static final java.util.function.LongUnaryOperator NO_JITTER = delay -> delay;
     private static final NodeId LOW = new NodeId("aaa-self");
     private static final NodeId HIGH = new NodeId("zzz-peer");
 
@@ -64,13 +66,13 @@ class ReconcileBackoffSwimGateTest {
         }
         var lastAttempt = now;
 
-        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS - 1, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS - 1, INITIAL_MS, ALIVE_SPACING_MS))
             .as("below the minimum spacing the alive evaluation still holds the dial back")
             .isFalse();
-        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS, INITIAL_MS, ALIVE_SPACING_MS))
             .as("at exactly the minimum spacing after the last attempt the alive evaluation lets the dial through, whatever attempt time the 60 s cap earned")
             .isTrue();
-        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS + 1, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS + 1, INITIAL_MS, ALIVE_SPACING_MS))
             .as("an allowed alive attempt is itself an attempt: the spacing restarts from it")
             .isFalse();
         assertThat(state.reconcileCurrentDelayMs()).as("the alive evaluation leaves the delay at its initial value").isEqualTo(INITIAL_MS);
@@ -82,7 +84,7 @@ class ReconcileBackoffSwimGateTest {
         var allowed = 0;
 
         for (var now = 0L; now < 20 * TICK_MS; now += TICK_MS) {
-            allowed += state.reconcileBackoffAllowsWhileAlive(now, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER) ? 1 : 0;
+            allowed += state.reconcileBackoffAllowsWhileAlive(now, INITIAL_MS, ALIVE_SPACING_MS) ? 1 : 0;
         }
 
         assertThat(allowed).as("one dial per tick while alive").isEqualTo(20);
@@ -90,54 +92,49 @@ class ReconcileBackoffSwimGateTest {
     }
 
     @Test
-    void aliveSpacingJitter_staysWithinTenPercentAndVaries() {
-        var distinct = new java.util.HashSet<Long>();
+    void drawReconcileTickOffsetMs_staysBelowTheJitterBoundAndVaries() {
+        var distinct = new HashSet<Long>();
 
         for (var i = 0; i < 2_000; i++) {
-            var spacing = QuicClusterNetwork.aliveSpacingJitter(ALIVE_SPACING_MS);
+            var offset = QuicClusterNetwork.drawReconcileTickOffsetMs();
 
-            assertThat(spacing).as("spacing stays inside +-10% of the base, so below one tick").isBetween(3_600L, 4_400L);
-            distinct.add(spacing);
+            assertThat(offset).as("the offset keeps two consecutive ticks at least 4.2 s apart, above the 4 s alive spacing").isBetween(0L, 799L);
+            distinct.add(offset);
         }
 
-        assertThat(distinct).as("the spacing is jittered, not constant").hasSizeGreaterThan(100);
+        assertThat(distinct).as("the offset is random, not constant: nodes started together do not tick together").hasSizeGreaterThan(100);
     }
 
     @Test
-    void reconcileBackoffAllowsWhileAlive_spreadsTheNextDialAcrossNodes_whenAllSeeTheHealAtOnce() {
-        var firstDialOffsets = new java.util.TreeSet<Long>();
+    void scheduleJitteredReconcileTick_defersTheDialByTheOffset_whenTheTickFiresFromTheScheduler() {
+        var scenario = new Scenario(true);
 
-        for (var node = 0; node < 100; node++) {
-            var state = PeerState.peerState(HIGH, 1L);
+        scenario.alive.set(true);
 
-            state.reconcileBackoffAllowsWhileAlive(1_000_000L, INITIAL_MS, ALIVE_SPACING_MS, QuicClusterNetwork::aliveSpacingJitter);
-            firstDialOffsets.add(firstAllowedOffset(state));
-        }
-
-        assertThat(firstDialOffsets.last()).as("every node re-dials inside one 5 s tick").isLessThanOrEqualTo(4_500L);
-        assertThat(firstDialOffsets.size()).as("the nodes do not re-dial in lockstep: distinct 100 ms slots").isGreaterThanOrEqualTo(5);
+        assertThat(scenario.dialDelayMsFor(600L)).as("the dial happens at the jittered instant, not at the tick").isGreaterThanOrEqualTo(590L);
     }
 
-    /// Offset after the last attempt (1,000,000) at which the alive gate first opens, scanned in 100 ms steps. The
-    /// first allowed call is the answer (an allowed call also moves the schedule, which ends the scan).
-    private static long firstAllowedOffset(PeerState state) {
-        for (var offset = 3_000L; offset <= 6_000L; offset += 100L) {
-            if (state.reconcileBackoffAllowsWhileAlive(1_000_000L + offset, INITIAL_MS, ALIVE_SPACING_MS, QuicClusterNetwork::aliveSpacingJitter)) {
-                return offset;
-            }
-        }
+    @Test
+    void scheduleJitteredReconcileTick_dialsTwoNodesAtDifferentInstants_whenBothTicksFireTogether() {
+        var early = new Scenario(true);
+        var late = new Scenario(true);
 
-        return Long.MAX_VALUE;
+        early.alive.set(true);
+        late.alive.set(true);
+        var earlyDialMs = early.dialDelayMsFor(50L);
+        var lateDialMs = late.dialDelayMsFor(700L);
+
+        assertThat(lateDialMs - earlyDialMs).as("two nodes whose ticks fire at the same instant dial a healed peer at different instants").isGreaterThanOrEqualTo(400L);
     }
 
     @Test
     void resetReconcileBackoff_allowsTheNextAliveAttemptAtOnce_afterAnAttach() {
         var state = PeerState.peerState(HIGH, 1L);
 
-        state.reconcileBackoffAllowsWhileAlive(100_000L, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER);
+        state.reconcileBackoffAllowsWhileAlive(100_000L, INITIAL_MS, ALIVE_SPACING_MS);
         state.resetReconcileBackoff();
 
-        assertThat(state.reconcileBackoffAllowsWhileAlive(100_001L, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(100_001L, INITIAL_MS, ALIVE_SPACING_MS))
             .as("a successful attach resets the backoff: the next attempt is not held back by the spacing")
             .isTrue();
     }
@@ -240,6 +237,19 @@ class ReconcileBackoffSwimGateTest {
             var peer = NodeInfo.nodeInfo(HIGH, addressOf("no-such-host.invalid", 4242));
 
             network.setDesiredConnections(() -> List.of(peer));
+        }
+
+        /// Fires the scheduler entry of the reconciler with a fixed offset and returns the delay until the dial
+        /// (a topology lookup) arrives.
+        long dialDelayMsFor(long offsetMs) {
+            network.overrideReconcileTickOffsetForTests(() -> offsetMs);
+            clock.addAndGet(TICK_MS);
+            var start = System.nanoTime();
+
+            network.scheduleJitteredReconcileTick();
+            awaitTrue(() -> lookups() >= 1L, TransportTripwireFixtures.AWAIT, "the deferred dial");
+
+            return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
         }
 
         void ticks(int count) {

@@ -704,18 +704,18 @@ public final class PeerState {
     /// evaluated with its cap equal to its initial value. The attempt time earned at the higher cap does not
     /// hold the dial back: the next attempt is due `jitterFn(spacingMs)` after the last allowed one (or at the
     /// stored attempt time, if that is earlier), and an allowed attempt leaves the delay at `initialMs`.
-    /// The jitter keeps nodes that all see a healed peer from re-dialing it in lockstep; the caller picks a
-    /// spacing and band whose upper end stays below one reconciler tick, so every tick may dial.
+    /// There is no jitter here: the gate is only evaluated on a reconciler tick, so a jittered threshold below
+    /// one tick cannot move a dial instant. The caller picks a spacing below the smallest gap between two ticks,
+    /// so every tick may dial; de-synchronisation across nodes comes from the tick offset.
     public synchronized boolean reconcileBackoffAllowsWhileAlive(long nowMs,
                                                                  long initialMs,
-                                                                 long spacingMs,
-                                                                 LongUnaryOperator jitterFn) {
-        if (nowMs < Math.min(reconcileNextAttemptMs, reconcileLastAttemptMs + jitterFn.applyAsLong(spacingMs))) {
+                                                                 long spacingMs) {
+        if (nowMs < Math.min(reconcileNextAttemptMs, reconcileLastAttemptMs + spacingMs)) {
             return false;
         }
 
         reconcileCurrentDelayMs = initialMs;
-        reconcileNextAttemptMs = nowMs + jitterFn.applyAsLong(spacingMs);
+        reconcileNextAttemptMs = nowMs + spacingMs;
         reconcileLastAttemptMs = nowMs;
 
         return true;
