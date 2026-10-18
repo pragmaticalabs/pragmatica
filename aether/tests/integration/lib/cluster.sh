@@ -894,6 +894,25 @@ is_cluster_ready() {
     _cluster_is_ready
 }
 
+# _operator_network_down — 0 when the OPERATOR HOST's own network is down, judged by a reference endpoint that is not part of
+# the cluster; 1 otherwise, including when no reference applies. #2192: a core sweep that finds nothing cannot tell a dead
+# cluster from an operator host that lost its link (a ~30 s receive blackout was reported as a dead cluster, against a cluster
+# that stayed healthy). Any HTTP answer from the reference proves the link; only a curl transport failure is "down".
+# OPERATOR_REFERENCE_URL overrides the reference; by default cloud runs use the Hetzner API host the harness already calls, and
+# other environments have none (the cluster is on the operator's own host or LAN, so its link is not in question) [guess:
+# cloud == Hetzner is the only cloud this harness drives today].
+_operator_network_down() {
+    local ref="${OPERATOR_REFERENCE_URL:-}"
+    if [ -z "$ref" ] && [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+        ref="https://api.hetzner.cloud/"
+    fi
+    [ -n "$ref" ] || return 1
+    if curl -s -o /dev/null -m "${OPERATOR_REFERENCE_TIMEOUT_S:-3}" "$ref" 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
 # wait_for_cluster_ready [timeout] [expected_count] — canonical "cluster is ready" gate.
 # Composite: generation members ≥ expected, leader elected, active cores ≥ expected-1.
 # See aether/docs/specs/test-readiness-contract.md §1.
@@ -923,6 +942,13 @@ wait_for_cluster_ready() {
     # different port (5156+/5166+). Without this, subsequent suites probe the dead pin
     # and fast-fail even though the cluster is operationally healthy.
     if ! _refresh_mgmt_entry_point; then
+        # #2192: when the operator host's own link is down, "no core answers" says nothing about the cluster. Do not call it
+        # dead; fall through to the normal bounded wait, which passes once the link is back and times out if it never is.
+        if _operator_network_down; then
+            log_warn "no core answered /health/live, but the reference endpoint is unreachable too: operator network unavailable, NOT fast-failing the cluster as down; waiting up to ${timeout}s"
+            wait_for "cluster ready (${expected}+ members, canonical §1.1)" "_cluster_is_ready ${expected}" "$timeout"
+            return $?
+        fi
         # Describe the probed address space accurately per env: docker/remote scan
         # the fixed seed host-port range on TARGET_HOST; cloud scans the per-VM
         # public IPs at the uniform CLOUD_MGMT_PORT (_resolve_live_endpoint handles
