@@ -575,12 +575,14 @@ public final class PeerState {
         return option(dropped);
     }
 
-    /// Incarnation-gated resurrection: REMOVED -> INIT. Called ONLY when the SWIM-authoritative
-    /// membership has re-admitted this NodeId (back in `coreNodes()` — possible only after a
-    /// strictly-higher incarnation superseded the tombstone, per `SwimProtocol.supersedeOrRefuse`).
-    /// Restores the peer to a dial-eligible / attach-eligible state so a transient-partition
-    /// survivor reconnects; the SWIM probe-ack remains the sole ALIVE authority, so re-admission
-    /// here is NOT resurrection-to-ALIVE (preserves the anti-resurrection guarantee). No-op (returns
+    /// Re-admission of a REMOVED peer: REMOVED -> INIT. Called when the membership view has the NodeId
+    /// again (back in `coreNodes()` — possible only after a strictly-higher incarnation superseded the
+    /// tombstone, per `SwimProtocol.supersedeOrRefuse`), and on an inbound authenticated Hello that raw SWIM
+    /// or the membership view corroborates or whose tombstone is at least 30 s old (see
+    /// `QuicClusterNetwork.inboundReadmitAllowed`). Restores the peer to a dial-eligible / attach-eligible
+    /// state so a transient-partition survivor reconnects; the SWIM probe-ack remains the sole ALIVE
+    /// authority, so re-admission here is NOT resurrection-to-ALIVE. A different process presenting the
+    /// NodeId stays refused by the boot-token gate; only the same process can come back this way. No-op (returns
     /// false) when the peer is not REMOVED. Offline buffer stays cleared (authoritativeRemove cleared
     /// it). Resets the upstream-announce provenance: the REMOVE was emitted, so the next attach is a
     /// fresh ACCEPTED/ADD, not a RECONNECT.

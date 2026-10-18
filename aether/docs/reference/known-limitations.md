@@ -16,6 +16,9 @@ Each entry below is a **deliberate boundary with a rationale**, not an apology. 
 | Overload / backpressure | Not yet characterized; system-level rate limiting deferred | Deferred **pending performance numbers** — see below | #365, #200 |
 | Hierarchical scale | Multi-community barrier designed, **under validation** | The one barrier Aether has not yet crossed | #367 |
 | Performance numbers | Single-machine / simulated | Multi-node benchmark not yet run | #365 |
+| Transport certificate rotation | Renewal restarts the node's QUIC server on the same port: connections the node accepted drop and their dialers reconnect; connections the node dialed keep the old certificate; a restart that cannot rebind the port leaves the node not accepting inbound connections | Rotation replaces the TLS material by rebuilding the server, not by swapping the TLS context in place | — |
+| State transfer size | A whole-snapshot state transfer must fit one transport frame: 32 MiB less 64 KiB. Above it adding a voter is refused with `STATE_TRANSFER_TOO_LARGE` and a catch-up response is answered with `SyncRejected` after an ERROR log | The cluster transport frames messages with a 32 MiB length-field cap; state transfer is one message | — |
+| Transport offline buffer | A peer that is not connected has its frames held in a memory-only buffer of at most 10,000 frames, each for at most the offline-buffer cap (30 s by default); beyond either bound frames are dropped, oldest first | Bounded memory; the layer above owns end-to-end delivery (see [Guarantees](guarantees.md), row 32) | — |
 | Stream reference counts | One count per stream, no per-holder record; a recovery re-drive can leave one reference too many | Per-holder reference entries are the structural fix, scheduled for rc5 | #2160 |
 | Streams and durable entities | Seven stated limits: a lagging consumer stalls on `CursorExpired`; sealed-tier retention is node-wide 24 h; sealing writes one segment per evicted event; default memory budget fits ~50 partition rings per node; replication is unbatched; a retried entity `update` that missed its barrier applies twice; the transactional cursor path is unwired | Found by a source audit at `acd3357ccc`; fixed by one spec-first overhaul, not patches — see below | #2201 |
 | No-majority network cut | A cut that leaves no group of cores with a majority halted every core in cuts of 20, 25 and 30 s halted every core (five cores, every core isolated, Ember in-process; longer cuts were not run); consensus state is memory-only and is lost | Terminal removal of a fenced node plus memory-only consensus; recovery is the backup restore | [runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted) |
@@ -56,6 +59,25 @@ through a live cluster.** It is an illustration of the gap above: a string-typed
 a value with no version check anywhere to notice, and the only reason this instance is not a
 security regression is the direction its fallback happens to point. The supported upgrade path
 remains full-cluster stop, upgrade, start.
+
+## Transport certificate rotation restarts the QUIC server
+
+Certificate renewal (at 40% of remaining validity, about day 2.8 of a 7-day certificate) does not swap the TLS context inside a running server. It stops the node's QUIC server, shuts down the server's event loop group, builds a new server and client with the new certificate and binds the same UDP port again. Consequences an operator can see:
+
+- Every connection the node **accepted** is closed with the server; the dialing peers reconnect through the normal reconnect path (a full handshake each).
+- Connections the node **dialed** are not drained: the old client is not closed, so those links keep the old certificate until they end.
+- If the new server cannot bind the port, the rotation fails and the node is left without a listening server, so it accepts no inbound connections until it is restarted.
+- Because the cadence is about every 2.8 days per node, the reconnect is routine, not exceptional.
+
+See [TLS Certificate Management](../operators/tls-certificates.md) for the renewal schedule.
+
+## State transfer is bounded by the transport frame (32 MiB)
+
+A whole-snapshot `SyncResponse` must fit in one transport frame, which is capped at 32 MiB; after a reserve of 64 KiB the usable size is 32 MiB less 64 KiB. Above it, adding a voter is refused up front with `STATE_TRANSFER_TOO_LARGE`, and a catch-up response is retried without pending state and, failing that, answered with `SyncRejected` after an ERROR log. The refusal is typed and visible. A KV state that grows past the bound needs the bound raised or the state split before a joiner can catch up.
+
+## Transport offline buffer is bounded and memory-only
+
+While a peer's link is down, frames addressed to it wait in a per-peer buffer in memory. It holds at most 10,000 frames; each frame is held at most the offline-buffer cap (`offline_buffer_cap`, 30 s by default, taken from the cluster timeout configuration), and a request frame with a shorter caller deadline expires with it. When the buffer is full the oldest frame is dropped. Frames marked `NoOfflineBuffering` (entity forwards, Rabia `NewBatch`) are never buffered. A node restart loses the buffer. See [Guarantees](guarantees.md), summary row 32.
 
 ## Single trust domain
 

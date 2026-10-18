@@ -77,19 +77,26 @@ detection and simultaneous-open race conditions.
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| Max idle timeout | 30s | Keeps connections alive during brief quiet periods |
-| Connection-level flow control | 16 MB | Accommodates large DHT transfers |
-| Per-stream flow control | 4 MB | Handles bulk data on individual streams |
-| Max bidirectional streams | 64 | Headroom for short-lived HTTP forward and DHT relay streams |
+| Max idle timeout | disabled (0) | Cluster connections are persistent; a dead link is found by write failure or by the receipt sweep (8 ping intervals with no inbound frame on any lane) |
+| Connection-level flow control | 64,000,000 bytes | Accommodates large DHT transfers and state transfer |
+| Per-stream flow control | 32,000,000 bytes | Handles bulk data on individual streams |
+| Max bidirectional streams | 64 | Headroom above the eight lane streams of a connection |
+| Max frame size | 32 MiB | Larger frames are refused by the length-field decoder |
 
 ### Stream Allocation
 
-| Stream | Purpose | Lifecycle |
-|--------|---------|-----------|
-| 0 | Consensus (Rabia proposals, votes, decisions) | Long-lived |
-| 1 | KV-Store commands | Long-lived |
-| 2 | HTTP forwarding | Short-lived (per request) |
-| 3 | DHT relay | Short-lived (per transfer) |
+Each connection carries eight lanes, one QUIC stream per lane, all long-lived (opened once per connection).
 
-Consensus messages (stream 0) cannot be starved by bulk transfers on other streams
+| Lane index | Lane | Purpose |
+|------------|------|---------|
+| 0 | CONSENSUS | Rabia proposals, votes, decisions, batches; forwarded apply requests |
+| 1 | KV | Community placement, governor authority and community health messages |
+| 2 | METRICS | ClusterSync ping/pong, deployment and source metrics |
+| 3 | INVOKE | Cross-node slice invocation requests and responses |
+| 4 | FORWARD | HTTP, entity and stream forwards, replication |
+| 5 | DHT | DHT puts, gets, removes, digests, migration |
+| 6 | CONTROL | Hello handshake, KeepAlive, node discovery, leader pre-vote, worker metadata manifests |
+| 7 | SYNC | Rabia state synchronization, worker metadata chunks |
+
+Consensus messages (lane 0) cannot be starved by bulk transfers on other streams
 thanks to QUIC's per-stream flow control.
