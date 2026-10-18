@@ -191,6 +191,18 @@ public final class ProviderResolver {
     /// caller hands the provider without a Docker daemon. Null in production.
     static volatile EnvironmentIntegrationFactory dockerFactoryOverride;
 
+    /// Test seam (package-private, #2149): the ambient environment the bootstrap hands a Docker provider (`withClusterSecret`).
+    /// Null in production, which reads the real process environment.
+    static volatile Fn1<String, String> ambientEnvOverride;
+
+    private static String ambientEnv(String name) {
+        var override = ambientEnvOverride;
+
+        return override != null
+               ? override.apply(name)
+               : System.getenv(name);
+    }
+
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
         var override = dockerFactoryOverride;
 
@@ -329,7 +341,7 @@ public final class ProviderResolver {
         return compute instanceof DockerComputeProvider docker
                ? DockerComputeProvider.dockerComputeProvider(docker.runner(),
                                                              docker.config(),
-                                                             bootstrapHostEnv(clusterSecret, System::getenv))
+                                                             bootstrapHostEnv(clusterSecret, ProviderResolver::ambientEnv))
                                       .map(ComputeProvider.class::cast)
                : Result.success(compute);
     }

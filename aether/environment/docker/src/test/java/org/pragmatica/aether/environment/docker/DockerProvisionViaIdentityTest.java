@@ -11,11 +11,17 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.CloudProviderSupport;
+import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.NodeGroupConfig;
+import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.MarketOptions;
+import org.pragmatica.aether.environment.ProvisionRequest;
+import org.pragmatica.lang.Option;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 /// #1027: `CloudProviderSupport.provisionVia` (the docker path of `WaveExecutor`) named each node `<source>-<role>-<index>` for its caller while the
@@ -131,5 +137,26 @@ class DockerProvisionViaIdentityTest {
         provisionWithoutClusterTag(providerOn(runner, name -> "AETHER_CLUSTER_NAME".equals(name) ? "injected-cluster" : null));
 
         assertThat(runner.runCommands.getFirst()).contains("aether.cluster=injected-cluster");
+    }
+
+    /// The instance-tags path (what CTM bookkeeping reads back) resolves the cluster too: it must use the injected host
+    /// environment, not the process one. Called directly because the InstanceInfo `provision` returns is re-stamped from
+    /// `docker inspect`.
+    private static String instanceClusterTag(org.pragmatica.lang.Functions.Fn1<String, String> hostEnv) {
+        var ctx = ProvisionContext.provisionContext(maybeClusterName(""), "core", sourceNameOrDefault("primary"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+        var request = new ProvisionRequest(InstanceType.ON_DEMAND, "docker", "", "", Option.empty(), MarketOptions.ON_DEMAND, ctx);
+
+        return DockerComputeProvider.buildInstanceTags(request, "c", hostEnv)
+                                    .get("aether.cluster");
+    }
+
+    @Test
+    void instanceTags_ignoreAmbientClusterName_whenTheInjectedHostEnvironmentHasNone() {
+        assertThat(instanceClusterTag(_ -> null)).isEqualTo("");
+    }
+
+    @Test
+    void instanceTags_useTheInjectedClusterName() {
+        assertThat(instanceClusterTag(name -> "AETHER_CLUSTER_NAME".equals(name) ? "injected-cluster" : null)).isEqualTo("injected-cluster");
     }
 }
