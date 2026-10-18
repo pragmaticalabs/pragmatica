@@ -53,7 +53,7 @@ EmberCursorCheckpointLoadTripwireTest 55
 EmberForwardLaneTripwireTest 33
 EmberForwardedPublishLoopTripwireTest 12
 EmberMemoryBudgetTripwireTest 70
-EmberOwnerRestartAckedTailTripwireTest 59
+EmberOwnerRestartAckedTailTripwireTest 62
 EmberReplicationBatchingTripwireTest 15
 EmberSealedTierRetentionTripwireTest 17
 EmberWalFailStopNodeTripwireTest 70
