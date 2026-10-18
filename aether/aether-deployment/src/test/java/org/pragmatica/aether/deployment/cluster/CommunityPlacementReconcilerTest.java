@@ -241,6 +241,60 @@ class CommunityPlacementReconcilerTest {
             .as("no member is removed while the third is a pairing's surge replacement").isEqualTo("none");
     }
 
+    /// #1535 item 7 support: members beyond the target are reduced by a scale-down operation naming the first
+    /// unprotected member (no pairing is live, so nothing shields any of the three).
+    @Test
+    void excessMembers_areReducedByAScaleDownOperation() {
+        var sizeTwoInOldZone = CONFIG.replace("target_size = 1", "target_size = 2").replace("zone = \"new\"", "zone = \"old\"");
+
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(sizeTwoInOldZone), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+        for (var member : List.of(new NodeId("a-first"), new NodeId("b-second"), new NodeId("c-third"))) {
+            seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(member), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
+            seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(member), new AetherValue.NodePlacementValue("pool", Option.some("old"), member.id() + "-instance")));
+            ready.add(member);
+        }
+
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().detail()).isEqualTo("Scale down");
+        assertThat(current().previousNode().unwrap()).isEqualTo(new NodeId("a-first"));
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+    }
+
+    /// A community that starts empty has no previous node to drain: once the new member is ready the operation completes.
+    @Test
+    void firstMemberOfAnEmptyCommunity_completesWithoutADrain() {
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().previousNode().isEmpty()).isTrue();
+        reconciler.reconcile().await().unwrap();
+        replacementReady();
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(effects).containsExactly("create");
+    }
+
+    /// A create the capacity ledger cannot admit (no definitive refusal) returns the operation to RESERVED with the
+    /// reason and escalates once; no provider effect follows.
+    @Test
+    void capacityNotAdmitted_defersTheOperationBackToReserved() {
+        initialize();
+        createOutcome = CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE.promise();
+
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.RESERVED);
+        assertThat(current().detail()).isNotEmpty();
+        assertThat(escalations).hasSize(1);
+    }
+
     @Test
     void implicitSurplusWaitsForQuiescenceAcknowledgementWithoutExplicitPolicy() {
         initialize();

@@ -195,6 +195,10 @@ class CapacityRefusalRecoveryTest {
     }
 
     private CommunityPlacementReconciler reconcilerOver(NodeLifecycleManager lifecycle) {
+        return reconcilerOver(lifecycle, clock());
+    }
+
+    private CommunityPlacementReconciler reconcilerOver(NodeLifecycleManager lifecycle, java.util.function.LongSupplier clock) {
         var actuator = new CommunityPlacementReconciler.Actuator() {
             @Override public org.pragmatica.lang.Result<String> sourceBinding(SourceName source) { return org.pragmatica.lang.Result.success("binding"); }
             @Override public Promise<Unit> create(CommunityPlacementOperationValue op) {
@@ -209,7 +213,7 @@ class CapacityRefusalRecoveryTest {
             @Override public Promise<Boolean> previousInstanceExists(CommunityPlacementOperationValue op) { return Promise.success(true); }
         };
         return CommunityPlacementReconciler.communityPlacementReconciler(CORE, store, this::auditedProcess, () -> true, ready::contains,
-            () -> Set.of(CORE, OLD), () -> 10, actuator, escalations::add, (n, c) -> {}, org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis(), clock());
+            () -> Set.of(CORE, OLD), () -> 10, actuator, escalations::add, (n, c) -> {}, org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis(), clock);
     }
 
     @Test
@@ -264,6 +268,32 @@ class CapacityRefusalRecoveryTest {
         recovered.reconcileRefusals().await().unwrap();
         assertThat(store.get(new AetherKey.CapacityReservationKey(requested.targetNode())).isEmpty()).isTrue();
         assertThat(creates.get()).isEqualTo(1);
+    }
+
+    /// #1535 item 7: a refused location is probed again only once the retry delay (30 s for the first attempt) has
+    /// passed on the INJECTED clock; a probe that read the wall clock would fire at once.
+    @Test
+    void refusedLocation_isProbedAgainOnlyAfterTheRetryDelayOnTheInjectedClock() {
+        initializeReconcilerWorld();
+        var now = new java.util.concurrent.atomic.AtomicLong(PlacementStampAudit.INJECTED_BASE);
+        var creates = new AtomicInteger();
+        var refusing = provider(creates, s -> EnvironmentError.capacityUnavailable("new", new RuntimeException("412 resource_unavailable")).promise());
+        var lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(refusing, CORE, store, this::process, () -> true, () -> 10);
+        var reconciler = reconcilerOver(lifecycle, now::get);
+
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        lifecycle.reconcileRefusals().await().unwrap();
+        var refused = current().operationId();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+
+        now.addAndGet(29_000);
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().operationId()).as("29 s after the refusal the 30 s retry delay has not passed").isEqualTo(refused);
+
+        now.addAndGet(2_000);
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().operationId()).as("31 s after the refusal the location is probed again").isNotEqualTo(refused);
     }
 
     @Test
