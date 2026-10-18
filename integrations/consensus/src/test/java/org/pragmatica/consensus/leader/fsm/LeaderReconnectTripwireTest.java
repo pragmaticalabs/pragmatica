@@ -165,7 +165,7 @@ class LeaderReconnectTripwireTest {
 
         follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
 
-        assertThat((Object) electing.tickFuture().get()).as("the rank staircase tick is not rescheduled by an unchanged-view reconnect").isSameAs(tickBefore);
+        assertThat(electing.tickFuture().get() == tickBefore).as("the rank staircase tick is not rescheduled by an unchanged-view reconnect").isTrue();
     }
 
     @Test
@@ -177,8 +177,18 @@ class LeaderReconnectTripwireTest {
         var tickAfterDisconnect = electing.tickFuture().get();
         follower.manager.peerReconnected(new PeerReconnected(N3, ALL, ObservationSource.QUIC));
 
-        assertThat((Object) tickAfterDisconnect).as("control: a changed view does reschedule").isNotSameAs(tickBefore);
+        assertThat(tickAfterDisconnect == tickBefore).as("control: a changed view does reschedule").isFalse();
         assertThat(follower.ctx.currentTopology()).as("the reconnected peer is back in the view").contains(N3);
+    }
+
+    @Test
+    void leaderManager_refreshesTheView_whenAReconnectedPeerIsStillStoredButTheViewChanged() {
+        follower = new Follower();
+        follower.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC));
+
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+
+        assertThat(follower.ctx.currentTopology()).as("node-1 was already stored, but the view gained node-3").contains(N3);
     }
 
     /// Node 2, rank 1 of three, driven into `Electing` with a proposal that never settles.

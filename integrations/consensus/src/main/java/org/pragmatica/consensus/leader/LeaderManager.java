@@ -523,7 +523,10 @@ public interface LeaderManager {
         private boolean restoresTheView(NodeId nodeId, List<NodeId> topology) {
             var stored = context.currentTopology();
 
-            return !stored.contains(nodeId) || !stored.equals(topology.stream().filter(context::isEligible).sorted().toList());
+            return ! stored.contains(nodeId) || !stored.equals(topology.stream()
+                                                                       .filter(context::isEligible)
+                                                                       .sorted()
+                                                                       .toList());
         }
 
         private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology) {
