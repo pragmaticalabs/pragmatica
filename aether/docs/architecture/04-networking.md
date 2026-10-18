@@ -53,7 +53,7 @@ sequenceDiagram
     participant A as Node A
     participant B as Node B
 
-    A->>B: QUIC connect to :8090/udp (TLS 1.3 handshake, full handshake every time)
+    A->>B: QUIC connect to :8090/udp (TLS 1.3 handshake)
     B-->>A: Connection established
 
     A->>B: CONTROL stream: Hello (NodeId, address, labels, boot token, intended peer)
@@ -68,12 +68,12 @@ sequenceDiagram
 
     alt Connection lost
         A->>A: Evict, re-dial
-        Note over A: Per-peer exponential backoff with jitter<br/>full TLS handshake
+        Note over A: Per-peer exponential backoff with jitter
     end
 ```
 
 - Peer list configured at startup (no external service registry)
-- Automatic reconnection: a link found dead is evicted and re-dialed with a short per-peer backoff, and a 5 s reconciler tick re-dials any configured peer that is not connected, with a per-peer exponential backoff and jitter. QUIC 0-RTT is not used: every reconnect is a full handshake.
+- Automatic reconnection: a link found dead is evicted and re-dialed with a short per-peer backoff, and a 5 s reconciler tick re-dials any configured peer that is not connected, with a per-peer exponential backoff and jitter. QUIC 0-RTT early data is not configured.
 - A peer's link is dead-detected by write failure or by the receipt sweep: the QUIC idle timeout is disabled, so a link that stays open but receives no frame on any lane for 8 ping intervals is evicted. The KeepAlive on CONTROL is what keeps a quiet healthy link from being evicted.
 - Backpressure is per lane stream. A write to a stream that is not writable (Netty write watermark, 256 KiB low, 1 MiB high) is refused on every lane except CONSENSUS and DHT; on those two the frame is retried up to 200 times at 25 ms and, if the retries run out, dropped with a debug log line. A write reported as sent means the transport accepted it locally: there is no acknowledgement, and delivery is earned by the layer above (Rabia retransmit, the DHT quorum collector, caller deadlines).
 - Frames for a peer that is not connected go to a per-peer offline buffer of at most 10,000 frames, each held at most the offline-buffer cap (30 s by default, taken from the cluster timeout configuration); when the buffer is full the oldest frame is dropped.

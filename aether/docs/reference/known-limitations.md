@@ -64,7 +64,7 @@ remains full-cluster stop, upgrade, start.
 
 Certificate renewal (at 40% of remaining validity, about day 2.8 of a 7-day certificate) does not swap the TLS context inside a running server. It stops the node's QUIC server, shuts down the server's event loop group, builds a new server and client with the new certificate and binds the same UDP port again. Consequences an operator can see:
 
-- Every connection the node **accepted** is closed with the server; the dialing peers reconnect through the normal reconnect path (a full handshake each).
+- Every connection the node **accepted** is closed with the server; the dialing peers reconnect through the normal reconnect path (each is a new handshake).
 - Connections the node **dialed** are not drained: the old client is not closed, so those links keep the old certificate until they end.
 - If the new server cannot bind the port, the rotation fails and the node is left without a listening server, so it accepts no inbound connections until it is restarted.
 - Because the cadence is about every 2.8 days per node, the reconnect is routine, not exceptional.

@@ -1,6 +1,6 @@
 # QUIC Transport Layer Specification
 
-> **Superseded (historical design).** This document is the design plan the QUIC transport was built from, not a description of the shipped transport. It diverges from the code in several places: there is no 0-RTT resumption (every reconnect is a full handshake), the QUIC idle timeout is disabled (`0`) rather than 30 s, flow control is 64,000,000 bytes per connection and 32,000,000 per stream, a connection carries eight long-lived lanes (not four allocated by message type), a 5 s reconciler re-dials missing peers with a per-peer backoff, and SWIM listens on the cluster port + 100. The live descriptions are [architecture/04-networking.md](../architecture/04-networking.md) and [operators/networking.md](../operators/networking.md).
+> **Superseded (historical design).** This document is the design plan the QUIC transport was built from, not a description of the shipped transport. It diverges from the code in several places: 0-RTT is not configured (no early data, no session-ticket setup), the QUIC idle timeout is disabled (`0`) rather than 30 s, flow control is 64,000,000 bytes per connection and 32,000,000 per stream, a connection carries eight long-lived lanes (not four allocated by message type), a 5 s reconciler re-dials missing peers with a per-peer backoff, and SWIM listens on the cluster port + 100. The live descriptions are [architecture/04-networking.md](../architecture/04-networking.md) and [operators/networking.md](../operators/networking.md).
 >
 > **RC4 note:** The historical `DHTRelayMessage` lane example below is superseded. That dormant worker relay and its codec were removed; active DHT traffic uses direct `DHTMessage` protocol records. Scoped worker metadata uses CONTROL manifests and SYNC chunks, with no raw consensus Decision relay. See [worker metadata distribution](worker-metadata-distribution-spec.md).
 
@@ -18,7 +18,7 @@ Replace TCP-based inter-node cluster networking with QUIC transport. Same messag
 
 ### 1.1 Motivation
 
-- **0-RTT reconnection** — *(planned; not implemented: every reconnect is a full handshake)*
+- **0-RTT reconnection** — *(planned; not implemented: no early data or session-ticket setup is configured)*
 - **Stream multiplexing** — consensus messages can't be starved by bulk DHT transfers
 - **No head-of-line blocking** — packet loss on one stream doesn't block others
 - **Built-in TLS 1.3** — mandatory encryption, eliminates TLS on/off config divergence
@@ -217,10 +217,10 @@ cluster_secret = "my-cluster-secret"
 
 ### 3.7 Reconnection — Simplified
 
-*(As planned. Shipped: no 0-RTT, no idle timeout, and an explicit reconnect loop.)*
+*(As planned. Shipped: 0-RTT not configured, no idle timeout, and an explicit reconnect loop.)*
 
 QUIC's built-in mechanisms were meant to replace the retry-with-backoff logic:
-- **0-RTT resumption:** planned; not implemented. Every connection does a full TLS 1.3 handshake.
+- **0-RTT resumption:** planned; not implemented (no early data or session-ticket setup is configured).
 - **Connection migration:** IP changes handled transparently
 - **Idle timeout:** planned as 30s; shipped disabled (`0`). A dead link is found by write failure or by the receipt sweep.
 
@@ -263,7 +263,7 @@ Docker compose, Hetzner integration, and cloud provider firewall configs must be
 | All message types | None | Same protocol messages |
 | Hello handshake | Simplified | Same protocol, no duplicate detection needed (NodeId ordering) |
 | TLS | Always on | No toggle, auto-generate for dev |
-| Reconnection | Simplified | Full handshake per reconnect, explicit reconciler loop (planned: 0-RTT, no retry loop) |
+| Reconnection | Simplified | No 0-RTT configured, explicit reconciler loop (planned: 0-RTT, no retry loop) |
 | SWIM | None | Stays on separate UDP port |
 | `peerLinks` | Type change | `Map<NodeId, QuicPeerConnection>` |
 | Topology/discovery | None | Same mechanism |
@@ -312,7 +312,7 @@ Per evolutionary implementation protocol:
 ### 6.4 Performance Benchmark
 - Latency comparison: TCP vs QUIC for consensus round-trip
 - Throughput comparison: DHT replication under concurrent consensus load
-- Reconnection time: TCP 3-way handshake vs QUIC full handshake (0-RTT was planned, not implemented)
+- Reconnection time: TCP 3-way handshake vs QUIC handshake (0-RTT was planned, not implemented)
 
 ---
 
