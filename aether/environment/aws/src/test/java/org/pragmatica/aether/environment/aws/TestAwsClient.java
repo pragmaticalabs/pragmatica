@@ -197,12 +197,12 @@ final class TestAwsClient implements AwsClient {
     // --- Factory helpers ---
 
     static DescribeInstancesResponse emptyDescribeResponse() {
-        return new DescribeInstancesResponse(new ReservationSet(List.of()));
+        return new DescribeInstancesResponse(new ReservationSet(List.of()), null);
     }
 
     static DescribeInstancesResponse describeResponseWith(List<Instance> instances) {
         var reservation = new Reservation("r-12345", new InstancesSet(instances));
-        return new DescribeInstancesResponse(new ReservationSet(List.of(reservation)));
+        return new DescribeInstancesResponse(new ReservationSet(List.of(reservation)), null);
     }
 
     static RunInstancesResponse emptyRunResponse() {

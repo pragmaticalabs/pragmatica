@@ -17,6 +17,7 @@
 package org.pragmatica.cloud.hetzner;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -49,6 +50,14 @@ public sealed interface HetznerError extends Cause {
         public String message() {
             return "Failed to parse Hetzner response: " + context + " - " + Causes.fromThrowable(cause).message();
         }
+    }
+
+    /// A paginated listing that cannot be completed: `next_page` failed to advance, or the page cap was
+    /// exceeded. Never degraded to a partial list, which would look like the whole inventory. `endpoint`
+    /// is the path without its query (a label selector can carry names), `pages` the pages read.
+    record PaginationFailed(String endpoint, int pages, String reason, String message) implements HetznerError {
+        static final Fn3<PaginationFailed, String, Integer, String> FACTORY = Causes.forThreeValues("Hetzner listing of %s stopped after %s page(s): %s",
+                                                                                                    PaginationFailed::new);
     }
 
     /// Hetzner error response JSON structure.

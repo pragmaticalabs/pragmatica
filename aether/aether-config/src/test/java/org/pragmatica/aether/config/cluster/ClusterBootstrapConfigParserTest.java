@@ -23,7 +23,7 @@ class ClusterBootstrapConfigParserTest {
         void parse_currentConfigVersion_succeeds() {
             ClusterBootstrapConfigParser.parse(forgeToml("config_version = \"1.0.0\"\n"))
                 .onFailure(cause -> Assertions.fail(cause.message()))
-                .onSuccess(config -> assertThat(config.configVersion()).isEqualTo("1.0.0"));
+                .onSuccess(config -> assertThat(config.cluster()).isNotNull());
         }
 
         @Test
@@ -115,7 +115,6 @@ class ClusterBootstrapConfigParserTest {
             ClusterBootstrapConfigParser.parse(toml)
                 .onFailure(cause -> Assertions.fail(cause.message()))
                 .onSuccess(config -> {
-                    assertThat(config.configVersion()).isEqualTo("1.0.0");
                     assertThat(config.cluster().name().value()).isEqualTo("dev-local");
                     assertThat(config.cluster().version()).isEqualTo("1.0.0");
                     assertThat(config.sources()).containsKey("local");
@@ -453,13 +452,55 @@ class ClusterBootstrapConfigParserTest {
                     var ops = config.operations();
                     assertThat(ops.autoHeal().enabled()).isTrue();
                     assertThat(ops.tls().autoGenerate()).isTrue();
-                    assertThat(ops.tls().certTtl()).isEqualTo("720h");
                     assertThat(ops.timeouts().healthCheck()).isEqualTo("300s");
                     assertThat(ops.timeouts().quorumFormation()).isEqualTo("600s");
                     assertThat(ops.ports().cluster()).isEqualTo(8090);
                     assertThat(ops.ports().management()).isEqualTo(8080);
                     assertThat(ops.ports().appHttp()).isEqualTo(8070);
                     assertThat(ops.ports().swim()).isEqualTo(8190);
+                });
+        }
+    }
+
+    /// #693: `[infrastructure.networking] type`, `[operations.tls] cert_ttl` and `[operations.timeouts] drain`
+    /// were parsed into record components nothing read, and are gone. A file that still carries them keeps
+    /// loading (they change nothing, as before) and its live neighbours keep their values.
+    @Nested
+    class RemovedDeadKeys {
+
+        @Test
+        void parse_removedDeadKeys_loadsAndKeepsLiveNeighbours() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "legacy-keys"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+
+                [infrastructure.networking]
+                type = "manual"
+
+                [operations.tls]
+                auto_generate = false
+                cert_ttl = "24h"
+
+                [operations.timeouts]
+                health_check = "42s"
+                drain = "7s"
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> {
+                    assertThat(config.operations().tls().autoGenerate()).isFalse();
+                    assertThat(config.operations().timeouts().healthCheck()).isEqualTo("42s");
+                    assertThat(config.operations().timeouts().quorumFormation()).isEqualTo("600s");
                 });
         }
     }

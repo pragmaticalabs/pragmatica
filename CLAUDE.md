@@ -11,7 +11,7 @@ Global rules (git, delegation, challenge mode, ndx, consult-before-action) live 
 | `jbct/` | Formatting, linting, Maven plugin, slice-processor |
 | `aether/` | Distributed runtime (Apache-2.0, except the BSL 1.1 modules listed in `tools/license/bsl-modules.txt`) |
 
-**Version:** `1.0.0-rc4` on branch `release-1.0.0-rc4`.
+**Version:** `1.0.0-rc5` on branch `release-1.0.0-rc5`.
 
 **Priorities & roadmap:**
 - V1 roadmap: [`aether/docs/.internal/progress/v1-roadmap.md`](aether/docs/.internal/progress/v1-roadmap.md)

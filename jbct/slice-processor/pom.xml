@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>jbct-parent</artifactId>
-        <version>1.0.0-rc4</version>
+        <version>1.0.0-rc5</version>
     </parent>
 
     <artifactId>slice-processor</artifactId>
@@ -64,6 +64,9 @@
             <version>${javapoet.version}</version>
         </dependency>
 
+        <!-- Terra backend compiler tests use the real target contract. -->
+        <dependency><groupId>org.pragmatica-lite</groupId><artifactId>terra-runtime</artifactId><version>${project.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.pragmatica-lite.aether</groupId><artifactId>slice-annotations</artifactId><version>${project.version}</version><scope>test</scope></dependency>
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

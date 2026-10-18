@@ -38,5 +38,10 @@ public record SshKey(long id, String name, String fingerprint, @JsonProperty("pu
 
     /// Wrapper for SSH key list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record SshKeyListResponse(@JsonProperty("ssh_keys") List<SshKey> sshKeys) {}
+    public record SshKeyListResponse(@JsonProperty("ssh_keys") List<SshKey> sshKeys, Pagination.Meta meta) implements Pagination.Paged<SshKey> {
+        @Override
+        public List<SshKey> items() {
+            return sshKeys;
+        }
+    }
 }

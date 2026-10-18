@@ -140,5 +140,10 @@ public record Server(long id,
 
     /// Wrapper for server list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record ServerListResponse(List<Server> servers) {}
+    public record ServerListResponse(List<Server> servers, Pagination.Meta meta) implements Pagination.Paged<Server> {
+        @Override
+        public List<Server> items() {
+            return servers;
+        }
+    }
 }
