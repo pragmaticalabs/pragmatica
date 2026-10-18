@@ -6504,7 +6504,7 @@ The `max_request_size` field accepts human-readable data size values:
 | `MB` | `"5MB"` | 5,242,880 |
 | `GB` | `"1GB"` | 1,073,741,824 |
 
-Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike.
+Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike. A plain integer is read as a byte count. A request forwarded to the node serving its route must also fit one cluster frame (32 MiB less a 64 KiB reserve); a larger one receives `413` with a detail saying it is too large to forward, and is not sent.
 
 #### Read timeout
 

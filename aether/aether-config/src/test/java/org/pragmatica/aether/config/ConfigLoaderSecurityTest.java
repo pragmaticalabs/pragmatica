@@ -248,6 +248,36 @@ class ConfigLoaderSecurityTest {
             });
     }
 
+    /// A17: a plain TOML integer is a byte count. It was silently ignored (the 10 MiB default applied), because the
+    /// int-sized data-size reader looked only for a string.
+    @Test
+    void loadFromString_parsesIntegerMaxRequestSizeAsBytes() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = 52428800
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().maxRequestSize()).isEqualTo(52_428_800));
+    }
+
+    @Test
+    void loadFromString_clampsOversizedIntegerMaxRequestSize() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = 8589934592
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().maxRequestSize()).isEqualTo(Integer.MAX_VALUE));
+    }
+
     @Test
     void loadFromString_parsesReadTimeout() {
         var toml = MINIMAL_CLUSTER + """

@@ -1212,6 +1212,27 @@ public interface HttpForwarder {
                     return;
                 }
 
+                var forwardRequest = new HttpForwardRequest(selfNodeId,
+                                                            correlationId,
+                                                            requestId,
+                                                            requestData,
+                                                            pipeline,
+                                                            deadline.toWireMillis());
+                // A3: a frame over the cluster frame limit is never sent. The receiver's frame decoder would reject
+                // it and close the whole FORWARD lane to this peer, failing every other forward in flight on it
+                // (pinned by OversizedLaneFrameTest in the consensus module); and no other node can take it either,
+                // so it fails terminally with 413, not as a retryable hop failure.
+                var bounded = clusterNetwork.validateOutboundMessage(forwardRequest);
+
+                if (bounded.isFailure()) {
+                    log.warn("Request [{}] encodes to {} bytes, over the cluster frame limit; not forwarding it",
+                             requestId,
+                             requestData.length);
+                    resultPromise.fail(ForwardError.TooLargeToForward.FACTORY.apply(requestData.length));
+
+                    return;
+                }
+
                 if (pendingForwards.size() >= MAX_PENDING_FORWARDS) {
                     log.warn("Pending forwards limit reached ({}), rejecting forward [{}]",
                              MAX_PENDING_FORWARDS,
@@ -1234,12 +1255,6 @@ public interface HttpForwarder {
                 // `internalPromise` itself (see Promise#timeout javadoc), so this still arms the timeout
                 // even though the derived promise it returns here is never used.
                 internalPromise.timeout(hopTimeout);
-                var forwardRequest = new HttpForwardRequest(selfNodeId,
-                                                            correlationId,
-                                                            requestId,
-                                                            requestData,
-                                                            pipeline,
-                                                            deadline.toWireMillis());
                 // hopTimeout is the wait that just started and the moment the caller retries elsewhere, so the frame must
                 // not outlive it in an offline buffer (#1996). Always bounded here: `remainingMillis` may be NO_BUDGET,
                 // but the hop wait never is.
