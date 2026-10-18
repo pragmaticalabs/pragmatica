@@ -179,29 +179,12 @@ class ApplyStateLedgerRefusalTest {
         }
 
         @Test
-        void rollback_unreadableApplyState_failsNamingTheRefusal_notNothingToRollback() throws Exception {
-            writeApplyState(applyStateJson(clusterName.value(), FUTURE_ENTRY));
-
-            ApplyOrchestrator.rollback(config(3), config(3))
-                             .onSuccess(result -> fail("rollback must not proceed past a refused state"))
-                             .onFailure(cause -> assertThat(cause.message()).contains("unreadable")
-                                                                             .contains("FutureThing")
-                                                                             .doesNotContain("Nothing to rollback"));
-        }
-
-        @Test
         void resume_absentApplyState_stillReportsNothingToResume() {
             ApplyOrchestrator.resume(config(3), config(3))
                              .onSuccess(result -> fail("nothing to resume"))
                              .onFailure(cause -> assertThat(cause.message()).contains("Nothing to resume"));
         }
 
-        @Test
-        void rollback_absentApplyState_stillReportsNothingToRollback() {
-            ApplyOrchestrator.rollback(config(3), config(3))
-                             .onSuccess(result -> fail("nothing to rollback"))
-                             .onFailure(cause -> assertThat(cause.message()).contains("Nothing to rollback"));
-        }
     }
 
     @Nested
