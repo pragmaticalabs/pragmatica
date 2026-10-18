@@ -16,6 +16,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,6 +54,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// unconditional removal and the same window.
 final class DHTCacheBackend implements CacheBackend {
     private static final Logger log = LoggerFactory.getLogger(DHTCacheBackend.class);
+
     private static final byte[] HEADER = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 1};
 
     static final int HEADER_BYTES = HEADER.length + Long.BYTES;
