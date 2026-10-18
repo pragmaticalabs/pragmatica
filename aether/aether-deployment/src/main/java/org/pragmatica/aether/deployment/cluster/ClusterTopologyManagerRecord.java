@@ -3193,6 +3193,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
+        if (!isAutoHealEnabled()) {
+            // #1038: the refusal was parked while auto-heal was enabled; a retry is still an AUTOMATIC deletion. Held, not dropped
+            // silently: parked as abandoned, so the next SWIM FAULTY or the next activation's replay re-arms it once auto-heal is back.
+            abandonedReaps.add(nodeId);
+            log.warn("CTM: refused reap of {} held — auto-heal is disabled; re-armed by the next SWIM FAULTY for it or the next activation replay",
+                     nodeId);
+
+            return;
+        }
+
         retirementRefusal.get()
                          .apply(nodeId)
                          .onPresent(reason -> continueRefusedReap(nodeId, epoch, retriesLeft, reason))
