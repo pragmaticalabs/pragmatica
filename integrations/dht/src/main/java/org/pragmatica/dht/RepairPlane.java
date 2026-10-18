@@ -123,14 +123,9 @@ public final class RepairPlane {
                : peers;
     }
 
-    /// Partition indexes found diverged from some co-replica and not yet repaired from it.
-    Set<Integer> divergedPartitions() {
-        return Set.copyOf(diverged.keySet());
-    }
-
     /// The repair deficit: partitions this node replicates that are not known to be whole here — still catching up,
-    /// or diverged from a co-replica and not yet repaired. While non-zero, a further loss of a co-replica may lose
-    /// entries only this node lacks.
+    /// or diverged from a co-replica and not yet repaired from it. While non-zero, losing that co-replica may lose
+    /// entries this node does not hold yet.
     int deficit(List<Partition> pending) {
         var partitions = new HashSet<>(diverged.keySet());
 
