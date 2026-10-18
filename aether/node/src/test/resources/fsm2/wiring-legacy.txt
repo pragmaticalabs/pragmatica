@@ -21,6 +21,8 @@ B10.cdm.WorkerJoin -> legacy
 B11.PlacementRedrive -> legacy
 B12.DrainReport -> legacy
 B13.Stop -> legacy
+B13.StopDrain -> legacy
+B14.StateRestored -> legacy
 B16.Seams -> legacy
 B17.ApplyRecord -> off
 B2.ClusterStateNotification -> legacy+gate

@@ -20,6 +20,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterEffect;
 import org.pragmatica.aether.deployment.cluster.fsm2.RoutedEvent;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.schema.SchemaEvent;
+import org.pragmatica.aether.deployment.wiring.BacklogSampler;
 import org.pragmatica.aether.deployment.wiring.LocalOpExecutor;
 import org.pragmatica.aether.deployment.wiring.StepObserver;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
@@ -117,6 +118,35 @@ public final class EffectTranslator {
              .register(targets.registry());
 
         return Unit.unit();
+    }
+
+    /// N-5: the alarm of the backlog sampler, as the catalogued warning `deployment-fsm-backlog` and its recovery. The subject is
+    /// `<node>/<fsm>`, so an operator reading the cluster's event log knows whose mailbox it is.
+    public BacklogSampler.Alarm backlogAlarm() {
+        return new BacklogSampler.Alarm() {
+            @Override
+            public void raised(String fsm, int depth) {
+                raise(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.code(),
+                      backlogSubject(fsm),
+                      "the %s FSM's mailbox holds %d inputs, above %d: inputs arrive faster than it steps them (none is dropped)".formatted(fsm,
+                                                                                                                                            depth,
+                                                                                                                                            BacklogSampler.RAISE_ABOVE));
+            }
+
+            @Override
+            public void cleared(String fsm, int depth) {
+                raise(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.code(),
+                      backlogSubject(fsm),
+                      "the %s FSM's mailbox is back to %d inputs, below %d".formatted(fsm,
+                                                                                      depth,
+                                                                                      BacklogSampler.CLEAR_BELOW));
+            }
+        };
+    }
+
+    private String backlogSubject(String fsm) {
+        return targets.self()
+                      .id() + "/" + fsm;
     }
 
     // -- node effects -----------------------------------------------------------------------------------------------

@@ -21,7 +21,7 @@
 2|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|nodeDeploymentManager));
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it only under LEGACY and drops it, counted, under FSM2 (B1..B12)|var workerAdmissionJoin = deploymentWiring.legacy("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onNodePlacementPut);
-1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it only under LEGACY and drops it, counted, under FSM2 (B1..B12)|var drainReportTarget = deploymentWiring.legacy("B12.DrainReport", clusterDeploymentManager::onNodeDraining);
+1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it under LEGACY and replaces it with the cluster FSM2 drain report under FSM2 (B12)|var drainReportTarget = deploymentWiring.drainReport(clusterDeploymentManager::onNodeDraining);
 3|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|nodeDeploymentManager,
 3|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|clusterDeploymentManager,
 1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setCommunityLiveness(node -> communityDirectory.assignment(node)
