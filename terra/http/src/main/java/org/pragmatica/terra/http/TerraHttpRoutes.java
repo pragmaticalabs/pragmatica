@@ -23,6 +23,7 @@ import org.pragmatica.aether.http.security.HttpAuthenticator;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RequestContext;
@@ -221,7 +222,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                             .call(() -> Objects.requireNonNull(route.handler()
                                                                                     .handle(SliceRequestContext.sliceRequestContext(request,
                                                                                                                                     route,
-                                                                                                                                    mapper)),
+                                                                                                                                    JsonCodecAdapter.forMapper(mapper))),
                                                                                "HTTP handler returned null Promise")))
                      .fold(Promise::failure, promise -> promise);
     }
