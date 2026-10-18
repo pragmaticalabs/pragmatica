@@ -2,11 +2,9 @@
 #
 # The FIRST fixture in the repository to declare `durability = "durable"`. Every other blueprint
 # declares `[streams.X]` sections; this one declares TOPIC sections, which is a different resource
-# and a different key convention.
-#
-# KEY CONVENTION TRAP, stated because it silently degrades the whole fixture: topic sections use
-# UNDERSCORES (`topic_name`, `confirmation_factor`) while most `[streams.X]` keys still use DASHES
-# (`max-event-size`). A dashed key here parses as ABSENT, and an absent `durability` defaults to
+# with its own keys (`topic_name`, `confirmation_factor`). Every key in both families is snake_case,
+# and a dashed spelling of a stream key is refused. A key a topic section does not
+# read would parse as ABSENT, and an absent `durability` defaults to
 # "ephemeral" — so a typo would not fail, it would quietly hand the test an ephemeral topic and make
 # every durable assertion vacuously green. DurableTopicDeliveryForgeTest therefore asserts the
 # topic came up durable rather than trusting this file.
