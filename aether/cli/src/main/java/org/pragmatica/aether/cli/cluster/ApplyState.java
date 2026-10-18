@@ -91,7 +91,6 @@ public record ApplyState(ClusterName clusterName,
     }
 
     private static final Path AETHER_DIR = Path.of(System.getProperty("user.home"), ".aether", "clusters");
-
     /// Where one cluster's apply state lives. Every read, write and delete resolves through here, which is
     /// the seam a test replaces to prove a code path never touches the state store (same pattern as
     /// `ClusterTargetMixin#registryLoader`).
@@ -140,7 +139,8 @@ public record ApplyState(ClusterName clusterName,
     }
 
     private static Path stateFilePath(ClusterName clusterName) {
-        return stateDirResolver.apply(clusterName).resolve(STATE_FILE_NAME);
+        return stateDirResolver.apply(clusterName)
+                               .resolve(STATE_FILE_NAME);
     }
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
