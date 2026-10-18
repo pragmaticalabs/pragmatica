@@ -34,6 +34,8 @@ public sealed interface ProvisionDisposition {
     /// Why a provision was deferred without booting anything. Observability-only — both reasons
     /// drive the SAME reconciler action (remove the placeholder, do not record a failure).
     enum DeferralReason {
+        /// No provider effect: capacity or source admission will be reconsidered on the next pass.
+        CAPACITY_ADMISSION,
         /// The #148 runaway-provisioning circuit is open; provisioning is suspended for the backoff
         /// window. Re-armed on the next tick once the window clears or a node joins.
         CIRCUIT_OPEN,

@@ -357,6 +357,16 @@ public final class LeaderReconciler {
     private static final int SUBSTITUTE_GENERATION = 1;
 
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
+
+    /// #1404 — the committed capacity allocations a core replacement may still be riding on, supplied by the capacity
+    /// ledger rather than by metrics gossip: an acknowledgement lost with the leader that issued the create is not
+    /// absence of the VM. See [`#effectiveCapacity`] for what counts.
+    private final AtomicReference<Supplier<Map<NodeId, DurableAllocation>>> durableProvisioning = new AtomicReference<>(Map::of);
+
+    /// Local instant [`#timeSource`] first saw each CONFIRMED durable allocation: the join grace of an allocation the in-flight
+    /// map does not track (a new leader, or an entry evicted by its ceiling) runs from here, or from the id's ULID mint time when
+    /// that is older.
+    private final ConcurrentHashMap<NodeId, Long> durableConfirmedSince = new ConcurrentHashMap<>();
     /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
     /// provider never accumulates stacked queries for the same replacement across poll ticks.
     private final Set<NodeId> statusQueriesOutstanding = ConcurrentHashMap.newKeySet();
@@ -1212,7 +1222,9 @@ public final class LeaderReconciler {
         }
 
         if (effective >= configuredCoreCount) {
-            return "NO_DEFICIT";
+            return durableCoversDeficit(membershipFsm.coreCountedMembers(), configuredCoreCount)
+                   ? "AWAITING_DURABLE_CAPACITY"
+                   : "NO_DEFICIT";
         }
 
         if (!quorumSafe) {
@@ -1272,7 +1284,17 @@ public final class LeaderReconciler {
     ///
     /// A provider-CONFIRMED entry still unjoined past [`#joinGraceWindow`] is left out of the union (#1783):
     /// it does not hide the deficit, though it stays in the map until it joins, fails or hits its ceiling.
+    ///
+    /// **Durable allocations (#1404).** The committed reservations of the capacity ledger join the union on the same terms
+    /// (D1, owner ruling): an UNCERTAIN allocation (a create that may have happened) ALWAYS counts, so no second create is
+    /// dispatched while the first is unresolved, whatever became of the local in-flight entry. A CONFIRMED allocation (the
+    /// provider listed it) counts only while its node is within the join grace, so the #1783 deficit reappears once the grace
+    /// has passed. A CONFIRMED allocation the in-flight map still tracks is governed by that entry alone.
     private int effectiveCapacity(Set<NodeId> currentMembers) {
+        return capacityUnion(currentMembers, true).size();
+    }
+
+    private Set<NodeId> capacityUnion(Set<NodeId> currentMembers, boolean withDurable) {
         var union = new LinkedHashSet<>(currentMembers);
         var now = timeSource.nanoTime();
 
@@ -1286,8 +1308,62 @@ public final class LeaderReconciler {
         // original that dies before its replacement is a member reads as a deficit and auto-heal provisions a second
         // node for the same seat.
         union.addAll(surgeReplacements.get().get());
+        if (withDurable) {
+            union.addAll(countedDurable(now));
+        }
 
-        return union.size();
+        return union;
+    }
+
+    private Set<NodeId> countedDurable(long nowNanos) {
+        var durable = durableProvisioning.get().get();
+
+        durableConfirmedSince.keySet().removeIf(id -> durable.get(id) != DurableAllocation.CONFIRMED);
+
+        return durable.entrySet()
+                      .stream()
+                      .filter(entry -> countsDurably(entry.getKey(),
+                                                     entry.getValue(),
+                                                     nowNanos))
+                      .map(Map.Entry::getKey)
+                      .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private boolean countsDurably(NodeId id, DurableAllocation allocation, long nowNanos) {
+        return switch (allocation) {
+            case UNCERTAIN -> true;
+            case CONFIRMED -> !inFlightProvisioning.containsKey(id) && withinJoinGrace(id, nowNanos);
+        };
+    }
+
+    private boolean withinJoinGrace(NodeId id, long nowNanos) {
+        var firstSeen = durableConfirmedSince.computeIfAbsent(id, _ -> nowNanos);
+        var elapsedMs = Math.max(TimeUnit.NANOSECONDS.toMillis(nowNanos - firstSeen), mintAgeMs(id));
+
+        return elapsedMs <= joinGraceWindow.millis();
+    }
+
+    /// True when durable allocations alone close an otherwise open deficit: the provisioning decision reports
+    /// AWAITING_DURABLE_CAPACITY rather than NO_DEFICIT.
+    private boolean durableCoversDeficit(Set<NodeId> currentMembers, int configuredCoreCount) {
+        return capacityUnion(currentMembers, false).size() < configuredCoreCount;
+    }
+
+    /// How the capacity ledger stands behind a committed core allocation.
+    public enum DurableAllocation {
+        /// The create may have happened and was never confirmed.
+        UNCERTAIN,
+        /// The provider listed the instance.
+        CONFIRMED
+    }
+
+    /// #1404 — inject the supplier of committed core allocations (the capacity ledger's, minus the installed electorate).
+    /// `AetherNode` wires it to the lifecycle's `allocatedNodes`. `null` resets to the empty default.
+    @Contract
+    public void setDurableProvisioningSupplier(Supplier<Map<NodeId, DurableAllocation>> supplier) {
+        durableProvisioning.set(supplier == null
+                                ? Map::of
+                                : supplier);
     }
 
     /// Simple-majority quorum threshold over the configured core size — same formula as

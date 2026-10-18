@@ -58,6 +58,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
@@ -183,9 +184,17 @@ class ClusterTopologyManagerActuatorTest {
     private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace,
                                                      Consumer<NodeId> drainSink,
                                                      MembershipLiveness liveness) {
+        return ctmWithDrainGrace(drainGrace, drainSink, liveness, System::currentTimeMillis);
+    }
+
+    /// As above, on a chosen clock: the lifecycle sweep's rate is measured on it, so a test moves time without waiting for it.
+    private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace,
+                                                     Consumer<NodeId> drainSink,
+                                                     MembershipLiveness liveness,
+                                                     LongSupplier clock) {
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), drainGrace).unwrap();
 
-        var manager = ClusterTopologyManager.clusterTopologyManager(observer,
+        var manager = ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                              lifecycleManager,
                                                              autoHeal,
                                                              DeploymentMap.deploymentMap(),
@@ -193,9 +202,9 @@ class ClusterTopologyManagerActuatorTest {
                                                              clusterStore::current,
                                                              clusterStore::apply,
                                                              () -> ClusterPhase.NORMAL,
+                                                             clock,
                                                              drainSink,
                                                              drainCommandClearCalls::add,
-                                                             Option::none,
                                                              clusterStore::autoHealState,
                                                              liveness);
         // This actuator fixture models a completed voter handoff. Tests below independently
@@ -455,6 +464,50 @@ class ClusterTopologyManagerActuatorTest {
     /// #148 — runaway-provisioning cap. After MAX consecutive provision failures the circuit
     /// trips and further `provisionReplacement` calls are suppressed (no new `provisionNode`),
     /// preventing the crash-loop container storm. The cap is 3 (MAX_CONSECUTIVE_PROVISIONING_FAILURES).
+    @Test
+    void sourceAdmissionDeferralDoesNotTripTheProviderFailureCircuit() {
+        ctm.activate();
+        lifecycleManager.deferProvision = true;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await().unwrap();
+            assertThat(disposition).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION));
+        }
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
+        assertThat(ctm.circuitBreakerState().tripped()).isFalse();
+    }
+
+    private static AetherValue.CommunityPlacementOperationValue placementOperation() {
+        return new AetherValue.CommunityPlacementOperationValue("operation", "community", NodeId.randomNodeId(), "default", Option.none(),
+                                                                "binding", Option.none(), "", AetherValue.PlacementOperationPhase.CREATE_REQUESTED,
+                                                                new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1), 1L, 1L, "");
+    }
+
+    /// #1404: a placement create that cannot be dispatched says why with a typed pre-dispatch refusal, which the community reconciler
+    /// reads as "retry the same identity", never as an uncertain create.
+    @Test
+    void provisionPlacementNode_whileInactive_isTheTypedInactiveAuthorityRefusal() {
+        var refused = ctm.provisionPlacementNode(placementOperation()).await();
+
+        refused.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("provisioned without authority"));
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(CapacityControlledLifecycle.AdmissionFailure.INACTIVE_AUTHORITY));
+        assertThat(lifecycleManager.provisionCount.get()).isZero();
+    }
+
+    @Test
+    void provisionPlacementNode_withUnparsableCommittedConfiguration_isTheTypedInvalidConfigurationRefusal() {
+        coreCountedMembers.set(Set.of(SELF, PEER_A, PEER_B));
+        clusterStore.current.set(Option.some(new ClusterConfigValue(Option.some("this is [not valid toml"), "", "1.0.0", coreTopology(5), 3, 9, "test", 7L, 0L)));
+        var configured = ctmWithDrainGrace(AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT);
+        configured.activate();
+
+        var refused = configured.provisionPlacementNode(placementOperation()).await();
+
+        refused.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("provisioned from an unreadable configuration"));
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(CapacityControlledLifecycle.AdmissionFailure.INVALID_CONFIGURATION));
+        assertThat(lifecycleManager.provisionCount.get()).isZero();
+        configured.deactivate();
+    }
+
     @Test
     void provisionReplacement_consecutiveFailures_tripCircuit_andSuppressFurtherProvisioning() {
         ctm.activate();
@@ -1605,6 +1658,175 @@ class ClusterTopologyManagerActuatorTest {
             assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
         }
 
+        private CommunityPlacementReconciler idlePlacement() {
+            return new CommunityPlacementReconciler() {
+                public Promise<Unit> reconcile() { return Promise.unitPromise(); }
+                public Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) { return Promise.unitPromise(); }
+                public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+            };
+        }
+
+        /// D2 (owner, 2026-10-18; ruling 317923624: no unbounded per-orphan calls, a low bounded re-check rate). The periodic lifecycle
+        /// sweep, source inventory reconciliation and the orphan listing alike, is stated as ONE sweep per five provisioning windows
+        /// (750ms for this 150ms window), whatever the poll rate: here the poll ticks every 20ms, so a sweep per tick would run dozens of
+        /// times inside the settle window. Activation replays orphans at once (one listing) and starts the interval; time moves on the
+        /// injected clock.
+        @Test
+        void lifecycleSweep_runsOncePerFiveProvisioningWindows_notOncePerPoll() {
+            var clock = new AtomicLong(1_000L);
+            var sweeper = ctmWithDrainGrace(GRACE, drainCommandSinkCalls::add, stubLiveness(), clock::get);
+
+            sweeper.installCommunityPlacement(idlePlacement());
+            sweeper.activate();
+            ((ClusterTopologyManagerRecord) sweeper).startWorkerTopologyPolling(timeSpan(20).millis());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.listCalls.get() >= 1);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.inventoryReconciliations.get()).as("activation starts the interval; the polls that follow do not sweep").isZero();
+            assertThat(lifecycleManager.listCalls.get()).as("the activation replay listed once").isEqualTo(1);
+
+            clock.addAndGet(749);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.inventoryReconciliations.get()).as("one millisecond short of five windows").isZero();
+            assertThat(lifecycleManager.listCalls.get()).isEqualTo(1);
+
+            clock.addAndGet(1);
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.inventoryReconciliations.get() == 1 && lifecycleManager.listCalls.get() == 2);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.inventoryReconciliations.get()).as("the first periodic sweep, and no second until another five windows pass").isEqualTo(1);
+            assertThat(lifecycleManager.listCalls.get()).isEqualTo(2);
+            sweeper.deactivate();
+        }
+
+        /// Activation replays orphans at once and restarts the interval: a new leader's first periodic sweep is one interval after ITS activation,
+        /// not after the previous leader's.
+        @Test
+        void lifecycleSweep_anActivationRestartsTheInterval() {
+            var clock = new AtomicLong(1_000L);
+            var sweeper = ctmWithDrainGrace(GRACE, drainCommandSinkCalls::add, stubLiveness(), clock::get);
+
+            sweeper.installCommunityPlacement(idlePlacement());
+            sweeper.activate();
+            clock.addAndGet(700);
+            sweeper.deactivate();
+            sweeper.activate();
+            ((ClusterTopologyManagerRecord) sweeper).startWorkerTopologyPolling(timeSpan(20).millis());
+            clock.addAndGet(100);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.inventoryReconciliations.get()).as("800ms after the first activation but 100ms after the second").isZero();
+            sweeper.deactivate();
+        }
+
+        /// One orphan sweep at a time per activation: while a sweep's second read is outstanding, a sweep that comes due does not start
+        /// another (no third listing), however many times the poll ticks.
+        @Test
+        void orphanSweep_oneSweepAtATimePerActivation() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            lifecycleManager.holdListingsAfter(1);
+            var clock = new AtomicLong(1_000L);
+            var sweeper = ctmWithDrainGrace(GRACE, drainCommandSinkCalls::add, stubLiveness(), clock::get);
+
+            sweeper.installCommunityPlacement(idlePlacement());
+            sweeper.activate();
+            ((ClusterTopologyManagerRecord) sweeper).startWorkerTopologyPolling(timeSpan(20).millis());
+            await().atMost(Duration.ofSeconds(5)).until(lifecycleManager::listingHeld);
+            clock.addAndGet(750);
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.inventoryReconciliations.get() == 1);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.listCalls.get()).as("the sweep came due while the first was outstanding and listed nothing").isEqualTo(2);
+            lifecycleManager.releaseHeldListing();
+            sweeper.deactivate();
+        }
+
+        /// A prior activation's sweep neither suppresses its successor nor, finishing late, clears the successor's guard.
+        @Test
+        void orphanSweep_aPriorActivationNeitherSuppressesNorUnguardsItsSuccessor() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            lifecycleManager.holdListingsAfter(1);
+            var clock = new AtomicLong(1_000L);
+            var sweeper = ctmWithDrainGrace(GRACE, drainCommandSinkCalls::add, stubLiveness(), clock::get);
+
+            sweeper.installCommunityPlacement(idlePlacement());
+            sweeper.activate();
+            await().atMost(Duration.ofSeconds(5)).until(lifecycleManager::listingHeld);
+            sweeper.deactivate();
+            sweeper.activate();
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.listCalls.get() == 3);
+            assertThat(lifecycleManager.listCalls.get()).as("the successor sweeps although the prior activation's sweep never finished").isEqualTo(3);
+
+            assertThat(lifecycleManager.releaseOldestHeldListing()).as("the prior activation's second read resolves late").isTrue();
+            ((ClusterTopologyManagerRecord) sweeper).startWorkerTopologyPolling(timeSpan(20).millis());
+            clock.addAndGet(750);
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.inventoryReconciliations.get() == 1);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.listCalls.get()).as("the successor's sweep is still outstanding: its guard was not cleared by the old one").isEqualTo(3);
+            lifecycleManager.releaseHeldListing();
+            sweeper.deactivate();
+        }
+
+        /// #1038 through the orphan sweep: an orphan is deleted automatically, so a disabled auto-heal holds it.
+        @Test
+        void orphanSweep_autoHealDisabled_terminatesNothing() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            var held = ctmWithDrainGrace(GRACE);
+
+            held.activate();
+            held.setAutoHealEnabled(false, "operator hold").await().unwrap();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.listCalls.get() >= 2);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("both reads ran and the orphan was found; the held deletion did not happen").isEmpty();
+            held.deactivate();
+        }
+
+        /// A periodic sweep that finds an orphan acts on it: the control for the next test. The orphan appears after the activation replay has
+        /// listed, so only the periodic sweep can see it.
+        @Test
+        void periodicOrphanSweep_terminatesAnUnmarkedOrphan() {
+            var clock = new AtomicLong(1_000L);
+            var sweeper = ctmWithDrainGrace(GRACE, drainCommandSinkCalls::add, stubLiveness(), clock::get);
+
+            sweeper.installCommunityPlacement(idlePlacement());
+            sweeper.activate();
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.listCalls.get() >= 1);
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            ((ClusterTopologyManagerRecord) sweeper).startWorkerTopologyPolling(timeSpan(20).millis());
+            clock.addAndGet(750);
+
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+            sweeper.deactivate();
+        }
+
+        /// Ruling 317923624 (b): a marked node is revisited by the low-rate mark re-check, one attempt per interval. The periodic sweep does
+        /// not start another confirmed-reap chain for it, however often it sweeps; it still reads the orphan twice.
+        @Test
+        void periodicOrphanSweep_skipsAnOrphanMarkedUnconfirmed() {
+            var clock = new AtomicLong(1_000L);
+            var sweeper = ctmWithDrainGrace(timeSpan(400).millis(), drainCommandSinkCalls::add, stubLiveness(), clock::get);
+
+            sweeper.installCommunityPlacement(idlePlacement());
+            sweeper.activate();
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.listCalls.get() >= 1);
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            ((ClusterTopologyManagerRecord) sweeper).unconfirmedReaps().add(DEAD);
+            ((ClusterTopologyManagerRecord) sweeper).startWorkerTopologyPolling(timeSpan(20).millis());
+            clock.addAndGet(2_000);
+
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.listCalls.get() >= 3);
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("the sweep read the orphan twice and left it to its mark").isEmpty();
+            sweeper.deactivate();
+        }
+
         /// SF-1 (verify-1057-r3, the reviewer's probeB): the old leader abandoned and parked the reap of `DEAD`, then
         /// lost leadership — its park died with it. The new leader's own SWIM still holds `DEAD` SUSPECTED at its
         /// replay's first read, so the instance is protected and would have been forgotten until the next activation.
@@ -1738,6 +1960,14 @@ class ClusterTopologyManagerActuatorTest {
             coreCountedMembers.set(Set.of());
             await().atMost(Duration.ofSeconds(5))
                    .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+        }
+
+        @Test
+        void disabledAutoHealHoldsDepartedDeletion() {
+            var reaper = activeCtm(SLOW_GRACE);
+            reaper.setAutoHealEnabled(false, "operator hold").await().unwrap();
+            reaper.onMembershipDecision(removedD());
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
         }
 
         /// A genuinely departed node — no evidence of life — is reaped at once, with no added delay, and once.
@@ -2366,18 +2596,22 @@ class ClusterTopologyManagerActuatorTest {
     private static final class RecordingLifecycleManager implements NodeLifecycleManager {
         final AtomicInteger provisionCount = new AtomicInteger();
         final AtomicInteger terminateCount = new AtomicInteger();
+        final AtomicInteger terminateAttempts = new AtomicInteger();
         private final CopyOnWriteArrayList<NodeId> terminatedIds = new CopyOnWriteArrayList<>();
         private final AtomicReference<ProvisionSpec> lastSpec = new AtomicReference<>();
         private final java.util.concurrent.atomic.AtomicBoolean failProvision = new java.util.concurrent.atomic.AtomicBoolean(false);
+        private boolean deferProvision;
         /// #1050 R4 — the labelled provider inventory the activation replay lists. `terminateNode` removes from it.
         private final ConcurrentHashMap<NodeId, InstanceInfo> inventory = new ConcurrentHashMap<>();
         final AtomicInteger listCalls = new AtomicInteger();
+        final AtomicInteger inventoryReconciliations = new AtomicInteger();
         private final AtomicReference<Map<String, String>> lastListFilter = new AtomicReference<>(Map.of());
         /// S2 (verify-1057-r2): listings after the `holdListingsAfter` count stay PENDING until released, so a test
         /// can change the CTM's state between a listing being issued and its resolution — the provider latency window.
         private final AtomicInteger holdListingsAfter = new AtomicInteger(Integer.MAX_VALUE);
-        private final AtomicReference<Promise<List<InstanceInfo>>> heldListing = new AtomicReference<>();
-        private final AtomicReference<Map<String, String>> heldFilter = new AtomicReference<>(Map.of());
+        private record HeldListing(Promise<List<InstanceInfo>> promise, Map<String, String> filter) {}
+
+        private final java.util.concurrent.ConcurrentLinkedQueue<HeldListing> heldListings = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
         void holdListingsAfter(int completedListings) {
             holdListingsAfter.set(completedListings);
@@ -2397,14 +2631,26 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         boolean listingHeld() {
-            return heldListing.get() != null;
+            return !heldListings.isEmpty();
         }
 
-        /// Resolves the held listing with the inventory as it stands NOW.
+        /// Resolves every held listing with the inventory as it stands NOW.
         void releaseHeldListing() {
-            var held = heldListing.getAndSet(null);
+            while (releaseOldestHeldListing()) {
+                // each iteration resolves one held listing
+            }
+        }
 
-            held.succeed(matching(heldFilter.get()));
+        /// Resolves the oldest held listing only; false when none was held.
+        boolean releaseOldestHeldListing() {
+            var held = heldListings.poll();
+
+            if (held == null) {
+                return false;
+            }
+            held.promise().succeed(matching(held.filter()));
+
+            return true;
         }
 
         private List<InstanceInfo> matching(Map<String, String> tagFilter) {
@@ -2468,6 +2714,7 @@ class ClusterTopologyManagerActuatorTest {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             var count = provisionCount.incrementAndGet();
             lastSpec.set(spec);
+            if (deferProvision) return CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE.promise();
             if (failProvision.get()) {
                 return provisionFailure.promise();
             }
@@ -2478,6 +2725,7 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
+            terminateAttempts.incrementAndGet();
             if (failTerminates.get()) {
                 return org.pragmatica.lang.utils.Causes.cause("stub provider refused terminate").promise();
             }
@@ -2487,13 +2735,17 @@ class ClusterTopologyManagerActuatorTest {
             return Promise.success(Unit.unit());
         }
 
+        @Override public Promise<Unit> reconcileInventory() {
+            inventoryReconciliations.incrementAndGet();
+            return Promise.unitPromise();
+        }
+
         @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
             var call = listCalls.incrementAndGet();
             lastListFilter.set(Map.copyOf(tagFilter));
             if (call > holdListingsAfter.get()) {
                 var pending = Promise.<List<InstanceInfo>> promise();
-                heldFilter.set(Map.copyOf(tagFilter));
-                heldListing.set(pending);
+                heldListings.add(new HeldListing(pending, Map.copyOf(tagFilter)));
                 return pending;
             }
             return Promise.success(matching(tagFilter));
