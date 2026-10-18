@@ -673,7 +673,9 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     /// Package-private so the cluster resolution on the tags path is testable: the returned `InstanceInfo` is re-stamped from `docker inspect`.
-    static Map<String, String> buildInstanceTags(ProvisionRequest request, String containerName, Fn1<String, String> hostEnv) {
+    static Map<String, String> buildInstanceTags(ProvisionRequest request,
+                                                 String containerName,
+                                                 Fn1<String, String> hostEnv) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
         var cluster = clusterLabelValue(ctx, hostEnv);

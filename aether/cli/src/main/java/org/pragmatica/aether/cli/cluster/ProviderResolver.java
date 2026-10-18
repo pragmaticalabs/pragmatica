@@ -190,7 +190,6 @@ public final class ProviderResolver {
     /// Test seam (package-private): a factory that replaces the SERVICE-LOADED Docker one, so a test can read the [CloudConfig] a
     /// caller hands the provider without a Docker daemon. Null in production.
     static volatile EnvironmentIntegrationFactory dockerFactoryOverride;
-
     /// Test seam (package-private, #2149): the ambient environment the bootstrap hands a Docker provider (`withClusterSecret`).
     /// Null in production, which reads the real process environment.
     static volatile Fn1<String, String> ambientEnvOverride;
@@ -341,7 +340,8 @@ public final class ProviderResolver {
         return compute instanceof DockerComputeProvider docker
                ? DockerComputeProvider.dockerComputeProvider(docker.runner(),
                                                              docker.config(),
-                                                             bootstrapHostEnv(clusterSecret, ProviderResolver::ambientEnv))
+                                                             bootstrapHostEnv(clusterSecret,
+                                                                              ProviderResolver::ambientEnv))
                                       .map(ComputeProvider.class::cast)
                : Result.success(compute);
     }
