@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main, release-*, feature/*]
+    branches: [main, release-*, feature/*, 'overhaul/**', 'rewrite/**']
   pull_request:
-    branches: [main, release-*]
+    # overhaul/** and rewrite/** are long-lived integration branches (#2222): PRs into them get the same gate as release-*
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
   workflow_dispatch:
 
 jobs:

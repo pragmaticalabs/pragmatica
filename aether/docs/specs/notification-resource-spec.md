@@ -8,6 +8,8 @@
 **Author:** Design team
 **Last Updated:** 2026-03-17
 
+> **Note:** the `integrations/net/dns` module this draft planned to build MX lookups on (`DnsClient`, `DomainNameResolver`) has been removed from the repository; it had no consumer. MX lookups should use Netty's `DnsNameResolver` (`io.netty.resolver.dns`), the resolver the cluster transport and SWIM already use. References below to the removed module name the original plan.
+
 ---
 
 ## Table of Contents
@@ -58,7 +60,7 @@ Jakarta Mail (formerly JavaMail) is:
 - **Heavy** -- pulls in Jakarta Activation, implementation JARs, and has a large API surface for features we do not need (IMAP, POP3, folder management).
 - **Opaque** -- connection pooling is internal and not configurable. TLS upgrade behavior varies by implementation.
 
-SMTP is a simple text protocol: connect, EHLO, AUTH, STARTTLS, MAIL FROM, RCPT TO, DATA, QUIT. A purpose-built async client on Netty is under 1000 lines and reuses infrastructure Aether already ships (`integrations/net/tcp`, `integrations/net/dns`).
+SMTP is a simple text protocol: connect, EHLO, AUTH, STARTTLS, MAIL FROM, RCPT TO, DATA, QUIT. A purpose-built async client on Netty is under 1000 lines and reuses infrastructure Aether already ships (`integrations/net/tcp`; Netty's `DnsNameResolver` for DNS).
 
 ---
 
@@ -120,7 +122,7 @@ integrations/smtp
   depends on:
     core/                        -- Promise, Result, Option, Cause
     integrations/net/tcp         -- TlsConfig, TlsContextFactory, SocketOptions
-    integrations/net/dns         -- DomainNameResolver (MX record lookups)
+    Netty DnsNameResolver        -- MX record lookups (the former integrations/net/dns module was removed)
     netty (existing dependency)
 
 integrations/email-http
@@ -267,7 +269,7 @@ Rationale: template engines are application-level concerns with wildly varying r
 The `integrations/smtp` module provides a fully asynchronous SMTP client built on Netty. It reuses Aether's existing TCP and DNS infrastructure:
 
 - `integrations/net/tcp` -- `TlsConfig`, `TlsContextFactory` for STARTTLS and implicit TLS.
-- `integrations/net/dns` -- `DomainNameResolver` for MX record lookups when sending directly to recipient domains (smart host mode does not need MX lookups).
+- Netty's `DnsNameResolver` for MX record lookups (the former `integrations/net/dns` module was removed) when sending directly to recipient domains (smart host mode does not need MX lookups).
 
 ### 4.2 SmtpClient Interface
 
@@ -290,7 +292,7 @@ public interface SmtpClient extends AsyncCloseable {
     /// Used when MX lookups are needed for direct delivery (non-smart-host).
     static SmtpClient smtpClient(SmtpConfig config,
                                   EventLoopGroup eventLoop,
-                                  DomainNameResolver resolver) { ... }
+                                  DnsNameResolver resolver) { ... }
 }
 ```
 
@@ -487,7 +489,7 @@ Pool sizing: default 4 connections. Most SMTP servers accept 10-50 concurrent co
 
 ### 4.9 MX Lookup
 
-When `SmtpConfig.host` is empty (direct delivery mode), the client resolves MX records for each recipient domain using `DomainNameResolver`. This requires extending `DomainNameResolver` or `DnsClient` to support MX record queries (currently only A/AAAA records are resolved).
+When `SmtpConfig.host` is empty (direct delivery mode), the client resolves MX records for each recipient domain using Netty's `DnsNameResolver`, which issues MX queries through its `resolveAll(DnsQuestion)` API.
 
 MX resolution flow:
 
@@ -495,7 +497,7 @@ MX resolution flow:
 2. Query MX records for the domain.
 3. Sort by priority (lowest preference value first).
 4. Try each MX host in order until delivery succeeds or all fail.
-5. Cache MX results with TTL (same mechanism as A record caching in `DomainNameResolver`).
+5. Cache MX results with TTL (Netty's `DnsNameResolver` cache, configured with TTL bounds).
 
 [ASSUMPTION] Direct delivery mode (without a smart host) is a secondary use case. Most production deployments will use a smart host (relay) or HTTP email vendor. MX lookup support can be deferred to Phase 1b if needed.
 
@@ -958,7 +960,7 @@ attempt 4: wait min(initialDelay * backoffMultiplier^2, maxDelay) (4s, capped at
 attempt N (maxAttempts): give up, fail Promise with last error
 ```
 
-Retry is implemented using `Promise.async(delay, ...)` for non-blocking wait, consistent with the DNS TTL eviction pattern in `DomainNameResolver`.
+Retry is implemented using `Promise.async(delay, ...)` for non-blocking wait, consistent with the non-blocking style used elsewhere in the runtime.
 
 ### 8.4 No Queuing / No Persistence
 
@@ -1226,7 +1228,7 @@ Logger names follow module packages:
 
 | Task | Effort | Dependencies |
 |------|--------|-------------|
-| `integrations/smtp` module: SmtpClient, SmtpSession state machine, SmtpConfig | 3-4 days | `integrations/net/tcp`, `integrations/net/dns` |
+| `integrations/smtp` module: SmtpClient, SmtpSession state machine, SmtpConfig | 3-4 days | `integrations/net/tcp`, Netty `DnsNameResolver` |
 | SmtpConnectionPool | 1-2 days | SmtpClient |
 | STARTTLS support via dynamic SslHandler insertion | 1 day | `TlsContextFactory` |
 | `integrations/email-http` module: HttpEmailSender, VendorMapping SPI | 1-2 days | `core/` |
@@ -1243,7 +1245,7 @@ Logger names follow module packages:
 
 | Task | Effort | Dependencies |
 |------|--------|-------------|
-| Extend DnsClient to support MX record queries | 1 day | `integrations/net/dns` |
+| MX record queries through Netty's `DnsNameResolver` | 1 day | Netty `resolver-dns` |
 | MX-based direct delivery in SmtpClient | 1 day | MX queries |
 | **Phase 1b total** | **~2 days** | |
 
@@ -1313,8 +1315,7 @@ Logger names follow module packages:
 - `aether/resource/http/src/main/java/org/pragmatica/aether/resource/http/HttpClientFactory.java` -- Reference ResourceFactory implementation
 - `aether/resource/api/src/main/java/org/pragmatica/aether/resource/http/Http.java` -- Reference @ResourceQualifier annotation
 - `aether/resource/api/src/main/java/org/pragmatica/aether/resource/http/HttpClientError.java` -- Reference sealed Cause pattern
-- `integrations/net/dns/src/main/java/org/pragmatica/net/dns/DnsClient.java` -- Async DNS client (Netty UDP)
-- `integrations/net/dns/src/main/java/org/pragmatica/net/dns/DomainNameResolver.java` -- DNS caching with TTL via Promise
+- `io.netty.resolver.dns.DnsNameResolver` -- Async DNS resolution with caching (Netty)
 - `integrations/net/tcp/src/main/java/org/pragmatica/net/tcp/TlsConfig.java` -- Sealed TLS configuration
 - `integrations/net/tcp/src/main/java/org/pragmatica/net/tcp/TlsContextFactory.java` -- Netty SslContext creation
 - `aether/docs/specs/in-memory-streams-spec.md` -- Spec format reference

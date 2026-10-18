@@ -52,9 +52,6 @@ count         = 5
 instance_type = "cpx32"
 image         = "ubuntu-22.04"
 
-[infrastructure.networking]
-type = "manual"
-
 [operations.tls]
 auto_generate = false
 
@@ -153,7 +150,7 @@ Applied at bootstrap as a standalone cloud firewall associated with the source's
 - `"tcp+udp"` expands to two provider rules on the same firewall.
 - Rules you do not list are never touched — a firewall is patched by union, never replaced.
 - The **cluster (8090) and management (8080) ports are yours to manage** and are never opened by
-  Aether, consistent with `[infrastructure.networking] type = "manual"`.
+  Aether, consistent with the manual networking model (nodes address each other by public IP).
 - With `load_balancer = "elected"` and **no** `[source.<name>.firewall]` block, Aether auto-opens
   `app_http` (default 8070) on TCP **and** UDP to `0.0.0.0/0` so HTTP/3 works out of the box, and
   warns. Declare the block to scope it.
@@ -233,11 +230,10 @@ source provisions (#1090); the deploy phase refuses it by name again as a backst
 validation before provisioning starts. A host may be declared by at most one `ssh` source (`PF-27`);
 `PF-09` covers the same host twice within one source.
 
-### `[infrastructure.networking]` / `[infrastructure.ssh]`
+### `[infrastructure.ssh]`
 
 | Field | Type | Default | Required | Notes |
 |---|---|---|---|---|
-| `[infrastructure.networking] type` | string | — | no | Only `"manual"` is currently a valid value. |
 | `[infrastructure.ssh] authorized_keys` | string list | `[]` | no | Keys injected into every provisioned VM. |
 | `[infrastructure.ssh] public_key_file` | string | — | no | Single operator key path. |
 | `[infrastructure.ssh] public_key_files` | string list | `[]` | no | Multiple operator key paths. Resolution priority at bootstrap time: CLI `--ssh-public-key` > this TOML field > `${AETHER_SSH_KEY}.pub` sibling. |
@@ -250,10 +246,8 @@ validation before provisioning starts. A host may be declared by at most one `ss
 | `[operations.auto_heal] enabled` | bool | `true` | `false` is **rejected at bootstrap** (error PF-25) — it has no runtime effect, so the parser refuses to accept a value that would silently lie. Use `aether cluster topology auto-heal disable` on a running cluster instead. See warning below. |
 | `[operations.auto_heal] retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`, `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, `swim_hints_ttl` | — | — | **Rejected at bootstrap** (error PF-26, #675). They parsed into `AutoHealSpec` and reached no node; see warning below. |
 | `[operations.tls] auto_generate` | bool | `true` | When `false`, the management API listener uses plain HTTP instead of an auto-generated self-signed cert. |
-| `[operations.tls] cert_ttl` | duration string | `"720h"` | |
 | `[operations.timeouts] health_check` | duration string | `"300s"` | |
 | `[operations.timeouts] quorum_formation` | duration string | `"600s"` | |
-| `[operations.timeouts] drain` | duration string | `"120s"` | |
 | `[operations.ports] cluster` | int | `8090` | Consensus/gossip port. |
 | `[operations.ports] management` | int | `8080` | Management API port. |
 | `[operations.ports] app_http` | int | `8070` | Slice app-HTTP port. |

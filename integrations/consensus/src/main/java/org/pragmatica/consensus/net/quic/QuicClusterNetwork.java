@@ -408,7 +408,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     enum ViewChangeOperation {
         ADD,
         REMOVE,
-        SHUTDOWN,
         /// Reconnect after a transient eviction. The peer is already known to upstream
         /// consumers (TopologyObserver, CTM, Rabia) via a prior `ADD`, so we MUST NOT emit
         /// a duplicate `nodeAdded` notification. Used to refresh QUIC peer-state without
@@ -750,10 +749,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // #487: unpin the loopback loop before the server's event loop group shuts down, so a post-stop
         // self-send takes the drop path rather than executing on a terminating loop.
         loopbackLoop = Option.empty();
-        log.debug("Stopping QuicClusterNetwork: notifying view change");
+        log.debug("Stopping QuicClusterNetwork");
         reconcilerTask.cancel();
         keepaliveTask.cancel();
-        processViewChange(SHUTDOWN, self.id());
 
         return closePeerConnections().flatMap(this::stopServerAndClient);
     }
@@ -1340,8 +1338,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     ///                                         `ConnectionFailed` routed at the failure site)
     ///
     /// Suppressed while not running: `stop()` flips `isRunning` before tearing every peer down
-    /// via `authoritativeRemove`, and emits the single SHUTDOWN view-change itself — without
-    /// the gate, shutdown would flood N spurious REMOVEs. Records still reach the journal.
+    /// via `authoritativeRemove` — without the gate, shutdown would flood N spurious REMOVEs.
+    /// Records still reach the journal.
     @SuppressWarnings("JBCT-PAT-01")  // Transition → emission mapping
     private void emitPeerTransition(PeerTransitionRecord record) {
         if (!isRunning.get()) {
@@ -3379,7 +3377,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     ///   - ADD       → `TransportObservation.PeerJoined`
     ///   - REMOVE    → `TransportObservation.PeerDisconnected` (also routes through
     ///                 `reportPeerRemoval`)
-    ///   - SHUTDOWN  → `TransportObservation.SelfShutdown` (self-emit only)
     ///   - RECONNECT → `TransportObservation.PeerReconnected` (previously suppressed;
     ///                 now surfaced as a typed event so subscribers can invalidate
     ///                 disconnect-driven cleanup if appropriate)
@@ -3392,7 +3389,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// verdict (`departurePermanent` / authoritative-remove). Threaded into `reportPeerRemoval`
     /// so the liveness-gone co-confirmation tap can skip it — a verdict must not co-confirm the
     /// death it caused. Organic closes (transient evict, peer-initiated channel close) pass
-    /// `false` and remain independent death evidence. Default `false` for ADD/RECONNECT/SHUTDOWN
+    /// `false` and remain independent death evidence. Default `false` for ADD/RECONNECT
     /// and the 2-arg overload above.
     private void processViewChange(ViewChangeOperation operation, NodeId peerId, boolean deathPathInitiated) {
         // Self should never appear in view changes — guard against cascading self-removal
@@ -3440,14 +3437,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // distinguish between the local (transport) and global (membership) facts.
                 peerStateListener.onPeerLeft(peerId);
                 yield TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.QUIC);
-            }
-            case SHUTDOWN -> {
-                // Self-shutdown remains a transport-emitted event: it fires on the local
-                // process's shutdown path before any consensus / KV writes can propagate, so
-                // there is no `MembershipView` delta to drive it. `TopologyObserver` cannot
-                // publish a decision for self because by the time the snapshot would reflect
-                // the shutdown the local process has stopped.
-                yield TransportObservation.selfShutdown(peerId, ObservationSource.QUIC);
             }
             case RECONNECT -> {
                 // Transparent reconnect — peer is already known to upstream consumers; no
