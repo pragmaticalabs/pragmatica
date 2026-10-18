@@ -7,7 +7,8 @@ name: S3 tests
 # edit here, as heavy-forge.yml does for Heavy.
 #
 # MinIO's own images left the public registries in 2025; the tests default to Chainguard's MinIO build
-# (cgr.dev/chainguard/minio), overridable with -Daether.s3.image, or pointed at any S3-compatible endpoint with
+# (cgr.dev/chainguard/minio), pinned by digest in the test classes (supply chain: CI must not run whatever was last
+# pushed to a moving tag), overridable with -Daether.s3.image, or pointed at any S3-compatible endpoint with
 # -Daether.s3.endpoint (and .region/.bucket/.accessKey/.secretKey/.pathStyle).
 permissions:
   contents: read

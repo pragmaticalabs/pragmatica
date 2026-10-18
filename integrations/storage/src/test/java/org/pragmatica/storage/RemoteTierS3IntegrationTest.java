@@ -63,7 +63,11 @@ class RemoteTierS3IntegrationTest {
     /// MinIO's own images left the public registries in 2025 (`minio/minio` and `quay.io/minio/minio` no longer
     /// pull anonymously). Chainguard builds the same MinIO server from source and publishes it openly; its
     /// entrypoint is the `minio` binary and it runs as a non-root user, hence `server /tmp/minio-data`.
-    private static final String MINIO_IMAGE = System.getProperty("aether.s3.image", "cgr.dev/chainguard/minio:latest");
+    /// Pinned by digest, not `:latest`: the test pulls third-party code into CI, and a moving tag would run whatever
+    /// was pushed last, unreviewed (supply chain) and unreproducible. Chainguard's free tier serves only `latest`,
+    /// so the digest is the only stable reference; bump it deliberately. `-Daether.s3.image` overrides it.
+    private static final String MINIO_DIGEST = "cgr.dev/chainguard/minio@sha256:709099319add48dfb44aa596a7070d3ddd8dd04d7ae881765719aec29df9e510";
+    private static final String MINIO_IMAGE = System.getProperty("aether.s3.image", MINIO_DIGEST);
 
     private static final byte[] CONTENT_A = "s3-integration-alpha-content".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CONTENT_B = "s3-integration-bravo-content".getBytes(StandardCharsets.UTF_8);
