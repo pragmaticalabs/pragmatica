@@ -709,6 +709,29 @@ class StreamConfigParserTest {
             });
         }
 
+        /// Every consumer group is checked, whichever position the dashed key sits in: a valid group must not mask a
+        /// dashed key in another one. Both positions are pinned so the result does not depend on group iteration order.
+        @Test
+        void externalStream_refusesDashedKeyInAnyOfSeveralConsumerGroups() {
+            var dashedAlpha = externalWithTwoGroups("batch-size = 10", "batch_size = 10");
+            var dashedZeta = externalWithTwoGroups("batch_size = 10", "batch-size = 10");
+
+            parseResources(dashedAlpha, ReplicationFactors.BUILT_IN)
+                .onSuccess(_ -> fail("dashed key in the alpha group must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).contains("'orders.consumers.alpha'")
+                                                               .contains("'batch-size' (did you mean 'batch_size'?)"));
+            parseResources(dashedZeta, ReplicationFactors.BUILT_IN)
+                .onSuccess(_ -> fail("dashed key in the zeta group must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).contains("'orders.consumers.zeta'")
+                                                               .contains("'batch-size' (did you mean 'batch_size'?)"));
+        }
+
+        private static String externalWithTwoGroups(String alphaLine, String zetaLine) {
+            return "[streams.orders]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\n\n"
+                   + "[streams.orders.consumers.alpha]\n" + alphaLine + "\n\n"
+                   + "[streams.orders.consumers.zeta]\n" + zetaLine + "\n";
+        }
+
         private static void assertDashedConsumerKeyRefused(String dashed, String snake, String value) {
             StreamConfigParser.parseConsumers(consumerTable(dashed + " = " + value), "orders")
                               .onSuccess(_ -> fail("dashed " + dashed + " must be refused"))
