@@ -204,7 +204,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Minimum spacing between reconciler dials to a peer SWIM reports alive: the lower jitter bound of the
     /// initial delay, so every 5 s tick may dial and scheduler jitter cannot skip one. With SWIM alive the
-    /// backoff cap equals its initial value (OQ-7(a)); a peer SWIM does not see alive keeps the 60 s cap.
+    /// backoff cap equals its initial value; a peer SWIM does not see alive keeps the 60 s cap.
     private static final long RECONCILE_ALIVE_MIN_SPACING_MS = Math.round(RECONCILE_BACKOFF_INITIAL_MS * JitterUtil.LIGHT_MIN_FACTOR);
 
     /// Multiple of the QUIC hello/handshake timeout after which a peer pinned in CONNECTING is

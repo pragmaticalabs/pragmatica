@@ -31,7 +31,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 /// C-12 (cluster T assessment, rc4 `7c786db0d3`): re-link after a partition is gated by the per-peer reconcile
 /// backoff, 5 s doubling to a 60 s cap with +-20% jitter, reset only by a successful attach. After about 75 s of
 /// failed attempts both ends sit at the cap, so a heal is noticed only at the next allowed attempt: up to 72 s
-/// later (60 s x 1.2) plus one 5 s tick on the grid. PR-A3 (OQ-7(a)) caps the backoff at its initial value while
+/// later (60 s x 1.2) plus one 5 s tick on the grid. Reconvergence now caps the backoff at its initial value while
 /// the raw-SWIM liveness gate reports the peer alive; a peer SWIM does not see alive keeps this schedule, which
 /// the remaining tripwires pin. The ones that held the old behaviour for an alive peer are replaced by
 /// `reconciler_dialsWithinOneTick_afterThePeerIsReportedAlive`; the gate's own cases are in
@@ -98,7 +98,7 @@ class ReconcileBackoffTripwireTest {
         var gap = largestGap(allowedAttempts(1.2));
 
         assertThat(gap).as("TRIPWIRE C-12: with +20 percent jitter the gap between allowed attempts at the cap is 72 s on a 5 s "
-                           + "grid, i.e. 75 s; the schedule for a peer SWIM does not see alive (OQ-7(a): the 60 s cap stays) "
+                           + "grid, i.e. 75 s; the schedule for a peer SWIM does not see alive (the 60 s cap stays) "
                            + "has changed.")
                        .isBetween(72_000L, 77_000L);
     }
