@@ -410,7 +410,12 @@ request_timeout = "30s"
 
 A section is validated at load: missing required keys, an unknown key, a non-positive `max_inflight`,
 a malformed `request_timeout` or a non-boolean `path_style` refuse the config, naming the instance and
-the key. `[storage.streams.shared]` accepts only `kind = "dht"`.
+the key. A sub-table or a dotted key under the section (`[storage.<instance>.shared.<x>]`,
+`aws.secret_access_key = ...`) is refused too. `[storage.streams.shared]` accepts only `kind = "dht"`: stream
+storage is being redesigned separately, and until then the streams instance keeps the DHT as its shared tier.
+`[storage.encryption.shared]` is refused: `encryption` names the keyring section, not an instance. Any other
+`[storage.<instance>.<sub>]` section has no effect and is named in a WARN at load, and an explicit blank
+`disk_path`/`snapshot_path` is refused (omit the key to use the default).
 
 **Without `[storage.<instance>]`.** A `[storage.content.shared]` section alone is enough: the instance is
 placed as if its own section were absent (for `artifacts` and `content`, the synthesized defaults described
@@ -418,7 +423,8 @@ above, including keyring-tracking encryption). A section for any other name crea
 default paths, as an empty `[storage.<instance>]` section would.
 
 **Credentials.** Secrets never live in the TOML. A key that can only hold a secret (`secret_access_key`,
-`access_key_id`, `session_token`, `password`, ...) is refused with `InlineSecretRejected`, and a
+`access_key_id`, `session_token`, `password`, ...) is refused with `InlineSecretRejected`, in any case and
+also as a dotted key or inside a sub-table, and a
 `credentials` value that is not one of the three forms is refused without echoing it.
 - `"env"` — `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, read once at boot.
 - `"file:<path>"` — the `[default]` profile of a file in the AWS shared-credentials format
@@ -440,8 +446,8 @@ for another region fails the probe.
 
 **What an acknowledged write is worth.** Blocks are written whole, one S3 object per content-addressed
 block (no multipart). A write is acknowledged only after the bucket answered the PUT with 200, and the
-S3 tier counts as durable (it can back a sealed stream range, and blocks may be demoted to it from the
-local disk). **What that 200 is worth is the provider's durability, not Aether's**: AWS S3 documents
+S3 tier counts as durable (blocks may be demoted to it from the local disk; it could back a sealed
+stream range, but the streams instance cannot be configured with S3 in this release). **What that 200 is worth is the provider's durability, not Aether's**: AWS S3 documents
 redundant storage across availability zones for its standard class; an S3-compatible endpoint provides
 whatever its deployment provides, and a single-disk MinIO provides a single disk. A provider outage
 makes the data **unavailable** — reads and writes fail with a retriable `Unavailable` cause, which the
@@ -452,14 +458,21 @@ bucket, another 4xx) fails as `Rejected`, terminal.
 **Consistency the endpoint must provide.** Read-after-write for new keys: a block is immutable and
 content-addressed, so a GET after the PUT returned must see it. AWS S3 provides this since December 2020;
 for an S3-compatible product it must be checked per product and version. The boot probe exercises it
-once; it is not a proof. List-after-write is not used yet; the cluster catalog's anchors (a later phase)
-will need it.
+once; it is not a proof. List-after-write: the encryption guard below lists the prefix to find existing
+blocks, so an endpoint that lists stale results can miss a block written just before; the cluster catalog's
+anchors (a later phase) will need it too.
 
 **Encryption.** With `encrypted = true` (or the keyring-tracking default of `artifacts`/`content`) the S3
 tier is wrapped in `EncryptingStorageTier` exactly like the DHT tier: the bucket holds ciphertext. The
-boot writes the marker `<prefix>.encryption-enabled` (the active key id), and a later boot with no keyring
-over a marked prefix is refused with `EncryptedTierRequiresKeyring`, as for disk and DHT. Unlike the DHT
-marker, this check runs during storage construction: an object store needs no cluster.
+guards follow the local disk, during storage construction (an object store needs no cluster):
+- a boot with no keyring over a prefix carrying the marker `<prefix>.encryption-enabled` is refused with
+  `EncryptedTierRequiresKeyring`;
+- a boot with a keyring over an unmarked prefix that already holds objects is refused with
+  `EnablingOverExistingPlaintext`: those blocks would be stranded as legacy plaintext. There is no migration;
+  use a fresh prefix;
+- over an empty prefix, the marker (the active key id) is written only after every storage instance of the
+  boot has passed its guards (#852): a boot refused by any instance stamps no bucket, so backing the keyring
+  out afterwards boots.
 
 **Garbage collection.** Node-local GC never deletes from the S3 tier, as from the DHT: one node's refcount
 cannot say another node no longer references a block. Explicit deletes (content deletion, stream retention)

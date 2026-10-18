@@ -1,5 +1,5 @@
-### Fixed (2026-10-18 — #249: the built-in S3 client could not talk to an S3-compatible endpoint, and read an outage as absence)
+### Fixed (2026-10-18 — part of #249: the built-in S3 client could not talk to an S3-compatible endpoint, and read an outage as absence)
 - **Every signed request to an endpoint on a non-default port failed with `SignatureDoesNotMatch`.** The SigV4 signer signed the bare host while the HTTP client sent `host:port` (MinIO on `:9000`, a LocalStack edge). It now signs what is sent. [verified: `AwsSigV4SignerTest$CanonicalHost`, `RemoteTierS3IntegrationTest`]
-- **ListObjectsV2 failed with `SignatureDoesNotMatch`**: the query string was signed in request order, not sorted as SigV4 requires. [verified: `AwsSigV4SignerTest$CanonicalQuery`]
+- **ListObjectsV2 failed with `SignatureDoesNotMatch`**: the query string was signed in request order; it is now sorted by encoded name, then value, as SigV4 requires (checked against AWS's published S3 signature examples). [verified: `AwsSigV4SignerTest$CanonicalQuery`]
 - **A GET or HEAD answered 5xx, 403 or `NoSuchBucket` read as "object absent".** Only a 404 for the object now reads as absent; anything else fails the request. [verified: `S3ClientTest$GetObject`, `S3ClientTest$HeadObject`]
 - Virtual-hosted addressing now derives the host from the configured endpoint instead of always using `amazonaws.com`; the AWS factory's URLs are unchanged. Temporary credentials' session token is signed and sent as `x-amz-security-token`.

@@ -193,7 +193,8 @@ public interface StorageInstance {
     ///   2. `refName` is pointed at the block, with [#putRef]'s counting;
     ///   3. [AppendLog#sealedThrough] advances to `toOffset`, which is what lets [AppendLog#truncate] pass it.
     /// A failure at any step leaves the log's seal bound where it was, so its records stay. "Durable" here
-    /// means the local-disk tier: an in-memory DHT tier never counts (#1544), and an instance with no
+    /// means a tier reporting [StorageTier#isDurable] -- the local disk, or an S3 tier built from config (#249): an
+    /// in-memory DHT tier never counts (#1544), and an instance with no
     /// durable tier refuses with [StorageError.NoDurableTier]. The ref itself reaches disk only with the
     /// next metadata snapshot (#1345) -- see [AppendLog]'s class doc.
     default Promise<BlockId> seal(AppendLog log, long fromOffset, long toOffset, String refName, byte[] block) {
