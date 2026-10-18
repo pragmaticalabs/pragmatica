@@ -310,6 +310,9 @@ public interface SystemTags {
         pin(table, 518, "org.pragmatica.aether.http.handler.security.Principal");
         pin(table, 519, "org.pragmatica.aether.http.handler.security.Role");
         pin(table, 520, "org.pragmatica.aether.http.handler.security.SecurityContext");
+        // #2244 F1: the out-of-band not-applied answer to a forwarded request, appended.
+        pin(table, 521, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied");
+        pin(table, 522, "org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason");
         // slice invocation  [base 640]
         // RETIRED 2026-08-27 (#571): `DHTNotification` was deleted — it had zero senders and zero
         // receivers. These two pins STAY, and deleting them would be the bug: the table is what makes

@@ -101,6 +101,10 @@ public interface HttpForwarder {
     @MessageReceiver
     void onHttpForwardResponse(HttpForwardResponse response);
 
+    /// The target refused the request before dispatching it (see [HttpForwardMessage.HttpForwardNotApplied]).
+    @MessageReceiver
+    void onHttpForwardNotApplied(HttpForwardMessage.HttpForwardNotApplied notApplied);
+
     @MessageReceiver
     void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved);
 
@@ -374,12 +378,17 @@ public interface HttpForwarder {
                                                                                  HttpMethod.PUT,
                                                                                  HttpMethod.DELETE);
 
-            /// A hop failure that PROVES the frame never left this node, so re-sending it elsewhere cannot run the
-            /// request twice, whatever its method. Every other hop failure (timeout, remote failure response,
-            /// target departure, undecodable response) may follow a delivery.
+            /// A hop failure that PROVES the request was not applied on the target: the frame never left this node,
+            /// or the target refused it before dispatch. Re-sending it elsewhere cannot run it twice, whatever its
+            /// method. Every other hop failure (timeout, a failure answer from the slice, target departure,
+            /// undecodable response) may follow an application.
             enum Undelivered implements Cause {
                 TARGET_NOT_CONNECTED("Target node not connected; nothing was sent"),
-                SEND_REFUSED("Transport refused the forward before writing it");
+                SEND_REFUSED("Transport refused the forward before writing it"),
+                /// The target answered [HttpForwardMessage.HttpForwardNotApplied]: it received the request but refused
+                /// it before any router or slice code ran (route not found locally, wire budget exhausted on arrival,
+                /// request undecodable). Delivered, but provably not applied, which is what re-sending needs.
+                TARGET_DID_NOT_APPLY("Target refused the forward before dispatching it");
                 private final String message;
                 Undelivered(String message) {
                     this.message = message;
@@ -639,7 +648,7 @@ public interface HttpForwarder {
                                                                       Deadline deadline) {
                 var resultPromise = Promise.<HttpResponseData> promise();
 
-                attemptTaskGroupForward(group, requestContext, requestId, resultPromise, maxForwardRetries, deadline);
+                attemptTaskGroupForward(group, requestContext, requestId, resultPromise, maxForwardRetries, deadline, false);
 
                 return resultPromise;
             }
@@ -649,7 +658,8 @@ public interface HttpForwarder {
                                                  String requestId,
                                                  Promise<HttpResponseData> resultPromise,
                                                  int retriesRemaining,
-                                                 Deadline deadline) {
+                                                 Deadline deadline,
+                                                 boolean delivered) {
                 var ownerResult = taskGroupOwnerResolver.apply(group);
 
                 if (ownerResult.isFailure()) {
@@ -660,6 +670,7 @@ public interface HttpForwarder {
                                          resultPromise,
                                          retriesRemaining,
                                          deadline,
+                                         delivered,
                                          () -> Causes.cause("Task group " + group + " has no owner after retries"));
 
                     return;
@@ -679,6 +690,7 @@ public interface HttpForwarder {
                                          resultPromise,
                                          retriesRemaining,
                                          deadline,
+                                         delivered,
                                          () -> ManagementRouteError.ownerDisconnected(group, owner.id()));
 
                     return;
@@ -692,6 +704,7 @@ public interface HttpForwarder {
                                                                                    resultPromise,
                                                                                    retriesRemaining,
                                                                                    deadline,
+                                                                                   delivered,
                                                                                    cause));
             }
 
@@ -704,6 +717,7 @@ public interface HttpForwarder {
                                                    Promise<HttpResponseData> resultPromise,
                                                    int retriesRemaining,
                                                    Deadline deadline,
+                                                   boolean delivered,
                                                    Cause cause) {
                 log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
                           owner,
@@ -722,6 +736,7 @@ public interface HttpForwarder {
                                      resultPromise,
                                      retriesRemaining,
                                      deadline,
+                                     delivered || cause instanceof ForwardError.OutcomeUnknown,
                                      () -> cause);
             }
 
@@ -731,15 +746,16 @@ public interface HttpForwarder {
                                               Promise<HttpResponseData> resultPromise,
                                               int retriesRemaining,
                                               Deadline deadline,
+                                              boolean delivered,
                                               Supplier<Cause> exhaustionCause) {
                 if (retriesRemaining <= 0) {
-                    resultPromise.fail(exhaustionCause.get());
+                    resultPromise.fail(taskGroupExhausted(delivered, exhaustionCause.get()));
 
                     return;
                 }
 
                 if (deadline.expired(BUDGET_FLOOR)) {
-                    resultPromise.fail(BUDGET_EXHAUSTED);
+                    resultPromise.fail(exhausted(delivered, BUDGET_EXHAUSTED));
 
                     return;
                 }
@@ -751,7 +767,17 @@ public interface HttpForwarder {
                                                               requestId,
                                                               resultPromise,
                                                               retriesRemaining - 1,
-                                                              deadline));
+                                                              deadline,
+                                                              delivered));
+            }
+
+            /// F8: the outer task-group loop remembers whether ANY attempt may have reached an owner. If one did, the
+            /// result is "outcome unknown" (503, know 14a3606152) even when the last attempt never left this node; if
+            /// none did, the last cause stands (an owner that could not be resolved or reached keeps its own error).
+            private static Cause taskGroupExhausted(boolean delivered, Cause last) {
+                return delivered && !(last instanceof ForwardError.OutcomeUnknown)
+                       ? ForwardError.OutcomeUnknown.FACTORY.apply(last)
+                       : last;
             }
 
             /// `budgetShares` counts the attempts an OUTER retry loop still has ahead of it (the
@@ -943,6 +969,23 @@ public interface HttpForwarder {
                                                response.requestId(),
                                                response.correlationId()))
                       .onPresent(pending -> processForwardResponse(pending, response));
+            }
+
+            @Override
+            public void onHttpForwardNotApplied(HttpForwardMessage.HttpForwardNotApplied notApplied) {
+                log.debug("[{}] Target {} did not apply forward correlationId={}: {}",
+                          notApplied.requestId(),
+                          notApplied.sender(),
+                          notApplied.correlationId(),
+                          notApplied.reason());
+                Option.option(pendingForwards.remove(notApplied.correlationId()))
+                      .onPresent(pending -> failNotApplied(pending, notApplied));
+            }
+
+            private void failNotApplied(PendingForward pending, HttpForwardMessage.HttpForwardNotApplied notApplied) {
+                removeFromNodeIndex(notApplied.correlationId(), pending.targetNode());
+                pending.promise()
+                       .fail(Undelivered.TARGET_DID_NOT_APPLY);
             }
 
             @Override

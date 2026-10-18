@@ -9737,6 +9737,8 @@ public interface AetherNode extends ManageableNode {
                                               response -> demuxHttpForwardResponse(response,
                                                                                    appHttpServer,
                                                                                    managementServerRef.get())));
+        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardNotApplied.class,
+                                              notApplied -> demuxHttpForwardNotApplied(notApplied, appHttpServer)));
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
@@ -9780,6 +9782,19 @@ public interface AetherNode extends ManageableNode {
             case APP -> appHttpServer.onHttpForwardResponse(response);
             case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP response for {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
                                                                            response.correlationId());
+        }
+    }
+
+    /// #2244 F1: only the app pipeline's receiver sends a not-applied answer; any other pipeline's is dropped, and
+    /// that pending forward waits out its hop timeout as "may have been applied" (the conservative side).
+    private static void demuxHttpForwardNotApplied(HttpForwardMessage.HttpForwardNotApplied notApplied,
+                                                   AppHttpServer appHttpServer) {
+        switch (notApplied.pipeline()) {
+            case APP -> appHttpServer.onHttpForwardNotApplied(notApplied);
+            case MANAGEMENT, UNKNOWN -> LoggerFactory.getLogger(AetherNode.class)
+                                                     .warn("Dropping forward not-applied answer for {} on pipeline {}: only the app pipeline sends it",
+                                                           notApplied.correlationId(),
+                                                           notApplied.pipeline());
         }
     }
 

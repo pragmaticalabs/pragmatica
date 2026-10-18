@@ -22,6 +22,8 @@ import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
@@ -65,14 +67,18 @@ class AppHttpServerForwardBudgetTest {
     void setUp() {
         network = new RecordingClusterNetwork();
         router = new CountingRouter();
-        server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+        server = server(new StubDeserializer(context("/local/thing")));
+    }
+
+    private AppHttpServer server(Deserializer deserializer) {
+        return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
                                              HttpRouteRegistry.httpRouteRegistry(),
                                              Option.some(new StubRoutePublisher("GET", "/local/", SELF_NODE, router)),
                                              Option.some(network),
                                              Option.some(new StubSerializer()),
-                                             Option.some(new StubDeserializer(context("/local/thing"))),
+                                             Option.some(deserializer),
                                              Option.none(),
                                              Option.none(),
                                              Option.none(),
@@ -80,15 +86,70 @@ class AppHttpServerForwardBudgetTest {
                                              Option.<org.pragmatica.aether.update.DeploymentManager>none());
     }
 
+    /// #2244 F1: a refusal before dispatch is answered out of band as not-applied, so the sender may re-send it.
     @Test
     void onHttpForwardRequest_expiredWireBudget_refusesWithoutDispatch() {
         server.onHttpForwardRequest(forwardRequest("corr-expired", 10));
 
-        var response = (HttpForwardResponse) network.sentMessages().getFirst();
+        var response = (HttpForwardNotApplied) network.sentMessages().getFirst();
 
-        assertThat(response.success()).isFalse();
-        assertThat(new String(response.payload())).contains("budget exhausted");
+        assertThat(response.reason()).isEqualTo(NotAppliedReason.BUDGET_EXHAUSTED);
+        assertThat(response.correlationId()).isEqualTo("corr-expired");
         assertThat(router.handleCount()).as("the router must never run for an abandoned request").isZero();
+    }
+
+    @Test
+    void onHttpForwardRequest_noLocalRoute_answersNotAppliedRouteNotFound() {
+        var unrouted = server(new StubDeserializer(context("/elsewhere/thing")));
+
+        unrouted.onHttpForwardRequest(forwardRequest("corr-unrouted", Deadline.NO_BUDGET));
+
+        var response = (HttpForwardNotApplied) network.sentMessages().getFirst();
+
+        assertThat(response.reason()).isEqualTo(NotAppliedReason.ROUTE_NOT_FOUND);
+        assertThat(router.handleCount()).isZero();
+    }
+
+    @Test
+    void onHttpForwardRequest_undecodableRequest_answersNotAppliedUndecodable() {
+        var undecodable = server(new ThrowingDeserializer());
+
+        undecodable.onHttpForwardRequest(forwardRequest("corr-garbled", Deadline.NO_BUDGET));
+
+        var response = (HttpForwardNotApplied) network.sentMessages().getFirst();
+
+        assertThat(response.reason()).isEqualTo(NotAppliedReason.UNDECODABLE_REQUEST);
+        assertThat(router.handleCount()).isZero();
+    }
+
+    /// A failure AFTER dispatch (the slice ran) stays an ordinary failure answer: the sender must treat it as
+    /// "may have been applied".
+    @Test
+    void onHttpForwardRequest_sliceFailure_answersOrdinaryFailure_notNotApplied() {
+        router.response = org.pragmatica.lang.utils.Causes.cause("slice blew up").promise();
+
+        server.onHttpForwardRequest(forwardRequest("corr-slice-failed", Deadline.NO_BUDGET));
+
+        assertThat(network.sentMessages().getFirst()).isInstanceOf(HttpForwardResponse.class);
+        assertThat(((HttpForwardResponse) network.sentMessages().getFirst()).success()).isFalse();
+    }
+
+    /// #2249 F5: a response over the cluster frame limit is never sent; the ingress gets a small 502 ProblemDetail
+    /// as an ordinary answer instead, and the lane is never handed an oversized frame.
+    @Test
+    void onHttpForwardRequest_responseOverTheFrameLimit_isNotSent_andAnswers502() {
+        network.rejectPayloadsOver = 1024;
+        router.response = Promise.success(HttpResponseData.httpResponseData(200, "x".repeat(4096)));
+
+        server.onHttpForwardRequest(forwardRequest("corr-big", Deadline.NO_BUDGET));
+
+        assertThat(network.sentMessages()).hasSize(1);
+        var response = (HttpForwardResponse) network.sentMessages().getFirst();
+        assertThat(response.success()).isTrue();
+        assertThat(response.payload().length).as("never the oversized payload").isLessThanOrEqualTo(network.rejectPayloadsOver);
+        var answered = StubSerializer.lastEncoded;
+        assertThat(answered.statusCode()).isEqualTo(502);
+        assertThat(new String(answered.body())).contains(AppHttpServerAdapter.RESPONSE_TOO_LARGE_DETAIL);
     }
 
     @Test
@@ -279,6 +340,15 @@ class AppHttpServerForwardBudgetTest {
 
     private static final class RecordingClusterNetwork implements ClusterNetwork {
         private final List<ProtocolMessage> sentMessages = new ArrayList<>();
+        private volatile int rejectPayloadsOver = Integer.MAX_VALUE;
+
+        /// The transport's frame check, scaled down: a forward response whose payload exceeds the bound is refused.
+        @Override
+        public org.pragmatica.lang.Result<Unit> validateOutboundMessage(ProtocolMessage message) {
+            return message instanceof HttpForwardResponse response && response.payload().length > rejectPayloadsOver
+                   ? org.pragmatica.consensus.net.OutboundMessageLimit.Error.TOO_LARGE.result()
+                   : org.pragmatica.lang.Result.unitResult();
+        }
 
         synchronized List<ProtocolMessage> sentMessages() {
             return List.copyOf(sentMessages);
@@ -304,9 +374,25 @@ class AppHttpServerForwardBudgetTest {
         @Override public Option<Server> server() {return Option.none();}
     }
 
+    /// Encodes a response to as many bytes as its body, so the frame check sees the body's size, and remembers it.
     private static final class StubSerializer implements Serializer {
+        private static volatile HttpResponseData lastEncoded;
+
         @Override public <T> void write(ByteBuf byteBuf, T object) {}
-        @Override public <T> byte[] encode(T value) {return new byte[] {2};}
+
+        @Override public <T> byte[] encode(T value) {
+            if (value instanceof HttpResponseData data) {
+                lastEncoded = data;
+                return new byte[Math.max(1, Math.min(data.body().length, 64 * 1024))];
+            }
+            return new byte[] {2};
+        }
+    }
+
+    private static final class ThrowingDeserializer implements Deserializer {
+        @Override public <T> T read(ByteBuf byteBuf) {return null;}
+
+        @Override public <T> T decode(byte[] bytes) {throw new IllegalStateException("garbled frame");}
     }
 
     /// decode() returns the prepared request context regardless of the wire bytes — the codec is

@@ -32,6 +32,8 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.http.forward.HttpForwarder;
@@ -120,6 +122,12 @@ public interface AppHttpServer {
     @MessageReceiver
     @Contract
     void onHttpForwardResponse(HttpForwardResponse response);
+
+    /// A target's answer that a request this node forwarded was refused before dispatch (#2244 F1). The default
+    /// drops it, for implementations that never forward.
+    @MessageReceiver
+    @Contract
+    default void onHttpForwardNotApplied(HttpForwardNotApplied notApplied) {}
 
     @Contract
     void rebuildRouter();
@@ -1564,8 +1572,16 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         Result.<HttpRequestContext, byte[]> lift1(des::decode,
                                                   request.requestData())
-              .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
+              .onFailure(cause -> refuseUndecodable(network, request, cause))
               .onSuccess(httpCtx -> dispatchForwardedRequest(httpCtx, request, network, ser));
+    }
+
+    private void refuseUndecodable(ClusterNetwork network, HttpForwardRequest request, Cause cause) {
+        log.error("Deserialization failed [{}]: {} (cause chain: {})",
+                  request.requestId(),
+                  cause.message(),
+                  HttpError.causeChain(cause));
+        sendForwardNotApplied(network, request, NotAppliedReason.UNDECODABLE_REQUEST);
     }
 
     private void logAndSendForwardError(ClusterNetwork network,
@@ -1595,7 +1611,7 @@ class AppHttpServerAdapter implements AppHttpServer {
             log.warn("[{}] Forwarded request arrived with {} budget remaining; refusing without dispatch",
                      request.requestId(),
                      deadline.remaining());
-            sendForwardError(network, request, "Sender request budget exhausted before dispatch");
+            sendForwardNotApplied(network, request, NotAppliedReason.BUDGET_EXHAUSTED);
 
             return;
         }
@@ -1622,7 +1638,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         if (routerOpt.isEmpty()) {
             log.warn("No local router for forwarded request {} {} [{}]", method, path, request.requestId());
-            sendForwardError(network, request, "Route not found locally");
+            sendForwardNotApplied(network, request, NotAppliedReason.ROUTE_NOT_FOUND);
 
             return;
         }
@@ -1807,16 +1823,66 @@ class AppHttpServerAdapter implements AppHttpServer {
               .onFailure(cause -> logAndSendForwardError(network, request, "Response serialization failed", cause));
     }
 
+    /// #2249 F5: a response that does not fit one cluster frame is never sent. The ingress's frame decoder would
+    /// reject it and close the whole FORWARD lane from this node, failing every other forward on it. The slice has
+    /// already run, so the request is answered, not refused: the ingress receives a small 502 ProblemDetail ("response
+    /// too large to forward") as an ordinary answer, which it neither retries nor re-sends.
     private void sendForwardPayload(ClusterNetwork network, HttpForwardRequest request, byte[] payload) {
-        var forwardResponse = new HttpForwardResponse(selfNodeId,
-                                                      request.correlationId(),
-                                                      request.requestId(),
-                                                      true,
-                                                      payload,
-                                                      request.pipeline());
+        var forwardResponse = forwardSuccess(request, payload);
 
-        network.send(request.sender(), forwardResponse);
+        network.validateOutboundMessage(forwardResponse)
+               .onSuccess(_ -> sendForwardResponse(network, request, forwardResponse))
+               .onFailure(_ -> sendResponseTooLarge(network, request, payload.length));
+    }
+
+    private HttpForwardResponse forwardSuccess(HttpForwardRequest request, byte[] payload) {
+        return new HttpForwardResponse(selfNodeId,
+                                       request.correlationId(),
+                                       request.requestId(),
+                                       true,
+                                       payload,
+                                       request.pipeline());
+    }
+
+    private void sendForwardResponse(ClusterNetwork network, HttpForwardRequest request, HttpForwardResponse response) {
+        network.send(request.sender(), response);
         log.trace("Sent forward success response [{}]", request.requestId());
+    }
+
+    private void sendResponseTooLarge(ClusterNetwork network, HttpForwardRequest request, int payloadBytes) {
+        log.warn("[{}] Forwarded response encodes to {} bytes, over the cluster frame limit; answering 502 instead",
+                 request.requestId(),
+                 payloadBytes);
+        var problem = ProblemDetail.problemDetail(HttpStatus.BAD_GATEWAY,
+                                                  RESPONSE_TOO_LARGE_DETAIL,
+                                                  "",
+                                                  request.requestId());
+
+        JSON_MAPPER.writeAsString(problem)
+                   .map(json -> HttpResponseData.httpResponseData(HttpStatus.BAD_GATEWAY.code(),
+                                                                  Map.of("Content-Type", "application/problem+json"),
+                                                                  json.getBytes(StandardCharsets.UTF_8)))
+                   .flatMap(response -> Result.lift1(serializer.unwrap()::encode, response))
+                   .onSuccess(encoded -> sendForwardResponse(network, request, forwardSuccess(request, encoded)))
+                   .onFailure(cause -> sendForwardError(network, request, RESPONSE_TOO_LARGE_DETAIL));
+    }
+
+    static final String RESPONSE_TOO_LARGE_DETAIL = "Response too large to forward from the node that served it";
+
+    /// #2244 F1: the three refusals this receiver makes BEFORE any router or slice code runs (request undecodable,
+    /// wire budget exhausted on arrival, no local route) prove the request was not applied here, so they are
+    /// answered out of band and the sender may re-send them to another node whatever the method. Everything after
+    /// dispatch (a slice failure, a response that cannot be encoded) goes back as [HttpForwardResponse] with
+    /// `success=false`, which the sender treats as "may have been applied". A host authorization refusal is an
+    /// ordinary 401/403 answer and is not re-sent anyway.
+    private void sendForwardNotApplied(ClusterNetwork network, HttpForwardRequest request, NotAppliedReason reason) {
+        network.send(request.sender(),
+                     new HttpForwardNotApplied(selfNodeId,
+                                               request.correlationId(),
+                                               request.requestId(),
+                                               reason,
+                                               request.pipeline()));
+        log.debug("Sent forward not-applied response [{}]: {}", request.requestId(), reason);
     }
 
     private void sendForwardError(ClusterNetwork network, HttpForwardRequest request, String errorMessage) {
@@ -1835,6 +1901,12 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     public void onHttpForwardResponse(HttpForwardResponse response) {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
+    }
+
+    @Override
+    @Contract
+    public void onHttpForwardNotApplied(HttpForwardNotApplied notApplied) {
+        httpForwarder.onPresent(fwd -> fwd.onHttpForwardNotApplied(notApplied));
     }
 
     @Override
