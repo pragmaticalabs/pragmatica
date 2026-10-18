@@ -320,6 +320,21 @@ class CapacityControlledLifecycleTest {
         assertThat(listings.get()).as("east was never listed for a termination").isEqualTo(1);
     }
 
+    /// The binding-checked overload carries the same contract: it must not list an unrelated, newly committed source.
+    @Test
+    void terminateWithBinding_succeeds_whenANewlyCommittedSourceCannotBeListed() {
+        commitSourceConfig();
+        lifecycle.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        commitOperatorConfig();
+        failingSources.add("east");
+        var node = new NodeId("seeded");
+
+        var terminated = lifecycle.terminateNode(node, SourceName.DEFAULT, "binding").await();
+
+        assertThat(terminated.isSuccess()).as("terminate with binding: %s", terminated).isTrue();
+        assertThat(listings.get()).as("east was never listed for a termination").isEqualTo(1);
+    }
+
     /// A source removed from the configuration and later committed again is listed again: instances created on it in
     /// between were never counted.
     @Test
