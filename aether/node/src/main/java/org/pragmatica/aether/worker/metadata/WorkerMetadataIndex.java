@@ -256,6 +256,7 @@ public final class WorkerMetadataIndex {
             case AetherKey.ScheduledTaskKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.ScheduledTaskPauseKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.ScheduledTaskStateKey entry -> Set.of(artifact(entry.artifact()));
+            case AetherKey.ScheduledTaskClaimKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.TopicSubscriptionKey entry -> Set.of(GLOBAL, artifact(entry.artifact()));
             case AetherKey.StreamRegistrationKey entry -> Set.of(artifact(entry.artifact()),
                                                                  "stream:" + entry.streamName());

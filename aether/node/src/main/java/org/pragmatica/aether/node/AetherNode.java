@@ -150,6 +150,7 @@ import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.InvocationMessage;
+import org.pragmatica.aether.invoke.ScheduledClaimStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
@@ -4005,7 +4006,9 @@ public interface AetherNode extends ManageableNode {
                                                                              clusterNode.leaderManager(),
                                                                              ScheduledTaskManager.DEFAULT_COMPLETION_BOUND,
                                                                              ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),
-                                                                                                                           delegateRouter::route));
+                                                                                                                           delegateRouter::route),
+                                                                             scheduledClaimStore(kvStore,
+                                                                                                 switchableCluster));
         // #273 item 1: resolve the drain hook now the manager exists. `DrainProcedure.initiate` runs this
         // once at the INACTIVE->DRAINING CAS, for every trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED).
         scheduledTaskDrainHookRef.set(scheduledTaskManager::onDrainInitiated);
@@ -7414,6 +7417,27 @@ public interface AetherNode extends ManageableNode {
     /// carries no source TOML), is the built-in default (ON). The section was validated at apply, so a failure here means a document committed
     /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
     /// that cannot be read — and the failure is logged.
+    /// The SINGLE-mode scheduled-task claims live in committed cluster state (#1155): read from this node's applied store, written
+    /// through consensus. A write resolves once applied; one the applier refused (VersionFenced) resolves too, so the scheduler
+    /// confirms every claim write by reading the row back.
+    private static ScheduledClaimStore scheduledClaimStore(KVStore<AetherKey, AetherValue> kvStore,
+                                                           SwitchableClusterNode<KVCommand<AetherKey>> cluster) {
+        return new ScheduledClaimStore() {
+            @Override
+            public Option<AetherValue.ScheduledTaskClaimValue> read(AetherKey.ScheduledTaskClaimKey key) {
+                return kvStore.get(key)
+                              .filter(AetherValue.ScheduledTaskClaimValue.class::isInstance)
+                              .map(AetherValue.ScheduledTaskClaimValue.class::cast);
+            }
+
+            @Override
+            public Promise<Unit> write(KVCommand<AetherKey> command) {
+                return cluster.apply(List.of(command))
+                              .mapToUnit();
+            }
+        };
+    }
+
     private static RollbackConfig committedRollbackPolicy(Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader) {
         return clusterConfigReader.get()
                                   .map(AetherValue.ClusterConfigValue::tomlContent)

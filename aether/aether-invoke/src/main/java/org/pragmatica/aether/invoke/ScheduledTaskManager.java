@@ -100,8 +100,10 @@ public interface ScheduledTaskManager {
     /// deliberate: a lost response (a message the transport dropped, with no node departure to end the wait) means up to this long
     /// of skipped SINGLE-mode fires (each tick a recorded skipped overlap, reported to the operator once per in-flight fire),
     /// in exchange for this guarantee, and no stronger one: a SINGLE-mode fire is not started while THIS leader still has the previous
-    /// fire in flight, up to the bound; past the bound the next fire runs; a leader change mid-fire can overlap (in-flight state is per
-    /// node); the `/inject` route takes no claim.
+    /// fire in flight, up to the bound; past the bound the next fire runs; a SINGLE-mode fire is also claimed in cluster state
+    /// ([ScheduledTaskClaims], #1155), so a leader elected mid-fire does not start a second run while the claim stands, and
+    /// takes the task over only once the claim is stale (older than the bound plus a margin), after which the old run's outcome
+    /// is not recorded and the old run itself, not cancellable, has still executed; the `/inject` route takes no claim.
     TimeSpan DEFAULT_COMPLETION_BOUND = TimeSpan.timeSpan(10).minutes();
 
     /// The bound the manager awaits a remote fire for (see [#DEFAULT_COMPLETION_BOUND]); the trigger route holds the same
@@ -151,6 +153,29 @@ public interface ScheduledTaskManager {
                                                      LeaderManager leaderManager,
                                                      TimeSpan completionBound,
                                                      ScheduledFireObserver observer) {
+        return scheduledTaskManager(registry,
+                                    invoker,
+                                    self,
+                                    stateWriter,
+                                    stateReader,
+                                    leaderManager,
+                                    completionBound,
+                                    observer,
+                                    ScheduledClaimStore.inMemory());
+    }
+
+    /// `claimStore` is where the SINGLE-mode in-flight claims live (#1155): the node's committed cluster state, shared by
+    /// every scheduler, so a leader elected mid-fire sees the previous leader's run. The overloads without it keep the claims
+    /// in a map private to this scheduler, which holds on one node only (the pre-#1155 guarantee).
+    static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
+                                                     SliceInvoker invoker,
+                                                     NodeId self,
+                                                     Consumer<KVCommand<AetherKey>> stateWriter,
+                                                     Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
+                                                     LeaderManager leaderManager,
+                                                     TimeSpan completionBound,
+                                                     ScheduledFireObserver observer,
+                                                     ScheduledClaimStore claimStore) {
         var ctxHolder = new AtomicReference<Context>();
         Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
                                                                                                                               f,
@@ -161,7 +186,8 @@ public interface ScheduledTaskManager {
                                                                                                                               stateReader,
                                                                                                                               leaderManager,
                                                                                                                               completionBound,
-                                                                                                                              observer);
+                                                                                                                              observer,
+                                                                                                                              claimStore);
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
 
@@ -179,7 +205,8 @@ public interface ScheduledTaskManager {
                                                               Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                                                               LeaderManager leaderManager,
                                                               TimeSpan completionBound,
-                                                              ScheduledFireObserver observer) {
+                                                              ScheduledFireObserver observer,
+                                                              ScheduledClaimStore claimStore) {
         var ctx = new Context(fsm,
                               registry,
                               invoker,
@@ -188,7 +215,8 @@ public interface ScheduledTaskManager {
                               stateReader,
                               leaderManager,
                               completionBound,
-                              observer);
+                              observer,
+                              claimStore);
 
         ctxHolder.set(ctx);
 
@@ -210,6 +238,8 @@ public interface ScheduledTaskManager {
         final Map<ScheduledTaskStateKey, ScheduledTaskStateValue> submitted = new ConcurrentHashMap<>();
         final TimeSpan completionBound;
         final ScheduledFireObserver observer;
+        /// The durable half of the SINGLE-mode in-flight guard: one fire per task across leader changes (#1155).
+        final ScheduledTaskClaims claims;
 
         static final String FIRE_LEADERSHIP_LOST = "leadership-lost";
 
@@ -234,7 +264,8 @@ public interface ScheduledTaskManager {
                 Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                 LeaderManager leaderManager,
                 TimeSpan completionBound,
-                ScheduledFireObserver observer) {
+                ScheduledFireObserver observer,
+                ScheduledClaimStore claimStore) {
             this.fsm = fsm;
             this.registry = registry;
             this.invoker = invoker;
@@ -244,6 +275,11 @@ public interface ScheduledTaskManager {
             this.leaderManager = leaderManager;
             this.completionBound = completionBound;
             this.observer = observer;
+            this.claims = new ScheduledTaskClaims(claimStore,
+                                                  self,
+                                                  leaderManager,
+                                                  completionBound,
+                                                  System::currentTimeMillis);
             this.dormant = new Dormant(this);
             this.following = new Following(this);
             this.leading = new Leading(this);
@@ -600,7 +636,7 @@ public interface ScheduledTaskManager {
 
             LongSupplier nextFireAt = () -> System.currentTimeMillis() + interval.millis();
 
-            executeTask(ctx, task, nextFireAt).onResultRun(() -> ctx.release(key));
+            fire(ctx, task, nextFireAt).onResultRun(() -> ctx.release(key));
         }
 
         /// ALL-mode runs independently on every node (`Following` + `Leading`), so a shared,
@@ -689,7 +725,7 @@ public interface ScheduledTaskManager {
 
             LongSupplier nextFireAt = () -> nextCronFireAt(cron);
 
-            executeTask(ctx, task, nextFireAt).onResultRun(() -> {
+            fire(ctx, task, nextFireAt).onResultRun(() -> {
                 ctx.release(key);
                 if (ctx.activeTimers.containsKey(key)) {
                     scheduleNextCronFire(ctx, key, task, cron);
@@ -717,28 +753,80 @@ public interface ScheduledTaskManager {
                        .or(0L);
         }
 
-        private static Promise<Unit> executeTask(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
+        /// A fire of a task this node has already claimed in process (`ctx.inFlight`): the durable claim is taken before the
+        /// run (#1155). When another holder's claim stands, the tick is a skipped overlap, recorded like the in-process one;
+        /// otherwise the task runs, and the claim is given up when it settles.
+        private static Promise<Unit> fire(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
+            return ctx.claims.acquire(task)
+                             .flatMap(claim -> claim.map(ticket -> executeTask(ctx, task, ticket, nextFireAtSupplier))
+                                                    .or(() -> skippedForClaim(ctx, task)));
+        }
+
+        private static Promise<Unit> skippedForClaim(Context ctx, ScheduledTask task) {
+            recordSkippedOverlap(ctx, task);
+
+            return Promise.success(Unit.unit());
+        }
+
+        private static Promise<Unit> executeTask(Context ctx,
+                                                 ScheduledTask task,
+                                                 ScheduledTaskClaims.Ticket ticket,
+                                                 LongSupplier nextFireAtSupplier) {
             var firedAt = System.currentTimeMillis();
             var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+            var invocation = ctx.invoker.invokeAwaitingCompletion(task.artifact(),
+                                                                  task.methodName(),
+                                                                  Unit.unit(),
+                                                                  ctx.completionBound)
+                                        .onSuccess(_ -> ctx.noteOutcome(key, "executed"))
+                                        .onFailure(cause -> ctx.noteOutcome(key,
+                                                                            cause instanceof SliceInvokerError.CompletionUnknown
+                                                                            ? "unknown"
+                                                                            : "failed"));
 
-            return ctx.invoker.invokeAwaitingCompletion(task.artifact(),
-                                                        task.methodName(),
-                                                        Unit.unit(),
-                                                        ctx.completionBound)
-                              .onSuccess(_ -> ctx.noteOutcome(key, "executed"))
-                              .onFailure(cause -> ctx.noteOutcome(key,
-                                                                  cause instanceof SliceInvokerError.CompletionUnknown
-                                                                  ? "unknown"
-                                                                  : "failed"))
-                              .onSuccess(_ -> writeSuccessState(ctx,
-                                                                task,
-                                                                nextFireAtSupplier.getAsLong(),
-                                                                firedAt))
-                              .onFailure(cause -> recordFailedFire(ctx,
-                                                                   task,
-                                                                   cause,
-                                                                   nextFireAtSupplier.getAsLong(),
-                                                                   firedAt));
+            return settleThroughClaim(ctx, task, ticket, invocation, nextFireAtSupplier, firedAt);
+        }
+
+        /// The fire's outcome is recorded only if its claim release lands: a release the applier refused means another leader
+        /// overrode the claim while this run was going, and that leader's run is the recorded one. The returned promise settles
+        /// as the invocation did, after the release, so the in-process claim is not given up before the durable one.
+        private static Promise<Unit> settleThroughClaim(Context ctx,
+                                                        ScheduledTask task,
+                                                        ScheduledTaskClaims.Ticket ticket,
+                                                        Promise<Unit> invocation,
+                                                        LongSupplier nextFireAtSupplier,
+                                                        long firedAt) {
+            var settled = Promise.<Unit> promise();
+
+            invocation.onResult(result -> ticket.release()
+                                                .onSuccess(landed -> recordWhenLanded(ctx,
+                                                                                      task,
+                                                                                      result,
+                                                                                      landed,
+                                                                                      nextFireAtSupplier,
+                                                                                      firedAt))
+                                                .onResultRun(() -> settled.resolve(result)));
+
+            return settled;
+        }
+
+        private static void recordWhenLanded(Context ctx,
+                                             ScheduledTask task,
+                                             Result<Unit> result,
+                                             boolean landed,
+                                             LongSupplier nextFireAtSupplier,
+                                             long firedAt) {
+            if (landed) {
+                result.onSuccess(_ -> writeSuccessState(ctx,
+                                                        task,
+                                                        nextFireAtSupplier.getAsLong(),
+                                                        firedAt))
+                      .onFailure(cause -> recordFailedFire(ctx,
+                                                           task,
+                                                           cause,
+                                                           nextFireAtSupplier.getAsLong(),
+                                                           firedAt));
+            }
         }
 
         /// A fire that ended without a success. A timeout of a REMOTE fire ([SliceInvokerError.CompletionUnknown]) says
@@ -888,6 +976,8 @@ public interface ScheduledTaskManager {
                                    ScheduledTaskStateKey.scheduledTaskStateKey(key.configSection(),
                                                                                key.artifact(),
                                                                                key.methodName()));
+                // The SINGLE-mode claim row is the leader's, and goes with the task (#1155).
+                ctx.claims.forget(key);
             }
         }
 

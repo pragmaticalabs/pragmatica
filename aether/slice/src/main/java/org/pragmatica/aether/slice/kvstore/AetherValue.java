@@ -986,6 +986,66 @@ public sealed interface AetherValue {
         }
     }
 
+    /// The durable in-flight claim of one SINGLE-mode scheduled task, stored under [AetherKey.ScheduledTaskClaimKey] (#1155).
+    ///
+    /// A fire is claimed before it runs and the claim is given up when the fire settles. `held` is true from the claim to
+    /// the release; a released row stays (it is the chain the fence runs on) until its task is removed. `token` names ONE
+    /// claim: a node that restarts, or is elected again, never owns the claim its predecessor took, whatever `holder` says.
+    /// `term` is the leader epoch the claimant held and `claimedAt` its wall clock; both are for the operator and for the
+    /// stale test, neither is compared for ownership.
+    ///
+    /// **Fence.** The row is [VersionFenced]: every write is the immediate successor of the committed one, so of two writers
+    /// that read the same row, one commits and the other is refused by the applier. That is what bounds the duplicate: a
+    /// leader that overrides a stale claim writes the successor, and the old holder's release, built on the version it
+    /// claimed, is no longer the successor and is refused. A refused write mutates nothing and emits no notification, so
+    /// each writer confirms by re-reading the committed row ([VersionFenced]'s own protocol).
+    ///
+    /// **Stale test.** A held claim is stale once `now - claimedAt` reaches the caller's bound ([#isStale]); the bound is the
+    /// caller's, because the claim cannot know the task's interval. The comparison mixes the claimant's clock with the
+    /// evaluator's: clock skew between nodes moves the moment a claim reads as stale by the skew, nothing more.
+    record ScheduledTaskClaimValue(NodeId holder, long term, String token, long claimedAt, boolean held, long version) implements AetherValue, VersionFenced {
+        /// A new claim over `prior` (a released claim, a stale one, or none): the immediate successor of `prior`.
+        public static ScheduledTaskClaimValue claimed(Option<ScheduledTaskClaimValue> prior,
+                                                      NodeId holder,
+                                                      long term,
+                                                      String token,
+                                                      long now) {
+            return new ScheduledTaskClaimValue(holder, term, token, now, true, nextVersion(prior));
+        }
+
+        /// The version a write over `prior` takes: the first write is 1, every later one the successor.
+        public static long nextVersion(Option<ScheduledTaskClaimValue> prior) {
+            return prior.map(ScheduledTaskClaimValue::version)
+                        .or(0L) + 1;
+        }
+
+        @Override
+        public long fenceVersion() {
+            return version;
+        }
+
+        /// This claim given up: the immediate successor, the same claimant, no longer held.
+        public ScheduledTaskClaimValue released() {
+            return new ScheduledTaskClaimValue(holder, term, token, claimedAt, false, version + 1);
+        }
+
+        /// Whether this row is the claim named by `claimToken`, held.
+        public boolean heldBy(String claimToken) {
+            return held && token.equals(claimToken);
+        }
+
+        /// Whether this row is the claim named by `claimToken`, given up.
+        public boolean releasedBy(String claimToken) {
+            return ! held && token.equals(claimToken);
+        }
+
+        /// Whether a held claim is older than `staleAfterMillis` at `now`: its holder has not given it up in that time and
+        /// is taken to be gone. A released claim is never stale, it is free.
+        public boolean isStale(long now, long staleAfterMillis) {
+            return held && now - claimedAt >= staleAfterMillis;
+        }
+    }
+
     record VersionRoutingValue(Version oldVersion, Version newVersion, int newWeight, int oldWeight, long updatedAt) implements AetherValue {
         public static VersionRoutingValue versionRoutingValue(Version oldVersion, Version newVersion) {
             return new VersionRoutingValue(oldVersion, newVersion, 0, 1, System.currentTimeMillis());

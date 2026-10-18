@@ -838,6 +838,51 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// Runtime: the durable in-flight claim of one SINGLE-mode scheduled task (#1155). The leader writes it before a
+    /// fire and gives it up when the fire settles, so a leader elected mid-fire finds the previous leader's run and does
+    /// not start a second one; its value is [org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue].
+    /// One row per SINGLE-mode task, never per fire, and it goes with the task. The identity is the task's
+    /// `(configSection, artifact, method)`, rendered like [ScheduledTaskKey]'s under its own prefix. There is no
+    /// ALL-mode claim: an ALL-mode fire is per node and never contends across nodes.
+    record ScheduledTaskClaimKey(String configSection, Artifact artifact, MethodName methodName) implements RuntimeKey {
+        private static final String PREFIX = "scheduled-task-claim/";
+
+        @Override
+        public String asString() {
+            return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ScheduledTaskClaimKey scheduledTaskClaimKey(String configSection,
+                                                                  Artifact artifact,
+                                                                  MethodName methodName) {
+            return new ScheduledTaskClaimKey(configSection, artifact, methodName);
+        }
+
+        public static ScheduledTaskClaimKey scheduledTaskClaimKey(ScheduledTaskKey task) {
+            return new ScheduledTaskClaimKey(task.configSection(), task.artifact(), task.methodName());
+        }
+
+        /// The task this claim guards.
+        public ScheduledTaskKey task() {
+            return ScheduledTaskKey.scheduledTaskKey(configSection, artifact, methodName);
+        }
+
+        public static Result<ScheduledTaskClaimKey> scheduledTaskClaimKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SCHEDULED_TASK_CLAIM_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return ScheduledTaskKey.scheduledTaskKey(ScheduledTaskKey.PREFIX + key.substring(PREFIX.length()))
+                                   .mapError(_ -> SCHEDULED_TASK_CLAIM_KEY_FORMAT_ERROR.apply(key))
+                                   .map(ScheduledTaskClaimKey::scheduledTaskClaimKey);
+        }
+    }
+
     /// Phase 1 step J — observability atom mirroring the in-process `JOIN_DEADLINE`
     /// scheduler entry the leader's `MembershipFsm` arms when a peer enters JOINING.
     /// Replicated via Rabia so a new leader on takeover can reconstruct the deadline from
@@ -1417,6 +1462,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> SCHEDULED_TASK_PAUSE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-pause key format: %s");
 
     Fn1<Cause, String> SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-state key format: %s");
+
+    Fn1<Cause, String> SCHEDULED_TASK_CLAIM_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-claim key format: %s");
 
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
 
