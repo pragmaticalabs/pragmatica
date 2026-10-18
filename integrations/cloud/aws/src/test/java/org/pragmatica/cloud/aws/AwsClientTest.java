@@ -884,8 +884,11 @@ class AwsClientTest {
         var token = nextToken == null ? "" : "<nextToken>" + nextToken + "</nextToken>";
 
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><DescribeInstancesResponse xmlns=\"http://ec2.amazonaws.com/doc/2016-11-15/\">"
-               + "<reservationSet><item><reservationId>r-1</reservationId><instancesSet>" + items
-               + "</instancesSet></item></reservationSet>" + token + "</DescribeInstancesResponse>";
+               + (instanceIds.length == 0
+                  ? "<reservationSet/>"
+                  : "<reservationSet><item><reservationId>r-1</reservationId><instancesSet>" + items
+                    + "</instancesSet></item></reservationSet>")
+               + token + "</DescribeInstancesResponse>";
     }
 
     /// The numeric suffix of the `NextToken=t<N>` in a request body; 0 for the first request (no token).
