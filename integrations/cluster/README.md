@@ -22,7 +22,7 @@ Batch ids are content-derived: `StateMachine.createBatch` hashes the serializer-
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>cluster</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
 

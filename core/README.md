@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-Apache%202-blue.svg)
 ![Java](https://img.shields.io/badge/Java-25-orange.svg)
-![Maven Central](https://img.shields.io/badge/Maven-1.0.0--rc4-blue.svg)
+![Maven Central](https://img.shields.io/badge/Maven-1.0.0--rc5-blue.svg)
 
 ## Modern Functional Programming for Java 25
 
@@ -89,20 +89,20 @@ Pragmatica Core targets Java 25 and leverages modern language features:
 
 ### Maven Configuration
 
-Once 1.0.0-rc4 is published to Maven Central, add the dependency to your `pom.xml`:
+Once 1.0.0-rc5 is published to Maven Central, add the dependency to your `pom.xml`:
 
 ```xml
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
 
 For Gradle users:
 
 ```gradle
-implementation 'org.pragmatica-lite:core:1.0.0-rc4'
+implementation 'org.pragmatica-lite:core:1.0.0-rc5'
 ```
 
 ### Your First Pragmatica Application
@@ -236,7 +236,7 @@ Serialize and deserialize Result, Option, and Promise types:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jackson</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
 
@@ -264,7 +264,7 @@ Promise-based JPA operations with typed errors:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jpa</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
 
@@ -299,7 +299,7 @@ Monitor Result, Option, and Promise operations:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>micrometer</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
 

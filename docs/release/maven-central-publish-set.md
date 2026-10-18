@@ -8,7 +8,7 @@ unpublished until somebody chooses otherwise.
 - **Only `skipPublishing` excludes a module.** `maven.deploy.skip` is ignored by the Central plugin (#1988); the root keeps it `true`
   only so a module the plugin is not bound to does not run the default deploy.
 - **The set is the closure of what a user's generated project needs.** Seeds: the six template dependencies, `jbct-maven-plugin`,
-  `pg-codegen` and `utility`; plus every module they reach at compile/runtime scope and every parent pom.
+  `pg-codegen` and `utility`, plus the libraries that applications built on Pragmatica consume directly (`http-server`, `postgres-async`); plus every module they reach at compile/runtime scope and every parent pom.
 - **Gates.** `tools/check-publish-closure.py` fails when a published module depends (compile/runtime, not optional) on an unpublished
   one or has an unpublished parent. It runs in CI, and first in a `-DperformRelease=true` build (the `release` profile runs it at
   `validate`). The same script checks this table against the poms (`--check-table`), so a table that drifts from the poms fails CI.
@@ -44,7 +44,7 @@ sink on `127.0.0.1`, so the plugin built and sent its own bundle; the bundle was
 | `checksums=required` | 408 | 15.8 MB / 14.5 MB | 2 (816 files; bytes allow 4) |
 
 612 = 102 files built (33 poms, 23 jars, 23 sources jars, 23 javadoc jars) + 102 `.asc` + 408 checksums (the plugin writes md5, sha1,
-sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. Javadoc is built with
+sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. The five modules added for rc5 (four jars, one parent pom) add 102 entries, so a release is about 714. Javadoc is built with
 `--no-fonts`: a javadoc jar was about 4.1 MB for the web fonts alone and is now about 0.1 MB for a small module, 10.4 MB for all 23.
 The limits are cumulative per month, so a second release in the same month needs `checksums=required` or a smaller set.
 `[unverified: whether Central counts the checksums it asks the plugin for; only Sonatype support can say]`.
@@ -157,12 +157,12 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/config/config-service` | `org.pragmatica-lite:config-service` | jar | publish | compile/runtime dependency of slice-api |
 | `integrations/config/toml` | `org.pragmatica-lite:toml` | jar | publish | compile/runtime dependency of jbct-core |
 | `integrations/consensus` | `org.pragmatica-lite:consensus` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
-| `integrations/db` | `org.pragmatica-lite:db` | pom | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/db` | `org.pragmatica-lite:db` | pom | publish | closure: parent of `postgres-async` (its own entry only, `<inherited>false</inherited>`) |
 | `integrations/db/jdbc` | `org.pragmatica-lite:jdbc` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/db/jooq` | `org.pragmatica-lite:jooq` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/db/jooq-r2dbc` | `org.pragmatica-lite:jooq-r2dbc` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/db/jpa` | `org.pragmatica-lite:jpa` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
-| `integrations/db/postgres-async` | `org.pragmatica-lite:postgres-async` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/db/postgres-async` | `org.pragmatica-lite:postgres-async` | jar | publish | seed: a library that applications built on Pragmatica consume directly (published rc1-rc3, dropped in rc4 by mistake) |
 | `integrations/db/postgres-r2dbc-adapter` | `org.pragmatica-lite:postgres-r2dbc-adapter` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/db/r2dbc` | `org.pragmatica-lite:r2dbc` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/dht` | `org.pragmatica-lite:dht` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
@@ -176,14 +176,14 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/net` | `org.pragmatica-lite:net` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of http-client) |
 | `integrations/net/dns` | `org.pragmatica-lite:dns` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net/http-client` | `org.pragmatica-lite:http-client` | jar | publish | compile/runtime dependency of jbct-core |
-| `integrations/net/http-server` | `org.pragmatica-lite:http-server` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/net/http-server` | `org.pragmatica-lite:http-server` | jar | publish | seed: a library that applications built on Pragmatica consume directly (published rc1-rc3, dropped in rc4 by mistake) |
 | `integrations/net/http-types` | `org.pragmatica-lite:http-types` | jar | publish | compile/runtime dependency of http-routing |
 | `integrations/net/smtp` | `org.pragmatica-lite:smtp` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
-| `integrations/net/tcp` | `org.pragmatica-lite:tcp` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/net/tcp` | `org.pragmatica-lite:tcp` | jar | publish | closure: compile dependency of `http-server` |
 | `integrations/serialization` | `org.pragmatica-lite:serialization` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of serialization-api) |
 | `integrations/serialization/api` | `org.pragmatica-lite:serialization-api` | jar | publish | compile/runtime dependency of slice-api |
 | `integrations/serialization/codec-processor` | `org.pragmatica-lite:serialization-codec-processor` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
-| `integrations/statemachine` | `org.pragmatica-lite:statemachine` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/statemachine` | `org.pragmatica-lite:statemachine` | jar | publish | closure: compile dependency of `tcp` |
 | `integrations/storage` | `org.pragmatica-lite:storage` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/swim` | `org.pragmatica-lite:swim` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/utility` | `org.pragmatica-lite:utility` | jar | publish | used by the in-repo example slices (banking, ecommerce, step-composition) as a provided dependency; not in the template. Kept: cheap (8 files) and a documented sample dependency |
@@ -232,4 +232,4 @@ The limits are cumulative per month, so a second release in the same month needs
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-33 modules publish, 144 skip (177 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+38 modules publish, 139 skip (177 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
