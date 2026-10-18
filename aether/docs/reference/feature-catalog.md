@@ -235,7 +235,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 166 | Generic state machine | Complete | Reusable state machine framework (`integrations/statemachine`). StateMachine, StateMachineDefinition, InMemoryStateMachine, Transition. 7 classes, tests |
-| 167 | DNS client | Complete | Async DNS resolution (`integrations/net/dns`). DnsClient, DomainNameResolver, DomainName, DomainAddress, InetUtils. 6 classes, 5 tests |
+| 167 | DNS client | Removed | The `integrations/net/dns` module had no consumer and was deleted; name resolution uses Netty's `DnsNameResolver` |
 | 168 | TOML parser/writer | Complete | Standalone TOML parser and writer (`integrations/config/toml`). TomlParser, TomlWriter, TomlDocument, TomlError |
 | 169 | KSUID generator | Complete | K-Sortable Unique IDs (`integrations/utility`). KSUID, IdGenerator, RingBuffer, HierarchyScanner |
 | 170 | Core parse library | Complete | Type-safe parsers for domain primitives (`core/parse`). Text, Number, TimeSpan, DateTime, DataSize, Network, I18n. 7 parsers, 7 test classes |
