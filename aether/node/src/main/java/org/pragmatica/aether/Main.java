@@ -846,14 +846,14 @@ public record Main(String[] args) {
     /// bound on that stop has to be armed BEFORE `start()` is awaited. Production only; in-JVM hosts own their nodes.
     @Contract
     private static void armOwnRestoreWatchdog(AetherNode node) {
-        ownRestoreWatchdog(node::ownRestoreFailure,
-                           Main::flushLogs,
-                           Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
+        ownRestoreWatchdog(node::ownRestoreFailure, Main::flushLogs, Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
     }
 
     /// The production watchdog with the flush and halt injected, so a test can read its bound and drive its exit
     /// without killing the JVM. Package-private for that reason only.
-    static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> failure, Runnable flushLogs, IntConsumer haltFn) {
+    static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> failure,
+                                                 Runnable flushLogs,
+                                                 IntConsumer haltFn) {
         return OwnRestoreWatchdog.ownRestoreWatchdog(failure,
                                                      Main::monotonicMillis,
                                                      OwnRestoreWatchdog.BOUND,
