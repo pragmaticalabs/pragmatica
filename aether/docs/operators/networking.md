@@ -89,14 +89,14 @@ Each connection carries eight lanes, one QUIC stream per lane, all long-lived (o
 
 | Lane index | Lane | Purpose |
 |------------|------|---------|
-| 0 | CONSENSUS | Rabia proposals, votes, decisions, batches; forwarded apply requests |
+| 0 | CONSENSUS | Rabia proposals, votes, decisions, batches, `SyncRejected`; forwarded apply requests |
 | 1 | KV | Community placement, governor authority and community health messages; the KV-sync snapshot request and response |
 | 2 | METRICS | ClusterSync ping/pong, deployment and source metrics |
 | 3 | INVOKE | Cross-node slice invocation requests and responses |
 | 4 | FORWARD | HTTP, entity and stream forwards, replication |
 | 5 | DHT | DHT puts, gets, removes, digests, migration |
 | 6 | CONTROL | Hello handshake, KeepAlive, node discovery, leader pre-vote, worker metadata manifests |
-| 7 | SYNC | Rabia state synchronization, worker metadata chunks |
+| 7 | SYNC | Rabia `SyncRequest` and `SyncResponse`, worker metadata chunks |
 
 Consensus messages (lane 0) cannot be starved by bulk transfers on other streams
 thanks to QUIC's per-stream flow control.

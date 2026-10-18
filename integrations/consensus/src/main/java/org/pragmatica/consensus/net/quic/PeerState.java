@@ -582,7 +582,8 @@ public final class PeerState {
     /// `QuicClusterNetwork.inboundReadmitAllowed`). Restores the peer to a dial-eligible / attach-eligible
     /// state so a transient-partition survivor reconnects; the SWIM probe-ack remains the sole ALIVE
     /// authority, so re-admission here is NOT resurrection-to-ALIVE. A different process presenting the
-    /// NodeId stays refused by the boot-token gate; only the same process can come back this way. No-op (returns
+    /// NodeId (a different non-zero boot token) is refused by the boot-token gate, which then retires the NodeId;
+    /// only the same process can come back this way. No-op (returns
     /// false) when the peer is not REMOVED. Offline buffer stays cleared (authoritativeRemove cleared
     /// it). Resets the upstream-announce provenance: the REMOVE was emitted, so the next attach is a
     /// fresh ACCEPTED/ADD, not a RECONNECT.

@@ -61,10 +61,11 @@ Aether is designed around a specific failure model — **terminal removal**:
 
 > **A dead NodeId never returns as a different process.** When a node leaves the
 > presence-derived membership view, the cluster terminally removes that NodeId. A new
-> process presenting it (a restart under the same identity) carries a different boot token
-> and is refused by every observer that has seen the first token, for that observer's
-> lifetime. Only the same process the cluster wrongly declared dead (a false-dead survivor,
-> a healed partition) can be re-admitted: by an authenticated Hello that the membership view
+> process presenting it (a restart under the same identity) carries a different non-zero boot token
+> and is refused by every observer that has seen the first token; once an observer sees the conflict
+> it retires the NodeId for that observer's lifetime, for both processes. A process that presents no
+> boot token (`0`) is not discriminated. Before any conflict, the same process the cluster wrongly
+> declared dead (a false-dead survivor, a healed partition) can be re-admitted: by an authenticated Hello that the membership view
 > or SWIM corroborates, or once its tombstone is at least 30 s old. Recovery from a real
 > failure is *always* a brand-new node with a new ULID NodeId, minted by
 > CTM auto-heal on a fresh host. Each VM (or pod, or systemd-managed host) hosts exactly

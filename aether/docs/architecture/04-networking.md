@@ -75,7 +75,7 @@ sequenceDiagram
 - Peer list configured at startup (no external service registry)
 - Automatic reconnection: a link found dead is evicted and re-dialed with a short per-peer backoff, and a 5 s reconciler tick re-dials any configured peer that is not connected, with a per-peer exponential backoff and jitter. QUIC 0-RTT early data is not configured.
 - A peer's link is dead-detected by write failure or by the receipt sweep: the QUIC idle timeout is disabled, so a link that stays open but receives no frame on any lane for 8 ping intervals is evicted. The KeepAlive on CONTROL is what keeps a quiet healthy link from being evicted.
-- Backpressure is per lane stream. A write to a stream that is not writable (Netty write watermark, 256 KiB low, 1 MiB high) is refused on every lane except CONSENSUS and DHT; on those two the frame is retried up to 200 times at 25 ms and, if the retries run out, dropped with a debug log line. A write reported as sent means the transport accepted it locally: there is no acknowledgement, and delivery is earned by the layer above (Rabia retransmit, the DHT quorum collector, caller deadlines).
+- Backpressure is per lane stream. The CONSENSUS lane stream has a Netty write watermark of 256 KiB low and 1 MiB high; other lanes use Netty's default. A write to a stream that is not writable is refused on every lane except CONSENSUS and DHT; a CONSENSUS frame, and a DHT frame to a peer whose channel is still active, is retried up to 200 times at 25 ms and, if the retries run out, dropped with a debug log line. A write reported as sent means the transport accepted it locally: there is no acknowledgement, and delivery is earned by the layer above (Rabia retransmit, the DHT quorum collector, caller deadlines).
 - Frames for a peer that is not connected go to a per-peer offline buffer of at most 10,000 frames, each held at most the offline-buffer cap (30 s by default, taken from the cluster timeout configuration); when the buffer is full the oldest frame is dropped.
 - Automatic certificate rotation (60% validity trigger, atomic SSL context swap)
 - SWIM health detection on separate UDP port (cluster port + 100)
@@ -90,7 +90,7 @@ graph TB
     Check -->|"No"| NoQuorum["QUORUM LOST<br/>Consensus paused,<br/>state persisted"]
 ```
 
-The transport does not decide quorum. `QuicClusterNetwork` counts its CONNECTED and EVICTED peers only for log lines; whether quorum is present is decided by the membership layer (`QuorumLossDetector`) and the Rabia engine. A 5-node cluster tolerates 2 simultaneous failures. When quorum is lost, the engine pauses and rejects writes with `QuorumPaused`, and a node on the minority side self-fences (`Runtime.halt(2)`) after the split timeout; consensus state is memory-only, with snapshot-only persistence. See [Guarantees](../reference/guarantees.md) section 3 and [Consensus](01-consensus.md).
+The transport does not decide quorum. `QuicClusterNetwork` counts its CONNECTED and EVICTED peers for log lines and for the connected-peer count the topology API reports; whether quorum is present is decided by the membership layer (`QuorumLossDetector`) and the Rabia engine. A 5-node cluster tolerates 2 simultaneous failures. When quorum is lost, the engine pauses and rejects writes with `QuorumPaused`, and a node on the minority side self-fences (`Runtime.halt(2)`) after the split timeout; consensus state is memory-only, with snapshot-only persistence. See [Guarantees](../reference/guarantees.md) section 3 and [Consensus](01-consensus.md).
 
 ## MessageRouter
 
@@ -98,14 +98,14 @@ Multiplexes all inter-node messages over QUIC streams. A connection carries eigh
 
 | Lane | Index | Carries |
 |------|-------|---------|
-| CONSENSUS | 0 | Rabia proposals, votes, decisions, batches; forwarded apply requests |
+| CONSENSUS | 0 | Rabia proposals, votes, decisions, batches, `SyncRejected`; forwarded apply requests |
 | KV | 1 | Community placement, governor authority and community health messages; the KV-sync snapshot request and response |
 | METRICS | 2 | ClusterSync ping/pong, deployment and source metrics |
 | INVOKE | 3 | Cross-node slice invocation requests and responses |
 | FORWARD | 4 | HTTP, entity and stream forwards, replication |
 | DHT | 5 | DHT puts, gets, removes, digests, migration |
 | CONTROL | 6 | Hello, KeepAlive, node discovery, leader pre-vote, worker metadata manifests |
-| SYNC | 7 | Rabia state synchronization, worker metadata chunks |
+| SYNC | 7 | Rabia `SyncRequest` and `SyncResponse`, worker metadata chunks |
 
 Each message type is routed to its handler:
 
