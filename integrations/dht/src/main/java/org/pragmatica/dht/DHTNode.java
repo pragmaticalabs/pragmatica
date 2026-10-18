@@ -31,6 +31,7 @@ import java.util.zip.CRC32;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTMessage.Readiness;
+import org.pragmatica.dht.storage.KeyStamp;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -43,6 +44,9 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 /// Local DHT node that handles storage operations.
@@ -136,6 +140,8 @@ public final class DHTNode {
     private final ConcurrentHashMap<Integer, Long> agreedAt = new ConcurrentHashMap<>();
     private final AtomicLong collectedTombstones = new AtomicLong();
     private final AtomicLong purgedStrayPartitions = new AtomicLong();
+    /// The repair plane's budget, peer versions, divergence and counters (A6).
+    private final RepairPlane repair = RepairPlane.repairPlane();
 
     /// The default tombstone retention (owner ruling 2026-10-03, #1777): one hour.
     public static final TimeSpan DEFAULT_TOMBSTONE_RETENTION = TimeSpan.timeSpan(1).hours();
@@ -205,6 +211,17 @@ public final class DHTNode {
     /// Get the storage engine (for migration and anti-entropy operations).
     public StorageEngine storage() {
         return storage;
+    }
+
+    /// The repair plane's budget, peer versions, divergence and counters (A6).
+    public RepairPlane repair() {
+        return repair;
+    }
+
+    /// Partitions this node replicates that are not known to be whole here (A6, a gauge): still catching up, or
+    /// diverged from a co-replica and not yet repaired. While non-zero, losing a co-replica may lose entries.
+    public int repairDeficitPartitions() {
+        return repair.deficit(pendingPartitions());
     }
 
     /// The replication this node currently places keys with (see [#resolveReplication]). While a replication change is
@@ -1037,10 +1054,15 @@ public final class DHTNode {
     /// node's [Readiness] for the partition so a catching-up requester can tell an authoritative source
     /// from another catching-up replica (#1777 track 2). A digest that could not be computed is reported
     /// [Readiness#UNKNOWN] — never as an authoritative empty partition.
+    ///
+    /// This is the LEGACY digest, over values (A6): only an older node asks for it, so its sender is recorded as
+    /// speaking the legacy protocol ([RepairPlane]).
     @Contract
     public void handleDigestRequest(DHTMessage.DigestRequest request,
                                     Consumer<DHTMessage.DigestResponse> responseHandler) {
         noteHeardFrom(request.sender());
+        repair.noteLegacyPeer(request.sender());
+        repair.noteLegacyExchange();
         var partition = Partition.at(request.partitionStart());
         var readiness = readiness(partition);
 
@@ -1049,6 +1071,28 @@ public final class DHTNode {
                                                                                           nodeId,
                                                                                           digestOf(entries),
                                                                                           readiness)))
+               .onFailure(_ -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
+                                                                                    nodeId,
+                                                                                    new byte[0],
+                                                                                    Readiness.UNKNOWN)));
+    }
+
+    /// Handle a stamp digest request (A6): the digest over the partition's [KeyStamp]s, computed without reading a
+    /// value, with this node's [Readiness] for the partition exactly as [#handleDigestRequest] reports it. A digest
+    /// that could not be computed is reported [Readiness#UNKNOWN], never as an authoritative empty partition.
+    @Contract
+    public void handleStampDigestRequest(DHTMessage.StampDigestRequest request,
+                                         Consumer<DHTMessage.DigestResponse> responseHandler) {
+        noteHeardFrom(request.sender());
+        repair.noteCurrentPeer(request.sender());
+        var partition = Partition.at(request.partition());
+        var readiness = readiness(partition);
+
+        storage.stampsForPartition(ring, partition)
+               .onSuccess(stamps -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
+                                                                                         nodeId,
+                                                                                         stampDigestOf(stamps),
+                                                                                         readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
                                                                                     nodeId,
                                                                                     new byte[0],
@@ -1072,9 +1116,16 @@ public final class DHTNode {
     /// (`refused=true`, #1777), as is a holder that could not read its own store: an empty entry list
     /// must only ever mean "the holder has nothing here", or a catching-up requester would take a
     /// refusal for a completed catch-up.
+    ///
+    /// This is the LEGACY whole-partition pull (A6): only an older node asks it, so its sender is recorded as
+    /// speaking the legacy protocol ([RepairPlane]), and the answer stays one message, as that sender expects. A
+    /// partition beyond the cluster frame cannot be answered this way; that limit lasts until the sender upgrades
+    /// and pulls in pages ([#handleMigrationPageRequest]).
     @Contract
     public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
                                            Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
+        repair.noteLegacyPeer(request.sender());
+        repair.noteLegacyExchange();
         var partition = Partition.at(request.partitionStart());
 
         if (!isReplicaOf(request.sender(), partition)) {
@@ -1103,6 +1154,136 @@ public final class DHTNode {
                                                                                            java.util.List.of(),
                                                                                            false,
                                                                                            true)));
+    }
+
+    /// Handle a migration page request (A6): one page of the partition's entries after the request's cursor,
+    /// within the smaller of the requester's page budget and this node's, to a node this node considers a replica
+    /// of the partition — the same holder-side ownership test as [#handleMigrationDataRequest] (issue #420). The
+    /// page is planned on the partition's [KeyStamp]s; only the values of the entries in the page are read. A
+    /// holder that could not read its store refuses explicitly, so the requester never takes a failed read for the
+    /// end of the partition (FER: the pull is delayed to the next round, never completed on a read that failed).
+    @Contract
+    public void handleMigrationPageRequest(DHTMessage.MigrationPageRequest request,
+                                           Consumer<DHTMessage.MigrationPageResponse> responseHandler) {
+        repair.noteCurrentPeer(request.sender());
+        var partition = Partition.at(request.partition());
+
+        if (!isReplicaOf(request.sender(), partition)) {
+            log.debug("Refusing migration page of partition {} to {}: not a replica in this node's ring",
+                      request.partition(),
+                      request.sender().id());
+            responseHandler.accept(refusedPage(request.requestId()));
+
+            return;
+        }
+
+        migrationPage(partition,
+                      request.after(),
+                      pageBudgetFor(request.pageBytes())).onSuccess(page -> respondWithPage(request.requestId(),
+                                                                                            page,
+                                                                                            responseHandler))
+                     .onFailure(_ -> responseHandler.accept(refusedPage(request.requestId())));
+    }
+
+    /// One page of a partition: its entries and the cursor of the next page, empty on the last one.
+    record MigrationPage(List<DHTMessage.KeyValue> entries, Option<byte[]> next) {}
+
+    private DHTMessage.MigrationPageResponse refusedPage(String requestId) {
+        return new DHTMessage.MigrationPageResponse(requestId, nodeId, List.of(), true, none());
+    }
+
+    @Contract
+    private void respondWithPage(String requestId,
+                                 MigrationPage page,
+                                 Consumer<DHTMessage.MigrationPageResponse> responseHandler) {
+        repair.notePageSent(PageBudget.transferBytes(page.entries()));
+        responseHandler.accept(new DHTMessage.MigrationPageResponse(requestId,
+                                                                    nodeId,
+                                                                    page.entries(),
+                                                                    false,
+                                                                    page.next()));
+    }
+
+    /// The smaller of the requester's budget and this node's: the page respects both ends' bounds. A requested
+    /// budget outside the accepted range is ignored in favour of this node's.
+    private PageBudget pageBudgetFor(long requestedBytes) {
+        var own = repair.pageBudget();
+
+        return PageBudget.pageBudget(Math.min(requestedBytes, own.bytes())).or(own);
+    }
+
+    /// The page of `partition` after `after`, within `budget`: planned on stamps, then only its values are read.
+    Promise<MigrationPage> migrationPage(Partition partition, Option<byte[]> after, PageBudget budget) {
+        return storage.stampsForPartition(ring, partition)
+                      .map(stamps -> remainingAfter(stamps, after))
+                      .flatMap(remaining -> readPage(remaining, budget));
+    }
+
+    private static List<KeyStamp> remainingAfter(List<KeyStamp> stamps, Option<byte[]> after) {
+        return PageBudget.sorted(stamps)
+                         .stream()
+                         .filter(stamp -> follows(stamp, after))
+                         .toList();
+    }
+
+    private static boolean follows(KeyStamp stamp, Option<byte[]> after) {
+        return after.map(cursor -> PageBudget.keyOrder().compare(stamp.key(),
+                                                                 cursor) > 0)
+                    .or(true);
+    }
+
+    private Promise<MigrationPage> readPage(List<KeyStamp> remaining, PageBudget budget) {
+        var planned = budget.leadingRun(remaining);
+
+        return readEntries(planned).map(entries -> pageOf(planned,
+                                                          entries,
+                                                          budget,
+                                                          planned.size() < remaining.size()));
+    }
+
+    /// The current entries of `stamps`' keys, in the same order; a key removed meanwhile is skipped. One read that
+    /// fails fails the batch, so no caller mistakes a partial read for the whole.
+    Promise<List<DHTMessage.KeyValue>> readEntries(List<KeyStamp> stamps) {
+        return readEach(stamps).flatMap(DHTNode::allRead)
+                       .map(DHTNode::present);
+    }
+
+    private static Promise<List<Option<DHTMessage.KeyValue>>> allRead(List<Result<Option<DHTMessage.KeyValue>>> results) {
+        return Result.allOf(results).async();
+    }
+
+    private Promise<List<Result<Option<DHTMessage.KeyValue>>>> readEach(List<KeyStamp> stamps) {
+        return Promise.allOf(stamps.stream().map(stamp -> storage.getEntry(stamp.key())).toList());
+    }
+
+    private static List<DHTMessage.KeyValue> present(List<Option<DHTMessage.KeyValue>> entries) {
+        return entries.stream()
+                      .flatMap(Option::stream)
+                      .toList();
+    }
+
+    /// The entries actually read are fitted to the budget again: one may have grown since its stamp was taken. The
+    /// cursor is the last key sent when the page was trimmed, else the last key planned when more remain.
+    private static MigrationPage pageOf(List<KeyStamp> planned,
+                                        List<DHTMessage.KeyValue> read,
+                                        PageBudget budget,
+                                        boolean moreAfterPlanned) {
+        var entries = budget.fit(read);
+
+        return new MigrationPage(entries, nextCursor(planned, read, entries, moreAfterPlanned));
+    }
+
+    private static Option<byte[]> nextCursor(List<KeyStamp> planned,
+                                             List<DHTMessage.KeyValue> read,
+                                             List<DHTMessage.KeyValue> sent,
+                                             boolean moreAfterPlanned) {
+        if (sent.size() < read.size()) {
+            return some(sent.getLast().key());
+        }
+
+        return moreAfterPlanned
+               ? some(planned.getLast().key())
+               : none();
     }
 
     /// Whether `candidate` is one of the partition's replicas in THIS node's ring — the same single
@@ -1156,6 +1337,17 @@ public final class DHTNode {
         return computeDigest(entries.stream()
                                     .filter(kv -> !kv.tombstone() || HlcTimestamp.physicalMillis(kv.version()) > cutoff)
                                     .toList());
+    }
+
+    /// The digest this node compares a partition by in the current protocol (A6): every live entry's and every
+    /// unexpired tombstone's [KeyStamp] — key, owner epoch, version, tombstone flag and value CRC — with expiry read
+    /// from the stamp exactly as [#digestOf] reads it. No value is read: the value CRC is kept beside the value.
+    public byte[] stampDigestOf(List<KeyStamp> stamps) {
+        var cutoff = expiryCutoffMillis(nowMillis());
+
+        return computeStampDigest(stamps.stream()
+                                        .filter(stamp -> !stamp.tombstone() || HlcTimestamp.physicalMillis(stamp.version()) > cutoff)
+                                        .toList());
     }
 
     /// The cluster's committed tombstone retention (#1777 track 3), applied live.
@@ -1301,6 +1493,28 @@ public final class DHTNode {
         entries.stream().sorted((a, b) -> Arrays.compare(a.key(), b.key())).forEach(kv -> updateCrc(crc, kv));
 
         return longToBytes(crc.getValue());
+    }
+
+    /// Compute a CRC32 digest over stamps in key order (A6). Two replicas agree exactly when they hold the same keys
+    /// at the same stamps with the same value checksums.
+    static byte[] computeStampDigest(List<KeyStamp> stamps) {
+        var crc = new CRC32();
+
+        PageBudget.sorted(stamps).forEach(stamp -> updateStampCrc(crc, stamp));
+
+        return longToBytes(crc.getValue());
+    }
+
+    private static void updateStampCrc(CRC32 crc, KeyStamp stamp) {
+        crc.update(stamp.key());
+        crc.update(stamp.tombstone()
+                   ? 1
+                   : 0);
+        crc.update(longToBytes(stamp.epochIncarnation()));
+        crc.update(longToBytes(stamp.epochTerm()));
+        crc.update(longToBytes(stamp.epochCounter()));
+        crc.update(longToBytes(stamp.version()));
+        crc.update(longToBytes(stamp.valueCrc()));
     }
 
     /// A kind byte separates a tombstone from a live entry with an empty value (#1777 track 3).

@@ -4209,6 +4209,18 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
+        // A6: the repair plane's current protocol — stamp digests and paged pulls; the legacy routes above stay for
+        // peers still on the previous version during a rolling upgrade
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.StampDigestRequest.class,
+                                                    request -> dhtNode.handleStampDigestRequest(request,
+                                                                                                response -> dhtNetwork.send(request.sender(),
+                                                                                                                            response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageRequest.class,
+                                                    request -> dhtNode.handleMigrationPageRequest(request,
+                                                                                                  response -> dhtNetwork.send(request.sender(),
+                                                                                                                              response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageResponse.class,
+                                                    dhtAntiEntropy::onMigrationPageResponse));
         // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
         // drain can confirm the chunk reached a surviving replica before halting.
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
