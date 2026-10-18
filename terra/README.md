@@ -91,4 +91,4 @@ sh terra/examples/target/terra-examples-terra/bin/terra
 curl http://localhost:8080/api/catalog/v2/items
 ```
 
-The ZIP at `terra/examples/target/terra-examples-1.0.0-rc4-terra.zip` includes its dependencies and can run outside the repository. The example explicitly uses public default routes; configure API keys or JWT for protected deployments.
+The ZIP at `terra/examples/target/terra-examples-1.0.0-rc5-terra.zip` includes its dependencies and can run outside the repository. The example explicitly uses public default routes; configure API keys or JWT for protected deployments.

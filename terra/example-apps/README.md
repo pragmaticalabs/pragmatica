@@ -33,7 +33,7 @@ Together with Catalog in `terra/examples`, this is 21 original slice compilation
 
 ## Run a bundle
 
-Extract `<module>/target/terra-<module>-1.0.0-rc4-terra.zip`, set `JAVA_HOME` to Java 25, configure the database, then run `sh bin/terra`. Both JDBC and native PostgreSQL URLs must point at the intended database when the owning JAR defaults contain both transports. For example:
+Extract `<module>/target/terra-<module>-1.0.0-rc5-terra.zip`, set `JAVA_HOME` to Java 25, configure the database, then run `sh bin/terra`. Both JDBC and native PostgreSQL URLs must point at the intended database when the owning JAR defaults contain both transports. For example:
 
 ```sh
 export TERRA_DATABASE__JDBC_URL='jdbc:postgresql://127.0.0.1:5432/app?user=app'

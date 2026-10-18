@@ -51,7 +51,7 @@ class TerraExamplesTest {
             assertThat(shop.visit("one").await(timeSpan(5).seconds()).unwrap()).isEqualTo(1);
             var interceptor = provider.provide(org.pragmatica.aether.resource.interceptor.CacheMethodInterceptor.class, "cache.calls",
                 org.pragmatica.aether.slice.ProvisioningContext.provisioningContext()
-                    .withExtension(String.class, "org.pragmatica.example:terra-counter:1.0.0-rc4")
+                    .withExtension(String.class, "org.pragmatica.example:terra-counter:1.0.0-rc5")
                     .withExtension(ConfigurationProvider.class, config)).await(timeSpan(5).seconds()).unwrap();
             org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).untilAsserted(() ->
                 assertThat(interceptor.cache().get("one").await(timeSpan(5).seconds()).unwrap().unwrap()).isEqualTo(1));

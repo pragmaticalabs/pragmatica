@@ -27,7 +27,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class TerraCatalogHttpTest {
     @Test void serve_unchangedCatalog_supportsVersionsCsvBinaryAndTypedErrors() throws Exception {
         for (var mode : List.of(RouteMountMode.pathMode(), RouteMountMode.headerMode("API-Version"))) {
-            var app = TerraApplication.start(new TerraBlueprint(List.of("org.pragmatica.example:terra-catalog:1.0.0-rc4")),
+            var app = TerraApplication.start(new TerraBlueprint(List.of("org.pragmatica.example:terra-catalog:1.0.0-rc5")),
                 _ -> ConfigurationProvider.builder().build()).await(timeSpan(10).seconds()).unwrap();
             var config = TerraHttpConfig.terraHttpConfig(HttpServerConfig.httpServerConfig("catalog", 0), mode,
                 SecurityPolicy.authenticated()).unwrap();

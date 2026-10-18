@@ -113,9 +113,9 @@ class TerraDatabaseTest {
     private void writeBlueprint(String id) throws Exception {
         Files.writeString(directory.resolve("blueprint.toml"), "id='" + id + "'\n" + """
             [[slices]]
-            artifact='org.pragmatica.example:terra-inventory-service:1.0.0-rc4'
+            artifact='org.pragmatica.example:terra-inventory-service:1.0.0-rc5'
             [[slices]]
-            artifact='org.pragmatica.example:terra-schema-probe:1.0.0-rc4'
+            artifact='org.pragmatica.example:terra-schema-probe:1.0.0-rc5'
             """);
     }
 
