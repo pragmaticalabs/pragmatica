@@ -1,0 +1,4 @@
+### Fixed (2026-10-18 — #2239: a follower kept suspecting a leader whose link had come back)
+- **A reconnect did not restore the peer to the leader FSM's view.** The transport's eviction removes the peer from the stored topology and the FSM replaces its topology wholesale from the last event, but `LeaderManager.peerReconnected` was empty, so a follower whose link to its leader flapped kept the connected leader out of its view, kept reporting it as suspected, and answered pre-votes with "doubt" until an unrelated topology event arrived.
+- `peerReconnected` now dispatches `NodeAdded` with the eligibility-filtered view, as `peerJoined` does; `ClusterFsmRouter` maps `PeerReconnected` to `NodeAdded` the same way. A reconnect starts no pre-vote round.
+- `[verified: integrations/consensus LeaderReconnectTripwireTest, LeaderReconnectTransportTest, ClusterFsmRouterReconnectTest]`
