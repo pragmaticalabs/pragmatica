@@ -4,7 +4,6 @@
 package org.pragmatica.aether.config;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.Level;
@@ -89,33 +88,5 @@ class ConfigLoaderStreamsSectionTest {
             """);
 
         assertThat(warnings).noneMatch(message -> message.contains("[storage.streams]"));
-    }
-
-    /// #249: a `[storage.<name>.<sub>]` section that is neither the keyring nor a shared tier is ignored, and said so
-    /// (before #249 it silently became an instance named `<name>.<sub>`). Mutation that reddens it: drop the
-    /// `warnIgnoredStorageSubSections` call.
-    @Test
-    void unknownStorageSubSection_warnsNamingIt_andCreatesNoInstance() {
-        var config = ConfigLoader.loadFromString("""
-            [storage.content.quota]
-            default_max_bytes = 10
-            """);
-
-        assertThat(warnings).anyMatch(message -> message.contains("storage.content.quota"));
-        assertThat(config.map(AetherConfig::storage).or(Map.of())).doesNotContainKey("content.quota");
-    }
-
-    /// CONTROL: the keyring sub-table and a shared section are not reported as ignored.
-    @Test
-    void keyringAndSharedSubSections_doNotWarn() {
-        ConfigLoader.loadFromString("""
-            [storage.encryption.keys]
-            k1 = "${secrets:k1}"
-
-            [storage.content.shared]
-            kind = "dht"
-            """);
-
-        assertThat(warnings).noneMatch(message -> message.contains("not storage instances"));
     }
 }

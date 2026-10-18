@@ -290,6 +290,56 @@ class ConfigLoaderSharedTierTest {
         }
     }
 
+    /// A `[storage.<name>.<sub>]` section that is neither the keyring nor a shared tier is refused, naming every such
+    /// section, sorted. Mutation that reddens it: drop `refuseUnknownStorageSubSections` (the sections are then
+    /// silently dropped and the load succeeds).
+    @Nested
+    class SubSections {
+
+        @Test
+        void typoForShared_isRefused_namingIt() {
+            assertThat(refusal(S3_SECTION.replace("[storage.content.shared]", "[storage.foo.shard]")).message())
+                .contains("[storage.foo.shard]")
+                .contains("only [storage.<name>.shared] and [storage.encryption] sub-sections are accepted");
+        }
+
+        @Test
+        void dottedLegacyInstanceName_isRefused() {
+            assertThat(refusal("[storage.a.b]\ndisk_path = \"/srv/ab\"\n").message()).contains("[storage.a.b]");
+        }
+
+        @Test
+        void everyUnknownSubSection_isNamed_sorted() {
+            assertThat(refusal("[storage.z.y]\nk = 1\n[storage.a.b]\nk = 1\n[storage.m.n.o]\nk = 1\n").message())
+                .contains("[storage.a.b], [storage.m.n.o], [storage.z.y]:");
+        }
+
+        /// CONTROL: the keyring with its sub-table, and an instance with its shared section, load. Nothing nested under
+        /// a shared section loads today; it is left to the shared-tier refusals, which [NestedUnderShared] pins by type.
+        @Test
+        void keyringAndSharedShapes_load() {
+            var config = load("""
+                [storage.encryption]
+                active_key_id = "k1"
+
+                [storage.encryption.keys]
+                k1 = "${secrets:k1}"
+
+                [storage.content]
+                disk_path = "/srv/content/blocks"
+
+                [storage.content.shared]
+                kind = "dht"
+
+                [storage.artifacts.shared]
+                kind = "dht"
+                """);
+
+            assertThat(config.storage()).containsOnlyKeys("content", "artifacts");
+            assertThat(config.storageEncryption().isPresent()).isTrue();
+        }
+    }
+
     /// An explicit blank path would read as "configured only through the shared section" and be replaced by the
     /// defaults wholesale. Mutation that reddens it: drop `refuseBlankStoragePaths`.
     @Nested
