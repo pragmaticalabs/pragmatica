@@ -37,6 +37,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// a pre-envelope value, i.e. during an upgrade.
 final class DHTCacheBackend implements CacheBackend {
     private static final byte[] HEADER = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 1};
+
     static final int HEADER_BYTES = HEADER.length + Long.BYTES;
 
     private final DHTClient dhtClient;
