@@ -3816,52 +3816,52 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                  .maxNodes()
                                                                                                                                                  .or(Integer.MAX_VALUE),
                                                                                                                                      new org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler.Actuator() {
-            @Override
-            public Result<String> sourceBinding(SourceName source) {
-                                                                                                                                         return lifecycleManager.sourceBinding(source);
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Result<String> sourceBinding(SourceName source) {
+                                                                                                                                             return lifecycleManager.sourceBinding(source);
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> create(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return clusterTopologyManager.provisionPlacementNode(operation);
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> create(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return clusterTopologyManager.provisionPlacementNode(operation);
+                                                                                                                                         }
 
-            @Override
-            public Promise<Boolean> retirementSafe(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return Promise.success(operation.previousNode()
-                                                                                                                                                                         .map(node -> deploymentMap.byNode(node)
-                                                                                                                                                                                                   .isEmpty())
-                                                                                                                                                                         .or(true));
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Boolean> retirementSafe(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return Promise.success(operation.previousNode()
+                                                                                                                                                                             .map(node -> deploymentMap.byNode(node)
+                                                                                                                                                                                                       .isEmpty())
+                                                                                                                                                                             .or(true));
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> drain(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         operation.previousNode()
-                                                                                                                                                  .onPresent(node -> clusterNode.network()
-                                                                                                                                                                                .send(node,
-                                                                                                                                                                                      new CommunityPlacementMessage.DrainRequested(config.self(),
-                                                                                                                                                                                                                                   operation.operationId())));
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> drain(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             operation.previousNode()
+                                                                                                                                                      .onPresent(node -> clusterNode.network()
+                                                                                                                                                                                    .send(node,
+                                                                                                                                                                                          new CommunityPlacementMessage.DrainRequested(config.self(),
+                                                                                                                                                                                                                                       operation.operationId())));
 
-                                                                                                                                         return Promise.unitPromise();
-                                                                                                                                     }
+                                                                                                                                             return Promise.unitPromise();
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> terminate(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return operation.previousNode()
-                                                                                                                                                         .fold(Promise::unitPromise,
-                                                                                                                                                               node -> lifecycleManager.terminateNode(node,
-                                                                                                                                                                                                      SourceName.sourceNameOrDefault(operation.previousSource())));
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> terminate(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return operation.previousNode()
+                                                                                                                                                             .fold(Promise::unitPromise,
+                                                                                                                                                                   node -> lifecycleManager.terminateNode(node,
+                                                                                                                                                                                                          SourceName.sourceNameOrDefault(operation.previousSource())));
+                                                                                                                                         }
 
-            @Override
-            public Promise<Boolean> previousInstanceExists(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return operation.previousNode()
-                                                                                                                                                         .fold(() -> Promise.success(false),
-                                                                                                                                                               node -> lifecycleManager.instancesForNode(node,
-                                                                                                                                                                                                         SourceName.sourceNameOrDefault(operation.previousSource()))
-                                                                                                                                                                                       .map(instances -> !instances.isEmpty()));
-                                                                                                                                     }
-        },
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Boolean> previousInstanceExists(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return operation.previousNode()
+                                                                                                                                                             .fold(() -> Promise.success(false),
+                                                                                                                                                                   node -> lifecycleManager.instancesForNode(node,
+                                                                                                                                                                                                             SourceName.sourceNameOrDefault(operation.previousSource()))
+                                                                                                                                                                                           .map(instances -> !instances.isEmpty()));
+                                                                                                                                         }
+                                                                                                                                     },
                                                                                                                                      operation -> eventAggregator.emitAsLeader(new ClusterEvent.NodeLifecycleChanged(hlcClock.now(),
                                                                                                                                                                                                                      ClusterEvent.Severity.WARNING,
                                                                                                                                                                                                                      "Community placement requires operator attention: " + operation.detail(),

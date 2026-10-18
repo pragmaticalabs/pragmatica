@@ -203,10 +203,10 @@ public final class UpgradeRunWiring {
                      .begin(node, targetVersion)
                      .<BeginResult> map(_ -> new BeginResult.Started())
                      .recover(cause -> switch (cause) {
-                case NodeReplacementService.Refusal.NotLeader _, NodeReplacementService.Refusal.AlreadyReplacing _, NodeReplacementService.Refusal.Conflict _, NodeReplacementService.Refusal.UnknownNode _ -> new BeginResult.Deferred(cause.message());
-                case NodeReplacementService.Refusal _ -> new BeginResult.Refused(cause.message());
-                default -> new BeginResult.Deferred(cause.message());
-            });
+                                  case NodeReplacementService.Refusal.NotLeader _, NodeReplacementService.Refusal.AlreadyReplacing _, NodeReplacementService.Refusal.Conflict _, NodeReplacementService.Refusal.UnknownNode _ -> new BeginResult.Deferred(cause.message());
+                                  case NodeReplacementService.Refusal _ -> new BeginResult.Refused(cause.message());
+                                  default -> new BeginResult.Deferred(cause.message());
+                              });
         }
 
         @Override

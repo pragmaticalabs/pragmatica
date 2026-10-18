@@ -778,13 +778,13 @@ record PlacementReconciler(NodeId self,
         return currentLeader().fold(() -> Promise.success(false),
                                     leader -> matchingDrain(sender, operationId).fold(() -> Promise.success(false),
                                                                                       operation -> switch (operation.phase()) {
-            case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
-            case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
-                                                                operation.withPhase(PlacementOperationPhase.DRAINED,
-                                                                                    leader,
-                                                                                    ""));
-            default -> Promise.success(false);
-        }));
+                                                                                          case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
+                                                                                          case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
+                                                                                                                                              operation.withPhase(PlacementOperationPhase.DRAINED,
+                                                                                                                                                                  leader,
+                                                                                                                                                                  ""));
+                                                                                          default -> Promise.success(false);
+                                                                                      }));
     }
 
     private Option<CommunityPlacementOperationValue> matchingDrain(NodeId sender, String operationId) {
