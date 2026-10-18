@@ -67,8 +67,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// own-restore arm is again `activateWithoutAdoption` → `restoreState`: a failed restore skips
 /// `activate()`, records the cause as the authority failure (reported by `voterReconfigurationStatus()`
 /// and fencing activation on later sync rounds), and `logRestoreFailure` reports it at ERROR.
-/// **#1468 stays OPEN** for whether that stop is bounded (wedge) or terminal (exit), and what the start
-/// promise and readiness surface report meanwhile.
+/// The stop is bounded (owner ruling, 2026-10-18): the process-level `OwnRestoreWatchdog` exits the process
+/// with a distinct code once [RabiaEngine#ownRestoreFailure] has persisted for its bound. The engine's side of
+/// that is pinned here; the bound and the exit are pinned by `OwnRestoreWatchdogTest`.
 ///
 /// **The negative assertions are meaningful only because of the control.** `#ownRestoreSucceeds_activates`
 /// runs the identical fixture with a SUCCEEDING `restoreSnapshot` and activates well inside the same
@@ -143,6 +144,18 @@ class RabiaOwnRestoreFailureTest {
             .contains(UNREADABLE_SNAPSHOT.message());
     }
 
+    /// #1468 bound: the typed own-restore failure is what the process-level watchdog samples. It is the
+    /// cause itself, not its text, and it is absent on the control path below.
+    @Test
+    void ownRestoreFails_exposesTheTypedCauseToTheWatchdog() {
+        var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        becameActive(engine);
+
+        assertThat(engine.ownRestoreFailure()).as("the watchdog's input is the restore failure itself").isEqualTo(Option.some(UNREADABLE_SNAPSHOT));
+    }
+
     /// Pins the diagnostic itself. The ERROR is the per-attempt operator signal on this path, so it must
     /// name the consequence and render the cause, not log a bare object. The periodic stuck-in-`Syncing`
     /// WARN reports the stall's length on top of it (#1447, pinned below).
@@ -174,6 +187,7 @@ class RabiaOwnRestoreFailureTest {
         assertThat(stateMachine.lastRestored()).as("control: the own-restore branch is the one exercised").isEqualTo(OWN_SNAPSHOT);
         assertThat(appender.capturedErrors()).as("a successful restore reports no failure")
                   .noneMatch(message -> message.contains(FAILURE_FRAGMENT));
+        assertThat(engine.ownRestoreFailure()).as("a successful restore leaves nothing for the watchdog to bound").isEqualTo(Option.none());
     }
 
     /// #1447 — the stuck-sync WARN was structurally suppressed on the adoption loop: `adoptCollectedState`

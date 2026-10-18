@@ -54,6 +54,7 @@ import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.node.OwnRestoreWatchdog;
 import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
@@ -832,11 +833,38 @@ public record Main(String[] args) {
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
+        armOwnRestoreWatchdog(node);
         node.start()
             .onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
             .onFailure(cause -> onStartFailure(cause, this::exitWithError))
             .await();
         waitForInterrupt();
+    }
+
+    /// #1468: `start()` does not resolve while the node cannot restore its own persisted consensus history, so the
+    /// bound on that stop has to be armed BEFORE `start()` is awaited. Production only; in-JVM hosts own their nodes.
+    @Contract
+    private static void armOwnRestoreWatchdog(AetherNode node) {
+        OwnRestoreWatchdog.ownRestoreWatchdog(node::ownRestoreFailure,
+                                              Main::monotonicMillis,
+                                              OwnRestoreWatchdog.BOUND,
+                                              Main::exitConsensusRestoreFailed).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
+    }
+
+    private static long monotonicMillis() {
+        return System.nanoTime() / 1_000_000L;
+    }
+
+    /// `halt`, not `exit`: the node is fenced and holds nothing worth a graceful stop, and `System.exit` from a
+    /// scheduler thread can park on the shutdown hooks (#838). The FATAL line names the cause and the exit code.
+    @Contract
+    private static void exitConsensusRestoreFailed(Cause cause) {
+        log.error("FATAL: this node could not restore its own persisted consensus history and stayed JOINING for {}: {}. "
+                 + "It never started with partial state. Exiting with code {}; restarting unchanged reads the same snapshot.",
+                  OwnRestoreWatchdog.BOUND,
+                  cause.message(),
+                  AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
+        Runtime.getRuntime().halt(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
     }
 
     /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying

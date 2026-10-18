@@ -210,6 +210,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
     }
 
+    /// Why this node's own persisted consensus history could not be restored, while that keeps it from
+    /// activating (#1468). Empty for a node that restored, never needed to, or whose engine is a test double.
+    default Option<org.pragmatica.lang.Cause> ownRestoreFailure() {
+        return Option.none();
+    }
+
     default Option<VoterConfiguration> voterConfiguration() {
         return Option.none();
     }
@@ -826,6 +832,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
                 return consensus().voterReconfigurationStatus();
+            }
+
+            @Override
+            public Option<org.pragmatica.lang.Cause> ownRestoreFailure() {
+                return consensus().ownRestoreFailure();
             }
 
             @Override

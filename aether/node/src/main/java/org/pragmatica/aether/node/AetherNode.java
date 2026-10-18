@@ -515,6 +515,11 @@ public interface AetherNode extends ManageableNode {
     /// "drained" by exit status alone. 78 is `EX_CONFIG` in sysexits(3): the node's configured identity is
     /// unusable, and restarting it unchanged cannot succeed.
     int EXIT_IDENTITY_REFUSED = 78;
+    /// Process exit code when this node's OWN persisted consensus history could not be restored and the
+    /// node stayed fenced in `JOINING` for the whole bound (#1468, [OwnRestoreWatchdog]). 74 is `EX_IOERR` in
+    /// sysexits(3): the node's snapshot could not be read. Restarting it unchanged reads the same snapshot, so
+    /// a supervisor should not (`RestartPreventExitStatus=74`); the node never started with partial state.
+    int EXIT_CONSENSUS_RESTORE_FAILED = 74;
     /// Process exit code when the SWIM gossip-key divergence gate refuses the boot (#683): gossip arrives
     /// under a key epoch this node does not hold and none has ever decrypted. Production reaches it through
     /// `System.exit` so the node's shutdown hooks run ([GossipKeyDivergenceGuard] measured that path); an
@@ -3051,6 +3056,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
                 return clusterNode.voterReconfigurationStatus();
+            }
+
+            @Override
+            public Option<Cause> ownRestoreFailure() {
+                return clusterNode.ownRestoreFailure();
             }
 
             @Override
