@@ -36,6 +36,7 @@ import java.util.stream.LongStream;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -4766,7 +4767,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// eviction does (every evictee is still sealed). `AetherNode` schedules it every `RING_AGE_TICK_INTERVAL`.
     /// Calls [OffHeapRingBuffer#evictByAge] and nothing else: `applyRetention` and the tier-aware path stay unwired.
     /// Excluded: an `entity:` ring (it keeps space eviction, its sealed segments are protected by the checkpoint
-    /// floor) and a stream whose max age is `Long.MAX_VALUE` (a count-typed stream declares no age). Returns the
+    /// floor), a stream whose max age is `Long.MAX_VALUE` (a count-typed stream declares no age) and a stream whose
+    /// retention mode is `UNKNOWN` (a rule this node cannot read is not authority to evict, #964). Returns the
     /// number of rings swept.
     public int evictRingsByAge() {
         return streams.values()
@@ -4777,7 +4779,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static boolean hasRingAgeBound(StreamEntry entry) {
-        return ! isEntityStream(entry) && declaresMaxAge(entry);
+        return ! isEntityStream(entry)
+               && declaresMaxAge(entry)
+               && readsRetentionRule(entry);
+    }
+
+    private static boolean readsRetentionRule(StreamEntry entry) {
+        return entry.config()
+                    .retention()
+                    .mode() != RetentionMode.UNKNOWN;
     }
 
     private static boolean isEntityStream(StreamEntry entry) {

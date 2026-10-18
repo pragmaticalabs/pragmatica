@@ -171,6 +171,20 @@ class RingAgeTickTest {
         assertThat(ring.eventCount()).isEqualTo(ALL_EVENTS);
     }
 
+    /// A retention rule this node cannot read (`UNKNOWN`, a mode from a newer node) is not authority to evict: the same
+    /// fail-closed stance as the sealed tier (#964), although a ring eviction hands the event to the sealer.
+    @Test
+    void evictRingsByAge_leavesAStreamWithAnUnreadableRetentionModeUntouched_andDoesNotSweepIt() {
+        var unreadable = retentionPolicy(DEFAULT_MAX_COUNT, DEFAULT_MAX_BYTES, HOUR_MS, RetentionMode.UNKNOWN);
+        var ring = ringWithOldAndFreshEvents("unreadable", unreadable);
+
+        var swept = manager.evictRingsByAge();
+
+        assertThat(swept).as("a stream whose retention mode this node cannot read is skipped").isZero();
+        assertThat(handedOver).isEmpty();
+        assertThat(ring.eventCount()).isEqualTo(ALL_EVENTS);
+    }
+
     @Test
     void evictRingsByAge_leavesAnEntityRingUntouched_evenWhenItsTierAwareBranchIsArmed() {
         var tierAware = timeTyped(HOUR_MS, tierAwareRetention(0, 0));
