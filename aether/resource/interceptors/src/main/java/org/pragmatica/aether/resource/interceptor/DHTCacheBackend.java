@@ -21,14 +21,23 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 /// Distributed entries carry their own expiry (#279 item 3): the DHT has no expiry primitive, so each
-/// stored value is the writer's wall-clock expiry (epoch millis, 8 bytes big-endian) followed by the
-/// encoded value, and a read past that instant is a miss that also removes the entry. Expiry is
-/// therefore enforced lazily, on read: an entry nobody reads again stays in the DHT until it is
-/// overwritten or removed. It compares clocks across nodes, so a node whose clock runs ahead of the
-/// writer's sees entries expire early by that skew, and one that runs behind sees them live late by it.
-/// An entry written before this envelope existed is read as a miss and removed.
+/// stored value is a self-identifying envelope -- a 4-byte header (three `0xFF` bytes and a format
+/// version), the writer's wall-clock expiry (epoch millis, 8 bytes big-endian), then the encoded value.
+/// A read past the expiry is a miss. Expiry is enforced lazily, on read, and the expired entry is left
+/// in place to be overwritten by the next put: [DHTClient] has no compare-and-remove, so removing it
+/// would race a concurrent fresh put and could delete that fresh value. An entry nobody writes again
+/// therefore stays in the DHT. Expiry compares clocks across nodes, so a node whose clock runs ahead of
+/// the writer's sees entries expire early by that skew, and one that runs behind sees them live late by it.
+///
+/// The header makes the envelope distinguishable from every value written before it existed. Those
+/// start with a VLQ type tag (`SliceCodec.writeCompact`) and tags stay below 2^21, so a tag is at most
+/// 3 bytes and its last byte has the high bit clear: no legacy value can begin with three bytes that all
+/// have the high bit set. A value without the header is read as a miss and removed. That removal is
+/// unconditional (same missing primitive), so it can race a fresh put, but only for a key still holding
+/// a pre-envelope value, i.e. during an upgrade.
 final class DHTCacheBackend implements CacheBackend {
-    private static final int EXPIRY_BYTES = Long.BYTES;
+    private static final byte[] HEADER = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 1};
+    static final int HEADER_BYTES = HEADER.length + Long.BYTES;
 
     private final DHTClient dhtClient;
     private final Serializer serializer;
@@ -100,23 +109,35 @@ final class DHTCacheBackend implements CacheBackend {
     /// The stored form: expiry instant, then the encoded value. Package-visible so a test seeds the DHT
     /// with the same bytes a write produces.
     static byte[] envelope(long expiryMillis, byte[] valueBytes) {
-        return ByteBuffer.allocate(EXPIRY_BYTES + valueBytes.length)
+        return ByteBuffer.allocate(HEADER_BYTES + valueBytes.length)
+                         .put(HEADER)
                          .putLong(expiryMillis)
                          .put(valueBytes)
                          .array();
     }
 
+    /// The expiry instant of a stored envelope.
+    static long expiryMillis(byte[] stored) {
+        return ByteBuffer.wrap(stored, HEADER.length, Long.BYTES).getLong();
+    }
+
     private Promise<Option<Object>> unexpired(Object key, byte[] stored) {
-        return isLive(stored)
-               ? decoded(Arrays.copyOfRange(stored, EXPIRY_BYTES, stored.length))
-               : expired(key);
+        return hasHeader(stored)
+               ? liveValue(stored)
+               : discarded(key);
     }
 
-    private boolean isLive(byte[] stored) {
-        return stored.length >= EXPIRY_BYTES && ByteBuffer.wrap(stored).getLong() > clockMillis.getAsLong();
+    private boolean hasHeader(byte[] stored) {
+        return stored.length >= HEADER_BYTES && Arrays.equals(stored, 0, HEADER.length, HEADER, 0, HEADER.length);
     }
 
-    private Promise<Option<Object>> expired(Object key) {
+    private Promise<Option<Object>> liveValue(byte[] stored) {
+        return expiryMillis(stored) > clockMillis.getAsLong()
+               ? decoded(Arrays.copyOfRange(stored, HEADER_BYTES, stored.length))
+               : Promise.success(Option.none());
+    }
+
+    private Promise<Option<Object>> discarded(Object key) {
         return remove(key).map(_ -> Option.none());
     }
 

@@ -15,7 +15,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
-import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -88,7 +87,7 @@ class DhtNamespaceExtensionTest {
     }
 
     private static long expiryOf(RecordingDhtClient client) {
-        return ByteBuffer.wrap(client.storage.values().iterator().next()).getLong();
+        return DHTCacheBackend.expiryMillis(client.storage.values().iterator().next());
     }
 
     private static final class RecordingDhtClient implements DHTClient {

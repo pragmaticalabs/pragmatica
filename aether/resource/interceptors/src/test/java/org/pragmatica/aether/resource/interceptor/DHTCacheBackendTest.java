@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource.interceptor;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.dht.DHTClient;
@@ -14,8 +15,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.serialization.SliceCodec;
 
-import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -26,13 +28,14 @@ import static org.pragmatica.lang.Unit.unit;
 class DHTCacheBackendTest {
 
     private ConcurrentHashMap<String, byte[]> storage;
+    private FakeDHTClient dhtClient;
     private DHTCacheBackend backend;
     private final AtomicLong clock = new AtomicLong(1_000_000L);
 
     @BeforeEach
     void setUp() {
         storage = new ConcurrentHashMap<>();
-        var dhtClient = new FakeDHTClient(storage);
+        dhtClient = new FakeDHTClient(storage);
         var serializer = new StringSerializer();
         var deserializer = new StringDeserializer();
         backend = DHTCacheBackend.dhtCacheBackend(dhtClient, serializer, deserializer, "test-ns", 60, clock::get);
@@ -60,7 +63,7 @@ class DHTCacheBackendTest {
         backend.put("key1", "world").await();
 
         assertThat(storage.containsKey("test-ns:key1")).isTrue();
-        assertThat(new String(storage.get("test-ns:key1"), 8, 5, UTF_8)).isEqualTo("world");
+        assertThat(new String(storage.get("test-ns:key1"), DHTCacheBackend.HEADER_BYTES, 5, UTF_8)).isEqualTo("world");
     }
 
     @Test
@@ -111,7 +114,7 @@ class DHTCacheBackendTest {
     void put_stampsTheExpiryInstant_asNowPlusTtl() {
         backend.put("key1", "world").await();
 
-        assertThat(ByteBuffer.wrap(storage.get("test-ns:key1")).getLong()).isEqualTo(1_000_000L + 60_000L);
+        assertThat(DHTCacheBackend.expiryMillis(storage.get("test-ns:key1"))).isEqualTo(1_000_000L + 60_000L);
     }
 
     @Test
@@ -125,14 +128,29 @@ class DHTCacheBackendTest {
     }
 
     @Test
-    void get_afterTheTtlElapses_isAMissAndRemovesTheEntry() {
+    void get_afterTheTtlElapses_isAMissAndLeavesTheEntryInPlace() {
         backend.put("key1", "world").await();
         clock.addAndGet(60_000L);
 
         var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
 
         assertThat(result.isEmpty()).as("an entry past its TTL is a miss").isTrue();
-        assertThat(storage.containsKey("test-ns:key1")).as("and the expired entry is removed").isFalse();
+        assertThat(storage.containsKey("test-ns:key1")).as("and is not removed: removal cannot be conditional").isTrue();
+    }
+
+    @Test
+    void get_expiredEntryOverwrittenBetweenReadAndMiss_keepsTheFreshValue() {
+        backend.put("key1", "old").await();
+        clock.addAndGet(60_000L);
+        dhtClient.afterGet = () -> storage.put("test-ns:key1",
+                                               DHTCacheBackend.envelope(clock.get() + 60_000L, "fresh".getBytes(UTF_8)));
+
+        var first = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
+        dhtClient.afterGet = () -> {};
+        var second = backend.get("key1").await().fold(_ -> Option.none(), v -> v);
+
+        assertThat(first.isEmpty()).as("the read saw the expired value").isTrue();
+        assertThat(second.unwrap()).as("the concurrent fresh put survives the expired read").isEqualTo("fresh");
     }
 
     @Test
@@ -147,13 +165,64 @@ class DHTCacheBackendTest {
     }
 
     @Test
-    void get_entryWithoutAnExpiryEnvelope_isAMissAndRemovesTheEntry() {
+    void get_legacyEntryWithOneByteTag_isAMissAndRemovesTheEntry() {
+        storage.put("test-ns:key1", new byte[] {3, 0, 0, 0, 5, 'h', 'e', 'l', 'l', 'o'});
+
+        var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
+
+        assertThat(result.isEmpty()).isTrue();
+        assertThat(storage.containsKey("test-ns:key1")).isFalse();
+    }
+
+    @Test
+    void get_entryShorterThanTheHeader_isAMissAndRemovesTheEntry() {
         storage.put("test-ns:key1", new byte[] {1, 2, 3});
 
         var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
 
         assertThat(result.isEmpty()).isTrue();
         assertThat(storage.containsKey("test-ns:key1")).isFalse();
+    }
+
+    /// Every tag a pre-envelope value can start with (0 .. the 2^21 tag limit, VLQ-encoded exactly as
+    /// the codec writes it) leaves at least one of the first three bytes with the high bit clear, so
+    /// none can match the header's three 0xFF bytes.
+    @Test
+    void header_isNeverProducedByAnyLegacyTag() {
+        var buf = Unpooled.buffer(8);
+        var offending = new ArrayList<Integer>();
+
+        for (var tag = 0; tag < SliceCodec.USER_TAG_LIMIT; tag++) {
+            buf.clear();
+            SliceCodec.writeCompact(buf, tag);
+
+            if (buf.writerIndex() > 3 || (buf.getByte(buf.writerIndex() - 1) & 0x80) != 0) {
+                offending.add(tag);
+            }
+        }
+
+        assertThat(offending).as("tags that could start with the header").isEmpty();
+    }
+
+    @Test
+    void put_emptyEncodedValue_roundTrips() {
+        backend.put("key1", "").await();
+
+        var result = backend.get("key1").await().fold(_ -> Option.none(), v -> v);
+
+        assertThat(storage.get("test-ns:key1")).hasSize(DHTCacheBackend.HEADER_BYTES);
+        assertThat(result.unwrap()).isEqualTo("");
+    }
+
+    @Test
+    void put_thirtyDayTtl_stampsTheExpiryWithoutIntOverflow() {
+        var thirtyDays = 30 * 24 * 3600;
+        var longTtl = DHTCacheBackend.dhtCacheBackend(dhtClient, new StringSerializer(), new StringDeserializer(),
+                                                      "test-ns", thirtyDays, clock::get);
+
+        longTtl.put("key1", "v").await();
+
+        assertThat(DHTCacheBackend.expiryMillis(storage.get("test-ns:key1"))).isEqualTo(1_000_000L + thirtyDays * 1000L);
     }
 
     @Test
@@ -165,6 +234,7 @@ class DHTCacheBackendTest {
 
     private static final class FakeDHTClient implements DHTClient {
         private final ConcurrentHashMap<String, byte[]> storage;
+        Runnable afterGet = () -> {};
 
         FakeDHTClient(ConcurrentHashMap<String, byte[]> storage) {
             this.storage = storage;
@@ -172,7 +242,10 @@ class DHTCacheBackendTest {
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
-            return Promise.success(Option.option(storage.get(new String(key, UTF_8))));
+            var stored = storage.get(new String(key, UTF_8));
+
+            afterGet.run();
+            return Promise.success(Option.option(stored));
         }
 
         @Override
