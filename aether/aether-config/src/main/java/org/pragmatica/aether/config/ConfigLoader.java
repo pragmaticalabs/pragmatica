@@ -71,12 +71,16 @@ public final class ConfigLoader {
     private static Result<AetherConfig> fromDocumentWithOverrides(TomlDocument doc, Map<String, String> overrides) {
         var envStr = overrides.getOrDefault("environment",
                                             doc.getString("cluster", "environment").or("docker"));
-
-        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc,
-                                                                                     overrides,
-                                                                                     environment,
-                                                                                     environmentIsExplicit(doc,
-                                                                                                           overrides)));
+        // #1455: every typed read above and below answers Option, so a present-but-wrong-typed value
+        // (`port = "80x"`) took the reader's default; the document recorded each such read, and the
+        // load refuses here naming all of them.
+        return Environment.environment(envStr)
+                          .flatMap(environment -> assembleConfig(doc,
+                                                                 overrides,
+                                                                 environment,
+                                                                 environmentIsExplicit(doc, overrides)))
+                          .flatMap(config -> doc.requireNoTypeMismatches()
+                                                .map(_ -> config));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")

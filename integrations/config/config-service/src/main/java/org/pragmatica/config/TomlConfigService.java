@@ -72,7 +72,21 @@ public final class TomlConfigService implements ConfigService {
             return ConfigError.sectionNotFound(section).result();
         }
 
-        return bindToClass(section, configClass);
+        return scopedToOneBind().bindChecked(section, configClass);
+    }
+
+    // #1455: the binder reads through TomlDocument's typed getters, which default a present-but-
+    // wrong-typed value; the document records those reads and the bind refuses naming every one.
+    // This service's own document lives as long as the service, so its ledger would carry one
+    // section's mismatch into every later bind (and across concurrent binds): each bind reads a
+    // view over the same content with a ledger of its own.
+    private <T> Result<T> bindChecked(String section, Class<T> configClass) {
+        return bindToClass(section, configClass).flatMap(bound -> document.requireNoTypeMismatches()
+                                                                          .map(_ -> bound));
+    }
+
+    private TomlConfigService scopedToOneBind() {
+        return new TomlConfigService(new TomlDocument(document.sections(), document.tableArrays()));
     }
 
     @Override

@@ -415,7 +415,19 @@ public interface StreamConfigParser {
     private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .flatMap(doc -> extractConsumerConfigs(doc, streamName));
+                         .flatMap(doc -> typeChecked(doc,
+                                                     extractConsumerConfigs(doc, streamName)));
+    }
+
+    /// #1455: the consumer keys (`batch-size`, `max-retries`) are the only typed reads in this parser; they
+    /// answer Option and take a default for a present-but-wrong-typed value. The document records those
+    /// reads and the parse refuses here, naming them. The stream-resource keys (`partitions`, `replicas`)
+    /// are read through the stream declaration, which refuses a malformed value itself (#1336), so
+    /// the resource entry points need no gate.
+    private static <T> Result<T> typeChecked(TomlDocument doc, Result<T> parsed) {
+        return parsed.flatMap(value -> doc.requireNoTypeMismatches()
+                                          .mapError(err -> cause("Stream config parse error: " + err.message()))
+                                          .map(_ -> value));
     }
 
     private static boolean isStreamSection(String sectionName) {

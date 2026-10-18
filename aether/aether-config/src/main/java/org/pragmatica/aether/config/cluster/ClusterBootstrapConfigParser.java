@@ -71,10 +71,15 @@ public final class ClusterBootstrapConfigParser {
     /// reads it back through [RollbackPolicyParser#fromClusterToml]. #1564: the `[replication]` defaults the same
     /// way, read back through [ReplicationDefaultsParser#fromClusterToml].
     public static Result<ClusterBootstrapConfig> fromDocument(TomlDocument doc) {
+        // #1455: typed reads answer Option and default a present-but-wrong-typed value; the document
+        // records those reads and the parse refuses here naming every one.
         return RollbackPolicyParser.parse(doc)
                                    .flatMap(_ -> ReplicationDefaultsParser.parse(doc))
                                    .flatMap(_ -> parseConfigVersion(doc))
-                                   .flatMap(_ -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc, cluster)));
+                                   .flatMap(_ -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc, cluster)))
+                                   .flatMap(config -> doc.requireNoTypeMismatches()
+                                                         .mapError(ClusterBootstrapConfigParser::wrapError)
+                                                         .map(_ -> config));
     }
 
     private static Result<ClusterBootstrapConfig> buildConfig(TomlDocument doc, ClusterIdentity cluster) {
