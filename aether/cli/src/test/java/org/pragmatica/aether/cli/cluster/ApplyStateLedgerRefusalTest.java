@@ -10,7 +10,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -89,12 +88,11 @@ class ApplyStateLedgerRefusalTest {
     }
 
     private ClusterBootstrapConfig config(int coreCount) {
-        return clusterBootstrapConfig("1",
-                                      clusterIdentity(clusterName.value(), "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity(clusterName.value(), "1.0.0").unwrap(),
                                       defaultCoreTopology(),
                                       Map.of("forge", forgeSource(coreCount)),
-                                      Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-                                      infrastructureConfig(NetworkingType.MANUAL),
+                                      Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+                                      infrastructureConfig(),
                                       defaultOperationsConfig(),
                                       Map.of());
     }
@@ -107,7 +105,7 @@ class ApplyStateLedgerRefusalTest {
                              List.of(),
                              none(),
                              Map.of(),
-                             Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
+                             Map.of(NodeRole.CORE, roleSubTable(some(coreCount), none(), none(), RUNTIME_REF)),
                              List.of());
     }
 
@@ -179,29 +177,12 @@ class ApplyStateLedgerRefusalTest {
         }
 
         @Test
-        void rollback_unreadableApplyState_failsNamingTheRefusal_notNothingToRollback() throws Exception {
-            writeApplyState(applyStateJson(clusterName.value(), FUTURE_ENTRY));
-
-            ApplyOrchestrator.rollback(config(3), config(3))
-                             .onSuccess(result -> fail("rollback must not proceed past a refused state"))
-                             .onFailure(cause -> assertThat(cause.message()).contains("unreadable")
-                                                                             .contains("FutureThing")
-                                                                             .doesNotContain("Nothing to rollback"));
-        }
-
-        @Test
         void resume_absentApplyState_stillReportsNothingToResume() {
             ApplyOrchestrator.resume(config(3), config(3))
                              .onSuccess(result -> fail("nothing to resume"))
                              .onFailure(cause -> assertThat(cause.message()).contains("Nothing to resume"));
         }
 
-        @Test
-        void rollback_absentApplyState_stillReportsNothingToRollback() {
-            ApplyOrchestrator.rollback(config(3), config(3))
-                             .onSuccess(result -> fail("nothing to rollback"))
-                             .onFailure(cause -> assertThat(cause.message()).contains("Nothing to rollback"));
-        }
     }
 
     @Nested

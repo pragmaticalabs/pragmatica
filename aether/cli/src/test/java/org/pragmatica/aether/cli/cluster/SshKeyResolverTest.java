@@ -12,7 +12,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -74,12 +73,12 @@ class SshKeyResolverTest {
     }
 
     private static ClusterBootstrapConfig configWithoutSsh() {
-        return configWith(InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL));
+        return configWith(InfrastructureConfig.infrastructureConfig());
     }
 
     private static ClusterBootstrapConfig configWithTomlSsh(List<String> keyFiles) {
         var ssh = SshDeploymentConfig.sshDeploymentConfig(keyFiles);
-        var infra = InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL, Option.some(ssh));
+        var infra = InfrastructureConfig.infrastructureConfig(Option.some(ssh));
         return configWith(infra);
     }
 
@@ -98,14 +97,12 @@ class SshKeyResolverTest {
                                                        Option.empty(),
                                                        Map.of(),
                                                        Map.of(NodeRole.CORE,
-                                                              RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                                          Option.some(3),
+                                                              RoleSubTable.roleSubTable(Option.some(3),
                                                                                           Option.empty(),
                                                                                           Option.empty(),
                                                                                           "default")),
                                                        List.of());
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                              ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                               CoreTopology.defaultCoreTopology(),
                                                               Map.of("cloud-1", cloudSource),
                                                               Map.of(),
@@ -128,18 +125,16 @@ class SshKeyResolverTest {
                                                        Option.empty(),
                                                        Map.of(),
                                                        Map.of(NodeRole.CORE,
-                                                              RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                                          Option.some(3),
+                                                              RoleSubTable.roleSubTable(Option.some(3),
                                                                                           Option.empty(),
                                                                                           Option.empty(),
                                                                                           "ember")),
                                                        List.of());
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                              ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                               CoreTopology.defaultCoreTopology(),
                                                               Map.of("forge-1", forgeSource),
                                                               Map.of(),
-                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                              InfrastructureConfig.infrastructureConfig(),
                                                               OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
