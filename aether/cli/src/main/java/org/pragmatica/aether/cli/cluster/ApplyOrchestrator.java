@@ -11,8 +11,10 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -45,10 +47,7 @@ public final class ApplyOrchestrator {
     public static Result<ApplyResult> resume(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
         var clusterName = desired.cluster().name();
 
-        return ApplyState.load(clusterName)
-                         .toResult(new ApplyAborted("No apply state found for cluster '" + clusterName
-                                                   + "'. Nothing to resume."))
-                         .flatMap(state -> validateResumeState(state, desired))
+        return loadRequiredState(clusterName, "resume").flatMap(state -> validateResumeState(state, desired))
                          .flatMap(_ -> computeValidPlan(desired, currentStored))
                          .flatMap(plan -> executeWithState(plan, currentStored, desired));
     }
@@ -56,10 +55,25 @@ public final class ApplyOrchestrator {
     public static Result<ApplyResult> rollback(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
         var clusterName = desired.cluster().name();
 
-        return ApplyState.load(clusterName)
-                         .toResult(new ApplyAborted("No apply state found for cluster '" + clusterName
-                                                   + "'. Nothing to rollback."))
-                         .flatMap(state -> executeRollback(state, currentStored, desired));
+        return loadRequiredState(clusterName, "rollback").flatMap(state -> executeRollback(state, currentStored, desired));
+    }
+
+    /// Absent state is "nothing to <verb>"; a state that is present but refused (see
+    /// [ApplyState#read]) fails naming the refusal, so the operator is told why rather than that
+    /// there was nothing.
+    private static Result<ApplyState> loadRequiredState(ClusterName clusterName, String verb) {
+        return ApplyState.read(clusterName)
+                         .mapError(cause -> unreadableState(clusterName, cause))
+                         .flatMap(state -> state.toResult(new ApplyAborted("No apply state found for cluster '"
+                                                                           + clusterName
+                                                                           + "'. Nothing to "
+                                                                           + verb
+                                                                           + ".")));
+    }
+
+    private static Cause unreadableState(ClusterName clusterName, Cause cause) {
+        return new ApplyAborted("The apply state for cluster '" + clusterName + "' is unreadable and was left untouched: "
+                                + cause.message());
     }
 
     private static Result<DiffPlan> computeValidPlan(ClusterBootstrapConfig desired,
@@ -160,6 +174,27 @@ public final class ApplyOrchestrator {
     private static Result<ApplyResult> executeAndPersist(DiffPlan plan,
                                                          ClusterBootstrapConfig stored,
                                                          ClusterBootstrapConfig desired) {
+        return executeAndPersist(plan, stored, desired, WaveExecutor::execute);
+    }
+
+    /// A fresh apply replaces a halted apply's state, but only one it could READ: an unreadable file may
+    /// hold a newer CLI's handles on resources, and overwriting it would erase them, so the apply is
+    /// refused before the file is touched or anything is executed.
+    static Result<ApplyResult> executeAndPersist(DiffPlan plan,
+                                                 ClusterBootstrapConfig stored,
+                                                 ClusterBootstrapConfig desired,
+                                                 Fn3<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig> executor) {
+        var clusterName = desired.cluster().name();
+
+        return ApplyState.read(clusterName)
+                         .mapError(cause -> unreadableState(clusterName, cause))
+                         .flatMap(_ -> persistInitialAndExecute(plan, stored, desired, executor));
+    }
+
+    private static Result<ApplyResult> persistInitialAndExecute(DiffPlan plan,
+                                                                ClusterBootstrapConfig stored,
+                                                                ClusterBootstrapConfig desired,
+                                                                Fn3<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig> executor) {
         var clusterName = desired.cluster().name();
         var configHash = ClusterBootstrapOrchestrator.computeConfigHash(desired);
         var state = ApplyState.initialState(clusterName,
@@ -168,9 +203,9 @@ public final class ApplyOrchestrator {
 
         ApplyState.save(state);
 
-        return WaveExecutor.execute(plan, stored, desired)
-                           .onSuccess(_ -> ApplyState.delete(clusterName))
-                           .onFailure(_ -> markStateFailed(state));
+        return executor.apply(plan, stored, desired)
+                       .onSuccess(_ -> ApplyState.delete(clusterName))
+                       .onFailure(_ -> markStateFailed(state));
     }
 
     @Contract
