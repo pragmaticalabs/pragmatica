@@ -145,6 +145,11 @@ public interface HetznerClient {
 
 /// Implementation of HetznerClient using HttpOperations and JsonMapper.
 record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper mapper) implements HetznerClient {
+    /// Upper bound on the pages one listing may read. Hetzner serves 25 entries a page by default, so this
+    /// is far above any real project; it exists so a server that never ends its listing fails the call
+    /// instead of running it forever.
+    static final int MAX_PAGES = 100;
+
     @Override
     public Promise<Server> createServer(CreateServerRequest request) {
         return postJson("/servers", request, ServerResponse.class).map(ServerResponse::server);
@@ -324,8 +329,6 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
                                                                                             response));
     }
 
-    /// A `next_page` that does not move forward ends the walk: a server that keeps pointing at the page
-    /// just read would otherwise loop this call forever.
     private <T, P extends Paged<T>> Promise<List<T>> continueWith(String path,
                                                                   Class<P> responseType,
                                                                   int page,
@@ -334,9 +337,39 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
         var all = concat(collected, response.items());
 
         return response.nextPage()
-                       .filter(next -> next > page)
-                       .map(next -> listFrom(path, responseType, next, all))
+                       .map(next -> advance(path, responseType, page, next, all))
                        .or(() -> Promise.success(all));
+    }
+
+    /// The listing is only complete when the server says so, so a walk that cannot continue FAILS rather
+    /// than returning what it has: a `next_page` that does not move forward (it would loop forever), or
+    /// more pages than [#MAX_PAGES].
+    private <T, P extends Paged<T>> Promise<List<T>> advance(String path,
+                                                             Class<P> responseType,
+                                                             int page,
+                                                             int next,
+                                                             List<T> collected) {
+        if (next <= page) {
+            return paginationFailed(path, page, "next_page " + next + " does not advance past page " + page);
+        }
+
+        if (page >= MAX_PAGES) {
+            return paginationFailed(path, page, "the listing has more than the " + MAX_PAGES + "-page cap");
+        }
+
+        return listFrom(path, responseType, next, collected);
+    }
+
+    private static <T> Promise<List<T>> paginationFailed(String path, int pages, String reason) {
+        return HetznerError.PaginationFailed.FACTORY.apply(endpointOf(path), pages, reason).promise();
+    }
+
+    private static String endpointOf(String path) {
+        var query = path.indexOf('?');
+
+        return query < 0
+               ? path
+               : path.substring(0, query);
     }
 
     private static <T> List<T> concat(List<T> head, List<T> tail) {

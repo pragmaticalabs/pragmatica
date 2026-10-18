@@ -37,7 +37,11 @@ public record Pagination(int page,
                          @JsonProperty("total_entries") int totalEntries) {
     /// The `meta` object every list response carries.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Meta(Pagination pagination) {}
+    public record Meta(Pagination pagination) {
+        public static Meta meta(Pagination pagination) {
+            return new Meta(pagination);
+        }
+    }
 
     /// A list response that knows which page follows it. `meta` is absent from a response with no
     /// pagination information, which reads as "no further page".

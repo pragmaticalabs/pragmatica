@@ -39,6 +39,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.ToLongFunction;
 import java.util.stream.Collectors;
 
@@ -225,17 +226,69 @@ class HetznerClientTest {
             assertThat(testHttp.requestedUris()).hasSize(1);
         }
 
+        /// A `next_page` that repeats or goes backwards is a server that will never reach the end. Returning
+        /// what was read so far would hand the caller a prefix that looks like the whole inventory, so the
+        /// call fails and names the endpoint and the page it stopped on.
         @Test
-        void listServers_nextPageThatDoesNotAdvance_stopsInsteadOfLooping() {
+        void listServers_repeatedNextPage_failsNamingTheEndpoint() {
             testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1), 2),
                                          BASE_URL + "/servers?page=2", page("servers", List.of(2), 2)));
 
             client.listServers()
                   .await()
-                  .onFailure(cause -> assertThat(cause).isNull())
-                  .onSuccess(servers -> assertThat(ids(servers, Server::id)).containsExactly(1L, 2L));
+                  .onSuccess(servers -> assertThat(servers).as("a truncated list must never be returned as success").isNull())
+                  .onFailure(HetznerClientTest::assertPaginationFailureNamesEndpoint);
 
             assertThat(testHttp.requestedUris()).hasSize(2);
+        }
+
+        @Test
+        void listServers_backwardsNextPage_failsNamingTheEndpoint() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1), 2),
+                                         BASE_URL + "/servers?page=2", page("servers", List.of(2), 3),
+                                         BASE_URL + "/servers?page=3", page("servers", List.of(3), 2)));
+
+            client.listServers()
+                  .await()
+                  .onSuccess(servers -> assertThat(servers).isNull())
+                  .onFailure(HetznerClientTest::assertPaginationFailureNamesEndpoint);
+        }
+
+        /// An endpoint whose `next_page` always advances never ends either. Exceeding the page cap fails
+        /// the call, naming the endpoint and the number of pages read.
+        @Test
+        void listServers_endlessPages_failsAtThePageCap_naming_endpointAndPageCount() {
+            testHttp.respondByFunction(uri -> page("servers", List.of(pageNumberOf(uri)), pageNumberOf(uri) + 1));
+
+            client.listServers()
+                  .await()
+                  .onSuccess(servers -> assertThat(servers).as("a capped list must never be returned as success").isNull())
+                  .onFailure(cause -> assertThat(cause.message()).contains("/servers")
+                                                                 .contains("stopped after " + HetznerClientRecord.MAX_PAGES + " page(s)")
+                                                                 .doesNotContain("?"));
+
+            assertThat(testHttp.requestedUris()).hasSize(HetznerClientRecord.MAX_PAGES);
+        }
+
+        @Test
+        void listServers_labelSelectorEndpointAtTheCap_namesThePathWithoutTheSelector() {
+            testHttp.respondByFunction(uri -> page("servers", List.of(pageNumberOf(uri)), pageNumberOf(uri) + 1));
+
+            client.listServers("aether-cluster=secret-name")
+                  .await()
+                  .onFailure(cause -> assertThat(cause.message()).contains("/servers").doesNotContain("secret-name"));
+        }
+
+        @Test
+        void listServers_exactlyTheCapWithAnEndingLastPage_succeeds() {
+            testHttp.respondByFunction(uri -> page("servers",
+                                                   List.of(pageNumberOf(uri)),
+                                                   pageNumberOf(uri) == HetznerClientRecord.MAX_PAGES ? null : pageNumberOf(uri) + 1));
+
+            client.listServers()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(servers -> assertThat(servers).hasSize(HetznerClientRecord.MAX_PAGES));
         }
 
         @Test
@@ -314,6 +367,13 @@ class HetznerClientTest {
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(ips -> assertThat(ids(ips, FloatingIp::id)).containsExactly(1L, 2L));
+        }
+
+        private static int pageNumberOf(String uri) {
+            var marker = "page=";
+            var at = uri.indexOf(marker);
+
+            return at < 0 ? 1 : Integer.parseInt(uri.substring(at + marker.length()));
         }
 
         private static String page(String listKey, List<Integer> itemIds, Integer nextPage) {
@@ -549,6 +609,7 @@ class HetznerClientTest {
         private int responseStatus;
         private String responseBody;
         private Map<String, String> bodiesByUri = Map.of();
+        private Function<String, String> bodyFunction;
         private final List<String> requestedUris = new ArrayList<>();
 
         TestHttpOperations(AtomicReference<HttpRequest> capturedRequest) {
@@ -566,6 +627,11 @@ class HetznerClientTest {
             this.bodiesByUri = bodies;
         }
 
+        /// Answers every request (200) from a function of its full URI, for endpoints that never end.
+        void respondByFunction(Function<String, String> bodyForUri) {
+            this.bodyFunction = bodyForUri;
+        }
+
         List<String> requestedUris() {
             return List.copyOf(requestedUris);
         }
@@ -579,12 +645,21 @@ class HetznerClientTest {
 
         @SuppressWarnings("unchecked")
         private <T> HttpResult<T> resultFor(HttpRequest request) {
+            if (bodyFunction != null) {
+                return new HttpResult<>(200, HttpHeaders.of(Map.of(), (a, b) -> true), (T) bodyFunction.apply(request.uri().toString()));
+            }
+
             var byUri = bodiesByUri.get(request.uri().toString());
             var status = bodiesByUri.isEmpty() ? responseStatus : byUri == null ? 500 : 200;
             var body = bodiesByUri.isEmpty() ? responseBody : byUri == null ? ERROR_SERVER_RESPONSE : byUri;
 
             return new HttpResult<>(status, HttpHeaders.of(Map.of(), (a, b) -> true), (T) body);
         }
+    }
+
+    private static void assertPaginationFailureNamesEndpoint(Cause cause) {
+        assertThat(cause).isInstanceOf(HetznerError.PaginationFailed.class);
+        assertThat(cause.message()).contains("/servers").contains("page");
     }
 
     // --- JSON fixtures ---
