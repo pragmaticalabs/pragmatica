@@ -16,6 +16,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.utils.Causes;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -34,6 +35,8 @@ import static org.pragmatica.lang.Result.success;
 class ClusterApplyCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
+    private static final Cause ROLLBACK_NOT_IMPLEMENTED = Causes.cause("--rollback is not implemented (#686); nothing was changed");
+
     @Parameters(index = "0", description = "Path to aether-cluster.toml config file")
     private Path configFile;
 
@@ -46,7 +49,7 @@ class ClusterApplyCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--resume", description = "Resume a halted apply from first unfinished wave")
     private boolean resume;
 
-    @CommandLine.Option(names = "--rollback", description = "Rollback completed waves to pre-apply state")
+    @CommandLine.Option(names = "--rollback", description = "Not implemented (#686): fails with a non-zero exit")
     private boolean rollback;
 
     @CommandLine.Option(names = "--full-check", description = "Run full network pre-flight checks before apply")
@@ -66,12 +69,12 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private int dispatch() {
-        if (resume) {
-            return handleResume();
+        if (rollback) {
+            return refuseRollback();
         }
 
-        if (rollback) {
-            return handleRollback();
+        if (resume) {
+            return handleResume();
         }
 
         return readConfigFile().flatMap(this::executeApply)
@@ -83,18 +86,15 @@ class ClusterApplyCommand implements Callable<Integer> {
                                  .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
-    private int handleRollback() {
-        return readAndParseConfig().flatMap(this::rollbackApply)
-                                 .fold(ClusterApplyCommand::onFailure, v -> v);
+    /// Owner ruling (#686): `--rollback` fails honestly until the wave rollout is decided. The flag used
+    /// to be accepted and then ran the normal apply path, which looked like a rollback that did nothing.
+    /// Refused before the config is read or the cluster is called, so no side effect precedes the refusal.
+    private int refuseRollback() {
+        return onFailure(ROLLBACK_NOT_IMPLEMENTED);
     }
 
     private Result<Integer> resumeApply(ClusterBootstrapConfig desired) {
         return fetchAndParseStoredConfig().flatMap(stored -> ApplyOrchestrator.resume(desired, stored))
-                                        .map(this::printApplyResult);
-    }
-
-    private Result<Integer> rollbackApply(ClusterBootstrapConfig desired) {
-        return fetchAndParseStoredConfig().flatMap(stored -> ApplyOrchestrator.rollback(desired, stored))
                                         .map(this::printApplyResult);
     }
 

@@ -2687,7 +2687,7 @@ aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--res
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
 | `--resume` | Resume a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below) |
-| `--rollback` | Roll back a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below); even when reached, it lists the recorded resources and destroys nothing |
+| `--rollback` | **Not implemented, see #686**: prints that `--rollback` is not implemented and exits non-zero (1) before reading the file or contacting the cluster; takes precedence over `--resume` |
 | `--full-check` | Run full network pre-flight checks |
 
 **Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
@@ -2711,13 +2711,13 @@ deliberately not wired to plain `apply` — a client-side rollout would be a sec
 authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
 is a separate ticket).
 
-**In rc4 `--resume` and `--rollback` have nothing to act on.** Both begin by loading the apply
-state for the cluster and abort without it (`No apply state found for cluster '<name>'. Nothing to
-resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
-rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
-options report that message and the wave executor is unreachable end to end.
+**In rc4 `--resume` has nothing to act on, and `--rollback` is refused outright.** `--resume` begins by loading the apply
+state for the cluster and aborts without it (`No apply state found for cluster '<name>'. Nothing to
+resume.`). That state is written only by the unwired client-side
+rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, `--resume`
+reports that message and the wave executor is unreachable end to end.
 
-**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
 each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
 - `destroyed`: gone, nothing to do;
 - `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
