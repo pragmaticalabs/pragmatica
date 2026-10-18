@@ -68,7 +68,7 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
                                                                                                              change.fromRuntime(),
                                                                                                              change.toRuntime()));
             case DiffAction.RuntimeProfileChange change -> Option.some(new ClusterConfigError.RuntimeProfileChangeViaApply(change.profileName(),
-                                                                                                                         change.fields()));
+                                                                                                                           change.fields()));
             case DiffAction.AddSource _, DiffAction.RemoveSource _, DiffAction.AddRole _, DiffAction.RemoveRole _, DiffAction.SourceFieldChange _, DiffAction.ClusterLevelChange _ -> Option.some(new ClusterConfigError.UnsupportedApplyAction(action));
         };
     }

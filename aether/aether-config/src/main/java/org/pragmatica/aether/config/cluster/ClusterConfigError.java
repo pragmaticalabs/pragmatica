@@ -411,10 +411,14 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     record RuntimeChangeViaApply(String sourceName, String role, String from, String to) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Changing the runtime of " + sourceName + "." + role + " (" + from + " -> " + to
+            return "Changing the runtime of " + sourceName
+                 + "." + role
+                 + " (" + from
+                 + " -> " + to
                  + ") is not applied through 'aether cluster apply': it would stop a node and start another in its place under the same id. "
                  + "Nodes are moved onto new software by replacement under a fresh id: 'aether cluster upgrade --version X.Y.Z --wait' "
-                 + "replaces every node one at a time. Keep runtime = \"" + from + "\" on that role in the file you apply.";
+                 + "replaces every node one at a time. Keep runtime = \"" + from
+                 + "\" on that role in the file you apply.";
         }
 
         @Override
@@ -428,7 +432,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     record RuntimeProfileChangeViaApply(String profile, String fields) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Runtime profile '" + profile + "' changed (" + fields
+            return "Runtime profile '" + profile
+                 + "' changed (" + fields
                  + ") but 'aether cluster apply' does not change runtime-profile content: replacements are provisioned from the committed config, "
                  + "so the edit would not take effect. To move nodes onto a new version use 'aether cluster upgrade --version X.Y.Z' "
                  + "(declare the image with {version}); otherwise keep the profile as committed in the file you apply.";

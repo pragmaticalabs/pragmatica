@@ -76,7 +76,9 @@ public final class ClusterBootstrapConfigDiff {
                                             List<DiffAction> modifications) {
         new TreeSet<>(storedProfiles.keySet()).stream()
                                               .filter(desiredProfiles::containsKey)
-                                              .map(name -> profileChange(name, storedProfiles.get(name), desiredProfiles.get(name)))
+                                              .map(name -> profileChange(name,
+                                                                         storedProfiles.get(name),
+                                                                         desiredProfiles.get(name)))
                                               .flatMap(Option::stream)
                                               .forEach(modifications::add);
     }
@@ -88,6 +90,7 @@ public final class ClusterBootstrapConfigDiff {
         addIfChanged(fields, "image", stored.image(), desired.image());
         addIfChanged(fields, "jvm_args", stored.jvmArgs(), desired.jvmArgs());
         addIfChanged(fields, "jar_url", stored.jarUrl(), desired.jarUrl());
+
         return fields.isEmpty()
                ? Option.none()
                : Option.some(new DiffAction.RuntimeProfileChange(name, String.join(", ", fields)));
