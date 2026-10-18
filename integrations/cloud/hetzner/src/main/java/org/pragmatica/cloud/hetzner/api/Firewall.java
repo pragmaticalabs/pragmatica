@@ -63,7 +63,12 @@ public record Firewall(long id, String name, List<Rule> rules, Map<String, Strin
 
     /// Wrapper for firewall list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record FirewallListResponse(List<Firewall> firewalls) {}
+    public record FirewallListResponse(List<Firewall> firewalls, Pagination.Meta meta) implements Pagination.Paged<Firewall> {
+        @Override
+        public List<Firewall> items() {
+            return firewalls;
+        }
+    }
 
     /// Wrapper for single-firewall API responses (create returns `{firewall, actions}`).
     @JsonIgnoreProperties(ignoreUnknown = true)
