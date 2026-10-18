@@ -5,11 +5,13 @@
 package org.pragmatica.aether.stream.topic;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
@@ -20,6 +22,8 @@ import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSink;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.storage.MemoryTier;
@@ -121,6 +125,62 @@ class DlqStreamSinkReadFailuresTest {
             .await()
             .onSuccess(entries -> fail("a refused owner gate answered " + offsets(entries)))
             .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.SEALING_BEHIND));
+    }
+
+    @Test
+    void read_failsWithCursorExpired_whenRetentionReclaimsAgainBetweenTheFirstReadAndTheRestart() {
+        var sink = sinkWith(storageSegmentSink(storage, index), 2);
+
+        awaitListed(sink, DEAD_LETTERS);
+        reclaimFirstSegment();
+        manager.placementRoleSupplier((_, _) -> Role.OWNER);
+        manager.ownerServeGate(secondReadReclaimsAgain());
+
+        sink.read(TOPIC_STREAM, 10)
+            .await()
+            .onSuccess(entries -> fail("a restart that expired again answered " + offsets(entries)))
+            .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+    }
+
+    @Test
+    void read_failsWithReplicaNotVerified_insteadOfListingTheVerifiedPrefix_onAnUnverifiedReplica() {
+        var sink = sinkWith(storageSegmentSink(storage, index), 100);
+        var epoch = Epoch.epoch(1L, 1L, 2L);
+
+        manager.ownerEpochSource((_, _) -> epoch);
+        manager.epochStarts((_, _, _) -> Option.some(2L));
+        manager.placementRoleSupplier((_, _) -> Role.REPLICA);
+
+        sink.read(TOPIC_STREAM, 10)
+            .await()
+            .onSuccess(entries -> fail("an unverified replica listed the prefix " + offsets(entries)))
+            .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReplicaNotVerified.class));
+
+        manager.markVerifiedForEpoch(DLQ, 0, epoch);
+
+        assertThat(offsets(sink.read(TOPIC_STREAM, 10).await().unwrap())).as("verified for the epoch: the whole DLQ")
+                                                                         .containsExactly(100L, 101L, 102L, 103L, 104L);
+    }
+
+    private void reclaimFirstSegment() {
+        var first = index.listSegments(DLQ, 0).getFirst();
+
+        index.recordReclaimed(DLQ, 0, first.endOffset());
+        index.removeSegment(DLQ, 0, first.startOffset());
+    }
+
+    /// The owner gate runs once per read: the second run (the restart) finds one more segment reclaimed.
+    private StreamPartitionManager.OwnerServeGate secondReadReclaimsAgain() {
+        var reads = new AtomicInteger();
+
+        return (_, _) -> reclaimOnSecondRead(reads);
+    }
+
+    private Result<Unit> reclaimOnSecondRead(AtomicInteger reads) {
+        if (reads.incrementAndGet() == 2) {
+            reclaimFirstSegment();
+        }
+        return Result.unitResult();
     }
 
     private static void awaitListed(DlqStreamSink sink, int expected) {

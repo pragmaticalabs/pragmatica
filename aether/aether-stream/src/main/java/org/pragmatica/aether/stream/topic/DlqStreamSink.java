@@ -131,9 +131,10 @@ public record DlqStreamSink(Deserializer deserializer,
     /// #1266 review: each DLQ record is decoded under a lift. A record that does not decode — an entry
     /// in the pre-`rawEvent` wire shape, or a corrupt one — is reported as a typed
     /// [UndecodableDeadLetter] and SKIPPED, never thrown out of `read`, so one bad record cannot make the
-    /// whole DLQ unreadable. `read` has no per-entry failure channel (its contract is a `List`), so the
-    /// typed failure surfaces in the log. [design intent — unverified: skip-and-log is a judgment call;
-    /// an interface change to `Result<List<...>>` was not made.]
+    /// whole DLQ unreadable. The skip is the one failure that stays out of the promise: it surfaces in the log
+    /// (a WARN per record), so a DLQ whose records are all undecodable lists nothing. Every failure of the read
+    /// itself is carried by the promise (`Promise<List<...>>`). [design intent — unverified: skip-and-log is a
+    /// judgment call.]
     @Override
     public Promise<List<DeadLetterEntry>> read(String streamName, int maxCount) {
         var dlqStream = DurableTopicNames.dlqStreamForTopicStream(streamName);
@@ -142,6 +143,7 @@ public record DlqStreamSink(Deserializer deserializer,
                                                                                                       maxCount,
                                                                                                       cause),
                                                                            Promise::success))
+                       .flatMap(read -> wholeOrRefused(dlqStream, read))
                        .map(read -> entriesOf(streamName, read));
     }
 
@@ -162,6 +164,16 @@ public record DlqStreamSink(Deserializer deserializer,
             case StreamError.CursorExpired expired -> readFrom(dlqStream, expired.tailOffset(), maxCount);
             default -> cause.promise();
         };
+    }
+
+    /// A copy that is not the owner and has not been compared with its owner holds back what it has at and above the committed
+    /// epoch's start ([StreamPartitionManager#unverifiedFrom]), and the read from offset 0 then returns only the prefix below it,
+    /// with no sign that more exists. An inspection that listed that prefix would read as the whole DLQ, so it is refused with
+    /// the transient `ReplicaNotVerified` instead. Asked after the read: the verdict the read itself was served under.
+    private Promise<StreamPartitionManager.EpochRead> wholeOrRefused(String dlqStream, StreamPartitionManager.EpochRead read) {
+        return manager.unverifiedFrom(dlqStream, 0)
+                      .fold(() -> Promise.success(read),
+                            start -> new StreamError.ReplicaNotVerified(dlqStream, 0, start).<StreamPartitionManager.EpochRead> promise());
     }
 
     private List<DeadLetterEntry> entriesOf(String streamName, StreamPartitionManager.EpochRead read) {
