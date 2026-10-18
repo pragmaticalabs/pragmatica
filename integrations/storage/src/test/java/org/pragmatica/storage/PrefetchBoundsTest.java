@@ -175,6 +175,49 @@ class PrefetchBoundsTest {
     }
 
     @Test
+    void recordAccess_whileInactive_recordsNothing_evenOnceActivated() {
+        var manager = manager(1);
+
+        manager.deactivate();
+        manager.recordAccess(blockIdOf(1));
+        manager.activate();
+
+        assertThat(manager.trackedBlocks()).as("a dormant manager must not accumulate observations").isZero();
+    }
+
+    @Test
+    void deactivate_clearsTheCooldowns() {
+        var manager = manager(1);
+
+        manager.processHints(List.of(prefetchHint(blockIdOf(1).hexString(), 10, TierLevel.MEMORY.name())));
+        assertThat(manager.cooldownEntries()).as("the attempt recorded a cooldown").isEqualTo(1);
+
+        manager.deactivate();
+
+        assertThat(manager.cooldownEntries()).isZero();
+    }
+
+    /// The reclaim at the start of `processHints` and the cooldown check read the clock separately. A clock that moves
+    /// on between the two reads isolates the check itself: the entry survives the reclaim (one millisecond short of
+    /// `cooldownMs`) and is exactly `cooldownMs` old when the check looks at it, which must allow the repeat.
+    @Test
+    void processHints_cooldownCheck_allowsARepeatAtExactlyTheCooldown() {
+        var drift = new AtomicLong();
+        var manager = new DefaultPrefetchManager(storage,
+                                                 prefetchConfig(1, 5, COOLDOWN_MS, WINDOW_MS, CAPACITY),
+                                                 () -> clock.getAndAdd(drift.get()));
+        var hint = prefetchHint(blockIdOf(1).hexString(), 10, TierLevel.MEMORY.name());
+
+        manager.activate();
+        manager.processHints(List.of(hint));
+        clock.addAndGet(COOLDOWN_MS - 1);
+        drift.set(1);
+        manager.processHints(List.of(hint));
+
+        assertThat(durable.gets.get()).as("elapsed == cooldownMs allows the repeat").isEqualTo(2);
+    }
+
+    @Test
     void collectHints_tiesRankDeterministically_byBlockId() {
         var manager = manager(2);
         var ids = List.of(blockIdOf(1), blockIdOf(2), blockIdOf(3), blockIdOf(4), blockIdOf(5), blockIdOf(6), blockIdOf(7));
