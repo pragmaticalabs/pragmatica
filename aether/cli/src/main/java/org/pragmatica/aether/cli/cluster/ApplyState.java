@@ -209,7 +209,6 @@ public record ApplyState(ClusterName clusterName,
         return Result.lift(() -> WaveStatus.valueOf(name)).or(WaveStatus.PENDING);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
     private static List<CreatedResource> parseResources(JsonNode node, ClusterName clusterName) {
         if (node.isMissingNode() || node.isNull() || !node.isArray()) {
             return List.of();
@@ -218,11 +217,7 @@ public record ApplyState(ClusterName clusterName,
         var resources = new ArrayList<CreatedResource>();
 
         for (var element : node) {
-            var resource = BootstrapStateJson.parseSingleResourceNode(element, clusterName);
-
-            if (resource != null) {
-                resources.add(resource);
-            }
+            resources.add(BootstrapStateJson.parseSingleResourceNode(element, clusterName));
         }
 
         return List.copyOf(resources);
