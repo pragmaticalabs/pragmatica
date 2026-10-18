@@ -40,7 +40,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// How `aether cluster apply` (scale-up, add-role, reprovision, replace-before-retire, `--resume`/`--rollback`)
+/// How `aether cluster apply` (scale-up, add-role, reprovision, replace-before-retire, `--resume`)
 /// provisions a CLOUD node — through the composition the leader's auto-heal uses
 /// ([ReplacementNodeConfigComposer], [SourceCloudBindings#resolveOverlayFromConfig], [NodeUserDataRenderer]), so the
 /// node boots with its cluster identity, secret, role, source, zone and the live core peers, and joins. One difference
@@ -328,8 +328,7 @@ sealed interface WaveNodeProvisioning {
 
     /// A rollout that fails after creating VMs. The failing step's VMs have been torn down; each destroy that failed is
     /// named as STILL RUNNING AND BILLED with its provider, server id and removal steps. VMs from earlier completed steps
-    /// are kept and listed too, because the rollout records none of them: a retry mints new ids, and `--rollback` does
-    /// not see them.
+    /// are kept and listed too, because the rollout records none of them: a retry mints new ids and does not reuse them.
     record PartiallyProvisioned(List<CreatedNode> created, Cause cause) implements Cause {
         static Cause partiallyProvisioned(List<CreatedNode> created, Cause cause) {
             return switch (cause) {
@@ -363,7 +362,7 @@ sealed interface WaveNodeProvisioning {
             sb.append("  ")
               .append(stillRunning)
               .append(" cloud VM(s) created by this apply are STILL RUNNING AND BILLED and are not recorded by the apply")
-              .append(" (a retry mints new ids and will not reuse them; --rollback does not see them).\n");
+              .append(" (a retry mints new ids and will not reuse them).\n");
 
             return sb.toString();
         }

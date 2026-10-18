@@ -37,29 +37,29 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class ClusterBootstrapConfigValidatorTest {
 
     private static ClusterBootstrapConfig validForgeConfig() {
-        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+        var coreRole = roleSubTable(some(3), none(), none(), "ember");
         var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("dev-local", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig validCloudConfig() {
-        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
-        var workerRole = roleSubTable(NodeRole.WORKER, some(2), none(), some("cx31"), "prod");
+        var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
+        var workerRole = roleSubTable(some(2), none(), some("cx31"), "prod");
         var source = sourceProfile(sourceNameOrDefault("hetzner-eu"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                    Map.of(NodeRole.CORE, coreRole, NodeRole.WORKER, workerRole), List.of());
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("hetzner-eu", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
     /// #2059: an aws source carries its credential keys under `node_config.cloud.credentials` — the scalar
@@ -71,23 +71,23 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigWithFirewall(CloudProviderName provider) {
-        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
         var rules = List.of(firewallRule(8070, "tcp", "0.0.0.0/0", none()));
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                    Map.of(NodeRole.CORE, coreRole), rules, awsCredentials(provider));
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithManagement(String securityMode, String cidr) {
-        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
         var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
                             firewallRule(8080, "tcp", cidr, none()));
         var overlay = new TomlDocument(Map.of("app-http", Map.of("security_mode", securityMode)));
@@ -96,25 +96,25 @@ class ClusterBootstrapConfigValidatorTest {
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                    Map.of(NodeRole.CORE, coreRole), rules, some(overlay));
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithOverlay(Map<String, Object> appHttp) {
-        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
         var overlay = new TomlDocument(Map.of("app-http", appHttp));
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                    Map.of(NodeRole.CORE, coreRole), List.of(), some(overlay));
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithPublicManagement(String securityMode) {
@@ -126,18 +126,18 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigWithSpot(CloudProviderName provider) {
-        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
-        var spotRole = roleSubTable(NodeRole.SPOT, some(2), none(), some("cx31"), "prod");
+        var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
+        var spotRole = roleSubTable(some(2), none(), some("cx31"), "prod");
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                    Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of(), awsCredentials(provider));
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
     @Nested
@@ -222,21 +222,21 @@ class ClusterBootstrapConfigValidatorTest {
         }
 
         private static ClusterBootstrapConfig configWithVersion(String version) {
-            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", version).unwrap(),
+            return clusterBootstrapConfig(clusterIdentity("test", version).unwrap(),
                                           defaultCoreTopology(), validForgeConfig().sources(),
-                                          Map.of(), infrastructureConfig(NetworkingType.MANUAL),
+                                          Map.of(), infrastructureConfig(),
                                           defaultOperationsConfig(), java.util.Map.of());
         }
 
         @Test
         void validate_evenCoreCount_returnsError() {
-            var coreRole = roleSubTable(NodeRole.CORE, some(4), none(), none(), "ember");
+            var coreRole = roleSubTable(some(4), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -245,13 +245,13 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_coreCountTooSmall_returnsError() {
-            var coreRole = roleSubTable(NodeRole.CORE, some(1), none(), none(), "ember");
+            var coreRole = roleSubTable(some(1), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -260,13 +260,13 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_noCoreSubTable_returnsError() {
-            var workerRole = roleSubTable(NodeRole.WORKER, some(3), none(), none(), "ember");
+            var workerRole = roleSubTable(some(3), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.WORKER, workerRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -277,16 +277,16 @@ class ClusterBootstrapConfigValidatorTest {
         /// name that dash-prefixes another would let two sources claim one node. Refused at load.
         @Test
         void validate_sourceNameIsDashPrefixOfAnother_returnsCl08NamingBoth() {
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var coreRole = roleSubTable(some(3), none(), none(), "ember");
             var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
             var eu1 = sourceProfile(sourceNameOrDefault("eu-1"), SourceType.FORGE, none(), none(), none(), none(),
                                     none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                     none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("eu", eu, "eu-1", eu1), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -296,16 +296,16 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_distinctNonPrefixSourceNames_pass() {
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var coreRole = roleSubTable(some(3), none(), none(), "ember");
             var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
             var us = sourceProfile(sourceNameOrDefault("us"), SourceType.FORGE, none(), none(), none(), none(),
                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("eu", eu, "us", us), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config).onFailure(cause -> assertThat(cause.message()).doesNotContain("CL-08"));
         }
@@ -315,9 +315,9 @@ class ClusterBootstrapConfigValidatorTest {
             var ports = portMapping(8080, 8080, 8070, 8190);
             var ops = operationsConfig(defaultOperationsConfig().autoHeal(), defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), ports);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
+                                                Map.of(), infrastructureConfig(), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-11").contains("conflicts"));
@@ -328,9 +328,9 @@ class ClusterBootstrapConfigValidatorTest {
             var ports = portMapping(0, 8080, 8070, 8190);
             var ops = operationsConfig(defaultOperationsConfig().autoHeal(), defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), ports);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
+                                                Map.of(), infrastructureConfig(), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-11").contains("out of range"));
@@ -343,9 +343,9 @@ class ClusterBootstrapConfigValidatorTest {
             var autoHeal = AutoHealSpec.autoHealSpec(false);
             var ops = operationsConfig(autoHeal, defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), defaultOperationsConfig().ports());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
+                                                Map.of(), infrastructureConfig(), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-25").contains("auto-heal disable"));
@@ -358,9 +358,9 @@ class ClusterBootstrapConfigValidatorTest {
         @Test
         void validate_maxUnavailableTooHigh_returnsError() {
             var topology = coreTopology(none(), none(), 3);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 topology, validForgeConfig().sources(), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -373,15 +373,15 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_spotOnSshSource_returnsError() {
-            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), "ember");
-            var spotRole = roleSubTable(NodeRole.SPOT, none(), some(List.of("h4")), none(), "ember");
+            var coreRole = roleSubTable(none(), some(List.of("h1", "h2", "h3")), none(), "ember");
+            var spotRole = roleSubTable(none(), some(List.of("h4")), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
                                        some("root"), some("/key"), some(22), LoadBalancerMode.NONE, List.of(),
                                        none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -390,15 +390,15 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_spotOnForgeSource_returnsError() {
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
-            var spotRole = roleSubTable(NodeRole.SPOT, some(1), none(), none(), "ember");
+            var coreRole = roleSubTable(some(3), none(), none(), "ember");
+            var spotRole = roleSubTable(some(1), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -475,15 +475,15 @@ class ClusterBootstrapConfigValidatorTest {
         /// would be silently inert. Refuse rather than pretend.
         @Test
         void validate_allowIngressOnSshSource_returnsPf23() {
-            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), "ember");
+            var coreRole = roleSubTable(none(), some(List.of("h1", "h2", "h3")), none(), "ember");
             var rules = List.of(firewallRule(8070, "tcp", "0.0.0.0/0", none()));
             var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
                                        some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
                                        List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), rules);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                                infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
 
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -512,8 +512,8 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void warnings_firewallWithBootstrapPorts_doesNotWarn() {
-            var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+            var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+            var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
             var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
                                 firewallRule(8080, "tcp", "10.0.0.0/8", none()),
                                 firewallRule(8070, "tcp", "0.0.0.0/0", none()));
@@ -521,10 +521,10 @@ class ClusterBootstrapConfigValidatorTest {
                                        some("key"), some("eu-central"), none(), none(), none(), none(),
                                        LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), rules);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("cloud-src", source),
                                                 Map.of("prod", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                                infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
 
             assertThat(warnings(config)).noneSatisfy(warning -> assertThat(warning).contains("port 22"))
                                         .noneSatisfy(warning -> assertThat(warning).contains("port 8080"));
@@ -675,14 +675,14 @@ class ClusterBootstrapConfigValidatorTest {
         /// source type the value would parse and never be read, so it is refused (PF-26).
         @Test
         void validate_replacementCeilingOnForgeSource_returnsPf26() {
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var coreRole = roleSubTable(some(3), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        List.of(), none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(), none(),
                                        some(timeSpan(5).minutes()));
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("dev-local", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
 
             validate(config)
@@ -694,31 +694,31 @@ class ClusterBootstrapConfigValidatorTest {
         /// Control for the PF-26 case above: the same key on a cloud source is read, so it is accepted.
         @Test
         void validate_replacementCeilingOnCloudSource_accepted() {
-            var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+            var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+            var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
             var source = sourceProfile(sourceNameOrDefault("hetzner-eu"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                        some("key"), some("eu-central"), none(), List.of(), none(), none(), none(),
                                        LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of(), none(),
                                        some(timeSpan(5).minutes()));
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("hetzner-eu", source),
                                                 Map.of("prod", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                                infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
 
             validate(config)
                 .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-26"));
         }
 
         @Test
-        void validate_electedLbOnSsh_returnsError() {            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), "ember");
+        void validate_electedLbOnSsh_returnsError() {            var coreRole = roleSubTable(none(), some(List.of("h1", "h2", "h3")), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
                                        some("root"), some("/key"), some(22), LoadBalancerMode.ELECTED,
                                        List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -727,14 +727,14 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_sshWithCountInsteadOfHosts_returnsError() {
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var coreRole = roleSubTable(some(3), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
                                        some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
                                        List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -743,17 +743,17 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_cloudWithHostsInsteadOfCount_returnsError() {
-            var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
-            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")),
+            var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+            var coreRole = roleSubTable(none(), some(List.of("h1", "h2", "h3")),
                                         some("cx41"), "prod");
             var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                        some("key"), some("eu"), none(), none(), none(), none(),
                                        LoadBalancerMode.EXTERNAL, List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("cloud-src", source),
                                                 Map.of("prod", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -763,13 +763,13 @@ class ClusterBootstrapConfigValidatorTest {
         @Test
         void validate_invalidFirewallPort_returnsError() {
             var rule = firewallRule(0, "tcp", "10.0.0.0/8", none());
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var coreRole = roleSubTable(some(3), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(rule));
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -779,13 +779,13 @@ class ClusterBootstrapConfigValidatorTest {
         @Test
         void validate_invalidFirewallProtocol_returnsError() {
             var rule = firewallRule(443, "icmp", "10.0.0.0/8", none());
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var coreRole = roleSubTable(some(3), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(rule));
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -794,15 +794,15 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_forgeWithNonEmberRuntime_returnsError() {
-            var runtime = runtimeProfile("jvm-rt", RuntimeType.JVM, none(), none());
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "jvm-rt");
+            var runtime = runtimeProfile(RuntimeType.JVM, none(), none());
+            var coreRole = roleSubTable(some(3), none(), none(), "jvm-rt");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -814,14 +814,14 @@ class ClusterBootstrapConfigValidatorTest {
         /// deploy phase can launch only a container over SSH, so PF-22 says so at config load.
         @Test
         void validate_sshWithJvmRuntime_returnsError() {
-            validate(sshConfigWithRuntime(runtimeProfile("jvm-rt", RuntimeType.JVM, none(), none())))
+            validate(sshConfigWithRuntime("jvm-rt", runtimeProfile(RuntimeType.JVM, none(), none())))
                 .onSuccess(v -> Assertions.fail("Expected PF-22: a JVM runtime cannot be launched over SSH"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("jvm-rt"));
         }
 
         @Test
         void validate_sshWithEmberRuntime_returnsError() {
-            validate(sshConfigWithRuntime(runtimeProfile("ember-rt", RuntimeType.EMBER, none(), none())))
+            validate(sshConfigWithRuntime("ember-rt", runtimeProfile(RuntimeType.EMBER, none(), none())))
                 .onSuccess(v -> Assertions.fail("Expected PF-22: an EMBER runtime cannot be launched over SSH"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("ember-rt"));
         }
@@ -829,22 +829,22 @@ class ClusterBootstrapConfigValidatorTest {
         /// Control for the two above: the container runtime is what the SSH path launches.
         @Test
         void validate_sshWithContainerRuntime_isAccepted() {
-            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+            var runtime = runtimeProfile(RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
                                          none());
-            validate(sshConfigWithRuntime(runtime))
+            validate(sshConfigWithRuntime("ctr", runtime))
                 .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-22"));
         }
 
-        private static ClusterBootstrapConfig sshConfigWithRuntime(RuntimeProfile runtime) {
-            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), runtime.name());
+        private static ClusterBootstrapConfig sshConfigWithRuntime(String runtimeName, RuntimeProfile runtime) {
+            var coreRole = roleSubTable(none(), some(List.of("h1", "h2", "h3")), none(), runtimeName);
             var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
                                        some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
                                        List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of());
-            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            return clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                           defaultCoreTopology(), Map.of("ssh-src", source),
-                                          Map.of(runtime.name(), runtime),
-                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          Map.of(runtimeName, runtime),
+                                          infrastructureConfig(),
                                           defaultOperationsConfig(), java.util.Map.of());
         }
 
@@ -868,14 +868,14 @@ class ClusterBootstrapConfigValidatorTest {
         }
 
         private static ClusterBootstrapConfig twoSshSources(List<String> dcHosts, List<String> labHosts) {
-            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+            var runtime = runtimeProfile(RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
                                          none());
-            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            return clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                           defaultCoreTopology(),
                                           Map.of("dc", sshSource("dc", NodeRole.CORE, dcHosts),
                                                  "lab", sshSource("lab", NodeRole.WORKER, labHosts)),
                                           Map.of("ctr", runtime),
-                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          infrastructureConfig(),
                                           defaultOperationsConfig(), java.util.Map.of());
         }
 
@@ -883,20 +883,20 @@ class ClusterBootstrapConfigValidatorTest {
             return sourceProfile(sourceNameOrDefault(name), SourceType.SSH, none(), none(), none(), none(),
                                  some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
                                  List.of(), none(), Map.of(),
-                                 Map.of(role, roleSubTable(role, none(), some(hosts), none(), "ctr")), List.of());
+                                 Map.of(role, roleSubTable(none(), some(hosts), none(), "ctr")), List.of());
         }
 
         @Test
         void validate_dockerWithNonDockerRuntime_returnsError() {
-            var runtime = runtimeProfile("jvm-rt", RuntimeType.JVM, none(), none());
-            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "jvm-rt");
+            var runtime = runtimeProfile(RuntimeType.JVM, none(), none());
+            var coreRole = roleSubTable(some(3), none(), none(), "jvm-rt");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.DOCKER, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.NONE, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+            var config = clusterBootstrapConfig(clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                infrastructureConfig(),
                                                 defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -930,25 +930,25 @@ class ClusterBootstrapConfigValidatorTest {
     class ConsensusTierMaximum {
 
         private static ClusterBootstrapConfig configWithCoreCount(int count) {
-            var coreRole = roleSubTable(NodeRole.CORE, some(count), none(), none(), "ember");
+            var coreRole = roleSubTable(some(count), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
 
-            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+            return clusterBootstrapConfig(clusterIdentity("dev-local", "1.0.0").unwrap(),
                                           defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                          infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
         }
 
         private static ClusterBootstrapConfig configWithCoreMax(int max) {
-            var coreRole = roleSubTable(NodeRole.CORE, some(5), none(), none(), "ember");
+            var coreRole = roleSubTable(some(5), none(), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
 
-            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+            return clusterBootstrapConfig(clusterIdentity("dev-local", "1.0.0").unwrap(),
                                           coreTopology(some(5), some(max), 1), Map.of("local", source), Map.of(),
-                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+                                          infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
         }
 
         private static String messageOf(ClusterBootstrapConfig config) {

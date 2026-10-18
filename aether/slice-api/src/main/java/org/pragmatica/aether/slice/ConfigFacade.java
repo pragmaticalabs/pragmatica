@@ -5,7 +5,6 @@ package org.pragmatica.aether.slice;
 
 import java.util.List;
 
-import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -16,6 +15,11 @@ import org.pragmatica.lang.Result;
 /// is a failure naming the key and the value (#1098). `Option<T>` alone had no failure channel, so
 /// `port = "80x"` read as "not configured" and the slice's default applied silently.
 public interface ConfigFacade {
+    /// Bind configuration for an explicitly assembled slice, including non-Aether runtimes.
+    static ConfigFacade configFacade(String sliceId, org.pragmatica.config.ConfigurationProvider provider) {
+        return ConfigProviderFacade.configProviderFacade(sliceId, provider);
+    }
+
     Result<String> requireString(String section, String key);
     Result<Integer> requireInt(String section, String key);
     Result<Long> requireLong(String section, String key);
@@ -27,11 +31,4 @@ public interface ConfigFacade {
     Result<Option<Long>> getLong(String section, String key);
     Result<Option<Double>> getDouble(String section, String key);
     Result<Option<Boolean>> getBoolean(String section, String key);
-
-    /// The facade a DEPLOYED slice gets (#889), served from `provider`; keys are `section + "." + key`. Public so a
-    /// test harness reads configuration with exactly the production semantics (typed parse, `requireStringList`)
-    /// instead of a lookalike. `sliceId` only names the asking slice in refusals.
-    static ConfigFacade configFacade(String sliceId, ConfigurationProvider provider) {
-        return ConfigProviderFacade.configProviderFacade(sliceId, provider);
-    }
 }

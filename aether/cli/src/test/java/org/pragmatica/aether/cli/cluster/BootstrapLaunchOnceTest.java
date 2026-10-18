@@ -14,7 +14,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
@@ -122,8 +121,7 @@ class BootstrapLaunchOnceTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(3),
+                                                  RoleSubTable.roleSubTable(Option.some(3),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -145,8 +143,7 @@ class BootstrapLaunchOnceTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(2),
+                                                  RoleSubTable.roleSubTable(Option.some(2),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -156,20 +153,18 @@ class BootstrapLaunchOnceTest {
     private static ClusterBootstrapConfig config(Map<String, SourceProfile> sources, RuntimeType runtime) {
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
-                                                    TimeoutsConfig.timeoutsConfig("3s", "10s", "10s"),
+                                                    TimeoutsConfig.timeoutsConfig("3s", "10s"),
                                                     PortMapping.defaultPortMapping());
 
-        return ClusterBootstrapConfig.clusterBootstrapConfig(VERSION,
-                                                             ClusterIdentity.clusterIdentity(CLUSTER.value(), VERSION)
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity(CLUSTER.value(), VERSION)
                                                                             .unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              sources,
                                                              Map.of("default",
-                                                                    RuntimeProfile.runtimeProfile("default",
-                                                                                                  runtime,
+                                                                    RuntimeProfile.runtimeProfile(runtime,
                                                                                                   Option.empty(),
                                                                                                   Option.empty())),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              ops,
                                                              Map.of());
     }
@@ -328,8 +323,7 @@ class BootstrapLaunchOnceTest {
                                                  Option.empty(),
                                                  Map.of(),
                                                  Map.of(NodeRole.CORE,
-                                                        RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                                  Option.some(3),
+                                                        RoleSubTable.roleSubTable(Option.some(3),
                                                                                   Option.empty(),
                                                                                   Option.empty(),
                                                                                   "default")),
