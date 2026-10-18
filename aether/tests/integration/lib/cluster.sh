@@ -894,18 +894,29 @@ is_cluster_ready() {
     _cluster_is_ready
 }
 
-# _operator_network_down — 0 when the OPERATOR HOST's own network is down, judged by a reference endpoint that is not part of
-# the cluster; 1 otherwise, including when no reference applies. #2192: a core sweep that finds nothing cannot tell a dead
-# cluster from an operator host that lost its link (a ~30 s receive blackout was reported as a dead cluster, against a cluster
-# that stayed healthy). Any HTTP answer from the reference proves the link; only a curl transport failure is "down".
-# OPERATOR_REFERENCE_URL overrides the reference; by default cloud runs use the Hetzner API host the harness already calls, and
-# other environments have none (the cluster is on the operator's own host or LAN, so its link is not in question) [guess:
-# cloud == Hetzner is the only cloud this harness drives today].
-_operator_network_down() {
+# _operator_reference_url — prints the reference endpoint used to judge the OPERATOR HOST's own link, empty when none applies.
+# OPERATOR_REFERENCE_URL overrides. Default: cloud runs use the Hetzner API (${HCLOUD_API}, the knob common.sh defines), which
+# answers an unauthenticated GET with an HTTP status [verified 2026-10-18: GET https://api.hetzner.cloud/v1 -> 404]. Every
+# other environment has NO default: docker on the operator's own host or LAN does not put the link in question, but `remote`
+# (ssh) and docker with a remote TARGET_HOST do, and #2192 stays unfixed there unless OPERATOR_REFERENCE_URL (an HTTP URL) is
+# set [guess: a TARGET_HOST:22 reachability probe would cover them; not built, it needs an owner call on a non-HTTP probe].
+_operator_reference_url() {
     local ref="${OPERATOR_REFERENCE_URL:-}"
     if [ -z "$ref" ] && [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-        ref="https://api.hetzner.cloud/"
+        ref="${HCLOUD_API:-https://api.hetzner.cloud/v1}"
     fi
+    printf '%s' "$ref"
+}
+
+# _operator_network_down — 0 when the operator host's own network is down, judged by the reference endpoint (not part of the
+# cluster); 1 otherwise, including when no reference applies. #2192: a core sweep that finds nothing cannot tell a dead
+# cluster from an operator host that lost its link (a ~30 s receive blackout was reported as a dead cluster, against a cluster
+# that stayed healthy). Any HTTP answer from the reference proves the link; only a curl transport failure is "down".
+# The probe is bounded by OPERATOR_REFERENCE_TIMEOUT_S (default 3), because an unbounded probe would hang through exactly
+# the blackout this exists for.
+_operator_network_down() {
+    local ref
+    ref=$(_operator_reference_url)
     [ -n "$ref" ] || return 1
     if curl -s -o /dev/null -m "${OPERATOR_REFERENCE_TIMEOUT_S:-3}" "$ref" 2>/dev/null; then
         return 1
@@ -946,6 +957,14 @@ wait_for_cluster_ready() {
         # dead; fall through to the normal bounded wait, which passes once the link is back and times out if it never is.
         if _operator_network_down; then
             log_warn "no core answered /health/live, but the reference endpoint is unreachable too: operator network unavailable, NOT fast-failing the cluster as down; waiting up to ${timeout}s"
+            wait_for "cluster ready (${expected}+ members, canonical §1.1)" "_cluster_is_ready ${expected}" "$timeout"
+            return $?
+        fi
+        # The link can come back between the sweep (~12 s) and the probe, or during it: the reference then answers although the
+        # sweep ran blind. One more sweep before calling the cluster dead; only when a reference was consulted (without one the
+        # extra sweep would just slow a genuinely dead cluster's fast-fail).
+        if [ -n "$(_operator_reference_url)" ] && _refresh_mgmt_entry_point; then
+            log_warn "first sweep found no core, but the reference answers and a second sweep found one: the operator link recovered mid-check, NOT fast-failing; waiting up to ${timeout}s"
             wait_for "cluster ready (${expected}+ members, canonical §1.1)" "_cluster_is_ready ${expected}" "$timeout"
             return $?
         fi
