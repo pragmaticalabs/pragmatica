@@ -183,6 +183,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// depend on); agreement is pinned end-to-end through the real entity substrate by
     /// `StreamEntityLogSubstrateTest.append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal`.
     private static final String ENTITY_STREAM_PREFIX = "entity:";
+    /// The most one ring age tick hands over from one ring (D5): the hand-over copies the evictees while the ring holds its
+    /// append lock, so the lock hold grows with what is handed over at once. Whatever else has aged out waits for the next
+    /// tick. Space eviction hands over a few events per append; these caps keep a tick to a comparable bound.
+    static final long RING_AGE_BATCH_EVENTS = 10_000L;
+    static final long RING_AGE_BATCH_BYTES = 8L * 1024 * 1024;
 
     /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
     /// cluster-event aggregator. See spec §4.5c.
@@ -4806,7 +4811,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var maxAgeMs = entry.config().retention().maxAgeMs();
         var rings = entry.materializedRings();
 
-        rings.forEach(ring -> ring.evictByAge(maxAgeMs));
+        rings.forEach(ring -> ring.evictByAge(maxAgeMs, RING_AGE_BATCH_EVENTS, RING_AGE_BATCH_BYTES));
 
         return rings.size();
     }

@@ -1379,12 +1379,21 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// rewrites the control region.
     @Contract
     public void evictByAge(long maxAgeMs) {
-        guardedSweep(() -> evictByAgeChecked(maxAgeMs));
+        evictByAge(maxAgeMs, Long.MAX_VALUE, Long.MAX_VALUE);
     }
 
-    private void evictByAgeChecked(long maxAgeMs) {
+    /// One bounded batch of [#evictByAge(long)]: at most `maxEvents` events and, after the first, no more than `maxBytes`
+    /// of event data, so the hand-over (which copies the evictees while it holds the append lock) has a bounded hold. The
+    /// events still aged out stay for the next call. At least one aged event is always taken, so a caller that repeats
+    /// makes progress whatever the caps.
+    @Contract
+    public void evictByAge(long maxAgeMs, long maxEvents, long maxBytes) {
+        guardedSweep(() -> evictByAgeChecked(maxAgeMs, maxEvents, maxBytes));
+    }
+
+    private void evictByAgeChecked(long maxAgeMs, long maxEvents, long maxBytes) {
         var cutoff = System.currentTimeMillis() - maxAgeMs;
-        var countToEvict = countEvictionsByAge(cutoff);
+        var countToEvict = countEvictionsByAge(cutoff, maxEvents, maxBytes);
 
         notifyAndEvict(countToEvict);
     }
@@ -1868,17 +1877,28 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private long countEvictionsByAge(long cutoff) {
+        return countEvictionsByAge(cutoff, Long.MAX_VALUE, Long.MAX_VALUE);
+    }
+
+    private long countEvictionsByAge(long cutoff, long maxEvents, long maxBytes) {
         var count = 0L;
+        var bytes = 0L;
         var tail = rawTailOffset();
 
-        while (count < rawEventCount()) {
+        while (count < rawEventCount() && count < maxEvents) {
             var slotIndex = Math.floorMod(tail + count, capacity);
-            var timestamp = readTimestamp(slotIndex);
 
-            if (timestamp >= cutoff) {
+            if (readTimestamp(slotIndex) >= cutoff) {
                 break;
             }
 
+            var withThis = bytes + dataLengthAt(slotIndex);
+
+            if (count > 0 && withThis > maxBytes) {
+                break;
+            }
+
+            bytes = withThis;
             count++;
         }
 

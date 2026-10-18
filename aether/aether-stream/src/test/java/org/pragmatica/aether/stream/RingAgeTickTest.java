@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +16,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.TierAwareRetention;
+import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -253,6 +255,91 @@ class RingAgeTickTest {
         assertThat(manager.evictRingsByAge()).isEqualTo(3);
         assertThat(handedOverRings).as("the old event of every ring of every stream went to the sealer")
                                    .containsExactlyInAnyOrder("a/0", "a/1", "b/0");
+    }
+
+    /// F-6 / D4: the tick reaches a REPLICA's ring too. The default role supplier answers OWNER for everything, so
+    /// without this a tick that swept owner rings only would pass every other test here.
+    @Test
+    void evictRingsByAge_reachesAReplicaRing_andHandsItsAgedEventsToItsSealer() {
+        manager.placementRoleSupplier((_, _) -> Role.REPLICA);
+
+        var ring = ringWithOldAndFreshEvents("replicated", timeTyped(HOUR_MS));
+
+        assertThat(manager.evictRingsByAge()).isEqualTo(1);
+        assertThat(handedOver).containsExactly(0L, 1L, 2L);
+        assertThat(ring.eventCount()).isEqualTo(KEPT_EVENTS);
+    }
+
+    /// D5: one tick hands over at most RING_AGE_BATCH_EVENTS events per ring; the rest wait for the next tick.
+    @Test
+    void evictRingsByAge_handsOverAtMostTheEventBatchPerRingPerTick_andTheRestOnTheNextTick() {
+        manager.createStream(StreamConfig.streamConfig("backlog", 1, timeTyped(HOUR_MS), "earliest"))
+               .onFailure(cause -> fail(cause.message()));
+
+        var ring = manager.partitionBuffer("backlog", 0).unwrap();
+        var stale = System.currentTimeMillis() - STALE_MS;
+        var backlog = (int) StreamPartitionManager.RING_AGE_BATCH_EVENTS + 2_000;
+
+        for (int i = 0; i < backlog; i++) {
+            append(ring, "e", stale);
+        }
+
+        manager.evictRingsByAge();
+        assertThat(handedOver).as("the first tick hands over one batch").hasSize((int) StreamPartitionManager.RING_AGE_BATCH_EVENTS);
+        assertThat(ring.eventCount()).isEqualTo(2_000L);
+
+        manager.evictRingsByAge();
+        assertThat(handedOver).as("the next tick takes the rest, in order")
+                              .containsExactlyElementsOf(LongStream.range(0, backlog).boxed().toList());
+        assertThat(ring.eventCount()).isZero();
+    }
+
+    /// D5: the byte cap bounds a batch whose events are large, whatever their number.
+    @Test
+    void evictRingsByAge_handsOverAtMostTheByteBatchPerRingPerTick() {
+        manager.createStream(StreamConfig.streamConfig("heavy", 1, timeTyped(HOUR_MS), "earliest"))
+               .onFailure(cause -> fail(cause.message()));
+
+        var ring = manager.partitionBuffer("heavy", 0).unwrap();
+        var stale = System.currentTimeMillis() - STALE_MS;
+        var eventBytes = (int) (StreamPartitionManager.RING_AGE_BATCH_BYTES * 3 / 8);
+
+        for (int i = 0; i < 4; i++) {
+            ring.append(new byte[eventBytes], stale).onFailure(cause -> fail(cause.message()));
+        }
+
+        manager.evictRingsByAge();
+        assertThat(handedOver).as("two events fit the byte batch, the third would pass it").containsExactly(0L, 1L);
+
+        manager.evictRingsByAge();
+        assertThat(handedOver).containsExactly(0L, 1L, 2L, 3L);
+    }
+
+    /// D5, at the ring: the batch caps apply, and at least one aged event is always taken so a repeating caller makes progress.
+    @Test
+    void evictByAge_withCaps_takesAtMostTheEventCap_andAlwaysAtLeastOneEvent() {
+        var taken = new CopyOnWriteArrayList<Long>();
+        var ring = OffHeapRingBuffer.offHeapRingBuffer("capped", 0, 16, 4096, (_, _, events) -> {
+            events.forEach(event -> taken.add(event.offset()));
+            return Result.unitResult();
+        }, EvictionPolicy.DROP_OLDEST);
+
+        try {
+            for (int i = 0; i < 6; i++) {
+                append(ring, "event-" + i, 1_000L + i);
+            }
+
+            ring.evictByAge(HOUR_MS, 2, Long.MAX_VALUE);
+            assertThat(taken).as("the event cap").containsExactly(0L, 1L);
+
+            ring.evictByAge(HOUR_MS, Long.MAX_VALUE, 1);
+            assertThat(taken).as("a byte cap below one event still takes one").containsExactly(0L, 1L, 2L);
+
+            ring.evictByAge(HOUR_MS, Long.MAX_VALUE, Long.MAX_VALUE);
+            assertThat(taken).as("uncapped takes the rest").containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+        } finally {
+            ring.close();
+        }
     }
 
     private record Partition(String stream, int partition) {}
