@@ -105,13 +105,13 @@ The `CertificateRenewalScheduler` handles automatic renewal for auto-generated c
 
 ### Renewal Timing
 
-Renewal triggers at **40% of remaining validity** (equivalently, when 60% of the certificate's
-lifetime has elapsed). For the default 7-day node certificates:
+Renewal triggers after **40% of the remaining validity** has passed (equivalently, when 40% of a
+fresh certificate's lifetime has elapsed, with 60% still remaining). For the default 7-day node certificates:
 
 | Event | Day |
 |-------|-----|
 | Certificate issued | 0 |
-| Renewal triggers (60% elapsed) | ~2.8 |
+| Renewal triggers (40% elapsed) | ~2.8 |
 | Certificate expires | 7 |
 
 This gives a comfortable window for retries if renewal fails.
