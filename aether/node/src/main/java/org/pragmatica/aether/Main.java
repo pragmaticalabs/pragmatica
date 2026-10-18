@@ -123,13 +123,13 @@ public record Main(String[] args) {
                                 tlsBundle,
                                 environment,
                                 resolveConfigProvider())
-                                     // #298 — stamp the boot-gated cluster identity onto runtime config.
-                                     // enforceClusterNamePresent() above already aborted the boot if this
-                                     // were missing or malformed, so the value is present and validated.
-                                     .withClusterName(resolveClusterName())
-                                     .withAutoHeal(resolveAutoHeal(aetherConfig))
-                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig))
-                                     .withAlerts(resolveAlertConfig(aetherConfig));
+                               // #298 — stamp the boot-gated cluster identity onto runtime config.
+                               // enforceClusterNamePresent() above already aborted the boot if this
+                               // were missing or malformed, so the value is present and validated.
+                               .withClusterName(resolveClusterName())
+                               .withAutoHeal(resolveAutoHeal(aetherConfig))
+                               .withStorageEncryption(resolveStorageEncryption(aetherConfig))
+                               .withAlerts(resolveAlertConfig(aetherConfig));
 
         config = withResolvedClusterSecret(config, aetherConfig);
         enforceWalDurabilityBootable(config);

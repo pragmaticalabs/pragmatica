@@ -199,6 +199,7 @@ public final class EmberCluster {
     /// could reach the node. That made Aether's own local simulator unable to demonstrate the
     /// access-control model applications are expected to declare.
     private final AtomicReference<SecurityMode> appHttpSecurityMode = new AtomicReference<>(SecurityMode.NONE);
+
     private final AtomicReference<Option<SecurityMode>> managementSecurityMode = new AtomicReference<>(Option.empty());
 
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());
