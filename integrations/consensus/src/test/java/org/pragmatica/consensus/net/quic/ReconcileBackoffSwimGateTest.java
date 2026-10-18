@@ -41,6 +41,7 @@ class ReconcileBackoffSwimGateTest {
     private static final long INITIAL_MS = 5_000;
     private static final long CAP_MS = 60_000;
     private static final long ALIVE_SPACING_MS = 4_000;
+    private static final java.util.function.LongUnaryOperator NO_JITTER = delay -> delay;
     private static final NodeId LOW = new NodeId("aaa-self");
     private static final NodeId HIGH = new NodeId("zzz-peer");
 
@@ -63,13 +64,13 @@ class ReconcileBackoffSwimGateTest {
         }
         var lastAttempt = now;
 
-        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS - 1, INITIAL_MS, ALIVE_SPACING_MS))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS - 1, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
             .as("below the minimum spacing the alive evaluation still holds the dial back")
             .isFalse();
-        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS, INITIAL_MS, ALIVE_SPACING_MS))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
             .as("at exactly the minimum spacing after the last attempt the alive evaluation lets the dial through, whatever attempt time the 60 s cap earned")
             .isTrue();
-        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS + 1, INITIAL_MS, ALIVE_SPACING_MS))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(lastAttempt + ALIVE_SPACING_MS + 1, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
             .as("an allowed alive attempt is itself an attempt: the spacing restarts from it")
             .isFalse();
         assertThat(state.reconcileCurrentDelayMs()).as("the alive evaluation leaves the delay at its initial value").isEqualTo(INITIAL_MS);
@@ -81,7 +82,7 @@ class ReconcileBackoffSwimGateTest {
         var allowed = 0;
 
         for (var now = 0L; now < 20 * TICK_MS; now += TICK_MS) {
-            allowed += state.reconcileBackoffAllowsWhileAlive(now, INITIAL_MS, ALIVE_SPACING_MS) ? 1 : 0;
+            allowed += state.reconcileBackoffAllowsWhileAlive(now, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER) ? 1 : 0;
         }
 
         assertThat(allowed).as("one dial per tick while alive").isEqualTo(20);
@@ -89,13 +90,54 @@ class ReconcileBackoffSwimGateTest {
     }
 
     @Test
+    void aliveSpacingJitter_staysWithinTenPercentAndVaries() {
+        var distinct = new java.util.HashSet<Long>();
+
+        for (var i = 0; i < 2_000; i++) {
+            var spacing = QuicClusterNetwork.aliveSpacingJitter(ALIVE_SPACING_MS);
+
+            assertThat(spacing).as("spacing stays inside +-10% of the base, so below one tick").isBetween(3_600L, 4_400L);
+            distinct.add(spacing);
+        }
+
+        assertThat(distinct).as("the spacing is jittered, not constant").hasSizeGreaterThan(100);
+    }
+
+    @Test
+    void reconcileBackoffAllowsWhileAlive_spreadsTheNextDialAcrossNodes_whenAllSeeTheHealAtOnce() {
+        var firstDialOffsets = new java.util.TreeSet<Long>();
+
+        for (var node = 0; node < 100; node++) {
+            var state = PeerState.peerState(HIGH, 1L);
+
+            state.reconcileBackoffAllowsWhileAlive(1_000_000L, INITIAL_MS, ALIVE_SPACING_MS, QuicClusterNetwork::aliveSpacingJitter);
+            firstDialOffsets.add(firstAllowedOffset(state));
+        }
+
+        assertThat(firstDialOffsets.last()).as("every node re-dials inside one 5 s tick").isLessThanOrEqualTo(4_500L);
+        assertThat(firstDialOffsets.size()).as("the nodes do not re-dial in lockstep: distinct 100 ms slots").isGreaterThanOrEqualTo(5);
+    }
+
+    /// Offset after the last attempt (1,000,000) at which the alive gate first opens, scanned in 100 ms steps. The
+    /// first allowed call is the answer (an allowed call also moves the schedule, which ends the scan).
+    private static long firstAllowedOffset(PeerState state) {
+        for (var offset = 3_000L; offset <= 6_000L; offset += 100L) {
+            if (state.reconcileBackoffAllowsWhileAlive(1_000_000L + offset, INITIAL_MS, ALIVE_SPACING_MS, QuicClusterNetwork::aliveSpacingJitter)) {
+                return offset;
+            }
+        }
+
+        return Long.MAX_VALUE;
+    }
+
+    @Test
     void resetReconcileBackoff_allowsTheNextAliveAttemptAtOnce_afterAnAttach() {
         var state = PeerState.peerState(HIGH, 1L);
 
-        state.reconcileBackoffAllowsWhileAlive(100_000L, INITIAL_MS, ALIVE_SPACING_MS);
+        state.reconcileBackoffAllowsWhileAlive(100_000L, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER);
         state.resetReconcileBackoff();
 
-        assertThat(state.reconcileBackoffAllowsWhileAlive(100_001L, INITIAL_MS, ALIVE_SPACING_MS))
+        assertThat(state.reconcileBackoffAllowsWhileAlive(100_001L, INITIAL_MS, ALIVE_SPACING_MS, NO_JITTER))
             .as("a successful attach resets the backoff: the next attempt is not held back by the spacing")
             .isTrue();
     }

@@ -702,17 +702,20 @@ public final class PeerState {
     /// The same gate as [#reconcileBackoffAllows] while the peer is reported alive on the SWIM path
     /// (a separate UDP socket), where a blocked QUIC link is worth one dial per tick: the backoff is
     /// evaluated with its cap equal to its initial value. The attempt time earned at the higher cap does not
-    /// hold the dial back, so the next attempt is due `minSpacingMs` after the last allowed one (or at the
+    /// hold the dial back: the next attempt is due `jitterFn(spacingMs)` after the last allowed one (or at the
     /// stored attempt time, if that is earlier), and an allowed attempt leaves the delay at `initialMs`.
-    /// No jitter is applied: the reconciler tick is the granularity, and a jittered spacing above one tick
-    /// would skip the next tick. The spacing is therefore chosen below one tick by the caller.
-    public synchronized boolean reconcileBackoffAllowsWhileAlive(long nowMs, long initialMs, long minSpacingMs) {
-        if (nowMs < Math.min(reconcileNextAttemptMs, reconcileLastAttemptMs + minSpacingMs)) {
+    /// The jitter keeps nodes that all see a healed peer from re-dialing it in lockstep; the caller picks a
+    /// spacing and band whose upper end stays below one reconciler tick, so every tick may dial.
+    public synchronized boolean reconcileBackoffAllowsWhileAlive(long nowMs,
+                                                                 long initialMs,
+                                                                 long spacingMs,
+                                                                 LongUnaryOperator jitterFn) {
+        if (nowMs < Math.min(reconcileNextAttemptMs, reconcileLastAttemptMs + jitterFn.applyAsLong(spacingMs))) {
             return false;
         }
 
         reconcileCurrentDelayMs = initialMs;
-        reconcileNextAttemptMs = nowMs + minSpacingMs;
+        reconcileNextAttemptMs = nowMs + jitterFn.applyAsLong(spacingMs);
         reconcileLastAttemptMs = nowMs;
 
         return true;

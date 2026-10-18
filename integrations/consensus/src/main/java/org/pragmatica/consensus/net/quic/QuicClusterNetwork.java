@@ -201,11 +201,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final TimeSpan RECONCILE_TICK = TimeSpan.timeSpan(5L).seconds();
     private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
-
-    /// Minimum spacing between reconciler dials to a peer SWIM reports alive: the lower jitter bound of the
-    /// initial delay, so every 5 s tick may dial and scheduler jitter cannot skip one. With SWIM alive the
+    /// Base spacing between reconciler dials to a peer SWIM reports alive: the lower jitter bound of the
+    /// initial delay, with a further +-10% jitter ([#aliveSpacingJitter]) so nodes that all see a healed peer do
+    /// not re-dial it in lockstep; the upper end (4.4 s) stays below the 5 s tick, so every tick may dial. With SWIM alive the
     /// backoff cap equals its initial value; a peer SWIM does not see alive keeps the 60 s cap.
-    private static final long RECONCILE_ALIVE_MIN_SPACING_MS = Math.round(RECONCILE_BACKOFF_INITIAL_MS * JitterUtil.LIGHT_MIN_FACTOR);
+    private static final double ALIVE_JITTER_MIN_FACTOR = 0.9d;
+    private static final double ALIVE_JITTER_MAX_FACTOR = 1.1d;
+
+    private static final long RECONCILE_ALIVE_SPACING_MS = Math.round(RECONCILE_BACKOFF_INITIAL_MS * JitterUtil.LIGHT_MIN_FACTOR);
 
     /// Multiple of the QUIC hello/handshake timeout after which a peer pinned in CONNECTING is
     /// treated as a hung dial and force-evicted by the reconciler so a fresh re-dial can proceed.
@@ -3095,11 +3098,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return swimLivenessAllows(state.peerId())
                ? state.reconcileBackoffAllowsWhileAlive(nowMs,
                                                         RECONCILE_BACKOFF_INITIAL_MS,
-                                                        RECONCILE_ALIVE_MIN_SPACING_MS)
+                                                        RECONCILE_ALIVE_SPACING_MS,
+                                                        QuicClusterNetwork::aliveSpacingJitter)
                : state.reconcileBackoffAllows(nowMs,
                                               RECONCILE_BACKOFF_INITIAL_MS,
                                               RECONCILE_BACKOFF_CAP_MS,
                                               this::reconcileJitter);
+    }
+
+    /// +-10% jitter on the alive-peer spacing; package-private so a test can bound its spread.
+    static long aliveSpacingJitter(long delayMs) {
+        return JitterUtil.applyJitter(delayMs, ALIVE_JITTER_MIN_FACTOR, ALIVE_JITTER_MAX_FACTOR);
     }
 
     /// Default jitter for the missing-peer reconciler. Light bands (0.8x–1.2x) — peers
