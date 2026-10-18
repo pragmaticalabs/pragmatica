@@ -2,7 +2,7 @@
 
 A monorepo for building reliable Java backends with functional programming patterns and a unified application runtime.
 
-**Current release branch: `release-1.0.0-rc4`.** Development integrates here and pull requests target this branch, not `main`; once the release ships, find the current one with `git ls-remote origin 'release-*'`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+**Current release branch: `release-1.0.0-rc5`.** Development integrates here and pull requests target this branch, not `main`; once the release ships, find the current one with `git ls-remote origin 'release-*'`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Pre-GA release candidate — not production-ready.** Read the [Aether known limitations](aether/docs/reference/known-limitations.md) before evaluating.
 
@@ -79,14 +79,14 @@ mvn test                   # Run tests after build
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 
 <!-- Aether Slice API (for writing slices) -->
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-api</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
     <scope>provided</scope>
 </dependency>
 
@@ -94,7 +94,7 @@ mvn test                   # Run tests after build
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </plugin>
 ```
 

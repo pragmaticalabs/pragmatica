@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [1.0.0-rc4] - Unreleased
+## [1.0.0-rc5] - Unreleased
+
+## [1.0.0-rc4] - 2026-10-17
 
 ### Changed (2026-10-16 — #2214: rc4 known limitations — no-majority network cut, bootstrap re-run)
 - **Known limitation: a network cut that leaves no core majority halts every core.** If no group of cores holds a majority for long enough, each core drains and exits with code 2 and is not restarted (`Restart=no`); a heal after a core has begun draining does not cancel its halt. Consensus state is memory-only, so blueprints, slice targets, API keys, cluster and stream configuration and entity state are lost. Measured with every core isolated from every other on five cores: a 10 s cut halted 0 of 25 core-runs, 15 s halted 2 of 25, and 20 s, 25 s and 30 s halted 25 of 25 each; the drain began 18-19 s after the cut (3-4 s detection plus the 15 s `split_timeout`); 77 of 77 cores that fired exited with code 2 and none returned. `[measured: five-node Ember probe on the rc4 tip, loopback on one host; the probe is not in the repository]` Not measured: a 2/2/1 split, cut lengths of 16-19 s, other `split_timeout` values, a production-mode halt. `[unverified: those four]`

@@ -23,7 +23,7 @@ Each slice module has `slices/<Name>.toml` and a `routes.toml` under `src/main/r
 
 ## Build
 
-The example builds on its own once the platform artifacts (`1.0.0-rc4`) are resolvable: from Maven Central after rc4 is published, otherwise after `mvn install` from the repository root.
+The example builds on its own once the platform artifacts (`1.0.0-rc5`) are resolvable: from Maven Central after rc5 is published, otherwise after `mvn install` from the repository root.
 
 ```bash
 mvn -f examples/ecommerce/pom.xml install -P '!test-plan-gate'
