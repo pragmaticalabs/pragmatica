@@ -63,8 +63,7 @@ final class MavenRepositoryPath {
         var size = segments.size();
 
         return segments.get(size - 1)
-                       .startsWith(METADATA_FILE) && ArtifactId.artifactId(segments.get(size - 2))
-                                                                       .isSuccess();
+                       .startsWith(METADATA_FILE) && ArtifactId.artifactId(segments.get(size - 2)).isSuccess();
     }
 
     private static List<String> fold(List<String> segments, int groupStart, int tail, boolean padVersion) {
