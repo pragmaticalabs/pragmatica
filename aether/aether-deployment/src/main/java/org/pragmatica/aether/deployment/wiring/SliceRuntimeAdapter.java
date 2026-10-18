@@ -78,7 +78,11 @@ import org.slf4j.LoggerFactory;
 public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     private static final Logger log = LoggerFactory.getLogger(SliceRuntimeAdapter.class);
 
-    private static final Fn1<Cause, LocalStep> NEEDS_ARTIFACT = Causes.forOneValue("local step %s needs an artifact");
+    /// A step handed no artifact: the node FSM never builds such an op, so this names a wiring defect, not a condition to handle.
+    private record NeedsArtifact(LocalStep step, String message) implements Cause {
+        static final Fn1<NeedsArtifact, LocalStep> FACTORY = Causes.forOneValue("local step %s needs an artifact",
+                                                                                NeedsArtifact::new);
+    }
 
     private static final Cause NO_CONFIG_KEY = Causes.cause("local step NOTIFY_CONFIG carries no config key");
 
@@ -127,7 +131,7 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
             case REGISTER_CONFIG -> onArtifact(op, artifact -> settled(registerConfig(artifact)));
             case PUBLISH_ROUTES -> onArtifact(op, this::publishRoutes);
             case DESCRIBE_ACTIVE -> onArtifact(op, artifact -> settled(describeActive(artifact)));
-            case PREPARE_TEARDOWN -> onArtifact(op, artifact -> settled(prepareTeardown(artifact)));
+            case PREPARE_TEARDOWN -> onArtifact(op, artifact -> Promise.success(prepareTeardown(artifact)));
             case UNPUBLISH -> onArtifact(op, artifact -> unpublish(artifact, true));
             case DEACTIVATE -> onArtifact(op, this::deactivate);
             case UNLOAD -> onArtifact(op, this::unload);
@@ -141,22 +145,23 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     private static Promise<LocalOutcome> onArtifact(NodeFsmEffect.LocalOp op,
                                                     Fn1<Promise<LocalOutcome>, Artifact> step) {
         return op.artifact()
-                 .fold(() -> Promise.success(LocalOutcome.failed(NEEDS_ARTIFACT.apply(op.step()))),
+                 .fold(() -> Promise.success(LocalOutcome.failed(NeedsArtifact.FACTORY.apply(op.step()))),
                        step::apply);
     }
 
     private Promise<LocalOutcome> load(Artifact artifact) {
-        return c.sliceStore()
-                .loadSlice(artifact)
-                .map(_ -> LocalOutcome.done())
-                .recover(LocalOutcome::failed);
+        return outcomeOf(c.sliceStore().loadSlice(artifact));
     }
 
     private Promise<LocalOutcome> activate(Artifact artifact) {
-        return c.sliceStore()
-                .activateSlice(artifact)
-                .map(_ -> LocalOutcome.done())
-                .recover(LocalOutcome::failed);
+        return outcomeOf(c.sliceStore().activateSlice(artifact));
+    }
+
+    /// design-out: nothing is absorbed. A store operation that fails is the step's own `Failed` outcome, carrying the store's cause, and the node FSM
+    /// records it; the recovery only moves the failure from the promise's channel into the outcome the executor delivers.
+    private static Promise<LocalOutcome> outcomeOf(Promise<?> operation) {
+        return operation.map(_ -> LocalOutcome.done())
+                        .recover(LocalOutcome::failed);
     }
 
     private static Promise<LocalOutcome> settled(Result<LocalOutcome> outcome) {
@@ -268,24 +273,18 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     // -- teardown ------------------------------------------------------------------------------------------------------
     /// The removes and releases of the teardown batch, built from the slice as it stands. A slice absent from the store has nothing to build from
     /// and the batch carries only the row.
-    private Result<LocalOutcome> prepareTeardown(Artifact artifact) {
-        return Result.success(loaded(artifact).map(slice -> LocalOutcome.done(builders.teardown(artifact,
-                                                                                                slice.slice())))
-                                    .or(LocalOutcome.done()));
+    private LocalOutcome prepareTeardown(Artifact artifact) {
+        return loaded(artifact).map(slice -> LocalOutcome.done(builders.teardown(artifact,
+                                                                                 slice.slice())))
+                     .or(LocalOutcome.done());
     }
 
     private Promise<LocalOutcome> deactivate(Artifact artifact) {
-        return c.sliceStore()
-                .deactivateSlice(artifact)
-                .map(_ -> LocalOutcome.done())
-                .recover(LocalOutcome::failed);
+        return outcomeOf(c.sliceStore().deactivateSlice(artifact));
     }
 
     private Promise<LocalOutcome> unload(Artifact artifact) {
-        return c.sliceStore()
-                .unloadSlice(artifact)
-                .map(_ -> LocalOutcome.done())
-                .recover(LocalOutcome::failed);
+        return outcomeOf(c.sliceStore().unloadSlice(artifact));
     }
 
     /// N17 (B-148, with B-166's change): the goal is gone while the slice is loaded. The node-scoped legs are released through the cluster,
@@ -301,7 +300,11 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     private Promise<LocalOutcome> forcedCleanup(Artifact artifact) {
         return releaseLegs(artifact).flatMap(_ -> severing(artifact, true))
                           .flatMap(_ -> deactivate(artifact))
-                          .flatMap(deactivated -> unload(artifact).map(unloaded -> firstFailure(deactivated, unloaded)));
+                          .flatMap(deactivated -> unloadAfter(artifact, deactivated));
+    }
+
+    private Promise<LocalOutcome> unloadAfter(Artifact artifact, LocalOutcome deactivated) {
+        return unload(artifact).map(unloaded -> firstFailure(deactivated, unloaded));
     }
 
     private static LocalOutcome firstFailure(LocalOutcome first, LocalOutcome second) {
@@ -320,14 +323,18 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
 
         return commands.isEmpty()
                ? Promise.unitPromise()
-               : c.cluster()
-                  .get()
-                  .<Object> apply(commands)
-                  .onFailure(cause -> log.warn("Could not release the legs of {} on forced cleanup: {}",
-                                               artifact,
-                                               cause.message()))
-                  .mapToUnit()
-                  .recover(_ -> Unit.unit());
+               : submitReleases(artifact, commands);
+    }
+
+    private Promise<Unit> submitReleases(Artifact artifact, List<KVCommand<AetherKey>> commands) {
+        var cluster = c.cluster().get();
+
+        return cluster.<Object> apply(commands)
+                      .onFailure(cause -> log.warn("Could not release the legs of {} on forced cleanup: {}",
+                                                   artifact,
+                                                   cause.message()))
+                      .mapToUnit()
+                      .recover(_ -> Unit.unit());
     }
 
     private static List<KVCommand<AetherKey>> nodeScoped(List<LegCommand> legs) {

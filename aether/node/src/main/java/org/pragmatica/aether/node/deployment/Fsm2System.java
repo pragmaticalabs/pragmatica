@@ -235,8 +235,8 @@ public final class Fsm2System {
         poller.bind(seams);
         translator.bindMailboxDepth("node", node::mailboxDepth);
         translator.bindMailboxDepth("cluster", cluster::mailboxDepth);
-        var backlog = BacklogSampler.backlogSampler(List.of(new BacklogSampler.Watched("node", node::mailboxDepth),
-                                                            new BacklogSampler.Watched("cluster", cluster::mailboxDepth)),
+        var backlog = BacklogSampler.backlogSampler(List.of(BacklogSampler.watched("node", node::mailboxDepth),
+                                                            BacklogSampler.watched("cluster", cluster::mailboxDepth)),
                                                     translator.backlogAlarm(),
                                                     c.clock());
         var membership = MembershipInputs.membershipInputs(cluster::deliver, c.admissions(), seams);
@@ -329,6 +329,7 @@ public final class Fsm2System {
     /// queued behind the quorum loss, so the `SUSPEND`s it queued are known, and then waits for the local-op executor to run them (and anything
     /// a stale chain left to undo). The wait is bounded; on expiry the stop goes on, WARN `deployment-fsm-stop-timeout`: a slice that is still
     /// serving when the node stops is closed with it, which is what a stop without a drain would have done to every slice.
+    @Contract
     @TerminalOperation
     public void drainNode() {
         node.drain()

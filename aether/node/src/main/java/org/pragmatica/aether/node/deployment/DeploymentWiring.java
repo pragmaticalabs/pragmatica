@@ -331,8 +331,11 @@ public final class DeploymentWiring {
     public Runnable stateRestored() {
         return isFsm2() && !worker
                ? recorded("B14.StateRestored", "fsm2:Fsm2System.onStateRestored", this::restored)
-               : legacy("B14.StateRestored",
-                        () -> {});
+               : legacy("B14.StateRestored", DeploymentWiring::nothing);
+    }
+
+    private static Unit nothing() {
+        return Unit.unit();
     }
 
     private void restored() {

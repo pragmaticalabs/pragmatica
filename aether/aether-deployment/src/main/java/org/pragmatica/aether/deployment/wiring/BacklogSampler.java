@@ -32,6 +32,10 @@ public final class BacklogSampler {
     /// One mailbox to watch: the FSM it belongs to (`node`, `cluster`) and a cheap, thread-safe read of its depth.
     public record Watched(String fsm, IntSupplier depth) {}
 
+    public static Watched watched(String fsm, IntSupplier depth) {
+        return new Watched(fsm, depth);
+    }
+
     /// Where the alarm goes. Called from the sampler's thread, once per change of state.
     public interface Alarm {
         @Contract
@@ -46,9 +50,7 @@ public final class BacklogSampler {
     private final FsmTimers.TimerService clock;
     private final long intervalMs;
     private final Set<String> raised = new HashSet<>();
-
-    private Runnable cancellation = () -> {};
-
+    private Runnable cancellation = BacklogSampler::uncancellable;
     private boolean stopped = true;
 
     private BacklogSampler(List<Watched> watched, Alarm alarm, FsmTimers.TimerService clock, long intervalMs) {
@@ -114,6 +116,10 @@ public final class BacklogSampler {
             arm();
         }
 
+        return Unit.unit();
+    }
+
+    private static Unit uncancellable() {
         return Unit.unit();
     }
 

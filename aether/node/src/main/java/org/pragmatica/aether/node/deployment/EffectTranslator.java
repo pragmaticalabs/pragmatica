@@ -28,6 +28,7 @@ import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
@@ -125,6 +126,7 @@ public final class EffectTranslator {
     public BacklogSampler.Alarm backlogAlarm() {
         return new BacklogSampler.Alarm() {
             @Override
+            @Contract
             public void raised(String fsm, int depth) {
                 raise(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.code(),
                       backlogSubject(fsm),
@@ -134,6 +136,7 @@ public final class EffectTranslator {
             }
 
             @Override
+            @Contract
             public void cleared(String fsm, int depth) {
                 raise(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.code(),
                       backlogSubject(fsm),
