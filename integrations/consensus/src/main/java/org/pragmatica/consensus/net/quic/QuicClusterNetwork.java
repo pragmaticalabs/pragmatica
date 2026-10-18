@@ -193,7 +193,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Periodic missing-peer reconciler tunables. The reconciler runs every
     /// `RECONCILE_TICK` and, for any configured peer whose `PeerState.phase()` is
     /// not CONNECTED, dispatches a `connectPeer(...)` call gated by a per-peer
-    /// jittered exponential backoff (initial 5s, cap 60s — matches Theme I patterns).
+    /// jittered exponential backoff (initial 5s, cap 60s — matches Theme I patterns); while the
+    /// raw-SWIM liveness gate reports the peer alive the cap is the initial 5s (one dial per tick).
     /// Closes the asymmetric-recreation gap: when a node container is recreated
     /// mid-cluster it may handshake with most peers but permanently miss one, leaving
     /// no traffic to clear the sticky SUSPECTED snapshot state.
