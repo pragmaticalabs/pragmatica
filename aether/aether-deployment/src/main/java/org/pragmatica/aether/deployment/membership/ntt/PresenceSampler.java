@@ -116,8 +116,8 @@ public final class PresenceSampler {
     private final int downHysteresis;
     private final LongSupplier nowNanos;
     private final Runnable onReconcileNeeded;
-    /// Injected callback fired at the DOWN-hysteresis crossing for a node and then once per
-    /// `downHysteresis` window while the absence continues (see [`#crossDownHysteresis`]).
+    /// Injected callback fired at the DOWN-hysteresis crossing for a node; for a node never admitted
+    /// to the stable set it re-fires once per `downHysteresis` window (see [`#crossDownHysteresis`]).
     /// Routes the crossing to the membership FSM; defaults to a no-op so callers/tests that
     /// don't supply it are unaffected. Additive to — not a replacement for — the
     /// presence-sensor `stableMembers.remove(node)` at that edge.
@@ -135,6 +135,9 @@ public final class PresenceSampler {
     private final Map<NodeId, SampleBias> biases = new ConcurrentHashMap<>();
     /// Stable member set (debounced). Always contains self.
     private final Set<NodeId> stableMembers = ConcurrentHashMap.newKeySet();
+    /// Every node that has ever entered `stableMembers`; separates a node whose absence has its own
+    /// removal edge from one the sampler never admitted (see [`#crossDownHysteresis`]).
+    private final Set<NodeId> everAdmitted = ConcurrentHashMap.newKeySet();
     /// Last-emitted set — the delta baseline. Distinct from `stableMembers` so the
     /// reconcile trigger fires exactly once per transition.
     private final AtomicReference<Set<NodeId>> lastEmitted;
@@ -410,24 +413,27 @@ public final class PresenceSampler {
 
         streaks.put(node, next);
         if (present && next >= upHysteresis) {
+            everAdmitted.add(node);
             stableMembers.add(node);
         } else if (!present && (-next) >= downHysteresis) {
             crossDownHysteresis(node, -next);
         }
     }
 
-    /// DOWN-hysteresis crossing: remove the node from the stable set (presence-sensor removal,
-    /// unchanged; a no-op for a peer that was never admitted) and route the crossing to the FSM
-    /// callback. The callback fires for ANY peer whose absent streak reaches the threshold, not
-    /// only for one that was in `stableMembers`: the FSM promotes on one healthy sample while
-    /// this sampler admits on `upHysteresis`, so a peer that dies inside that window must still
-    /// reach the FSM. It then fires once per `downHysteresis` window while the absence
-    /// continues, because the FSM consumes the event only in SUSPECT and ignores it elsewhere
-    /// (`MembershipState`: MEMBER, OBSERVED, DEPARTING and DEAD absorb it); a single edge that
-    /// landed on a MEMBER would otherwise be lost. The callback is idempotent.
+    /// DOWN-hysteresis crossing. A node that was in the stable set keeps the single-edge behaviour:
+    /// it is removed (presence-sensor removal, unchanged) and the crossing is routed to the FSM
+    /// callback once, at the removal. A node the sampler NEVER admitted has no such edge, yet the FSM
+    /// promotes on one healthy sample while this sampler admits on `upHysteresis`, so a peer that dies
+    /// inside that window must still reach the FSM: for it the crossing fires at the threshold and then
+    /// once per `downHysteresis` window while the absence continues, because the FSM consumes the event
+    /// only in SUSPECT and ignores it elsewhere (`MembershipState`: MEMBER, OBSERVED, DEPARTING and DEAD
+    /// absorb it), so a single edge that landed on a MEMBER would be lost. The callback is idempotent.
+    /// Re-firing is deliberately NOT extended to admitted nodes: it would move a killed stable owner to
+    /// DEPARTING before SWIM marks it faulty and shorten failover.
     private void crossDownHysteresis(NodeId node, int absentStreak) {
-        stableMembers.remove(node);
-        if (absentStreak % downHysteresis == 0) {
+        if (stableMembers.remove(node)) {
+            onDownHysteresisCrossing.accept(node);
+        } else if (!everAdmitted.contains(node) && absentStreak % downHysteresis == 0) {
             onDownHysteresisCrossing.accept(node);
         }
     }

@@ -166,8 +166,8 @@ class PresenceSamplerTest {
     }
 
     /// DOWN-hysteresis crossing callback — the additive FSM-routing seam. Fires when the absent
-    /// streak reaches `K_DOWN` and then once per further `K_DOWN` absent samples (not on every
-    /// absent sample), for admitted and never-admitted peers alike, and leaves the existing
+    /// streak reaches `K_DOWN`, once for an admitted peer and once per further `K_DOWN` absent samples for a
+    /// never-admitted one (never on every absent sample), and leaves the existing
     /// membership-removal + reconcile-trigger behaviour unchanged.
     @Nested
     class DownHysteresisCrossingCallback {
@@ -218,9 +218,27 @@ class PresenceSamplerTest {
         }
 
         /// A single edge is lost when the FSM is still Member as it fires (Member ignores the event),
-        /// so a continuing absence re-delivers once per `K_DOWN` window, not on every sample.
+        /// so a never-admitted peer's continuing absence re-delivers once per `K_DOWN` window, not on
+        /// every sample.
         @Test
-        void advanceOne_sustainedAbsence_refiresOncePerDownWindow() {
+        void advanceOne_neverAdmittedSustainedAbsence_refiresOncePerDownWindow() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(C);
+            sampleTimes(sampler, K_UP - 1);
+            absent(C);
+
+            sampleTimes(sampler, K_DOWN * 3);
+
+            assertThat(crossings).containsExactly(C, C, C);
+        }
+
+        /// A stable member's death timing is unchanged: one crossing at its removal edge, never
+        /// re-fired, however long the absence lasts (re-firing would depart a killed owner before SWIM
+        /// marks it faulty).
+        @Test
+        void advanceOne_stableMemberSustainedAbsence_firesOnlyAtTheRemovalEdge() {
             var crossings = new ArrayList<NodeId>();
             var sampler = sampler(crossings::add);
 
@@ -228,9 +246,9 @@ class PresenceSamplerTest {
             sampleTimes(sampler, K_UP);
             absent(A);
 
-            sampleTimes(sampler, K_DOWN * 3);
+            sampleTimes(sampler, K_DOWN * 4);
 
-            assertThat(crossings).containsExactly(A, A, A);
+            assertThat(crossings).containsExactly(A);
         }
 
         @Test
