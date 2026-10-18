@@ -224,16 +224,17 @@ final class DefaultSnapshotManager implements SnapshotManager {
                               .map(_ -> filePath);
     }
 
-    /// #2257: the encoded form goes through the RESTORE path -- [#parseSnapshot] and the integrity check --
-    /// and the DECODED result is compared by value with the snapshot that was captured in memory: epoch,
-    /// node id, every ref (name and target) and every lifecycle. The hash alone cannot do this job: it is
-    /// computed through the same encoder that wrote the file, so an encoder that loses information hashes
-    /// identically on both sides. A snapshot that would not restore as captured is refused here, loudly,
+    /// #2257: the encoded form goes through the RESTORE parser and the DECODED result is compared by value
+    /// with the snapshot that was captured in memory: epoch, node id, every ref (name and target), every
+    /// lifecycle. The hash alone cannot do this job: it is computed through the same encoder that wrote the
+    /// file, so an encoder that loses information hashes identically on both sides. The hash is computed
+    /// ONCE, from the captured snapshot; the read-back only checks that the file carries that same value.
+    /// Equal content under a deterministic hash is an equal hash, so this is the integrity check the
+    /// restore applies, without hashing the parsed content a second time. A snapshot that would not restore as captured is refused here, loudly,
     /// while the previous snapshot and `LATEST` are still in place.
     private Result<Unit> verifyReadsBack(MetadataSnapshot captured, String content) {
-        return parseSnapshot(content).filter(SnapshotError.INTEGRITY_CHECK_FAILED, MetadataSnapshot::isValid)
-                            .filter(SnapshotError.General.ROUND_TRIP_MISMATCH,
-                                    restored -> readsBackAs(captured, restored))
+        return parseSnapshot(content).filter(SnapshotError.General.ROUND_TRIP_MISMATCH,
+                                             restored -> readsBackAs(captured, restored))
                             .mapError(SnapshotError.RoundTripFailed::new)
                             .onFailure(cause -> LOG.error("Snapshot epoch={} refused: {}",
                                                           captured.epoch(),
@@ -243,6 +244,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     private static boolean readsBackAs(MetadataSnapshot captured, MetadataSnapshot restored) {
         return captured.epoch() == restored.epoch()
+               && Arrays.equals(captured.contentHash(), restored.contentHash())
                && captured.nodeId()
                           .equals(restored.nodeId())
                && captured.refs()

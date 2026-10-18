@@ -338,6 +338,23 @@ class SnapshotDurableWriteTest {
         assertRefusedAndPreviousIntact(refused, latestBefore);
     }
 
+    /// The hash is computed once, from the captured snapshot, and the read-back checks the file carries that
+    /// value: a file whose header hash is not the captured one is refused although its content is right.
+    @Test
+    void snapshotNow_headerHashIsNotTheCapturedOne_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withZeroHash).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static String withZeroHash(MetadataSnapshot snapshot) {
+        return DefaultSnapshotManager.serializeSnapshot(snapshot).replaceFirst("contentHash=[0-9a-f]+", "contentHash=" + "00".repeat(32));
+    }
+
     private String keptSnapshotThenChange() {
         mutate("kept");
         store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
