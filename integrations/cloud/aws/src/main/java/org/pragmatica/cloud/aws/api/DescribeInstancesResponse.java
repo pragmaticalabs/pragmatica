@@ -18,17 +18,23 @@ package org.pragmatica.cloud.aws.api;
 
 import java.util.List;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Verify;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// EC2 DescribeInstances XML response wrapper.
 @JacksonXmlRootElement(localName = "DescribeInstancesResponse")
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reservationSet") ReservationSet reservationSet) {
+public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reservationSet") ReservationSet reservationSet,
+                                        @JacksonXmlProperty(localName = "nextToken") String nextToken) {
     /// Container for reservations.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ReservationSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Reservation> items) {}
@@ -41,6 +47,21 @@ public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reserva
     /// Container for instances within a reservation.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record InstancesSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Instance> items) {}
+
+    /// The reservations of this page; empty for a filter that matched nothing.
+    public List<Reservation> reservations() {
+        if (reservationSet == null || reservationSet.items() == null) {
+            return List.of();
+        }
+
+        return reservationSet.items();
+    }
+
+    /// The token that asks EC2 for the page after this one, absent on the last page. EC2 may also send
+    /// the element empty, which reads as absent.
+    public Option<String> continuation() {
+        return option(nextToken).filter(Verify.Is::present);
+    }
 
     /// Flattens all instances across all reservations, tolerating an empty reservation set
     /// (`<reservationSet />` deserializes with a null item list — a filter that matches nothing).

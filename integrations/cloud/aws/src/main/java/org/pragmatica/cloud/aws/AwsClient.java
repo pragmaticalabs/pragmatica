@@ -25,9 +25,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.cloud.aws.api.CreateSecurityGroupResponse;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
+import org.pragmatica.cloud.aws.api.DescribeInstancesResponse.Reservation;
+import org.pragmatica.cloud.aws.api.DescribeInstancesResponse.ReservationSet;
 import org.pragmatica.cloud.aws.api.DescribeSecurityGroupsResponse;
 import org.pragmatica.cloud.aws.api.DescribeSubnetsResponse;
 import org.pragmatica.cloud.aws.api.DescribeTargetHealthResponse;
@@ -158,15 +161,12 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     @Override
     public Promise<DescribeInstancesResponse> describeInstances() {
-        return postQuery(EC2_SERVICE,
-                         config.ec2Url(),
-                         "Action=DescribeInstances&Version=" + EC2_API_VERSION,
-                         DescribeInstancesResponse.class);
+        return describeAll("Action=DescribeInstances&Version=" + EC2_API_VERSION);
     }
 
     @Override
     public Promise<DescribeInstancesResponse> describeInstances(String tagKey, String tagValue) {
-        return postQuery(EC2_SERVICE, config.ec2Url(), buildTagFilterForm(tagKey, tagValue), DescribeInstancesResponse.class);
+        return describeAll(buildTagFilterForm(tagKey, tagValue));
     }
 
     @Override
@@ -260,6 +260,46 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     // --- Query-protocol (EC2 + ELBv2) helpers: form-encoded request, XML response ---
+
+    /// Reads DescribeInstances to its end. EC2 pages the result and signals more with `nextToken`; a
+    /// caller that stops at the first page sees a silent prefix of the fleet. The reservations of every
+    /// page are concatenated in order into one response with no token. A failing later page fails the
+    /// call, so a partial fleet never looks complete.
+    private Promise<DescribeInstancesResponse> describeAll(String formBody) {
+        return describeFrom(formBody, "", List.of());
+    }
+
+    private Promise<DescribeInstancesResponse> describeFrom(String formBody,
+                                                            String token,
+                                                            List<Reservation> collected) {
+        return postQuery(EC2_SERVICE, config.ec2Url(), withToken(formBody, token), DescribeInstancesResponse.class).flatMap(page -> continueDescribe(formBody,
+                                                                                                                                                     token,
+                                                                                                                                                     collected,
+                                                                                                                                                     page));
+    }
+
+    /// A token equal to the one just sent ends the walk: a service that keeps repeating it would
+    /// otherwise loop this call forever.
+    private Promise<DescribeInstancesResponse> continueDescribe(String formBody,
+                                                                String sentToken,
+                                                                List<Reservation> collected,
+                                                                DescribeInstancesResponse page) {
+        var all = Stream.concat(collected.stream(),
+                                page.reservations().stream()).toList();
+
+        return page.continuation()
+                   .filter(next -> !next.equals(sentToken))
+                   .map(next -> describeFrom(formBody, next, all))
+                   .or(() -> Promise.success(new DescribeInstancesResponse(new ReservationSet(all),
+                                                                           null)));
+    }
+
+    private static String withToken(String formBody, String token) {
+        return token.isEmpty()
+               ? formBody
+               : formBody + "&NextToken=" + AwsSigV4Signer.urlEncode(token);
+    }
+
     private <T> Promise<T> postQuery(String service, String url, String formBody, Class<T> responseType) {
         return signAndSendQuery(service, url, formBody).flatMap(result -> parseXmlResponse(result, responseType));
     }
