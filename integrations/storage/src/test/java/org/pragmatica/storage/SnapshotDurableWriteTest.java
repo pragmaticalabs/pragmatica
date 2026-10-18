@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -404,7 +406,7 @@ class SnapshotDurableWriteTest {
 
     private static MetadataSnapshot withOtherTargets(MetadataSnapshot snapshot) {
         var other = BlockId.blockId(new byte[]{9}).unwrap();
-        var refs = snapshot.refs().keySet().stream().collect(Collectors.toMap(name -> name, _ -> other));
+        var refs = snapshot.refs().keySet().stream().collect(Collectors.toMap(name -> name, _ -> other, (a, b) -> a, LinkedHashMap::new));
 
         return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
     }
@@ -445,12 +447,45 @@ class SnapshotDurableWriteTest {
         return readLatest();
     }
 
+    /// A lossy encoder as it would be seen in production: the header carries the hash of the CAPTURED
+    /// snapshot (computed while rendering), so only the body lines can disagree with the in-memory source.
     private static Function<MetadataSnapshot, String> lossy(Function<MetadataSnapshot, MetadataSnapshot> loss) {
-        return snapshot -> DefaultSnapshotManager.serializeSnapshot(loss.apply(snapshot));
+        return snapshot -> withCapturedHash(snapshot, loss.apply(snapshot));
+    }
+
+    private static String withCapturedHash(MetadataSnapshot captured, MetadataSnapshot lossy) {
+        return DefaultSnapshotManager.serializeSnapshot(lossy)
+                                     .replace("contentHash=" + HexFormat.of().formatHex(lossy.contentHash()),
+                                              "contentHash=" + HexFormat.of().formatHex(captured.contentHash()));
+    }
+
+    @Test
+    void snapshotNow_formatHeaderDisagrees_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replace("format=2\n", "format=7\n"));
+    }
+
+    @Test
+    void snapshotNow_lifecycleLineWithExtraField_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replaceAll("(?m)^([0-9a-f]{64}\\|.*)$", "$1|9"));
+    }
+
+    @Test
+    void snapshotNow_refTargetWithTrailingCharacters_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replaceAll("(?m)^([^\\n#=|]+\\|[0-9a-f]{64})$", "$1ab"));
+    }
+
+    private void assertTextDefectRefused(UnaryOperator<String> defect) {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> defect.apply(DefaultSnapshotManager.serializeSnapshot(snapshot))).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
     }
 
     private static MetadataSnapshot withoutNul(MetadataSnapshot snapshot) {
-        var refs = snapshot.refs().entrySet().stream().collect(Collectors.toMap(e -> e.getKey().replace("\0", ""), Map.Entry::getValue));
+        var refs = snapshot.refs().entrySet().stream().collect(Collectors.toMap(e -> e.getKey().replace("\0", ""), Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
 
         return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
     }
