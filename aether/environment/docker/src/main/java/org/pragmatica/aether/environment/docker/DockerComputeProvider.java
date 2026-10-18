@@ -112,7 +112,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// `aether-<cluster>-` prefix as their compose-fixed siblings — the orphan sweeper
     /// and `docker kill` prefix-matching keep working.
     private String resolveIdentity(ProvisionRequest request) {
-        var cluster = resolveClusterName(request.context());
+        var cluster = resolveClusterName(request.context(), hostEnv);
 
         return request.context()
                       .nodeId()
@@ -362,7 +362,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     private List<String> buildRunCommand(ProvisionRequest request, String containerName, List<String> fileVars) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
-        var cluster = clusterLabelValue(ctx);
+        var cluster = clusterLabelValue(ctx, hostEnv);
         // NodeId == container name (the resolved identity: caller-supplied ctx.nodeId()
         // or a freshly-minted ULID id). Keeping them equal means `docker kill <nodeId>`
         // resolves to this exact container — no nodeId→container map needed.
@@ -659,7 +659,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // == NodeId. Host-mapped per-slot ports were a seed-only convenience; ULID
         // replacements carry no slot, so report the overlay-reachable form.
         var addresses = List.of(containerName + ":8080", containerName + ":8070");
-        var tags = buildInstanceTags(request, containerName);
+        var tags = buildInstanceTags(request, containerName, hostEnv);
         // Created, not yet confirmed live: report PROVISIONING. confirmRunning() polls
         // `docker inspect` and re-stamps this to RUNNING only after the container actually
         // reaches `running`, or FAILS the provision if it never does (no phantom success).
@@ -672,10 +672,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                 org.pragmatica.lang.Option.none());
     }
 
-    private static Map<String, String> buildInstanceTags(ProvisionRequest request, String containerName) {
+    private static Map<String, String> buildInstanceTags(ProvisionRequest request, String containerName, Fn1<String, String> hostEnv) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
-        var cluster = clusterLabelValue(ctx);
+        var cluster = clusterLabelValue(ctx, hostEnv);
         // NodeId == container name (see buildRunCommand). Tags expose this to the
         // CTM bookkeeping layer so observed/desired reconciliation aligns with the
         // identity the container actually boots with.
@@ -695,17 +695,20 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// files set the env to `a` / `b` so cluster A/B replacements carry their siblings' label).
     /// Ends [Option#empty] with no cluster anywhere, mirroring the cloud providers rather than
     /// silently mislabeling the node `default`.
-    private static Option<ClusterName> resolveClusterName(ProvisionContext ctx) {
+    ///
+    /// #2149: the environment is the provider's injected `hostEnv`, like every other host read here, so a test (or an embedder)
+    /// that supplies one is not at the mercy of the real process environment.
+    private static Option<ClusterName> resolveClusterName(ProvisionContext ctx, Fn1<String, String> hostEnv) {
         return ctx.clusterName()
-                  .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
+                  .orElse(() -> ClusterName.maybeClusterName(hostEnv.apply("AETHER_CLUSTER_NAME")));
     }
 
     /// The label/env rendering of [#resolveClusterName]. An unresolved cluster renders as the EMPTY
     /// string — byte-identical to the historical fall-through, so `aether.cluster=` and
     /// `AETHER_CLUSTER_NAME=` are emitted empty and the node-side boot gate
     /// (`Main.verifyClusterNamePresent`) still fails loud on them.
-    private static String clusterLabelValue(ProvisionContext ctx) {
-        return resolveClusterName(ctx).map(ClusterName::value)
+    private static String clusterLabelValue(ProvisionContext ctx, Fn1<String, String> hostEnv) {
+        return resolveClusterName(ctx, hostEnv).map(ClusterName::value)
                                  .or("");
     }
 

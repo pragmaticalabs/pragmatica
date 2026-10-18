@@ -45,7 +45,23 @@ class DockerProvisionViaIdentityTest {
     /// #2149: the host environment is injected EMPTY. The two-argument factory reads the real one, and a developer machine that
     /// exports `AETHER_CLUSTER_SECRET` / `AETHER_API_KEY` made provisioning refuse before any test assertion ran.
     private static DockerComputeProvider providerOn(RecordingRunner runner) {
-        return DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap(), _ -> null).unwrap();
+        return providerOn(runner, _ -> null);
+    }
+
+    private static DockerComputeProvider providerOn(RecordingRunner runner, org.pragmatica.lang.Functions.Fn1<String, String> hostEnv) {
+        return DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap(), hostEnv).unwrap();
+    }
+
+    /// One node provisioned with NO cluster tag, so the cluster can only come from the host environment fallback.
+    private static void provisionWithoutClusterTag(DockerComputeProvider provider) {
+        var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("primary"),
+                                                    "core",
+                                                    1,
+                                                    "default",
+                                                    "default",
+                                                    Map.of("aether-source", "primary", "aether-role", "core"));
+
+        CloudProviderSupport.provisionVia(provider, group).await().unwrap();
     }
 
     private static List<ProvisionedNode> provision(DockerComputeProvider provider, int count) {
@@ -93,5 +109,27 @@ class DockerProvisionViaIdentityTest {
         provision(provider, 1);
 
         assertThat(runner.runCommands.getFirst()).contains("aether.source=primary");
+    }
+
+    /// #2149: the cluster-name fallback reads the PROVIDER'S host environment, not the process one. With an empty injected
+    /// environment the label stays empty whatever the machine running the test exports (red before the fix when
+    /// AETHER_CLUSTER_NAME is exported).
+    @Test
+    void ambientClusterNameIsIgnored_whenTheInjectedHostEnvironmentHasNone() {
+        var runner = new RecordingRunner();
+
+        provisionWithoutClusterTag(providerOn(runner));
+
+        assertThat(runner.runCommands.getFirst()).contains("aether.cluster=");
+        assertThat(runner.runCommands.getFirst()).noneMatch(arg -> arg.startsWith("aether.cluster=") && arg.length() > "aether.cluster=".length());
+    }
+
+    @Test
+    void injectedHostEnvironmentSuppliesTheClusterName_whenNoTagDoes() {
+        var runner = new RecordingRunner();
+
+        provisionWithoutClusterTag(providerOn(runner, name -> "AETHER_CLUSTER_NAME".equals(name) ? "injected-cluster" : null));
+
+        assertThat(runner.runCommands.getFirst()).contains("aether.cluster=injected-cluster");
     }
 }
