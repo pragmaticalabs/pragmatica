@@ -3,9 +3,14 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.testkit;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.testkit.deployedconfig.EndpointProbeFactory;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -60,7 +65,47 @@ class SliceTestKitConfigTest {
         assertThatThrownBy(() -> SliceTestKit.forSlice(EndpointProbeFactory::endpointProbe)
                                              .withConfig(values)
                                              .build()).isInstanceOf(AssertionError.class)
-                                                      .hasMessageContaining(SECTION + ".port");
+                                                      .hasMessageContaining(SECTION + ".port")
+                                                      .hasMessageContaining("slice-under-test");
+    }
+
+    /// The provider overload, directly: a TOML document layered over defaults. The document wins for the keys it
+    /// declares, a key only the defaults declare still resolves, and a native TOML array is read as its elements.
+    @Test
+    void withConfig_provider_readsATomlDocumentLayeredOverDefaults(@TempDir Path dir) throws IOException {
+        var toml = dir.resolve("slice.toml");
+
+        Files.writeString(toml, """
+                          [deployed.endpoint]
+                          host = "toml.internal"
+                          port = 8443
+                          tags = ["alpha", "beta"]
+                          """);
+
+        var provider = ConfigurationProvider.builder()
+                                            .withDefaults(Map.of(SECTION + ".port", "1", SECTION + ".secure", "true", SECTION + ".weight", "9"))
+                                            .withTomlFile(toml)
+                                            .build();
+
+        try (var sut = SliceTestKit.forSlice(EndpointProbeFactory::endpointProbe)
+                                   .withConfig(provider)
+                                   .build()) {
+            assertThat(sut.client().describe("probe").await(TIMEOUT).unwrap()).isEqualTo("probe=toml.internal|8443|true|alpha+beta|9");
+        }
+    }
+
+    /// A repeated `withConfig` replaces the earlier source; it neither merges nor keeps the first.
+    @Test
+    void withConfig_repeated_lastWins() {
+        var first = Map.of(SECTION + ".host", "first", SECTION + ".port", "1", SECTION + ".secure", "false", SECTION + ".tags", "x");
+        var second = Map.of(SECTION + ".host", "second", SECTION + ".port", "2", SECTION + ".secure", "true", SECTION + ".tags", "y");
+
+        try (var sut = SliceTestKit.forSlice(EndpointProbeFactory::endpointProbe)
+                                   .withConfig(first)
+                                   .withConfig(second)
+                                   .build()) {
+            assertThat(sut.client().describe("probe").await(TIMEOUT).unwrap()).isEqualTo("probe=second|2|true|y|none");
+        }
     }
 
     /// Premise control: without `withConfig` the kit still hands the slice a facade that fails every read, so the
