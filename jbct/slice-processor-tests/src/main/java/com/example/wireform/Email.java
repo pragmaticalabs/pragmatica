@@ -6,6 +6,7 @@ package com.example.wireform;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// A value object: travels as its bare string on every route of the slice.
 public record Email(String value) {
     public static Result<Email> email(String value) {

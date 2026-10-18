@@ -14,7 +14,6 @@ import com.example.dupreq.y.Req;
 @Slice
 public interface DupReqSlice {
     Promise<String> named(Req request);
-
     Promise<Long> counted(com.example.dupreq.z.Req request);
 
     static DupReqSlice dupReqSlice() {

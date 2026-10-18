@@ -14,9 +14,7 @@ import org.pragmatica.lang.Promise;
 @Slice
 public interface SharedListSlice {
     Promise<Integer> count(List<Item> request);
-
     Promise<Integer> total(List<Item> request);
-
     Promise<List<Item>> echo(List<Item> request);
 
     static SharedListSlice sharedListSlice() {

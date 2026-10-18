@@ -5,4 +5,5 @@ package com.example.wireform;
 
 import org.pragmatica.lang.Option;
 
+
 public record Note(String id, Option<String> text) {}

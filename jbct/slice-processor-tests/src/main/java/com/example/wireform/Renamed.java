@@ -5,4 +5,5 @@ package com.example.wireform;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+
 public record Renamed(@JsonProperty("user_name") String userName) {}

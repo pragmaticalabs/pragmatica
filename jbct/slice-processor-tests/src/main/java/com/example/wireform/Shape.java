@@ -6,6 +6,7 @@ package com.example.wireform;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
+
 /// Jackson writes a discriminator for every implementation, so no implementation may get a generated codec.
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
 @JsonSubTypes({@JsonSubTypes.Type(value = Circle.class, name = "circle")})

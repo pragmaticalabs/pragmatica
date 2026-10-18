@@ -15,16 +15,11 @@ import org.pragmatica.lang.Promise;
 @Slice
 public interface WireFormSlice {
     Promise<Accounts> signup(Signup request);
-
     // A List body is decoded by the routes holder's generated container codec (CONTAINERS), not the fallback.
     Promise<Accounts> signupAll(List<Signup> request);
-
     Promise<Shape> shape(ShapeRequest request);
-
     Promise<Drawing> drawing(ShapeRequest request);
-
     Promise<Renamed> renamed(ShapeRequest request);
-
     Promise<Note> note(ShapeRequest request);
 
     static WireFormSlice wireFormSlice() {
