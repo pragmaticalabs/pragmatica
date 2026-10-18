@@ -71,7 +71,7 @@ class AppHttpServerTlsFailClosedTest {
                                        protocol,
                                        base.apiVersioningDetection(),
                                        base.apiVersionHeaderName(),
-                                       Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")), base.readTimeout());
+                                       Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")), base.readTimeout(), base.minBodyRate());
 
         return AppHttpServer.appHttpServer(config,
                                            ForwardingTimeouts.forwardingTimeouts(),

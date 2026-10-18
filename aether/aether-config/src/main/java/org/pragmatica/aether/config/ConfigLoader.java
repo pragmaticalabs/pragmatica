@@ -431,7 +431,9 @@ public final class ConfigLoader {
                                                   apiVersioningDetection,
                                                   apiVersionHeaderName).unwrap();
         var readTimeout = parseTimeSpan(doc, "app-http", "read_timeout", AppHttpConfig.DEFAULT_READ_TIMEOUT);
-        var withReadTimeout = appHttp.withReadTimeout(readTimeout);
+        var minBodyRate = parseDataSize(doc, "app-http", "min_body_rate", AppHttpConfig.DEFAULT_MIN_BODY_RATE);
+        var withReadTimeout = appHttp.withReadTimeout(readTimeout)
+                                     .withMinBodyRate(minBodyRate);
 
         builder.appHttp(parseAppTls(doc).map(withReadTimeout::withTls).or(withReadTimeout));
     }

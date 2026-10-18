@@ -25,7 +25,8 @@ public record AppHttpConfig(boolean enabled,
                             ApiVersioningDetection apiVersioningDetection,
                             String apiVersionHeaderName,
                             Option<AppTls> tls,
-                            TimeSpan readTimeout) {
+                            TimeSpan readTimeout,
+                            int minBodyRate) {
     /// Operator-supplied TLS identity for the USER-facing app-HTTP listener.
     ///
     /// The app port must not reuse the cluster identity. That certificate is issued by the
@@ -47,6 +48,10 @@ public record AppHttpConfig(boolean enabled,
     /// nginx's `client_body_timeout` default and the http-server default; it is a guess, not a measurement. A
     /// zero or negative value disables the bound.
     public static final TimeSpan DEFAULT_READ_TIMEOUT = TimeSpan.timeSpan(60).seconds();
+    /// `[app-http] min_body_rate`: the minimum rate, in bytes per second, a request body must arrive at once its 10 s
+    /// grace has passed, averaged over 10 s windows (http-server `BodyRateLimit`), on HTTP/1.1 and HTTP/3 alike. 1 KiB/s
+    /// is a guess in the spirit of Apache's mod_reqtimeout `MinRate=500`. A zero or negative value disables the bound.
+    public static final int DEFAULT_MIN_BODY_RATE = 1024;
 
     public AppHttpConfig {
         apiKeys = Map.copyOf(apiKeys);
@@ -73,7 +78,8 @@ public record AppHttpConfig(boolean enabled,
                                          apiVersioningDetection,
                                          apiVersionHeaderName,
                                          Option.empty(),
-                                         DEFAULT_READ_TIMEOUT));
+                                         DEFAULT_READ_TIMEOUT,
+                                         DEFAULT_MIN_BODY_RATE));
     }
 
     /// Attach an operator-supplied TLS identity to this listener. See [AppTls].
@@ -88,7 +94,8 @@ public record AppHttpConfig(boolean enabled,
                                  apiVersioningDetection,
                                  apiVersionHeaderName,
                                  Option.some(appTls),
-                                 readTimeout);
+                                 readTimeout,
+                                 minBodyRate);
     }
 
     /// Replace the read timeout. See [#DEFAULT_READ_TIMEOUT].
@@ -103,7 +110,24 @@ public record AppHttpConfig(boolean enabled,
                                  apiVersioningDetection,
                                  apiVersionHeaderName,
                                  tls,
-                                 readTimeout);
+                                 readTimeout,
+                                 minBodyRate);
+    }
+
+    /// Replace the minimum body rate. See [#DEFAULT_MIN_BODY_RATE].
+    public AppHttpConfig withMinBodyRate(int minBodyRate) {
+        return new AppHttpConfig(enabled,
+                                 port,
+                                 apiKeys,
+                                 maxRequestSize,
+                                 securityMode,
+                                 jwtConfig,
+                                 httpProtocol,
+                                 apiVersioningDetection,
+                                 apiVersionHeaderName,
+                                 tls,
+                                 readTimeout,
+                                 minBodyRate);
     }
 
     public static Result<AppHttpConfig> appHttpConfig(boolean enabled,

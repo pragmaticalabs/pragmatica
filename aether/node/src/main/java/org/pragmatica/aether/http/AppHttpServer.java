@@ -67,6 +67,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerError;
+import org.pragmatica.http.server.BodyRateLimit;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
@@ -573,7 +574,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
                                                              config.port())
                                            .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout());
+                                           .withReadTimeout(config.readTimeout())
+                                           .withBodyRateLimit(bodyRateLimit(config));
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -607,7 +609,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
                                            .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout());
+                                           .withReadTimeout(config.readTimeout())
+                                           .withBodyRateLimit(bodyRateLimit(config));
         // #967: never demand a client certificate from callers of a USER-facing listener. The node's
         // cluster TlsConfig is Mutual, so building this listener from it made every slice request
         // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
@@ -721,7 +724,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
                                            .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout());
+                                           .withReadTimeout(config.readTimeout())
+                                           .withBodyRateLimit(bodyRateLimit(config));
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                              ? this::handleRequestWithAltSvc
@@ -758,7 +762,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
                                                              config.port())
                                            .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout());
+                                           .withReadTimeout(config.readTimeout())
+                                           .withBodyRateLimit(bodyRateLimit(config));
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -1545,6 +1550,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      HttpError.clientMessage(cause),
                                                      request.path(),
                                                      requestId));
+    }
+
+    /// `[app-http] min_body_rate` with the server's default grace and window (F6).
+    private static BodyRateLimit bodyRateLimit(AppHttpConfig config) {
+        return BodyRateLimit.bodyRateLimit(config.minBodyRate(), BodyRateLimit.DEFAULT_GRACE, BodyRateLimit.DEFAULT_WINDOW);
     }
 
     /// A [ForwardError] names its own status: 503 per the 2026-10-07 ruling (know 14a3606152), whose detail says

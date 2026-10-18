@@ -286,6 +286,8 @@ final class NettyHttpServer implements HttpServer {
                                                   0,
                                                   TimeUnit.MILLISECONDS));
             pipeline.addLast(new HttpServerCodec());
+            // F6: the minimum body rate, checked on the chunks before the aggregator assembles them
+            pipeline.addLast(new BodyRateGuardHandler(config.bodyRateLimit()));
             pipeline.addLast(new HttpObjectAggregator(config.maxContentLength()));
             if (config.chunkedWriteEnabled()) {
                 pipeline.addLast(new ChunkedWriteHandler());

@@ -279,6 +279,33 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadFromString_parsesMinBodyRate() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            min_body_rate = "2KB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().minBodyRate()).isEqualTo(2048));
+    }
+
+    @Test
+    void loadFromString_usesDefaultMinBodyRate_whenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().minBodyRate()).isEqualTo(AppHttpConfig.DEFAULT_MIN_BODY_RATE));
+    }
+
+    @Test
     void loadFromString_parsesReadTimeout() {
         var toml = MINIMAL_CLUSTER + """
 

@@ -21,6 +21,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -49,10 +50,14 @@ class Http3RequestHandlerTest {
     }
 
     private EmbeddedChannel channel(TimeSpan readTimeout) {
+        return channel(LIMIT, readTimeout, BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()));
+    }
+
+    private EmbeddedChannel channel(int limit, TimeSpan readTimeout, BodyRateLimit rate) {
         return new EmbeddedChannel(new Http3Server.Http3RequestHandler((request, response) -> {
             dispatched.add(request);
             response.okText("ok");
-        }, LIMIT, readTimeout));
+        }, limit, readTimeout, rate));
     }
 
     private static DefaultHttp3HeadersFrame requestHeaders() {
@@ -143,7 +148,7 @@ class Http3RequestHandlerTest {
 
     /// I3: a stream that keeps trickling (QUIC's 5 s idle never fires) is bounded by the request deadline.
     @Test
-    void bodyNotCompleteWithinReadTimeout_isAnswered408_andNeverDispatched() throws InterruptedException {
+    void bodyIdleLongerThanReadTimeout_isAnswered408_andNeverDispatched() throws InterruptedException {
         var channel = channel(timeSpan(100).millis());
         var handler = (Http3Server.Http3RequestHandler) channel.pipeline().first();
 
@@ -161,7 +166,7 @@ class Http3RequestHandlerTest {
     }
 
     @Test
-    void bodyCompleteWithinReadTimeout_isDispatched() throws InterruptedException {
+    void bodyCompleteBeforeGoingIdle_isDispatched() throws InterruptedException {
         var channel = channel(timeSpan(300).millis());
 
         channel.writeInbound(requestHeaders());
@@ -177,6 +182,49 @@ class Http3RequestHandlerTest {
             assertThat(rest).as("no late 408 after the deadline was cancelled").isNotInstanceOf(Http3HeadersFrame.class);
             ReferenceCountUtil.release(rest);
         }
+        channel.finishAndReleaseAll();
+    }
+
+    /// F6: a 1 B/s trickle is never idle, but it is far below the minimum rate: 408, stream input reset, no dispatch.
+    /// Virtual time, default limits (1 KiB/s after 10 s, 60 s idle).
+    @Test
+    void trickleOfOneBytePerSecond_isAnswered408_andNeverDispatched() {
+        var channel = channel(LIMIT, timeSpan(60).seconds(), BodyRateLimit.DEFAULT);
+
+        channel.freezeTime();
+        channel.writeInbound(requestHeaders());
+        for (int second = 0; second < 30 && channel.outboundMessages().isEmpty(); second++) {
+            channel.writeInbound(data(1));
+            channel.advanceTimeBy(1, TimeUnit.SECONDS);
+            channel.runScheduledPendingTasks();
+        }
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+
+        assertThat(dispatched).isEmpty();
+        assertThat(responseStatus(channel)).isEqualTo("408");
+        channel.finishAndReleaseAll();
+    }
+
+    /// F6: a slow but legitimate upload above the minimum rate completes however long it takes: 5 MiB at 50 KiB/s,
+    /// about 100 s of virtual time, under the default limits.
+    @Test
+    void uploadOfFiveMebibytesAtFiftyKibibytesPerSecond_isDispatchedWhole() {
+        var fiveMiB = 5 * 1024 * 1024;
+        var channel = channel(fiveMiB, timeSpan(60).seconds(), BodyRateLimit.DEFAULT);
+        var frame = 5 * 1024;
+
+        channel.freezeTime();
+        channel.writeInbound(requestHeaders());
+        for (int sent = 0; sent < fiveMiB; sent += frame) {
+            channel.writeInbound(data(frame));
+            channel.advanceTimeBy(100, TimeUnit.MILLISECONDS);
+            channel.runScheduledPendingTasks();
+        }
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+
+        assertThat(dispatched).hasSize(1);
+        assertThat(dispatched.getFirst().body()).hasSize(fiveMiB);
+        assertThat(responseStatus(channel)).isEqualTo("200");
         channel.finishAndReleaseAll();
     }
 

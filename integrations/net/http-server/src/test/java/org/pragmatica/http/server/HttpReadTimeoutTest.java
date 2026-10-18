@@ -46,9 +46,13 @@ class HttpReadTimeoutTest {
     private int port;
 
     private void start(BiConsumer<HttpRequest, ResponseWriter> handler) {
-        port = freeTcpPort();
-        var config = HttpServerConfig.httpServerConfig("read-timeout", port)
-                                     .withReadTimeout(timeSpan(READ_TIMEOUT_MS).millis());
+        start(handler,
+              HttpServerConfig.httpServerConfig("read-timeout", freeTcpPort())
+                              .withReadTimeout(timeSpan(READ_TIMEOUT_MS).millis()));
+    }
+
+    private void start(BiConsumer<HttpRequest, ResponseWriter> handler, HttpServerConfig config) {
+        port = config.port();
 
         server = (NettyHttpServer) NettyHttpServer.create(config, handler)
                                                   .await(timeSpan(10).seconds())
@@ -99,6 +103,50 @@ class HttpReadTimeoutTest {
             socket.getOutputStream().flush();
 
             assertThat(readUntilClosed(socket.getInputStream())).startsWith("HTTP/1.1 200");
+        }
+    }
+
+    /// F6 over a real socket: a body trickling a byte every 100 ms is never idle (the idle bound here is 10 s), but it
+    /// is far below the 1000 B/s minimum, so the connection is closed once the grace has passed.
+    @Test
+    void trickleBelowTheMinimumRate_connectionClosed_handlerNeverInvoked() throws IOException, InterruptedException {
+        start((request, response) -> {
+                  invocations.incrementAndGet();
+                  response.okText("handled");
+              },
+              HttpServerConfig.httpServerConfig("min-rate", freeTcpPort())
+                              .withReadTimeout(timeSpan(10).seconds())
+                              .withBodyRateLimit(BodyRateLimit.bodyRateLimit(1000,
+                                                                             timeSpan(300).millis(),
+                                                                             timeSpan(300).millis())));
+
+        try (var socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(200);
+            var out = socket.getOutputStream();
+            var startedAt = System.nanoTime();
+            var closed = false;
+
+            out.write("POST /up HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+            while (!closed && TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt) < 5_000) {
+                closed = trickleOneByte(socket);
+            }
+
+            assertThat(closed).as("the trickling connection was closed").isTrue();
+        }
+
+        assertThat(invocations.get()).isZero();
+    }
+
+    /// Writes one byte, then reads briefly: true once the server has closed the connection.
+    private static boolean trickleOneByte(Socket socket) throws IOException {
+        try {
+            socket.getOutputStream().write('x');
+            socket.getOutputStream().flush();
+            return socket.getInputStream().read() == -1;
+        } catch (SocketTimeoutException e) {
+            return false;
+        } catch (IOException e) {
+            return true;
         }
     }
 

@@ -34,12 +34,13 @@ import org.pragmatica.net.tcp.TlsConfig;
 /// @param webSocketEndpoints   WebSocket endpoints
 /// @param chunkedWriteEnabled  whether to enable chunked transfer encoding
 /// @param socketOptions        socket-level options
-/// @param readTimeout          how long the server waits on a client's request bytes. HTTP/1.1: a connection that
-///                             delivers no byte for this long while no response is pending (a stalled body, an idle
-///                             keep-alive connection) is closed. HTTP/3: QUIC already closes a silent connection after
-///                             its 5 s idle timeout, so the gap there is a stream that trickles; this bounds the whole
-///                             request, from its HEADERS frame to the end of its body, and answers 408 past it.
-///                             WebSocket connections are exempt once upgraded.
+/// @param readTimeout          how long the server waits on a client's request bytes without receiving one: an IDLE
+///                             bound, the same on both protocols. HTTP/1.1: a connection that delivers no byte for this
+///                             long while no response is pending (a stalled body, an idle keep-alive connection) is
+///                             closed. HTTP/3: a request stream whose body delivers no frame for this long is answered
+///                             408 and its input reset. WebSocket connections are exempt once upgraded.
+/// @param bodyRateLimit        the minimum rate a request body must arrive at, the same on both protocols (see
+///                             [BodyRateLimit]): it bounds a client that trickles just inside the idle bound.
 public record HttpServerConfig(String name,
                                int port,
                                Option<TlsConfig> tls,
@@ -47,7 +48,8 @@ public record HttpServerConfig(String name,
                                List<WebSocketEndpoint> webSocketEndpoints,
                                boolean chunkedWriteEnabled,
                                SocketOptions socketOptions,
-                               TimeSpan readTimeout) {
+                               TimeSpan readTimeout,
+                               BodyRateLimit bodyRateLimit) {
     private static final int DEFAULT_MAX_CONTENT_LENGTH = 65536;
     /// 60 s mirrors nginx's `client_body_timeout` default. It is a guess, not a measurement: long enough for a
     /// client on a slow link to send a 10 MiB body over HTTP/3 (about 1.4 Mbit/s), short enough that a stalled
@@ -66,7 +68,8 @@ public record HttpServerConfig(String name,
                                     List.of(),
                                     false,
                                     SocketOptions.defaultConfig(),
-                                    DEFAULT_READ_TIMEOUT);
+                                    DEFAULT_READ_TIMEOUT,
+                                    BodyRateLimit.DEFAULT);
     }
 
     public HttpServerConfig withTls(TlsConfig tls) {
@@ -77,7 +80,8 @@ public record HttpServerConfig(String name,
                                     webSocketEndpoints,
                                     chunkedWriteEnabled,
                                     socketOptions,
-                                    readTimeout);
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 
     public HttpServerConfig withMaxContentLength(int maxContentLength) {
@@ -88,7 +92,8 @@ public record HttpServerConfig(String name,
                                     webSocketEndpoints,
                                     chunkedWriteEnabled,
                                     socketOptions,
-                                    readTimeout);
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 
     public HttpServerConfig withWebSocket(WebSocketEndpoint endpoint) {
@@ -103,7 +108,8 @@ public record HttpServerConfig(String name,
                                     List.copyOf(endpoints),
                                     chunkedWriteEnabled,
                                     socketOptions,
-                                    readTimeout);
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 
     public HttpServerConfig withChunkedWrite() {
@@ -114,7 +120,20 @@ public record HttpServerConfig(String name,
                                     webSocketEndpoints,
                                     true,
                                     socketOptions,
-                                    readTimeout);
+                                    readTimeout,
+                                    bodyRateLimit);
+    }
+
+    public HttpServerConfig withBodyRateLimit(BodyRateLimit bodyRateLimit) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 
     public HttpServerConfig withReadTimeout(TimeSpan readTimeout) {
@@ -125,6 +144,7 @@ public record HttpServerConfig(String name,
                                     webSocketEndpoints,
                                     chunkedWriteEnabled,
                                     socketOptions,
-                                    readTimeout);
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 }
