@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -32,6 +33,7 @@ import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -51,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SnapshotDurableWriteTest {
     private static final String LOGGER = DefaultSnapshotManager.class.getName();
     private static final String NODE_ID = "node-durable";
+    private static final Function<Path, Result<Unit>> NO_SYNC = _ -> Result.unitResult();
 
     @TempDir
     Path tempDir;
@@ -246,6 +249,78 @@ class SnapshotDurableWriteTest {
         assertThat(raceDir.resolve(FileOps.readString(raceDir.resolve("LATEST")).unwrap().trim())).as("LATEST names an existing file")
                   .exists();
         assertThat(appender.warnsMentioning("Snapshot write failed")).isEmpty();
+    }
+
+    // --- Write-time read-back (#2257) ---
+    /// A snapshot is read back through the restore path before its file is committed. The node id is
+    /// written as-is, so one holding a newline encodes to a file that restores under a different id.
+    @Test
+    void snapshotNow_nodeIdThatDoesNotReadBack_isRefusedAndPreviousSnapshotKept() {
+        var good = new DefaultSnapshotManager(store, config);
+        var badConfig = snapshotConfig(tempDir, 100, 600_000, 5, "node\nwith-newline");
+
+        mutate("kept");
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        mutate("refused");
+
+        var refused = new DefaultSnapshotManager(store, badConfig).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// An encoder defect of the SA-01 kind -- a line lost on the way out -- is caught by the integrity
+    /// check the restore would apply, at write time, not at the next boot.
+    @Test
+    void snapshotNow_serializerDropsRefLine_isRefusedAtWrite() {
+        var good = new DefaultSnapshotManager(store, config);
+
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        store.putRef("lost", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withoutLastLine).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A separator mangled by the encoder is a parse failure on the read-back, refused at write time.
+    @Test
+    void snapshotNow_serializerMangledSeparator_isRefusedAtWrite() {
+        var good = new DefaultSnapshotManager(store, config);
+
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        store.putRef("mangled", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withMangledSeparator).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static String withoutLastLine(MetadataSnapshot snapshot) {
+        var lines = DefaultSnapshotManager.serializeSnapshot(snapshot).split("\n");
+
+        return String.join("\n", List.of(lines).subList(0, lines.length - 1)) + "\n";
+    }
+
+    private static String withMangledSeparator(MetadataSnapshot snapshot) {
+        return DefaultSnapshotManager.serializeSnapshot(snapshot).replace("mangled|", "mangled ");
+    }
+
+    private void assertRefusedAndPreviousIntact(Result<MetadataSnapshot> refused, String latestBefore) {
+        refused.onSuccess(_ -> Assertions.fail("a snapshot that does not read back must not be written"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(SnapshotError.RoundTripFailed.class));
+        assertThat(readLatest()).as("LATEST still names the previous snapshot").isEqualTo(latestBefore);
+        assertThat(snapshotFiles()).as("no new snapshot file").hasSize(1);
+        assertThat(appender.errorsMentioning("NOT written")).as("the refusal is logged at ERROR").hasSize(1);
+        assertThat(new DefaultSnapshotManager(inMemoryMetadataStore("boot"), config).restoreFromLatest().unwrap().isPresent())
+            .as("the previous snapshot still restores")
+            .isTrue();
     }
 
     // --- Read path: fallback ---
@@ -681,6 +756,14 @@ class SnapshotDurableWriteTest {
         List<Captured> warns() {
             return events.stream()
                          .filter(e -> e.level() == Level.WARN)
+                         .toList();
+        }
+
+        List<Captured> errorsMentioning(String fragment) {
+            return events.stream()
+                         .filter(e -> e.level() == Level.ERROR)
+                         .filter(e -> e.message()
+                                       .contains(fragment))
                          .toList();
         }
 
