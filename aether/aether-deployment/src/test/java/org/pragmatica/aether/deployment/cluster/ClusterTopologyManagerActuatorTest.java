@@ -2274,6 +2274,23 @@ class ClusterTopologyManagerActuatorTest {
                                                             .containsExactly(DEAD);
         }
 
+        /// #1038 on the parked-retry path: auto-heal is disabled AFTER the refusal was parked, and the node is voted out. The retry is an automatic
+        /// deletion, so it deletes nothing.
+        @Test
+        void parkedRefusedReap_autoHealDisabledAfterTheRefusal_deletesNothingOnRetry() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(250));
+            manager.setAutoHealEnabled(false, "operator hold").await().unwrap();
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("voted out, retried, but auto-heal is disabled").isEmpty();
+        }
+
         @Test
         void nodeRemoved_refusal_isLoggedAtWarnWithTheReason() {
             var manager = voterAwareCtm(GRACE);
