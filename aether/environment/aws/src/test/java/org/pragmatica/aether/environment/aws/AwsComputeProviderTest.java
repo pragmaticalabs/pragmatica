@@ -21,6 +21,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -285,6 +286,68 @@ class AwsComputeProviderTest {
 
             assertThat(testClient.lastDescribeTagKey).isEqualTo("env");
             assertThat(testClient.lastDescribeTagValue).isEqualTo("prod");
+        }
+
+        /// The EC2 query takes one tag; the SPI contract is that EVERY tag of the filter must match. The
+        /// canned response is the superset the single-tag query returns (matches `a` only, `b` only, and
+        /// both), so whichever tag is queried first, only the instance carrying both may survive.
+        @Test
+        void listInstances_twoTagFilter_keepsOnlyInstancesMatchingAllTags_aThenB() {
+            assertTwoTagFilterKeepsOnlyFullMatch(orderedFilter("a", "1", "b", "2"));
+        }
+
+        @Test
+        void listInstances_twoTagFilter_keepsOnlyInstancesMatchingAllTags_bThenA() {
+            assertTwoTagFilterKeepsOnlyFullMatch(orderedFilter("b", "2", "a", "1"));
+        }
+
+        @Test
+        void listInstances_twoTagFilterWithNodeId_postFiltersOnTranslatedKey() {
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(
+                    instanceWithTags("i-both", Map.of("aether-node-id", "node-7", "role", "core", "unrelated", "x")),
+                    instanceWithTags("i-wrong-role", Map.of("aether-node-id", "node-7", "role", "worker")))));
+
+            provider.listInstances(orderedFilter("aether.node-id", "node-7", "role", "core"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(instances -> assertThat(instances).extracting(info -> info.id().value())
+                                                                 .containsExactly("i-both"));
+        }
+
+        @Test
+        void listInstances_emptyTagFilter_returnsEveryInstance() {
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(
+                    instanceWithTags("i-1", Map.of("a", "1")),
+                    instanceWithTags("i-2", Map.of()))));
+
+            provider.listInstances(Map.of())
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(instances -> assertThat(instances).hasSize(2));
+        }
+
+        private void assertTwoTagFilterKeepsOnlyFullMatch(Map<String, String> filter) {
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(
+                    instanceWithTags("i-only-a", Map.of("a", "1")),
+                    instanceWithTags("i-both", Map.of("a", "1", "b", "2", "unrelated", "x")),
+                    instanceWithTags("i-only-b", Map.of("b", "2")))));
+
+            provider.listInstances(filter)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(instances -> assertThat(instances).extracting(info -> info.id().value())
+                                                                 .containsExactly("i-both"));
+        }
+
+        private static Map<String, String> orderedFilter(String k1, String v1, String k2, String v2) {
+            var filter = new LinkedHashMap<String, String>();
+
+            filter.put(k1, v1);
+            filter.put(k2, v2);
+            return filter;
         }
 
         /// #1049 — upper layers select a node's instance by the dotted `aether.node-id`, but this

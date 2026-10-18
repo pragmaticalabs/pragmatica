@@ -11,7 +11,7 @@ config_version = "1.0.0"
 
 [cluster]
 name = "cloud-test"
-version = "1.0.0-rc4"
+version = "1.0.0-rc5"
 
 [cluster.core]
 count = 5
@@ -36,11 +36,11 @@ core = "cx22"
 type = "container"
 # Must match a tag published by .github/workflows/release.yml, which derives the tag
 # from the pushed git tag (VERSION=${GITHUB_REF#refs/tags/v}). The moving candidate tag
-# v1.0.0-rc4-candidate therefore publishes :1.0.0-rc4-candidate. This key is the ONLY
+# v1.0.0-rc5-candidate therefore publishes :1.0.0-rc5-candidate. This key is the ONLY
 # live pin: `aether cluster bootstrap` reads it. (deploy-cloud.sh used to carry a second,
 # hard-coded copy as AETHER_IMAGE; it had no consuming reference, pulled nothing, went stale
 # a release behind this key, and was removed.)
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4-candidate"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc5-candidate"
 
 [deployment.zones]
 zone-1 = "fsn1-dc14"

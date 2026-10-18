@@ -111,5 +111,11 @@ public record LoadBalancer(long id,
 
     /// Wrapper for load balancer list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record LoadBalancerListResponse(@JsonProperty("load_balancers") List<LoadBalancer> loadBalancers) {}
+    public record LoadBalancerListResponse(@JsonProperty("load_balancers") List<LoadBalancer> loadBalancers,
+                                           Pagination.Meta meta) implements Pagination.Paged<LoadBalancer> {
+        @Override
+        public List<LoadBalancer> items() {
+            return loadBalancers;
+        }
+    }
 }

@@ -16,7 +16,6 @@ import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
@@ -43,7 +42,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
     private static SourceProfile source(String name, SourceType type, int coreCount) {
         var roles = coreCount > 0
                     ? Map.of(NodeRole.CORE,
-                             RoleSubTable.roleSubTable(NodeRole.CORE, Option.some(coreCount), Option.empty(), Option.empty(), "default"))
+                             RoleSubTable.roleSubTable(Option.some(coreCount), Option.empty(), Option.empty(), "default"))
                     : Map.<NodeRole, RoleSubTable> of();
 
         return SourceProfile.sourceProfile(sourceNameOrDefault(name),
@@ -68,15 +67,14 @@ class BootstrapPhaseDeployFormationLabelsTest {
     private static ClusterBootstrapConfig config(Map<String, SourceProfile> sources) {
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
-                                                    TimeoutsConfig.timeoutsConfig("3s", "10s", "10s"),
+                                                    TimeoutsConfig.timeoutsConfig("3s", "10s"),
                                                     PortMapping.defaultPortMapping());
 
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              sources,
                                                              Map.of(),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              ops, java.util.Map.of());
     }
 

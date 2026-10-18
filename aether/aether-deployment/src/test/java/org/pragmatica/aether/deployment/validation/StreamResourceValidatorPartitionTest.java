@@ -48,6 +48,25 @@ class StreamResourceValidatorPartitionTest {
             assertThat(fieldsAndRules(partition.rejected())).containsExactly("[streams.audit]::version-and-source-mutually-exclusive");
         }
 
+        /// #1377: an OWNED alias `ResourceName` refuses (`Order_Events`) used to pass the parser and then vanish
+        /// from the bindings in `BlueprintService` (`.option()` on the address), so the slice failed far away with
+        /// `UnboundStreamAlias`. It is now rejected here by rule, and the valid sibling still binds.
+        @Test
+        void anOwnedAliasResourceNameRefuses_isRejectedByRule_andSiblingKept() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.Order_Events]
+                    version = "1.0.0"
+                    """;
+
+            var partition = partition(toml, APP_ARTIFACT);
+
+            assertThat(partition.accepted()).containsOnlyKeys("orders");
+            assertThat(fieldsAndRules(partition.rejected())).containsExactly("[streams.Order_Events]::stream-name-invalid");
+        }
+
         @Test
         void everyFailingSection_isReported_andEveryPassingOneKept() {
             var toml = """

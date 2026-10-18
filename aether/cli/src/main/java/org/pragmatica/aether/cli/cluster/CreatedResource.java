@@ -83,11 +83,6 @@ public sealed interface CreatedResource {
         public String resourceId() {
             return floatingIp;
         }
-
-        @Override
-        public String provider() {
-            return "cloud";
-        }
     }
 
     record DockerContainer(String containerId, String sourceName) implements CreatedResource {
