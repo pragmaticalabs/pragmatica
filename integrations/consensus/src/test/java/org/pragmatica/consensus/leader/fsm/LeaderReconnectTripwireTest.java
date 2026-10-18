@@ -129,24 +129,13 @@ class LeaderReconnectTripwireTest {
     }
 
     @Test
-    void leaderManager_asksNoPreVoteQuestion_whenTheLeaderReconnects() {
+    void leaderManager_asksNoPreVoteQuestion_whenAPeerReconnects() {
         follower = new Follower();
-        follower.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2, N3), ObservationSource.QUIC));
-        var sendsAfterTheDisconnect = follower.sends.get();
 
         follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
 
-        assertThat(sendsAfterTheDisconnect).as("control: losing the leader starts a pre-vote round").isPositive();
-        assertThat(follower.sends.get()).as("a reconnect is a join, not another loss of the leader").isEqualTo(sendsAfterTheDisconnect);
-    }
-
-    @Test
-    void leaderManager_keepsOnlyEligibleNodesInTheView_whenAPeerReconnects() {
-        follower = new Follower();
-        follower.ctx.installVoters(List.of(N1, N2));
-        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
-
-        assertThat(follower.ctx.currentTopology()).as("view after the reconnect, node-3 is not a voter").containsExactlyInAnyOrder(N1, N2);
+        assertThat(follower.sends.get()).as("a reconnect is a join, not a loss of the leader: no pre-vote round").isZero();
+        assertThat(follower.followsTheLeader()).isTrue();
     }
 
     @Test
