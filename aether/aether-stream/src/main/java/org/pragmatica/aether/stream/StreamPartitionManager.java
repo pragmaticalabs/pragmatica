@@ -4770,7 +4770,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Ring age tick (PR-0c, owner ruling Q8 A): evicts, from every materialized ring of a stream that declares a
     /// finite max age, the events older than that age, handing them to the eviction listener exactly as space
     /// eviction does (every evictee is still sealed). `AetherNode` schedules it every `RING_AGE_TICK_INTERVAL`.
-    /// Calls [OffHeapRingBuffer#evictByAge] and nothing else: `applyRetention` and the tier-aware path stay unwired.
+    /// Takes at most [#RING_AGE_BATCH_EVENTS] events and [#RING_AGE_BATCH_BYTES] bytes from a ring per tick; the rest
+    /// of what has aged out waits for the next tick. Calls [OffHeapRingBuffer#evictByAge] and nothing else: `applyRetention` and the tier-aware path stay unwired.
     /// Excluded: an `entity:` ring (it keeps space eviction, its sealed segments are protected by the checkpoint
     /// floor), a stream whose max age is `Long.MAX_VALUE` (a count-typed stream declares no age) and a stream whose
     /// retention mode is `UNKNOWN` (a rule this node cannot read is not authority to evict, #964). Returns the

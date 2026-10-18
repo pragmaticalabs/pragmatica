@@ -37,9 +37,10 @@ import org.pragmatica.serialization.Deserializer;
 /// time). This sink serves ONLY topic streams — it is the dead-letter handler of the dispatch
 /// runtime, whose every consumer is a durable-topic group.
 ///
-/// `read` serves the source-stream view of dead letters by decoding the DLQ stream's LOCAL
-/// partition (owner-local read from offset 0): sufficient for same-node inspection and tests; the
-/// operator-facing paged/routed read is the D3 management surface.
+/// `read` serves the source-stream view of dead letters by decoding the DLQ stream's LOCAL partition through the
+/// validated tiered read (so dead letters that left the ring come from the sealed tier), starting at the earliest
+/// retained offset: sufficient for same-node inspection and tests; the operator-facing paged/routed read is the D3
+/// management surface. Its promise carries the failure of a read that could not be served; it is never an empty list.
 public record DlqStreamSink(Deserializer deserializer,
                             StreamPartitionManager manager,
                             Function<String, StreamPublisher<DlqEnvelope>> dlqPublisherFor) implements DeadLetterHandler {
