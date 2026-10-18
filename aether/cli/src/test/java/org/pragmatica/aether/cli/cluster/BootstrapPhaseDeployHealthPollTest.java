@@ -14,7 +14,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
@@ -57,8 +56,7 @@ class BootstrapPhaseDeployHealthPollTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(3),
+                                                  RoleSubTable.roleSubTable(Option.some(3),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -84,8 +82,7 @@ class BootstrapPhaseDeployHealthPollTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(2),
+                                                  RoleSubTable.roleSubTable(Option.some(2),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -94,18 +91,17 @@ class BootstrapPhaseDeployHealthPollTest {
 
     private static ClusterBootstrapConfig configWithShortTimeout() {
         // Use a very short healthCheck timeout so the failing branch completes in test time.
-        var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s", "10s");
+        var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s");
         var ports = PortMapping.defaultPortMapping();
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
                                                     timeouts,
                                                     ports);
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", cloudSource(), "dc-1", sshCoreSource()),
                                                              Map.of(),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              ops, java.util.Map.of());
     }
 

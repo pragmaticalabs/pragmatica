@@ -22,7 +22,6 @@ import static org.pragmatica.aether.config.cluster.ClusterBootstrapConfig.cluste
 import static org.pragmatica.aether.config.cluster.ClusterIdentity.clusterIdentity;
 import static org.pragmatica.aether.config.cluster.CoreTopology.defaultCoreTopology;
 import static org.pragmatica.aether.config.cluster.InfrastructureConfig.infrastructureConfig;
-import static org.pragmatica.aether.config.cluster.NetworkingType.MANUAL;
 import static org.pragmatica.aether.config.cluster.OperationsConfig.defaultOperationsConfig;
 import static org.pragmatica.lang.Result.success;
 
@@ -54,12 +53,11 @@ class BootstrapPhaseDeployLedgerRefusalTest {
     }
 
     private BootstrapContext context() {
-        ClusterBootstrapConfig config = clusterBootstrapConfig("1",
-                                                               clusterIdentity(clusterName.value(), "1.0.0").unwrap(),
+        ClusterBootstrapConfig config = clusterBootstrapConfig(clusterIdentity(clusterName.value(), "1.0.0").unwrap(),
                                                                defaultCoreTopology(),
                                                                Map.of(),
                                                                Map.of(),
-                                                               infrastructureConfig(MANUAL),
+                                                               infrastructureConfig(),
                                                                defaultOperationsConfig(),
                                                                Map.of());
         var state = BootstrapState.initialState(clusterName, "h", "2026-10-18T00:00:00Z").withClusterSecret("s");

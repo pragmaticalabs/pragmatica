@@ -23,7 +23,6 @@ import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
@@ -290,8 +289,7 @@ class DrainWaitCallSitesTest {
     }
 
     private static ClusterBootstrapConfig config(SourceType type, String... hosts) {
-        var role = RoleSubTable.roleSubTable(NodeRole.CORE,
-                                             Option.some(hosts.length),
+        var role = RoleSubTable.roleSubTable(Option.some(hosts.length),
                                              Option.some(List.of(hosts)),
                                              Option.empty(),
                                              Option.empty(),
@@ -313,15 +311,14 @@ class DrainWaitCallSitesTest {
                                                  List.of());
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
-                                                    TimeoutsConfig.timeoutsConfig("3s", "10s", "10s"),
+                                                    TimeoutsConfig.timeoutsConfig("3s", "10s"),
                                                     PortMapping.defaultPortMapping());
 
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("dc", source),
                                                              Map.of(),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              ops,
                                                              Map.of());
     }
