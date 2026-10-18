@@ -17,6 +17,7 @@
 package org.pragmatica.cloud.aws;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -47,6 +48,14 @@ public sealed interface AwsError extends Cause {
             return "Failed to parse AWS response: " + context + cause.map(t -> " - " + Causes.fromThrowable(t).message())
                                                                      .or("");
         }
+    }
+
+    /// A paginated listing that cannot be completed: a continuation token repeated (a cycle of any length),
+    /// or the page cap was exceeded. Never degraded to a partial list, which would look like the whole
+    /// fleet. `endpoint` is the EC2 action, `pages` the pages read.
+    record PaginationFailed(String endpoint, int pages, String reason, String message) implements AwsError {
+        static final Fn3<PaginationFailed, String, Integer, String> FACTORY = Causes.forThreeValues("AWS listing %s stopped after %s page(s): %s",
+                                                                                                    PaginationFailed::new);
     }
 
     /// Maps an HTTP status code and response body to an AwsError.

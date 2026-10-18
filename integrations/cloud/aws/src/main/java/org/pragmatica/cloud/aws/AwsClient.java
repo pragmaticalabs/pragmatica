@@ -24,16 +24,17 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.cloud.aws.api.CreateSecurityGroupResponse;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
-import org.pragmatica.cloud.aws.api.DescribeInstancesResponse.Reservation;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse.ReservationSet;
 import org.pragmatica.cloud.aws.api.DescribeSecurityGroupsResponse;
 import org.pragmatica.cloud.aws.api.DescribeSubnetsResponse;
 import org.pragmatica.cloud.aws.api.DescribeTargetHealthResponse;
+import org.pragmatica.cloud.aws.api.Paged;
 import org.pragmatica.cloud.aws.api.RunInstancesRequest;
 import org.pragmatica.cloud.aws.api.RunInstancesResponse;
 import org.pragmatica.cloud.aws.api.SecurityGroup;
@@ -42,6 +43,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -129,6 +131,10 @@ public interface AwsClient {
 
 /// Implementation of AwsClient using HttpOperations, JsonMapper, and XmlMapper.
 record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMapper, XmlMapper xmlMapper) implements AwsClient {
+    /// Upper bound on the pages one listing may read. EC2 pages by token with no server-side limit on how
+    /// long a chain may run, so this is a guard against a service that never ends its listing: past it the
+    /// call fails instead of running forever.
+    static final int MAX_PAGES = 100;
     private static final String EC2_API_VERSION = "2016-11-15";
     private static final String ELB_API_VERSION = "2015-12-01";
     private static final String EC2_SERVICE = "ec2";
@@ -197,9 +203,12 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     @Override
     public Promise<List<SecurityGroup>> describeSecurityGroups(Map<String, String> tagFilters) {
-        return signAndSendQuery(EC2_SERVICE,
-                                config.ec2Url(),
-                                buildDescribeSecurityGroupsForm(tagFilters)).flatMap(this::parseSecurityGroups);
+        var formBody = buildDescribeSecurityGroupsForm(tagFilters);
+
+        return listAll("DescribeSecurityGroups",
+                       token -> signAndSendQuery(EC2_SERVICE,
+                                                 config.ec2Url(),
+                                                 withToken(formBody, token)).flatMap(this::parseSecurityGroupsPage));
     }
 
     @Override
@@ -261,37 +270,77 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     // --- Query-protocol (EC2 + ELBv2) helpers: form-encoded request, XML response ---
 
-    /// Reads DescribeInstances to its end. EC2 pages the result and signals more with `nextToken`; a
-    /// caller that stops at the first page sees a silent prefix of the fleet. The reservations of every
-    /// page are concatenated in order into one response with no token. A failing later page fails the
-    /// call, so a partial fleet never looks complete.
+    /// Reads DescribeInstances to its end (see [#listAll]); the reservations of every page are
+    /// concatenated in order into one response with no token.
     private Promise<DescribeInstancesResponse> describeAll(String formBody) {
-        return describeFrom(formBody, "", List.of());
+        return listAll("DescribeInstances",
+                       token -> postQuery(EC2_SERVICE,
+                                          config.ec2Url(),
+                                          withToken(formBody, token),
+                                          DescribeInstancesResponse.class)).map(all -> new DescribeInstancesResponse(new ReservationSet(all),
+                                                                                                                     null));
     }
 
-    private Promise<DescribeInstancesResponse> describeFrom(String formBody,
-                                                            String token,
-                                                            List<Reservation> collected) {
-        return postQuery(EC2_SERVICE, config.ec2Url(), withToken(formBody, token), DescribeInstancesResponse.class).flatMap(page -> continueDescribe(formBody,
-                                                                                                                                                     token,
-                                                                                                                                                     collected,
-                                                                                                                                                     page));
+    /// Reads a paged EC2 listing to its end. EC2 pages the result and signals more with `nextToken`; a
+    /// caller that stops at the first page sees a silent prefix of the account. The walk is complete only
+    /// when the service says so, so it FAILS (never returns what it has) when it cannot continue: a
+    /// token that repeats any token already sent (a cycle of any length) or more than [#MAX_PAGES]
+    /// pages. A failing later page fails the call too. Only the token ends a walk, never an empty page.
+    private <T, P extends Paged<T>> Promise<List<T>> listAll(String action, Fn1<Promise<P>, String> fetchPage) {
+        return listFrom(action, fetchPage, "", 1, Set.of(""), List.of());
     }
 
-    /// A token equal to the one just sent ends the walk: a service that keeps repeating it would
-    /// otherwise loop this call forever.
-    private Promise<DescribeInstancesResponse> continueDescribe(String formBody,
-                                                                String sentToken,
-                                                                List<Reservation> collected,
-                                                                DescribeInstancesResponse page) {
-        var all = Stream.concat(collected.stream(),
-                                page.reservations().stream()).toList();
+    private <T, P extends Paged<T>> Promise<List<T>> listFrom(String action,
+                                                              Fn1<Promise<P>, String> fetchPage,
+                                                              String token,
+                                                              int page,
+                                                              Set<String> sent,
+                                                              List<T> collected) {
+        return fetchPage.apply(token).flatMap(response -> continueWith(action,
+                                                                       fetchPage,
+                                                                       page,
+                                                                       sent,
+                                                                       concat(collected, response.items()),
+                                                                       response.continuation()));
+    }
 
-        return page.continuation()
-                   .filter(next -> !next.equals(sentToken))
-                   .map(next -> describeFrom(formBody, next, all))
-                   .or(() -> Promise.success(new DescribeInstancesResponse(new ReservationSet(all),
-                                                                           null)));
+    private <T, P extends Paged<T>> Promise<List<T>> continueWith(String action,
+                                                                  Fn1<Promise<P>, String> fetchPage,
+                                                                  int page,
+                                                                  Set<String> sent,
+                                                                  List<T> collected,
+                                                                  Option<String> next) {
+        return next.map(token -> advance(action, fetchPage, page, sent, token, collected))
+                   .or(() -> Promise.success(collected));
+    }
+
+    private <T, P extends Paged<T>> Promise<List<T>> advance(String action,
+                                                             Fn1<Promise<P>, String> fetchPage,
+                                                             int page,
+                                                             Set<String> sent,
+                                                             String next,
+                                                             List<T> collected) {
+        if (sent.contains(next)) {
+            return paginationFailed(action, page, "a continuation token repeated, so the listing cycles");
+        }
+
+        if (page >= MAX_PAGES) {
+            return paginationFailed(action, page, "the listing has more than the " + MAX_PAGES + "-page cap");
+        }
+
+        return listFrom(action, fetchPage, next, page + 1, withSent(sent, next), collected);
+    }
+
+    private static Set<String> withSent(Set<String> sent, String token) {
+        return Stream.concat(sent.stream(), Stream.of(token)).collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static <T> Promise<List<T>> paginationFailed(String action, int pages, String reason) {
+        return AwsError.PaginationFailed.FACTORY.apply(action, pages, reason).promise();
+    }
+
+    private static <T> List<T> concat(List<T> head, List<T> tail) {
+        return Stream.concat(head.stream(), tail.stream()).toList();
     }
 
     private static String withToken(String formBody, String token) {
@@ -417,18 +466,15 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
                : error.promise();
     }
 
-    private Promise<List<SecurityGroup>> parseSecurityGroups(HttpResult<String> result) {
+    private Promise<DescribeSecurityGroupsResponse> parseSecurityGroupsPage(HttpResult<String> result) {
         if (result.isSuccess()) {
-            return xmlMapper.readString(result.body(),
-                                        DescribeSecurityGroupsResponse.class)
-                            .map(DescribeSecurityGroupsResponse::securityGroups)
-                            .async();
+            return xmlMapper.readString(result.body(), DescribeSecurityGroupsResponse.class).async();
         }
 
         var error = AwsError.fromResponse(result.statusCode(), result.body());
 
         return isTolerated(error, GROUP_ALREADY_ABSENT)
-               ? Promise.success(List.of())
+               ? Promise.success(new DescribeSecurityGroupsResponse(null, null))
                : error.promise();
     }
 

@@ -147,14 +147,69 @@ class AwsClientTest {
             assertThat(testHttp.sentBodies()).hasSize(2);
         }
 
+        /// A token that comes back is a service that will never reach the end. Returning what was read would
+        /// hand the caller a prefix that looks like the whole fleet, so the call fails naming the action.
         @Test
-        void describeInstances_repeatedToken_stopsInsteadOfLooping() {
+        void describeInstances_repeatedToken_failsNamingTheAction() {
             testHttp.respondInSequence(instancesPage("same", "i-1"), instancesPage("same", "i-2"), instancesPage("same", "i-3"));
 
             client.describeInstances()
                   .await()
+                  .onSuccess(response -> assertThat(response).as("a truncated fleet must never be returned as success").isNull())
+                  .onFailure(AwsClientTest::assertPaginationFailureNamesDescribeInstances);
+
+            assertThat(testHttp.sentBodies()).hasSize(2);
+        }
+
+        /// A,B,A,B: the repeat is two hops back, not the token just sent.
+        @Test
+        void describeInstances_tokenCycleOfTwo_failsNamingTheAction() {
+            testHttp.respondInSequence(instancesPage("tA", "i-1"),
+                                       instancesPage("tB", "i-2"),
+                                       instancesPage("tA", "i-3"),
+                                       instancesPage("tB", "i-4"));
+
+            client.describeInstances()
+                  .await()
+                  .onSuccess(response -> assertThat(response).isNull())
+                  .onFailure(AwsClientTest::assertPaginationFailureNamesDescribeInstances);
+
+            assertThat(testHttp.sentBodies()).hasSize(3);
+        }
+
+        @Test
+        void describeInstances_endlessDistinctTokens_failsAtThePageCap() {
+            testHttp.respondByFunction(body -> instancesPage("t" + (tokenNumberOf(body) + 1), "i-" + tokenNumberOf(body)));
+
+            client.describeInstances()
+                  .await()
+                  .onSuccess(response -> assertThat(response).as("a capped fleet must never be returned as success").isNull())
+                  .onFailure(cause -> assertThat(cause.message()).contains("DescribeInstances")
+                                                                 .contains("stopped after " + AwsClientRecord.MAX_PAGES + " page(s)"));
+
+            assertThat(testHttp.sentBodies()).hasSize(AwsClientRecord.MAX_PAGES);
+        }
+
+        @Test
+        void describeInstances_exactlyTheCapWithAnEndingLastPage_succeeds() {
+            testHttp.respondByFunction(body -> instancesPage(tokenNumberOf(body) + 1 >= AwsClientRecord.MAX_PAGES ? null : "t" + (tokenNumberOf(body) + 1),
+                                                             "i-" + tokenNumberOf(body)));
+
+            client.describeInstances()
+                  .await()
                   .onFailure(cause -> assertThat(cause).isNull())
-                  .onSuccess(response -> assertThat(instanceIds(response)).containsExactly("i-1", "i-2"));
+                  .onSuccess(response -> assertThat(instanceIds(response)).hasSize(AwsClientRecord.MAX_PAGES));
+        }
+
+        /// An empty page can still be followed by more: only the token ends the walk, never the page being empty.
+        @Test
+        void describeInstances_emptyPageCarryingAToken_isFollowed() {
+            testHttp.respondInSequence(instancesPage("t1"), instancesPage(null, "i-2"));
+
+            client.describeInstances()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(response -> assertThat(instanceIds(response)).containsExactly("i-2"));
 
             assertThat(testHttp.sentBodies()).hasSize(2);
         }
@@ -166,6 +221,96 @@ class AwsClientTest {
             client.describeInstances()
                   .await()
                   .onSuccess(response -> assertThat(response).as("a partial fleet must not look complete").isNull())
+                  .onFailure(cause -> assertThat(cause.message()).contains("NoPage"));
+        }
+    }
+
+    /// `describeSecurityGroups(Map.of())` lists every group in the account and `deleteWhenEmptied` looks
+    /// one group id up in that list; a group on a later page would read as absent and its delete would be
+    /// skipped. Same page rules as DescribeInstances.
+    @Nested
+    class DescribeSecurityGroupsPagination {
+
+        @Test
+        void describeSecurityGroups_twoPages_returnsBothAndSendsTheToken() {
+            testHttp.respondInSequence(groupsPage("tok+1", "sg-1", "sg-2"), groupsPage(null, "sg-3"));
+
+            client.describeSecurityGroups(Map.of())
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(groups -> assertThat(groups).extracting(SecurityGroup::groupId).containsExactly("sg-1", "sg-2", "sg-3"));
+
+            assertThat(testHttp.sentBodies()).hasSize(2);
+            assertThat(testHttp.sentBodies().get(0)).doesNotContain("NextToken");
+            assertThat(testHttp.sentBodies().get(1)).contains("Action=DescribeSecurityGroups").contains("&NextToken=tok%2B1");
+        }
+
+        @Test
+        void describeSecurityGroups_tagFilterKeptOnEveryPage() {
+            testHttp.respondInSequence(groupsPage("t1", "sg-1"), groupsPage(null, "sg-2"));
+
+            client.describeSecurityGroups(tagFilters())
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(groups -> assertThat(groups).hasSize(2));
+
+            assertThat(testHttp.sentBodies().get(1)).contains("Filter.1.Name=tag:aether-cluster")
+                                                    .contains("Filter.2.Name=tag:aether-source")
+                                                    .contains("&NextToken=t1");
+        }
+
+        @Test
+        void describeSecurityGroups_repeatedToken_failsNamingTheAction() {
+            testHttp.respondInSequence(groupsPage("same", "sg-1"), groupsPage("same", "sg-2"), groupsPage("same", "sg-3"));
+
+            client.describeSecurityGroups(Map.of())
+                  .await()
+                  .onSuccess(groups -> assertThat(groups).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).contains("DescribeSecurityGroups"));
+
+            assertThat(testHttp.sentBodies()).hasSize(2);
+        }
+
+        @Test
+        void describeSecurityGroups_tokenCycleOfTwo_fails() {
+            testHttp.respondInSequence(groupsPage("tA", "sg-1"), groupsPage("tB", "sg-2"), groupsPage("tA", "sg-3"));
+
+            client.describeSecurityGroups(Map.of())
+                  .await()
+                  .onSuccess(groups -> assertThat(groups).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).contains("DescribeSecurityGroups"));
+        }
+
+        @Test
+        void describeSecurityGroups_endlessDistinctTokens_failsAtThePageCap() {
+            testHttp.respondByFunction(body -> groupsPage("t" + (tokenNumberOf(body) + 1), "sg-" + tokenNumberOf(body)));
+
+            client.describeSecurityGroups(Map.of())
+                  .await()
+                  .onSuccess(groups -> assertThat(groups).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).contains("DescribeSecurityGroups")
+                                                                 .contains("stopped after " + AwsClientRecord.MAX_PAGES + " page(s)"));
+
+            assertThat(testHttp.sentBodies()).hasSize(AwsClientRecord.MAX_PAGES);
+        }
+
+        @Test
+        void describeSecurityGroups_emptyPageCarryingAToken_isFollowed() {
+            testHttp.respondInSequence(groupsPage("t1"), groupsPage(null, "sg-2"));
+
+            client.describeSecurityGroups(Map.of())
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(groups -> assertThat(groups).extracting(SecurityGroup::groupId).containsExactly("sg-2"));
+        }
+
+        @Test
+        void describeSecurityGroups_secondPageFails_fails() {
+            testHttp.respondInSequence(groupsPage("t1", "sg-1"));
+
+            client.describeSecurityGroups(Map.of())
+                  .await()
+                  .onSuccess(groups -> assertThat(groups).as("a partial group list must not look complete").isNull())
                   .onFailure(cause -> assertThat(cause.message()).contains("NoPage"));
         }
     }
@@ -632,6 +777,7 @@ class AwsClientTest {
         private int responseStatus;
         private String responseBody;
         private boolean sequenced;
+        private java.util.function.Function<String, String> bodyFunction;
         private final ArrayDeque<String> queuedBodies = new ArrayDeque<>();
         private final List<String> sentBodies = new ArrayList<>();
 
@@ -653,6 +799,11 @@ class AwsClientTest {
             queuedBodies.addAll(List.of(bodies));
         }
 
+        /// Answers every request (200) from a function of its form body, for listings that never end.
+        void respondByFunction(java.util.function.Function<String, String> bodyForRequest) {
+            this.bodyFunction = bodyForRequest;
+        }
+
         List<String> sentBodies() {
             return List.copyOf(sentBodies);
         }
@@ -667,6 +818,10 @@ class AwsClientTest {
 
         @SuppressWarnings("unchecked")
         private <T> HttpResult<T> resultFor() {
+            if (bodyFunction != null) {
+                return new HttpResult<>(200, HttpHeaders.of(Map.of(), (a, b) -> true), (T) bodyFunction.apply(capturedBody.get()));
+            }
+
             var queued = queuedBodies.poll();
             var status = queued != null ? 200 : sequenced ? 500 : responseStatus;
             var body = queued != null ? queued : sequenced ? NO_PAGE_QUEUED : responseBody;
@@ -731,6 +886,29 @@ class AwsClientTest {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><DescribeInstancesResponse xmlns=\"http://ec2.amazonaws.com/doc/2016-11-15/\">"
                + "<reservationSet><item><reservationId>r-1</reservationId><instancesSet>" + items
                + "</instancesSet></item></reservationSet>" + token + "</DescribeInstancesResponse>";
+    }
+
+    /// The numeric suffix of the `NextToken=t<N>` in a request body; 0 for the first request (no token).
+    private static int tokenNumberOf(String body) {
+        var marker = "NextToken=t";
+        var at = body.indexOf(marker);
+
+        return at < 0 ? 0 : Integer.parseInt(body.substring(at + marker.length()));
+    }
+
+    private static String groupsPage(String nextToken, String... groupIds) {
+        var items = java.util.Arrays.stream(groupIds)
+                                    .map(id -> "<item><groupId>" + id + "</groupId><groupName>n-" + id + "</groupName></item>")
+                                    .collect(java.util.stream.Collectors.joining());
+        var token = nextToken == null ? "" : "<nextToken>" + nextToken + "</nextToken>";
+
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><DescribeSecurityGroupsResponse xmlns=\"http://ec2.amazonaws.com/doc/2016-11-15/\">"
+               + "<securityGroupInfo>" + items + "</securityGroupInfo>" + token + "</DescribeSecurityGroupsResponse>";
+    }
+
+    private static void assertPaginationFailureNamesDescribeInstances(Cause cause) {
+        assertThat(cause).isInstanceOf(AwsError.PaginationFailed.class);
+        assertThat(cause.message()).contains("DescribeInstances").contains("page(s)");
     }
 
     private static List<String> instanceIds(DescribeInstancesResponse response) {

@@ -34,7 +34,7 @@ import static org.pragmatica.lang.Option.option;
 @JacksonXmlRootElement(localName = "DescribeInstancesResponse")
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reservationSet") ReservationSet reservationSet,
-                                        @JacksonXmlProperty(localName = "nextToken") String nextToken) {
+                                        @JacksonXmlProperty(localName = "nextToken") String nextToken) implements Paged<DescribeInstancesResponse.Reservation> {
     /// Container for reservations.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ReservationSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Reservation> items) {}
@@ -49,7 +49,8 @@ public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reserva
     public record InstancesSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Instance> items) {}
 
     /// The reservations of this page; empty for a filter that matched nothing.
-    public List<Reservation> reservations() {
+    @Override
+    public List<Reservation> items() {
         if (reservationSet == null || reservationSet.items() == null) {
             return List.of();
         }
@@ -59,6 +60,7 @@ public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reserva
 
     /// The token that asks EC2 for the page after this one, absent on the last page. EC2 may also send
     /// the element empty, which reads as absent.
+    @Override
     public Option<String> continuation() {
         return option(nextToken).filter(Verify.Is::present);
     }
