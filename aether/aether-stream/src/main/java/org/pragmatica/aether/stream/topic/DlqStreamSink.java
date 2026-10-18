@@ -44,9 +44,6 @@ import org.pragmatica.serialization.Deserializer;
 public record DlqStreamSink(Deserializer deserializer,
                             StreamPartitionManager manager,
                             Function<String, StreamPublisher<DlqEnvelope>> dlqPublisherFor) implements DeadLetterHandler {
-    private static final StreamPartitionManager.EpochRead NOTHING_DEAD_LETTERED = new StreamPartitionManager.EpochRead(List.of(),
-                                                                                                                       Epoch.ZERO);
-
     private static final System.Logger LOG = System.getLogger(DlqStreamSink.class.getName());
 
     /// #1266: the envelope decode is LIFTED. A bare decode threw synchronously out of `append`, before
@@ -155,15 +152,14 @@ public record DlqStreamSink(Deserializer deserializer,
         return manager.readServingTiered(dlqStream, 0, fromOffset, maxCount, Epoch.ZERO);
     }
 
-    /// Two outcomes that are not failures of the inspection. FER (degrade forward): retention reclaimed the oldest dead
+    /// One outcome that is not a failure of the inspection. FER (degrade forward): retention reclaimed the oldest dead
     /// letters, so a read from offset 0 is refused with the earliest offset still held; the inspection lists what is
-    /// retained, from there, and the reclaimed ones are gone by the stream's own max-age rule. Design-out: the DLQ stream
-    /// is created with its topic, so a DLQ stream this node does not hold means nothing was dead-lettered here. Every
-    /// other failure is passed on.
+    /// retained, from there, and the reclaimed ones are gone by the stream's own max-age rule. Every other failure is
+    /// passed on, `StreamNotFound` included: a node that has not materialized the DLQ stream (its committed config not
+    /// applied yet) cannot tell "nothing was dead-lettered" from "not loaded here", so it answers neither.
     private Promise<StreamPartitionManager.EpochRead> restartAtEarliest(String dlqStream, int maxCount, Cause cause) {
         return switch (cause) {
             case StreamError.CursorExpired expired -> readFrom(dlqStream, expired.tailOffset(), maxCount);
-            case StreamError.StreamNotFound _ -> Promise.success(NOTHING_DEAD_LETTERED);
             default -> cause.promise();
         };
     }

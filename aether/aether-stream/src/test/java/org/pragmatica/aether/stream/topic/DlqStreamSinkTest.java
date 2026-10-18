@@ -120,10 +120,28 @@ class DlqStreamSinkTest {
     }
 
     @Test
-    void read_returnsEmpty_whenNothingDeadLettered() {
+    void read_returnsEmpty_whenTheDlqStreamExistsAndNothingIsDeadLettered() {
+        DurableTopicSubstrate.durableTopicSubstrate(manager)
+                             .activateTopic(ADDRESS,
+                                            org.pragmatica.aether.resource.DurableTopicSpec.durableTopicSpec(1,
+                                                                                                             new org.pragmatica.aether.slice.ReplicationDeclaration.Resolved(new org.pragmatica.aether.slice.ReplicationFactors(3, 3), java.util.List.of()),
+                                                                                                             org.pragmatica.lang.parse.TimeSpan.timeSpan("7d")
+                                                                                                                                               .unwrap())
+                                                                                           .unwrap())
+                             .onFailure(cause -> fail(cause.message()));
         var sink = new DlqStreamSink(codec, manager, _ -> capturing(new CopyOnWriteArrayList<>()));
 
         assertThat(sink.read(TOPIC_STREAM, 10).await().unwrap()).isEmpty();
+    }
+
+    @Test
+    void read_failsWithStreamNotFound_whenThisNodeHoldsNoDlqStream_insteadOfAnsweringEmpty() {
+        var sink = new DlqStreamSink(codec, manager, _ -> capturing(new CopyOnWriteArrayList<>()));
+
+        sink.read(TOPIC_STREAM, 10)
+            .await()
+            .onSuccess(entries -> fail("a node without the DLQ stream answered " + entries))
+            .onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.aether.stream.StreamError.StreamNotFound.class));
     }
 
     @Test
