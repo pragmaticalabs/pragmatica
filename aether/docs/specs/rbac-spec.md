@@ -243,11 +243,8 @@ Format: semicolon-separated entries, each entry is `keyValue:name:comma-separate
 ```toml
 [management]
 port = 8080
-# When app-http.api-keys is configured, management API requires
-# API key by default. This flag overrides that behavior.
-# security = "inherit"  # default: use app-http.api-keys
-# security = "disabled" # explicitly disable for management
-# security = "required" # always require, even if app-http has no keys
+# No `security` key exists (the draft proposed inherit|disabled|required). The management plane
+# follows [app-http] security_mode and api-keys: see management-api.md, "One setting arms both planes".
 ```
 
 ---

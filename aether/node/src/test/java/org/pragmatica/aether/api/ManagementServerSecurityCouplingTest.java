@@ -47,6 +47,13 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.QueryParams;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -121,6 +128,62 @@ class ManagementServerSecurityCouplingTest {
         assertThat(serializer.status()).as("security_mode = none serves a non-public route to an anonymous caller")
                                        .isEqualTo(201);
         verify(validator, never()).validate(any(), any());
+    }
+
+    @Test
+    void accessDeniedFromTheValidator_refusalNamesThePlaneAndTheAuthorizationRoleAxis() {
+        var validator = validatorReturning(new SecurityError.AccessDenied("key may not use this plane").result());
+
+        server(validator, true).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).isEqualTo(403);
+        assertThat(serializer.bodyText()).contains("Management API").contains("authorization_role").contains("key may not use this plane");
+    }
+
+    @Test
+    void securityDisabled_localPath_servesAnonymousRequestWithoutConsultingTheValidator() {
+        var validator = validatorReturning(SecurityError.NO_VALIDATOR_CONFIGURED.result());
+        var writer = new RecordingResponseWriter();
+
+        server(validator, false).handleRequest(new StubHttpRequest("/api/v1/no-such-route"), writer);
+
+        verify(validator, never()).validate(any(), any());
+        assertThat(writer.status()).as("dispatch was reached, not refused").isNotIn(401, 403);
+    }
+
+    /// Control for the pin above: the same local request with security ENABLED does consult the validator and is
+    /// refused, so the disabled case passing is the gate and not a request that can never be refused.
+    @Test
+    void securityEnabled_localPath_consultsTheValidatorAndRefuses() {
+        var validator = validatorReturning(SecurityError.MISSING_API_KEY.result());
+        var writer = new RecordingResponseWriter();
+
+        server(validator, true).handleRequest(new StubHttpRequest("/api/v1/no-such-route"), writer);
+
+        verify(validator).validate(any(), any());
+        assertThat(writer.status()).isEqualTo(401);
+    }
+
+    private record StubHttpRequest(String path) implements HttpRequest {
+        @Override public String requestId() {return "req-962-local";}
+        @Override public HttpMethod method() {return HttpMethod.GET;}
+        @Override public Headers headers() {return Headers.empty();}
+        @Override public QueryParams queryParams() {return QueryParams.empty();}
+        @Override public byte[] body() {return new byte[0];}
+    }
+
+    private static final class RecordingResponseWriter implements ResponseWriter {
+        private volatile HttpStatus status;
+
+        int status() {
+            assertThat(status).as("the server answered").isNotNull();
+
+            return status.code();
+        }
+
+        @Override public void write(HttpStatus status, byte[] body, ContentType contentType) {this.status = status;}
+
+        @Override public ResponseWriter header(String name, String value) {return this;}
     }
 
     private static SecurityValidator validatorReturning(Result<SecurityContext> outcome) {

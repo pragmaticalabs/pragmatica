@@ -4197,7 +4197,7 @@ When API keys are configured, WebSocket connections require first-message authen
 
 If not authenticated within 5 seconds, the connection is closed.
 
-When no API keys are configured, WebSocket connections are immediately authorized.
+With `security_mode = "api-key"` (the default) and no key configured, the feeds are fail-closed: only the cluster bootstrap admin key authenticates. Connections are authorized immediately only under an explicit `security_mode = "none"`, which leaves the whole management plane open.
 
 ---
 
@@ -6408,6 +6408,8 @@ The app HTTP server (serving slice-generated endpoints) supports configurable au
 | `jwt` | `Authorization: Bearer <token>` | JWT with JWKS validation (RS256/ES256) |
 | `none` | -- | No authentication — must be set explicitly; dev/eval only, never for anything reachable over an untrusted network |
 
+**This setting also governs the Management API.** Whatever mode is chosen here arms (or, for `none`, opens) the management plane too, and the two planes authorize on different axes (`roles` here, `authorization_role` there). See [One setting arms both planes](#one-setting-arms-both-planes).
+
 ### Health Endpoint Bypass
 
 Health endpoints always bypass authentication regardless of security mode:
@@ -6481,9 +6483,9 @@ jwks_cache_ttl_seconds = 3600
 
 #### Mode: None
 
-No authentication -- all requests are allowed with a system principal. Must be set explicitly
-(`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev
-instance, never for anything reachable over an untrusted network -- see the
+On the application plane, `none` serves routes whose policy is unspecified or `public`, and refuses auth-requiring routes outright with `401 NO_VALIDATOR_CONFIGURED`; there is no system principal for a request to assume.
+
+**`none` also opens the Management API completely.** `[app-http] security_mode` is the only security setting the management plane has (see [One setting arms both planes](#one-setting-arms-both-planes)), so under `none` no validator is consulted on any management path: every operation (cluster changes, node shutdown, config, blueprint deploy), the websocket feeds, and `PUT /repository/...` artifact pushes (code the cluster will load) are served to any caller that can reach the management port. Setting `none` for a local app-HTTP development setup therefore opens cluster operations too. Must be set explicitly (`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev instance, never for anything reachable over an untrusted network -- see the
 [Bootstrap Config Reference](bootstrap-config.md#a-security_mode--none--why-deveval-bootstrap-needs-it)
 for why the dev/eval bootstrap path uses it and what it gives up.
 

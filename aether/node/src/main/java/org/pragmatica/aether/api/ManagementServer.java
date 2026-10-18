@@ -957,8 +957,11 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}}");
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private void handleRequest(HttpRequest ctx, ResponseWriter response) {
+    /// Package-visible so the local-path security gate is pinnable (#1121): `ManagementServerSecurityCouplingTest` drives it
+    /// with security disabled and enabled. Widening only, no behaviour change: the server callback remains the only production caller, and
+    /// the RET-01 suppression is the cost of widening a terminal `void` sink, as on `dispatchManagementRequest`.
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
+    void handleRequest(HttpRequest ctx, ResponseWriter response) {
         var startTime = System.nanoTime();
         var path = ctx.path();
         var method = ctx.method();
