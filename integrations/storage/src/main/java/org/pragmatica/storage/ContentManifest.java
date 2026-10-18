@@ -18,16 +18,17 @@ import static org.pragmatica.lang.Option.some;
 /// Manifest linking chunks of large content.
 ///
 /// Serialized inside the content store's typed envelope ([ContentEnvelope]) as kind `M`, with every field length
-/// prefixed, so a name may contain any character (`|` included) and round-trips. A manifest is never recognised by
-/// sniffing a value's leading bytes: user content is written under envelope kind `D`, so no upload can be read back
-/// as a manifest.
+/// prefixed, so a name may contain any character (`|` included) and round-trips. Whether a value is a manifest is
+/// decided out of band: the store writes every value under a TRUSTED ref that no legacy value can occupy (see
+/// [ContentEnvelope#trustedRef]), and only there is the envelope kind byte believed.
 ///
-/// The format before the envelope, pipe-delimited text behind the magic `AHSE-MANIFEST:`, is still READ (only for a
-/// value without the envelope, which only a store from before the envelope can have written), so content stored
-/// before the upgrade stays readable and its delete still releases its chunks. A legacy value is ambiguous by
-/// construction: a pre-upgrade upload that began with the magic is indistinguishable from a pre-upgrade manifest, so
-/// that one hazard remains for legacy data and ends when it is rewritten or deleted. Legacy manifests are parsed from
-/// the right, so a legacy name containing `|` is read too.
+/// The format before the envelope, pipe-delimited text behind the magic `AHSE-MANIFEST:`, is still READ for a LEGACY
+/// name (a bare ref, which only a store from before the trusted namespace can have written), so content stored before
+/// the upgrade stays readable and its delete still releases its chunks. A legacy value is ambiguous by construction:
+/// a pre-upgrade upload that began with that magic is indistinguishable from a pre-upgrade manifest, so that one
+/// hazard remains for legacy data and ends when the name is rewritten (which moves it to the trusted ref) or deleted.
+/// A legacy value is never read as an envelope. Legacy manifests are parsed from the right, so a legacy name
+/// containing `|` is read too.
 public record ContentManifest(String name, long totalSize, int chunkCount, List<String> chunkBlockIds) {
     static final String MAGIC_HEADER = "AHSE-MANIFEST:";
 
@@ -58,15 +59,15 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
         return ContentEnvelope.wrap(ContentEnvelope.MANIFEST, body.array());
     }
 
-    /// Parse manifest bytes: the enveloped form, or the legacy text form of a value written before the envelope.
-    /// Returns None for anything else, enveloped direct content included.
+    /// Parse an enveloped manifest, the form the content store writes under its trusted names. Returns None for
+    /// anything else, enveloped direct content and legacy text manifests included (a legacy text manifest is read
+    /// only for a legacy name, through [#fromLegacyBytes]).
     public static Option<ContentManifest> fromBytes(byte[] data) {
-        return ContentEnvelope.isEnveloped(data)
-               ? ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, data).flatMap(ContentManifest::parseEnveloped)
-               : fromLegacyBytes(data);
+        return ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, data)
+                              .flatMap(ContentManifest::parseEnveloped);
     }
 
-    /// Whether the bytes are a manifest in either form. Enveloped direct content never is, whatever it begins with.
+    /// Whether the bytes are an enveloped manifest. Enveloped direct content never is, whatever it begins with.
     public static boolean isManifest(byte[] data) {
         return fromBytes(data).isPresent();
     }

@@ -473,6 +473,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
         sb.append("timestamp=").append(snapshot.timestamp()).append('\n');
         sb.append("nodeId=").append(snapshot.nodeId()).append('\n');
         sb.append("contentHash=").append(HEX.formatHex(snapshot.contentHash())).append('\n');
+        sb.append(REF_NAME_ENCODING_HEADER).append('=').append(REF_NAME_ENCODING_ESCAPED).append('\n');
         sb.append('\n');
         sb.append("# Lifecycles\n");
         snapshot.lifecycles().forEach(lc -> appendLifecycleLine(sb, lc));
@@ -502,8 +503,49 @@ final class DefaultSnapshotManager implements SnapshotManager {
           .append('\n');
     }
 
+    /// Ref names are percent-escaped (`%`, `|`, `=`, CR, LF), so every name round-trips. The legacy writer put names raw:
+    /// a name containing `|` or `=` or a line break could not be read back (the parser split at the first `|`, skipped
+    /// lines containing `=`, and split lines on LF), so no ref restored from a legacy snapshot contains `|`. The
+    /// content store relies on that to keep its trusted names out of any legacy name (see [ContentEnvelope]).
     private static void appendRefLine(StringBuilder sb, String name, BlockId id) {
-        sb.append(name).append('|').append(id.hexString()).append('\n');
+        sb.append(escapeRefName(name)).append('|').append(id.hexString()).append('\n');
+    }
+
+    static final String REF_NAME_ENCODING_HEADER = "refNames";
+    static final String REF_NAME_ENCODING_ESCAPED = "escaped";
+
+    static String escapeRefName(String name) {
+        var escaped = new StringBuilder(name.length());
+
+        for (var ch : name.toCharArray()) {
+            switch (ch) {
+                case '%' -> escaped.append("%25");
+                case '|' -> escaped.append("%7C");
+                case '=' -> escaped.append("%3D");
+                case '\n' -> escaped.append("%0A");
+                case '\r' -> escaped.append("%0D");
+                default -> escaped.append(ch);
+            }
+        }
+
+        return escaped.toString();
+    }
+
+    static String unescapeRefName(String escaped) {
+        var name = new StringBuilder(escaped.length());
+
+        for (int i = 0; i < escaped.length(); i++) {
+            var ch = escaped.charAt(i);
+
+            if (ch == '%' && i + 2 < escaped.length()) {
+                name.append((char) Integer.parseInt(escaped.substring(i + 1, i + 3), 16));
+                i += 2;
+            } else {
+                name.append(ch);
+            }
+        }
+
+        return name.toString();
     }
 
     // --- Deserialization ---
@@ -519,8 +561,9 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var nodeId = headers.get("nodeId");
         var contentHash = HEX.parseHex(headers.get("contentHash"));
         var refs = new LinkedHashMap<String, BlockId>();
+        var escapedNames = REF_NAME_ENCODING_ESCAPED.equals(headers.get(REF_NAME_ENCODING_HEADER));
 
-        return parseLifecycles(lines, refs).map(lifecycles -> new MetadataSnapshot(epoch,
+        return parseLifecycles(lines, refs, escapedNames).map(lifecycles -> new MetadataSnapshot(epoch,
                                                                                    timestamp,
                                                                                    nodeId,
                                                                                    lifecycles,
@@ -532,7 +575,9 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// silently dropping it. Ref lines mutate `refs` in place (a `String -> BlockId` accumulator);
     /// lifecycle lines are collected via [`Result.allOf`] so a single corrupt line fails the whole
     /// snapshot restore (a partially-parsed snapshot is worse than a clean failure).
-    private static Result<List<BlockLifecycle>> parseLifecycles(String[] lines, Map<String, BlockId> refs) {
+    private static Result<List<BlockLifecycle>> parseLifecycles(String[] lines,
+                                                                Map<String, BlockId> refs,
+                                                                boolean escapedNames) {
         var lifecycleResults = new ArrayList<Result<BlockLifecycle>>();
         var section = "";
 
@@ -542,7 +587,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
             } else if (line.equals("# Refs")) {
                 section = "refs";
             } else if (!line.isEmpty() && !line.startsWith("#") && !line.contains("=")) {
-                collectDataLine(section, line, lifecycleResults, refs);
+                collectDataLine(section, line, lifecycleResults, refs, escapedNames);
             }
         }
 
@@ -552,11 +597,12 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private static void collectDataLine(String section,
                                         String line,
                                         List<Result<BlockLifecycle>> lifecycleResults,
-                                        Map<String, BlockId> refs) {
+                                        Map<String, BlockId> refs,
+                                        boolean escapedNames) {
         if ("lifecycles".equals(section)) {
             lifecycleResults.add(parseLifecycleLine(line));
         } else if ("refs".equals(section)) {
-            parseRefLine(line, refs);
+            parseRefLine(line, refs, escapedNames);
         }
     }
 
@@ -618,11 +664,16 @@ final class DefaultSnapshotManager implements SnapshotManager {
         return tiers;
     }
 
-    private static void parseRefLine(String line, Map<String, BlockId> refs) {
+    /// A legacy line is split at its FIRST `|` exactly as before, so a legacy snapshot restores exactly the refs it
+    /// always did; an escaped line's name is unescaped.
+    static void parseRefLine(String line, Map<String, BlockId> refs, boolean escapedNames) {
         var pipeIndex = line.indexOf('|');
 
         if (pipeIndex > 0) {
-            var name = line.substring(0, pipeIndex);
+            var rawName = line.substring(0, pipeIndex);
+            var name = escapedNames
+                       ? unescapeRefName(rawName)
+                       : rawName;
 
             BlockId.fromHex(line.substring(pipeIndex + 1)).onSuccess(id -> refs.put(name, id));
         }

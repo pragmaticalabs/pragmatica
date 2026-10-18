@@ -11,17 +11,29 @@ import static org.pragmatica.lang.Option.some;
 /// The content store's typed envelope around every value it stores under a name: a fixed marker, then one kind byte,
 /// then the payload. Kind `D` is the caller's (possibly compressed) content, kind `M` a [ContentManifest].
 ///
-/// It is what keeps a manifest out of band: whether a value is a manifest is decided by the kind byte the store itself
-/// wrote, never by what the value's payload begins with, so content a caller uploads — whatever its bytes — is always
-/// kind `D` and is returned verbatim. Unnamed chunk blocks carry no envelope; they are reached only through a manifest.
-///
-/// The marker begins with a NUL byte, which a legacy text manifest (`AHSE-MANIFEST:`) never does. A value without the
-/// marker was written before the envelope existed and is read the legacy way (see [ContentManifest]).
+/// F7: the kind byte is believed ONLY for a value stored under a trusted ref ([#trustedRef]), a ref name that no value
+/// written before this scheme can carry. Every content-store write goes there, so the kind byte of a trusted value is
+/// always one the store itself wrote, and an upload (whatever its bytes) is kind `D`, returned verbatim. A value under
+/// a bare (legacy) name is never read as an envelope, so a legacy upload that happens to begin with the marker is
+/// returned verbatim too. Unnamed chunk blocks carry no envelope; they are reached only through a manifest.
 sealed interface ContentEnvelope {
     record unused() implements ContentEnvelope {}
 
     byte DIRECT = 'D';
     byte MANIFEST = 'M';
+    String TRUSTED_REF_PREFIX = "|";
+
+    /// The ref under which the content store keeps `name`'s value: `|` + name.
+    ///
+    /// Why no legacy value can be found under it: ref names reach disk only in metadata snapshots, and a snapshot
+    /// written before the escaped ref-name encoding stored names raw and was read back by splitting each line at its
+    /// FIRST `|` (see `DefaultSnapshotManager.parseRefLine`), so a name containing `|` never survived a restart (its
+    /// line failed to parse, and its snapshot failed its integrity hash). An upgrade is a restart, so after it every
+    /// ref whose name contains `|` was written by this code. A raw [StorageInstance] user can write any ref; the
+    /// guarantee is about values that arrived through the content store.
+    static String trustedRef(String name) {
+        return TRUSTED_REF_PREFIX + name;
+    }
 
     static byte[] marker() {
         return new byte[]{0x00, 'A', 'H', 'S', 'E', 0x02};

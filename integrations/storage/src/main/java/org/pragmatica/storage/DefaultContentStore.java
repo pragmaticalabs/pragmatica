@@ -56,9 +56,20 @@ final class DefaultContentStore implements ContentStore {
     /// back, and before #981 every superseded chunk stayed at refCount 1 forever. Releasing after the
     /// write is load-bearing: a failed overwrite leaves the previous document untouched, and re-storing
     /// the same content credits each chunk (dedup) before releasing it, netting to zero.
+    ///
+    /// F7: values are written under the TRUSTED ref of `name` ([ContentEnvelope#trustedRef]); a LEGACY ref of the
+    /// same name (written before the trusted namespace existed) is retired after the write, its chunks released by
+    /// the legacy rules.
     @Override
     public Promise<String> put(String name, byte[] content) {
-        return previousContent(name).flatMap(previous -> storeThenRelease(name, content, previous));
+        return previousContent(Namespace.TRUSTED, name).flatMap(previous -> storeThenRelease(name, content, previous))
+                                                       .flatMap(id -> retireLegacy(name).map(_ -> id));
+    }
+
+    private Promise<Unit> retireLegacy(String name) {
+        return previousContent(Namespace.LEGACY, name).flatMap(previous -> dropThenRelease(Namespace.LEGACY,
+                                                                                          name,
+                                                                                          previous));
     }
 
     private Promise<String> storeThenRelease(String name, byte[] content, Option<PreviousContent> previous) {
@@ -66,8 +77,8 @@ final class DefaultContentStore implements ContentStore {
     }
 
     private Promise<String> releaseThenReturn(RefSwap swap, Option<PreviousContent> previous) {
-        return releaseDisplaced(swap.displaced(), previous).map(_ -> swap.current()
-                                                                         .hexString());
+        return releaseDisplaced(Namespace.TRUSTED, swap.displaced(), previous).map(_ -> swap.current()
+                                                                                            .hexString());
     }
 
     private Promise<RefSwap> store(String name, byte[] content) {
@@ -80,7 +91,7 @@ final class DefaultContentStore implements ContentStore {
     /// manifest, whatever its bytes begin with.
     private Promise<RefSwap> putDirect(String name, byte[] content) {
         return frameCompress(content).async()
-                            .flatMap(framed -> storage.swapRef(name,
+                            .flatMap(framed -> storage.swapRef(ContentEnvelope.trustedRef(name),
                                                                ContentEnvelope.wrap(ContentEnvelope.DIRECT, framed)));
     }
 
@@ -127,7 +138,7 @@ final class DefaultContentStore implements ContentStore {
     private Promise<RefSwap> storeManifestUnderName(String name, long totalSize, List<String> chunkIds) {
         var manifest = ContentManifest.contentManifest(name, totalSize, chunkIds);
 
-        return storage.swapRef(name, manifest.toBytes());
+        return storage.swapRef(ContentEnvelope.trustedRef(name), manifest.toBytes());
     }
 
     private Promise<BlockId> frameAndStore(byte[] content) {
@@ -167,19 +178,30 @@ final class DefaultContentStore implements ContentStore {
     // --- Get flow ---
     @Override
     public Promise<Option<byte[]>> get(String name) {
-        return storage.resolveRef(name)
-                      .async(CONTENT_NOT_FOUND)
-                      .flatMap(storage::get)
-                      .flatMap(opt -> opt.async(CONTENT_NOT_FOUND))
-                      .flatMap(this::resolveContent);
+        return storage.resolveRef(ContentEnvelope.trustedRef(name))
+                      .fold(() -> getLegacy(name),
+                            this::readTrusted);
     }
 
-    /// The envelope's kind byte, written by this store, decides direct content from a manifest. A value without the
-    /// envelope predates it and is read the legacy way (see [ContentManifest]).
-    private Promise<Option<byte[]>> resolveContent(byte[] rawData) {
-        return ContentEnvelope.isEnveloped(rawData)
-               ? resolveEnveloped(rawData)
-               : resolveLegacy(rawData);
+    /// The trusted namespace is written only by this store, so its envelope kind byte decides direct content from
+    /// a manifest.
+    private Promise<Option<byte[]>> readTrusted(BlockId blockId) {
+        return readBlock(blockId).flatMap(this::resolveEnveloped);
+    }
+
+    /// A name never written since the trusted namespace existed is read the legacy way (see [ContentManifest]): the
+    /// legacy text manifest is recognised, everything else is returned VERBATIM. A legacy value is never read as an
+    /// envelope, whatever its bytes begin with.
+    private Promise<Option<byte[]>> getLegacy(String name) {
+        return storage.resolveRef(name)
+                      .async(CONTENT_NOT_FOUND)
+                      .flatMap(this::readBlock)
+                      .flatMap(this::resolveLegacy);
+    }
+
+    private Promise<byte[]> readBlock(BlockId blockId) {
+        return storage.get(blockId)
+                      .flatMap(opt -> opt.async(CONTENT_NOT_FOUND));
     }
 
     private Promise<Option<byte[]>> resolveEnveloped(byte[] rawData) {
@@ -187,6 +209,7 @@ final class DefaultContentStore implements ContentStore {
                               .map(this::frameDecompressAndWrap)
                               .or(() -> reassembleEnvelopedManifest(rawData));
     }
+
 
     private Promise<Option<byte[]>> reassembleEnvelopedManifest(byte[] rawData) {
         return ContentManifest.fromBytes(rawData)
@@ -270,7 +293,8 @@ final class DefaultContentStore implements ContentStore {
     // --- Exists flow ---
     @Override
     public Promise<Boolean> exists(String name) {
-        return storage.resolveRef(name)
+        return storage.resolveRef(ContentEnvelope.trustedRef(name))
+                      .orElse(() -> storage.resolveRef(name))
                       .fold(() -> Promise.success(false),
                             storage::exists);
     }
@@ -283,36 +307,61 @@ final class DefaultContentStore implements ContentStore {
     /// no second delete path. A block another name still holds (two names deduplicating to one block)
     /// is decremented, not destroyed, and stays readable through that name. Before #981 this called
     /// [StorageInstance#delete], which removes the block from every tier regardless of who else holds it.
+    ///
+    /// Both the trusted and any legacy ref of the name are dropped, each releasing its chunks by its own rules.
     @Override
     public Promise<Unit> delete(String name) {
-        return previousContent(name).flatMap(previous -> dropThenRelease(name, previous));
+        return previousContent(Namespace.TRUSTED, name).flatMap(previous -> dropThenRelease(Namespace.TRUSTED,
+                                                                                           name,
+                                                                                           previous))
+                                                       .flatMap(_ -> retireLegacy(name));
     }
 
-    private Promise<Unit> dropThenRelease(String name, Option<PreviousContent> previous) {
-        return storage.dropRef(name)
-                      .flatMap(displaced -> releaseDisplaced(displaced, previous));
+    private Promise<Unit> dropThenRelease(Namespace namespace, String name, Option<PreviousContent> previous) {
+        return storage.dropRef(namespace.refName(name))
+                      .flatMap(displaced -> releaseDisplaced(namespace, displaced, previous));
+    }
+
+    /// Where a name's value lives and how its manifest is recognised. TRUSTED: the `|`-prefixed ref only this store
+    /// writes, manifest by envelope kind. LEGACY: the bare name, written before the trusted namespace existed,
+    /// manifest by the legacy text format only (an envelope-shaped legacy value is content, never a manifest).
+    private enum Namespace {
+        TRUSTED,
+        LEGACY;
+
+        String refName(String name) {
+            return this == TRUSTED
+                   ? ContentEnvelope.trustedRef(name)
+                   : name;
+        }
+
+        Option<ContentManifest> manifestOf(byte[] value) {
+            return this == TRUSTED
+                   ? ContentManifest.fromBytes(value)
+                   : ContentManifest.fromLegacyBytes(value);
+        }
     }
 
     /// The block `name` currently points at and, if it is a manifest, its chunk ids -- empty for an
     /// absent name; empty chunks for a block no tier holds any more or for direct (unchunked) content.
     /// A block that cannot be READ fails the operation here, before anything is written or dropped.
-    private Promise<Option<PreviousContent>> previousContent(String name) {
-        return storage.resolveRef(name)
+    private Promise<Option<PreviousContent>> previousContent(Namespace namespace, String name) {
+        return storage.resolveRef(namespace.refName(name))
                       .fold(() -> Promise.success(none()),
-                            this::previousContentOf);
+                            blockId -> previousContentOf(namespace, blockId));
     }
 
-    private Promise<Option<PreviousContent>> previousContentOf(BlockId blockId) {
-        return chunkIdsOf(blockId).map(chunkIds -> some(PreviousContent.previousContent(blockId, chunkIds)));
+    private Promise<Option<PreviousContent>> previousContentOf(Namespace namespace, BlockId blockId) {
+        return chunkIdsOf(namespace, blockId).map(chunkIds -> some(PreviousContent.previousContent(blockId, chunkIds)));
     }
 
-    private Promise<List<String>> chunkIdsOf(BlockId blockId) {
+    private Promise<List<String>> chunkIdsOf(Namespace namespace, BlockId blockId) {
         return storage.get(blockId)
-                      .map(DefaultContentStore::chunkIdsIn);
+                      .map(block -> chunkIdsIn(namespace, block));
     }
 
-    private static List<String> chunkIdsIn(Option<byte[]> block) {
-        return block.flatMap(ContentManifest::fromBytes)
+    private static List<String> chunkIdsIn(Namespace namespace, Option<byte[]> block) {
+        return block.flatMap(namespace::manifestOf)
                     .map(ContentManifest::chunkBlockIds)
                     .or(List.of());
     }
@@ -322,20 +371,22 @@ final class DefaultContentStore implements ContentStore {
     /// instant, so this read races the collector's grace period, and a grace shorter than one put's
     /// tail leaks that one manifest's chunks (bounded; the same bound as a crash between the swap and
     /// these releases).
-    private Promise<Unit> releaseDisplaced(Option<BlockId> displaced, Option<PreviousContent> previous) {
-        return displaced.fold(() -> Promise.success(unit()), id -> releaseChunksOf(id, previous));
+    private Promise<Unit> releaseDisplaced(Namespace namespace,
+                                           Option<BlockId> displaced,
+                                           Option<PreviousContent> previous) {
+        return displaced.fold(() -> Promise.success(unit()), id -> releaseChunksOf(namespace, id, previous));
     }
 
-    private Promise<Unit> releaseChunksOf(BlockId displaced, Option<PreviousContent> previous) {
+    private Promise<Unit> releaseChunksOf(Namespace namespace, BlockId displaced, Option<PreviousContent> previous) {
         return previous.filter(content -> content.id()
                                                  .equals(displaced))
-                       .fold(() -> releaseChunksOfUnread(displaced),
+                       .fold(() -> releaseChunksOfUnread(namespace, displaced),
                              content -> releaseAllChunks(content.chunkIds(),
                                                          0));
     }
 
-    private Promise<Unit> releaseChunksOfUnread(BlockId displaced) {
-        return chunkIdsOf(displaced).flatMap(ids -> releaseAllChunks(ids, 0));
+    private Promise<Unit> releaseChunksOfUnread(Namespace namespace, BlockId displaced) {
+        return chunkIdsOf(namespace, displaced).flatMap(ids -> releaseAllChunks(ids, 0));
     }
 
     private Promise<Unit> releaseAllChunks(List<String> chunkIds, int index) {

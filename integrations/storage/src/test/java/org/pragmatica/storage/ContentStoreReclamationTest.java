@@ -101,7 +101,7 @@ class ContentStoreReclamationTest {
             var refCountWhileNamed = refCountOf(id);
             var orphanedWhileNamed = isOrphaned(id);
 
-            storage.deleteRef(NAME)
+            storage.deleteRef(ContentEnvelope.trustedRef(NAME))
                    .await()
                    .onFailure(c -> fail("deleteRef failed: " + c.message()));
 
@@ -256,7 +256,7 @@ class ContentStoreReclamationTest {
                                                      garbageCollectorConfig(0, 500));
             restoredGc.activate();
 
-            restoredInstance.deleteRef(NAME)
+            restoredInstance.deleteRef(ContentEnvelope.trustedRef(NAME))
                             .await()
                             .onFailure(c -> fail("deleteRef failed: " + c.message()));
 

@@ -50,7 +50,7 @@ class ContentStoreManifestFramingTest {
     }
 
     private List<String> victimChunkIds(String name) {
-        var manifestId = storage.resolveRef(name).unwrap();
+        var manifestId = storage.resolveRef(ContentEnvelope.trustedRef(name)).unwrap();
 
         return ContentManifest.fromBytes(storage.get(manifestId).await().unwrap().unwrap())
                               .unwrap()
@@ -110,7 +110,7 @@ class ContentStoreManifestFramingTest {
         var chunkIds = victimChunkIds(name);
 
         assertThat(get(name)).isEqualTo(data);
-        assertThat(ContentManifest.fromBytes(storage.get(storage.resolveRef(name).unwrap()).await().unwrap().unwrap())
+        assertThat(ContentManifest.fromBytes(storage.get(storage.resolveRef(ContentEnvelope.trustedRef(name)).unwrap()).await().unwrap().unwrap())
                                   .unwrap()
                                   .name()).isEqualTo(name);
 
@@ -148,5 +148,74 @@ class ContentStoreManifestFramingTest {
         System.arraycopy(part1, 0, expected, 0, 100);
         System.arraycopy(part2, 0, expected, 100, 50);
         assertThat(get("old|name")).isEqualTo(expected);
+    }
+
+    /// F7: a legacy value (under a bare name) is never read as an envelope, whatever kind byte follows the marker:
+    /// every one of the 256 reads back verbatim.
+    @Test
+    void legacyValueStartingWithTheMarkerAndAnyKindByte_readsBackVerbatim() {
+        var marker = ContentEnvelope.marker();
+
+        for (int kind = 0; kind < 256; kind++) {
+            var value = new byte[marker.length + 1 + 5];
+            System.arraycopy(marker, 0, value, 0, marker.length);
+            value[marker.length] = (byte) kind;
+            System.arraycopy(new byte[]{'h', 'e', 'l', 'l', 'o'}, 0, value, marker.length + 1, 5);
+            var name = "legacy-" + kind;
+
+            storage.swapRef(name, value).await().unwrap();
+
+            assertThat(get(name)).as("kind byte %d", kind).isEqualTo(value);
+        }
+    }
+
+    /// F7: a legacy value that is byte-for-byte an enveloped manifest naming another file's chunks reads back verbatim,
+    /// and its delete releases nothing of the victim's.
+    @Test
+    void legacyValueShapedLikeAnEnvelopedManifest_readsBackVerbatim_andItsDeleteReleasesNothingElse() {
+        var victim = content(3 * CHUNK_SIZE, 9);
+
+        put("victim", victim);
+        var chunkIds = victimChunkIds("victim");
+        var before = refCounts(chunkIds);
+        var forged = ContentManifest.contentManifest("victim", victim.length, chunkIds).toBytes();
+
+        storage.swapRef("planted", forged).await().unwrap();
+
+        assertThat(get("planted")).isEqualTo(forged);
+        store.delete("planted").await().onFailure(c -> fail("delete: " + c.message()));
+        assertThat(refCounts(chunkIds)).isEqualTo(before);
+        assertThat(get("victim")).isEqualTo(victim);
+    }
+
+    /// Overwriting a legacy name moves it to the trusted ref and releases the legacy manifest's chunks.
+    @Test
+    void overwritingALegacyName_retiresTheLegacyRef_andReleasesItsChunks() {
+        var part = content(100, 4);
+        var id = storage.put(part).await().unwrap().hexString();
+        var legacyManifest = (ContentManifest.MAGIC_HEADER + "old|100|1|" + id).getBytes(StandardCharsets.UTF_8);
+
+        storage.swapRef("old", legacyManifest).await().unwrap();
+        put("old", "fresh".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(get("old")).isEqualTo("fresh".getBytes(StandardCharsets.UTF_8));
+        assertThat(storage.resolveRef("old").isEmpty()).as("the legacy ref is retired").isTrue();
+        assertThat(refCounts(List.of(id))).allMatch(count -> count <= 0);
+    }
+
+    /// The proof the trusted namespace rests on: a LEGACY snapshot line (no escaped-name header) is split at its first
+    /// `|`, so a name containing `|` is never restored from it; an escaped line round-trips any name.
+    @Test
+    void snapshotRefLines_legacyNeverRestoresAPipeName_escapedRoundTripsIt() {
+        var hex = BlockId.fromHex("ab".repeat(32)).unwrap().hexString();
+        var legacy = new java.util.HashMap<String, BlockId>();
+        var escaped = new java.util.HashMap<String, BlockId>();
+
+        DefaultSnapshotManager.parseRefLine("|victim|" + hex, legacy, false);
+        DefaultSnapshotManager.parseRefLine("planted|x|" + hex, legacy, false);
+        DefaultSnapshotManager.parseRefLine(DefaultSnapshotManager.escapeRefName("|a=b|c\nd%") + "|" + hex, escaped, true);
+
+        assertThat(legacy.keySet()).noneMatch(name -> name.contains("|"));
+        assertThat(escaped).containsOnlyKeys("|a=b|c\nd%");
     }
 }
