@@ -43,6 +43,9 @@ sealed interface BootstrapStatePersistence {
                            () -> Files.createDirectories(AETHER_DIR.resolve(state.clusterName().value())));
     }
 
+    /// Swallowing read: absent AND unreadable both come back as `none()`. No production code calls it any more
+    /// (every production reader needs [#read], because it acts on the difference); it remains for tests that only
+    /// inspect a ledger they wrote.
     static Option<BootstrapState> load(ClusterName clusterName) {
         return read(clusterName).onFailure(cause -> System.err.println("Warning: failed to load bootstrap state: " + cause.message()))
                    .or(none());

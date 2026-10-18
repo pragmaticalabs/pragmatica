@@ -75,7 +75,8 @@ sealed interface WaveNodeProvisioning {
     }
 
     static Result<JoinInputs> resolveJoinInputs(ClusterName clusterName, Fn1<String, String> env) {
-        return clusterSecret(clusterName, env).flatMap(secret -> livePeers(clusterName).map(peers -> new JoinInputs(secret, peers)));
+        return clusterSecret(clusterName, env).flatMap(secret -> livePeers(clusterName).map(peers -> new JoinInputs(secret,
+                                                                                                                    peers)));
     }
 
     /// Provision `count` CLOUD nodes of `role` from `source`, each under a freshly minted id.
@@ -211,8 +212,7 @@ sealed interface WaveNodeProvisioning {
     private static Result<String> clusterSecret(ClusterName clusterName, Fn1<String, String> env) {
         return BootstrapStatePersistence.read(clusterName)
                                         .mapError(cause -> new JoinInputsUnavailable(clusterName,
-                                                                                     "the bootstrap state for the cluster is unreadable and was left untouched: "
-                                                                                    + cause.message()))
+                                                                                     "the bootstrap state for the cluster is unreadable and was left untouched: " + cause.message()))
                                         .flatMap(state -> persistedOrAmbient(clusterName, state, env));
     }
 

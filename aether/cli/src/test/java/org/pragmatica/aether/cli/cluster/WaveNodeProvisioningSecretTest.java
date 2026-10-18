@@ -43,6 +43,8 @@ class WaveNodeProvisioningSecretTest {
     /// through to an env secret that may differ from the ledger's, and the nodes rendered with it never join.
     /// Runs against the real `~/.aether/clusters/<name>` path with a per-run random name, as the other
     /// ledger tests do.
+    private static final String LIVE_NODES = "{\"nodes\": [{\"nodeId\": \"core-0\", \"address\": \"10.0.0.1:8090\", \"role\": \"core\", \"swimAlive\": true}]}";
+
     @Nested
     class UnreadableLedger {
         private final ClusterName clusterName = uniqueClusterName();
@@ -64,7 +66,11 @@ class WaveNodeProvisioningSecretTest {
             fakeCluster = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             fakeCluster.createContext("/", exchange -> {
                 clusterRequests.incrementAndGet();
-                exchange.sendResponseHeaders(500, -1);
+
+                var body = LIVE_NODES.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
                 exchange.close();
             });
             fakeCluster.start();
@@ -128,19 +134,30 @@ class WaveNodeProvisioningSecretTest {
         /// Controls: with a readable ledger the ledger's secret wins over a differing env secret, and with no
         /// ledger the env secret is used; both proceed to the peers lookup (the fake cluster counts it).
         @Test
-        void resolveJoinInputs_readableLedger_proceedsPastSecretResolution() throws Exception {
+        void resolveJoinInputs_readableLedger_carriesTheLedgersSecret_notTheEnvOne() throws Exception {
             writeLedger(ledger("", "ledger-secret"));
 
-            WaveNodeProvisioning.resolveJoinInputs(clusterName, Map.of("AETHER_CLUSTER_SECRET", "different-env-secret")::get);
+            WaveNodeProvisioning.resolveJoinInputs(clusterName, Map.of("AETHER_CLUSTER_SECRET", "different-env-secret")::get)
+                                .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
+                                .onSuccess(inputs -> assertThat(inputs.clusterSecret()).isEqualTo("ledger-secret"));
 
-            assertThat(clusterRequests.get()).as("control: secret resolution passed and peers were requested").isPositive();
+            assertThat(clusterRequests.get()).as("control: peers were requested").isPositive();
         }
 
         @Test
-        void resolveJoinInputs_noLedger_usesTheEnvSecret_andProceeds() {
-            WaveNodeProvisioning.resolveJoinInputs(clusterName, Map.of("AETHER_CLUSTER_SECRET", "env-secret")::get);
+        void resolveJoinInputs_noLedger_usesTheEnvSecret() {
+            WaveNodeProvisioning.resolveJoinInputs(clusterName, Map.of("AETHER_CLUSTER_SECRET", "env-secret")::get)
+                                .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
+                                .onSuccess(inputs -> assertThat(inputs.clusterSecret()).isEqualTo("env-secret"));
+        }
 
-            assertThat(clusterRequests.get()).as("control: the env secret is accepted and peers were requested").isPositive();
+        @Test
+        void resolveJoinInputs_ledgerWithBlankSecret_fallsBackToTheEnvSecret() throws Exception {
+            writeLedger(ledger("", ""));
+
+            WaveNodeProvisioning.resolveJoinInputs(clusterName, Map.of("AETHER_CLUSTER_SECRET", "env-secret")::get)
+                                .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
+                                .onSuccess(inputs -> assertThat(inputs.clusterSecret()).isEqualTo("env-secret"));
         }
 
         @Test
