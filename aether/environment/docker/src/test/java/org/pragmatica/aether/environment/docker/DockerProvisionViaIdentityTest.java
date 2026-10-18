@@ -42,6 +42,12 @@ class DockerProvisionViaIdentityTest {
         }
     }
 
+    /// #2149: the host environment is injected EMPTY. The two-argument factory reads the real one, and a developer machine that
+    /// exports `AETHER_CLUSTER_SECRET` / `AETHER_API_KEY` made provisioning refuse before any test assertion ran.
+    private static DockerComputeProvider providerOn(RecordingRunner runner) {
+        return DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap(), _ -> null).unwrap();
+    }
+
     private static List<ProvisionedNode> provision(DockerComputeProvider provider, int count) {
         var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("primary"),
                                                     "core",
@@ -56,7 +62,7 @@ class DockerProvisionViaIdentityTest {
     @Test
     void theNodeIdTheCallerGetsIsTheContainersName() {
         var runner = new RecordingRunner();
-        var provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap()).unwrap();
+        var provider = providerOn(runner);
 
         var nodes = provision(provider, 3);
 
@@ -68,7 +74,7 @@ class DockerProvisionViaIdentityTest {
     @Test
     void twoCalls_neverShareANodeId() {
         var runner = new RecordingRunner();
-        var provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap()).unwrap();
+        var provider = providerOn(runner);
         var ids = new ArrayList<String>();
 
         provision(provider, 2).forEach(node -> ids.add(node.nodeId()));
@@ -82,7 +88,7 @@ class DockerProvisionViaIdentityTest {
     @Test
     void theContainerCarriesItsSourceAsALabel() {
         var runner = new RecordingRunner();
-        var provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap()).unwrap();
+        var provider = providerOn(runner);
 
         provision(provider, 1);
 
