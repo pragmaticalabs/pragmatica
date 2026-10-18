@@ -2635,16 +2635,13 @@ public interface AetherNode extends ManageableNode {
             /// [#start] and therefore before this loop exists. Consequence: a refusal leaves periodic
             /// work armed until whoever owns the node stops it (`Main#exitWithError`, Ember's
             /// `abortStart`, a test's tear-down).
+            ///
+            /// #1170: a refusal also takes back the disk markers `createAll` committed for this boot
+            /// (`StorageFactory#admitDhtMarkers`), so backing out to `encrypted = false` is bootable.
             private Promise<Unit> verifyDhtMarkers() {
-                var checks = storageSetups.values()
-                                          .stream()
-                                          .map(StorageFactory.StorageSetup::dhtMarkerCheck)
-                                          .flatMap(Option::stream)
-                                          .toList();
-
-                return dhtClient.map(client -> StorageFactory.verifyDhtMarkers(client,
-                                                                               checks,
-                                                                               periodicTasks::isCancelled))
+                return dhtClient.map(client -> StorageFactory.admitDhtMarkers(client,
+                                                                              storageSetups,
+                                                                              periodicTasks::isCancelled))
                                 .or(Promise.UNIT);
             }
 

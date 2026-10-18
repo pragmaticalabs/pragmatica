@@ -1225,6 +1225,12 @@ public class RabiaEngine<C extends Command> {
         safeExecute(this::doResumeFromPause);
     }
 
+    /// A node removed from the electorate before or during the pause (#1799) has no vote to resume:
+    /// it returns to Observing, the state it left ([#startPhase] refuses to run there).
+    private boolean resumesAsObserver() {
+        return observerMode || !isVoter(self);
+    }
+
     private void doResumeFromPause() {
         var current = engineState.get();
 
@@ -1232,10 +1238,17 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        engineState.set(new EngineState.Idle());
+        var observer = resumesAsObserver();
+
+        engineState.set(observer
+                        ? new EngineState.Observing()
+                        : new EngineState.Idle());
         notifyConsensusStateTransition();
-        log.info("Node {} resumed from pause (quorum returned). currentPhase={}, pendingBatches={}",
+        log.info("Node {} resumed from pause (quorum returned) as {}. currentPhase={}, pendingBatches={}",
                  self,
+                 observer
+                 ? "observer"
+                 : "voter",
                  currentPhase.get(),
                  pendingBatches.size());
         // Replay through the live ordering guard. A remaining gap starts synchronization;

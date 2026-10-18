@@ -17,6 +17,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.tuple;
 
 
 class StreamResourceValidatorTest {
@@ -298,6 +299,26 @@ class StreamResourceValidatorTest {
         @Test
         void unusedRecordExists() {
             assertThat(List.of(new StreamResourceValidator.unused())).hasSize(1);
+        }
+    }
+
+    /// #1377: the all-or-nothing pass refuses an OWNED alias `ResourceName` refuses, by the same rule the
+    /// deploy path's partition reports it under.
+    @Nested
+    class OwnedAliasName {
+        @Test
+        void validate_ownedAliasResourceNameRefuses_failsWithStreamNameInvalid() {
+            var toml = """
+                    [streams.Order_Events]
+                    version = "1.0.0"
+                    """;
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onSuccessRun(() -> fail("Expected failure"))
+                                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                                               .extracting(StreamValidationFailure::field, StreamValidationFailure::rule)
+                                                               .containsExactly(tuple("[streams.Order_Events]",
+                                                                                                                       StreamResourceValidator.RULE_STREAM_NAME_INVALID)));
         }
     }
 

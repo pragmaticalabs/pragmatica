@@ -305,10 +305,19 @@ sealed interface BootstrapPhaseDeploy {
                                                      .type() == SourceType.CLOUD;
     }
 
+    // #1965: a core source declares its members by `count` (cloud) or by an SSH `hosts=[...]` list, never
+    // both; counting `count` alone made a hosts-declared core source invisible to the discovery gate.
     private static int coreCount(SourceProfile source) {
         return Option.option(source.roles().get(NodeRole.CORE))
-                     .flatMap(role -> role.count())
+                     .map(BootstrapPhaseDeploy::roleSize)
                      .or(0);
+    }
+
+    private static int roleSize(RoleSubTable role) {
+        return role.count()
+                   .or(0) + role.hosts()
+                                .map(List::size)
+                                .or(0);
     }
 
     /// C4 — readiness without inbound ports: poll the provider API for instances carrying
@@ -1210,16 +1219,14 @@ sealed interface BootstrapPhaseDeploy {
                                                     SourceProfile source,
                                                     NodeRole role,
                                                     String nodeId) {
-        var profile = Option.option(source.roles().get(role))
-                            .map(RoleSubTable::runtimeRef)
-                            .flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
+        var runtimeRef = Option.option(source.roles().get(role)).map(RoleSubTable::runtimeRef);
+        var profile = runtimeRef.flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
         var type = profile.map(RuntimeProfile::type).or(RuntimeType.CONTAINER);
 
         if (type != RuntimeType.CONTAINER) {
             return new BootstrapError.DeploymentFailed(nodeId,
                                                        "SSH source '" + sourceNameOf(source)
-                                                      + "' declares runtime '" + profile.map(RuntimeProfile::name)
-                                                                                        .or("?")
+                                                      + "' declares runtime '" + runtimeRef.or("?")
                                                       + "' of type " + type
                                                       + "; only CONTAINER can be launched over SSH in this release (#1090)").result();
         }
