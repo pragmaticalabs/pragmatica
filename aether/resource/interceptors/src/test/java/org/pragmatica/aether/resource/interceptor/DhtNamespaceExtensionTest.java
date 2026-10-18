@@ -8,14 +8,17 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,6 +28,8 @@ import static org.pragmatica.lang.Unit.unit;
 /// extension, at the committed `[replication]` factors — and only the cache namespace uses the cache's own, lower
 /// `[cache]` replication ([CacheDhtClient]). A dedup record lost with its only copy re-executes the call it guarded.
 class DhtNamespaceExtensionTest {
+    private static final Cause METHOD_FAILED = Causes.cause("method failed");
+
     private final RecordingDhtClient replicated = new RecordingDhtClient();
     private final RecordingDhtClient cache = new RecordingDhtClient();
     private final ProvisioningContext context = ProvisioningContext.provisioningContext()
@@ -86,16 +91,65 @@ class DhtNamespaceExtensionTest {
                                                    System.currentTimeMillis() + config.retentionSeconds() * 1000L);
     }
 
+    /// A pre-envelope record must not wedge the key: its read is a miss (not a failed read that stops the
+    /// call before the method runs), the method re-runs, and its outcome is recorded over the legacy bytes.
+    @Test
+    void distributedIdempotency_legacyRecord_isAMissThatRerunsAndReRecords() {
+        var interceptor = idempotencyInterceptor("dedup-legacy");
+        var runs = new AtomicInteger();
+        Fn1<Promise<String>, String> method = request -> Promise.success("done-" + request + "-" + runs.incrementAndGet());
+        interceptor.intercept(method).apply("call-1").await().unwrap();
+        var storedKey = replicated.storage.keySet().iterator().next();
+        replicated.storage.put(storedKey, new byte[] {3, 0, 0, 0, 5, 'h', 'e', 'l', 'l', 'o'});
+
+        var rerun = interceptor.intercept(method).apply("call-1").await();
+        var deduped = interceptor.intercept(method).apply("call-1").await();
+
+        assertThat(rerun.unwrap()).isEqualTo("done-call-1-2");
+        assertThat(deduped.unwrap()).as("the re-recorded outcome is served").isEqualTo("done-call-1-2");
+        assertThat(runs).hasValue(2);
+    }
+
+    /// An expired record read must not delete a record a concurrent writer stored between the read and
+    /// the miss: the DHT has no compare-and-remove, so the expired read leaves the entry alone. The
+    /// method fails here so the interceptor does not overwrite the entry; what remains is the fresh record.
+    @Test
+    void distributedIdempotency_expiredRecordReadRacingAFreshPut_keepsTheFreshRecord() {
+        var interceptor = idempotencyInterceptor("dedup-race");
+        Fn1<Promise<String>, String> ok = request -> Promise.success("done-" + request);
+        interceptor.intercept(ok).apply("call-1").await().unwrap();
+        var storedKey = replicated.storage.keySet().iterator().next();
+        var fresh = DHTCacheBackend.envelope(Long.MAX_VALUE, "fresh-outcome".getBytes(UTF_8));
+        replicated.storage.put(storedKey, DHTCacheBackend.envelope(1L, "expired-outcome".getBytes(UTF_8)));
+        replicated.afterGet = () -> replicated.storage.put(storedKey, fresh);
+        Fn1<Promise<String>, String> failing = _ -> METHOD_FAILED.promise();
+
+        var outcome = interceptor.intercept(failing).apply("call-1").await();
+
+        assertThat(outcome.isFailure()).as("the expired record was a miss, so the method ran").isTrue();
+        assertThat(replicated.storage.get(storedKey)).as("the concurrent fresh record survives").isEqualTo(fresh);
+    }
+
+    private IdempotencyMethodInterceptor idempotencyInterceptor(String name) {
+        var config = IdempotencyConfig.idempotencyConfig(name, CacheMode.DISTRIBUTED).unwrap();
+
+        return new IdempotencyInterceptorFactory().provision(config, context).await().unwrap();
+    }
+
     private static long expiryOf(RecordingDhtClient client) {
         return DHTCacheBackend.expiryMillis(client.storage.values().iterator().next());
     }
 
     private static final class RecordingDhtClient implements DHTClient {
         final ConcurrentHashMap<String, byte[]> storage = new ConcurrentHashMap<>();
+        Runnable afterGet = () -> {};
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
-            return Promise.success(Option.option(storage.get(new String(key, UTF_8))));
+            var stored = storage.get(new String(key, UTF_8));
+
+            afterGet.run();
+            return Promise.success(Option.option(stored));
         }
 
         @Override

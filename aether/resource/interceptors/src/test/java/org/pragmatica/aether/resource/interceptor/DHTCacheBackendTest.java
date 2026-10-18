@@ -165,7 +165,7 @@ class DHTCacheBackendTest {
     }
 
     @Test
-    void get_legacyEntryWithOneByteTag_isAMissAndRemovesTheEntry() {
+    void legacyEntry_tagBelow128_isMissAndRemoved() {
         storage.put("test-ns:key1", new byte[] {3, 0, 0, 0, 5, 'h', 'e', 'l', 'l', 'o'});
 
         var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
