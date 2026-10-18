@@ -5,6 +5,7 @@ package org.pragmatica.aether.http.adapter;
 
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.routing.MultipartError;
 import org.pragmatica.lang.Cause;
 
 
@@ -16,10 +17,16 @@ public interface ErrorMapper {
     /// (#1737) answers 503 so a client can tell it from a server fault. A cause that is not classified
     /// transient — including a publish whose outcome is unknown, which is not retry-safe without a
     /// message ID — stays 500. No `Retry-After` is set, as on the Management-API publish path (#1735).
+    ///
+    /// A [MultipartError] answers its declared 400/415 (500 only for a body that could not be read on this side),
+    /// never the generic 500 (I7).
     static ErrorMapper defaultMapper() {
-        return cause -> cause instanceof HttpError he
-                        ? he
-                        : HttpError.httpError(unmappedStatus(cause), cause);
+        return cause -> switch (cause) {
+            case HttpError he -> he;
+            case MultipartError multipartError -> multipartError.httpStatus()
+                                                                .with(multipartError);
+            default -> HttpError.httpError(unmappedStatus(cause), cause);
+        };
     }
 
     private static HttpStatus unmappedStatus(Cause cause) {
