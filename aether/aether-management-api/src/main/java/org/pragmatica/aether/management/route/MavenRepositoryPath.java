@@ -6,6 +6,7 @@ package org.pragmatica.aether.management.route;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.http.HttpMethod;
 
 
@@ -18,13 +19,16 @@ import org.pragmatica.http.HttpMethod;
 /// `/repository/info/` reads `<group>/<artifactId>/<version>`, and `maven-metadata.xml*` at artifact level reads
 /// `<group>/<artifactId>/<file>`. Anything too short to carry a group is left untouched and matches nothing.
 ///
+/// The segment before a `maven-metadata.xml*` file is an artifact id when it parses as one, the same reading the
+/// Maven protocol handler applies; otherwise it is a version (`1.0.0` has dots, which an artifact id never has).
+/// A group may start with any segment, `artifacts` included: only a path with no room for a group is left untouched.
+///
 /// A metadata PUT/POST has no version, but its only routes are `ARTIFACT_PUT`/`ARTIFACT_POST`, so the version slot
 /// is filled with an empty value: the request must resolve to the same route, and the same forwarding target, as
 /// the artifact files pushed beside it.
 final class MavenRepositoryPath {
     private static final String REPOSITORY = "repository";
     private static final String INFO = "info";
-    private static final String ARTIFACTS = "artifacts";
     private static final String METADATA_FILE = "maven-metadata.xml";
     private static final int FILE_TAIL = 3;
     private static final int METADATA_TAIL = 2;
@@ -33,7 +37,7 @@ final class MavenRepositoryPath {
     private MavenRepositoryPath() {}
 
     static List<String> foldGroup(HttpMethod method, List<String> segments) {
-        if (segments.size() < 3 || !REPOSITORY.equals(segments.getFirst()) || ARTIFACTS.equals(segments.get(1))) {
+        if (segments.size() < 3 || !REPOSITORY.equals(segments.getFirst())) {
             return segments;
         }
 
@@ -59,11 +63,8 @@ final class MavenRepositoryPath {
         var size = segments.size();
 
         return segments.get(size - 1)
-                       .startsWith(METADATA_FILE) && !startsWithDigit(segments.get(size - 2));
-    }
-
-    private static boolean startsWithDigit(String segment) {
-        return ! segment.isEmpty() && Character.isDigit(segment.charAt(0));
+                       .startsWith(METADATA_FILE) && ArtifactId.artifactId(segments.get(size - 2))
+                                                                       .isSuccess();
     }
 
     private static List<String> fold(List<String> segments, int groupStart, int tail, boolean padVersion) {

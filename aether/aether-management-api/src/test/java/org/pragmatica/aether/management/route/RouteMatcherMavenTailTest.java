@@ -20,7 +20,7 @@ import static org.pragmatica.http.HttpMethod.PUT;
 /// segment count. The group id is every segment before the coordinate tail, so one logical operation resolves to
 /// one route whether the group has 1, 2 or 3+ segments.
 class RouteMatcherMavenTailTest {
-    private static final List<String> GROUPS = List.of("org", "org/example", "org/example/deep");
+    private static final List<String> GROUPS = List.of("org", "org/example", "org/example/deep", "artifacts/demo");
 
     private final RouteMatcher matcher = RouteMatcher.shared();
 
@@ -117,6 +117,45 @@ class RouteMatcherMavenTailTest {
     @Test
     void put_tooShortToBeACoordinate_isNoMatch() {
         assertThat(matcher.match(PUT, "/repository/hello/1.0.0").isFailure()).isTrue();
+    }
+
+    @Test
+    void artifactsLeadingGroup_isRoutedByCoordinate_notBySegmentCount() {
+        assertRoute(PUT, "/repository/artifacts/demo/lib/1.0.0/lib-1.0.0.jar", ManagementRoute.ARTIFACT_PUT, "artifacts/demo", "lib", "1.0.0", "lib-1.0.0.jar");
+        assertRoute(GET, "/repository/artifacts/demo/lib/1.0.0/lib-1.0.0.jar", ManagementRoute.ARTIFACT_GET, "artifacts/demo", "lib", "1.0.0", "lib-1.0.0.jar");
+        assertRoute(PUT, "/repository/artifacts/demo/lib/maven-metadata.xml", ManagementRoute.ARTIFACT_PUT, "artifacts/demo", "lib", "", "maven-metadata.xml");
+        assertThat(matcher.match(DELETE, "/repository/artifacts/demo/lib/1.0.0").isSuccess()).isTrue();
+    }
+
+    @Test
+    void artifactsOnlyPath_withTrailingSlash_stillMatchesTheListRoute() {
+        var result = matcher.match(GET, "/repository/artifacts/");
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(matched -> assertThat(matched.route()).isEqualTo(ManagementRoute.REPOSITORY_ARTIFACTS_LIST));
+    }
+
+    @Test
+    void digitLeadingArtifactId_isReadAsAnArtifactAtArtifactLevelMetadata() {
+        assertRoute(PUT, "/repository/org/s2/3scale/maven-metadata.xml", ManagementRoute.ARTIFACT_PUT, "org/s2", "3scale", "", "maven-metadata.xml");
+
+        var result = matcher.match(GET, "/repository/org/s2/3scale/maven-metadata.xml");
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(matched -> {
+            assertThat(matched.route()).isEqualTo(ManagementRoute.MAVEN_METADATA);
+            assertThat(matched.param("groupPath").or("?")).isEqualTo("org/s2");
+            assertThat(matched.param("artifactId").or("?")).isEqualTo("3scale");
+        });
+    }
+
+    @Test
+    void infoPrefix_isTheInfoRouteOnlyForGet() {
+        var info = matcher.match(GET, "/repository/info/x/lib/1.0.0/lib-1.0.0.jar");
+
+        assertThat(info.isSuccess()).isTrue();
+        info.onSuccess(matched -> assertThat(matched.route()).isEqualTo(ManagementRoute.ARTIFACT_INFO));
+        assertRoute(PUT, "/repository/info/x/lib/1.0.0/lib-1.0.0.jar", ManagementRoute.ARTIFACT_PUT, "info/x", "lib", "1.0.0", "lib-1.0.0.jar");
     }
 
     private void assertRoute(HttpMethod method, String path, ManagementRoute expected, String group, String artifact, String version, String file) {
