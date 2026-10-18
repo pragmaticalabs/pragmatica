@@ -16,9 +16,38 @@
  */
 package org.pragmatica.cloud.hetzner.api;
 
+import java.util.List;
+
+import org.pragmatica.lang.Option;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import static org.pragmatica.lang.Option.option;
 
 
-/// Hetzner API pagination metadata.
+/// Hetzner API pagination metadata. `previous_page` and `next_page` are JSON `null` on the first and last
+/// page respectively, hence the boxed types.
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record Pagination(int page, int perPage, int previousPage, int nextPage, int lastPage, int totalEntries) {}
+public record Pagination(int page,
+                         @JsonProperty("per_page") int perPage,
+                         @JsonProperty("previous_page") Integer previousPage,
+                         @JsonProperty("next_page") Integer nextPage,
+                         @JsonProperty("last_page") int lastPage,
+                         @JsonProperty("total_entries") int totalEntries) {
+    /// The `meta` object every list response carries.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Meta(Pagination pagination) {}
+
+    /// A list response that knows which page follows it. `meta` is absent from a response with no
+    /// pagination information, which reads as "no further page".
+    public interface Paged<T> {
+        List<T> items();
+        Meta meta();
+
+        default Option<Integer> nextPage() {
+            return option(meta()).flatMap(meta -> option(meta.pagination()))
+                         .flatMap(pagination -> option(pagination.nextPage()));
+        }
+    }
+}

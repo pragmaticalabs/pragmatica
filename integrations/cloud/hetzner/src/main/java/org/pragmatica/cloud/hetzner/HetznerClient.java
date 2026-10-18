@@ -23,6 +23,7 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.pragmatica.cloud.hetzner.api.Firewall;
 import org.pragmatica.cloud.hetzner.api.Firewall.ApplyToResourcesRequest;
@@ -44,6 +45,7 @@ import org.pragmatica.cloud.hetzner.api.LoadBalancer.TargetActionRequest;
 import org.pragmatica.cloud.hetzner.api.Network;
 import org.pragmatica.cloud.hetzner.api.Network.NetworkListResponse;
 import org.pragmatica.cloud.hetzner.api.Network.NetworkResponse;
+import org.pragmatica.cloud.hetzner.api.Pagination.Paged;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.Server.ServerListResponse;
@@ -56,6 +58,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -159,12 +162,12 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<Server>> listServers() {
-        return getJson("/servers", ServerListResponse.class).map(ServerListResponse::servers);
+        return listAll("/servers", ServerListResponse.class);
     }
 
     @Override
     public Promise<List<Server>> listServers(String labelSelector) {
-        return getJson("/servers?label_selector=" + encodeQueryParam(labelSelector), ServerListResponse.class).map(ServerListResponse::servers);
+        return listAll("/servers?label_selector=" + encodeQueryParam(labelSelector), ServerListResponse.class);
     }
 
     @Override
@@ -189,12 +192,12 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<SshKey>> listSshKeys() {
-        return getJson("/ssh_keys", SshKeyListResponse.class).map(SshKeyListResponse::sshKeys);
+        return listAll("/ssh_keys", SshKeyListResponse.class);
     }
 
     @Override
     public Promise<List<Network>> listNetworks() {
-        return getJson("/networks", NetworkListResponse.class).map(NetworkListResponse::networks);
+        return listAll("/networks", NetworkListResponse.class);
     }
 
     @Override
@@ -204,13 +207,12 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<Firewall>> listFirewalls() {
-        return getJson("/firewalls", FirewallListResponse.class).map(FirewallListResponse::firewalls);
+        return listAll("/firewalls", FirewallListResponse.class);
     }
 
     @Override
     public Promise<List<Firewall>> listFirewalls(String labelSelector) {
-        return getJson("/firewalls?label_selector=" + encodeQueryParam(labelSelector),
-                       FirewallListResponse.class).map(FirewallListResponse::firewalls);
+        return listAll("/firewalls?label_selector=" + encodeQueryParam(labelSelector), FirewallListResponse.class);
     }
 
     @Override
@@ -253,7 +255,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<LoadBalancer>> listLoadBalancers() {
-        return getJson("/load_balancers", LoadBalancerListResponse.class).map(LoadBalancerListResponse::loadBalancers);
+        return listAll("/load_balancers", LoadBalancerListResponse.class);
     }
 
     @Override
@@ -287,7 +289,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<FloatingIp>> listFloatingIps() {
-        return getJson("/floating_ips", FloatingIpListResponse.class).map(FloatingIpListResponse::floatingIps);
+        return listAll("/floating_ips", FloatingIpListResponse.class);
     }
 
     @Override
@@ -302,6 +304,59 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     }
 
     // --- Internal HTTP helpers ---
+    /// Reads a list endpoint to its end. Hetzner pages every list (25 entries by default) and reports the
+    /// next page in `meta.pagination.next_page`, `null` on the last; a caller that stops at the first page
+    /// sees a silent prefix of the inventory. The first request is the bare path, so the unpaged contract
+    /// is unchanged for a result that fits in one page. A failing later page fails the whole call: a
+    /// partial inventory that looks complete is the failure this exists to prevent.
+    private <T, P extends Paged<T>> Promise<List<T>> listAll(String path, Class<P> responseType) {
+        return listFrom(path, responseType, 1, List.of());
+    }
+
+    private <T, P extends Paged<T>> Promise<List<T>> listFrom(String path,
+                                                              Class<P> responseType,
+                                                              int page,
+                                                              List<T> collected) {
+        return getJson(pagePath(path, page), responseType).flatMap(response -> continueWith(path,
+                                                                                            responseType,
+                                                                                            page,
+                                                                                            collected,
+                                                                                            response));
+    }
+
+    /// A `next_page` that does not move forward ends the walk: a server that keeps pointing at the page
+    /// just read would otherwise loop this call forever.
+    private <T, P extends Paged<T>> Promise<List<T>> continueWith(String path,
+                                                                  Class<P> responseType,
+                                                                  int page,
+                                                                  List<T> collected,
+                                                                  P response) {
+        var all = concat(collected, response.items());
+
+        return response.nextPage()
+                       .filter(next -> next > page)
+                       .map(next -> listFrom(path, responseType, next, all))
+                       .or(() -> Promise.success(all));
+    }
+
+    private static <T> List<T> concat(List<T> head, List<T> tail) {
+        return Stream.concat(head.stream(),
+                             tail.stream())
+                     .toList();
+    }
+
+    private static String pagePath(String path, int page) {
+        return page == 1
+               ? path
+               : path + querySeparator(path) + "page=" + page;
+    }
+
+    private static String querySeparator(String path) {
+        return path.contains("?")
+               ? "&"
+               : "?";
+    }
+
     private <T> Promise<T> getJson(String path, Class<T> responseType) {
         return http.sendString(buildGet(path))
                    .flatMap(result -> parseResponse(result, responseType));

@@ -20,7 +20,10 @@ package org.pragmatica.cloud.hetzner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.cloud.hetzner.api.Firewall;
+import org.pragmatica.cloud.hetzner.api.FloatingIp;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer;
+import org.pragmatica.cloud.hetzner.api.Network;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
@@ -32,9 +35,12 @@ import org.pragmatica.lang.Promise;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.ToLongFunction;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
@@ -143,6 +149,183 @@ class HetznerClientTest {
                   .await()
                   .onSuccess(servers -> assertThat(servers).isNull())
                   .onFailure(HetznerClientTest::assertServerErrorResponse);
+        }
+    }
+
+    /// Hetzner returns list endpoints one page at a time (25 by default) and says so in `meta.pagination`.
+    /// A client that reads one page sees the first 25 of anything larger; the destroy sweep, the CTM
+    /// inventory and genesis discovery all sit on these calls, and the sweep is the net for what the
+    /// ledger missed, which is exactly when the counts are largest.
+    @Nested
+    class PaginatedLists {
+
+        @Test
+        void listServers_twoPages_returnsBothPagesInOrder() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1, 2), 2),
+                                         BASE_URL + "/servers?page=2", page("servers", List.of(3), null)));
+
+            client.listServers()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(servers -> assertThat(ids(servers, Server::id)).containsExactly(1L, 2L, 3L));
+
+            assertThat(testHttp.requestedUris()).containsExactly(BASE_URL + "/servers", BASE_URL + "/servers?page=2");
+        }
+
+        @Test
+        void listServers_threePages_followsNextPageUntilItIsNull() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1), 2),
+                                         BASE_URL + "/servers?page=2", page("servers", List.of(2), 3),
+                                         BASE_URL + "/servers?page=3", page("servers", List.of(3), null)));
+
+            client.listServers()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(servers -> assertThat(ids(servers, Server::id)).containsExactly(1L, 2L, 3L));
+
+            assertThat(testHttp.requestedUris()).hasSize(3);
+        }
+
+        @Test
+        void listServers_byLabelSelector_keepsTheSelectorOnEveryPage() {
+            var first = BASE_URL + "/servers?label_selector=aether-cluster%3Dc1";
+
+            testHttp.respondByUri(Map.of(first, page("servers", List.of(1), 2),
+                                         first + "&page=2", page("servers", List.of(2), null)));
+
+            client.listServers("aether-cluster=c1")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(servers -> assertThat(ids(servers, Server::id)).containsExactly(1L, 2L));
+
+            assertThat(testHttp.requestedUris()).containsExactly(first, first + "&page=2");
+        }
+
+        @Test
+        void listServers_singlePageWithoutNextPage_issuesOneRequest() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1, 2), null)));
+
+            client.listServers()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(servers -> assertThat(servers).hasSize(2));
+
+            assertThat(testHttp.requestedUris()).containsExactly(BASE_URL + "/servers");
+        }
+
+        @Test
+        void listServers_responseWithoutMeta_issuesOneRequest() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/servers", "{\"servers\": [{\"id\": 1}]}"));
+
+            client.listServers()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(servers -> assertThat(servers).hasSize(1));
+
+            assertThat(testHttp.requestedUris()).hasSize(1);
+        }
+
+        @Test
+        void listServers_nextPageThatDoesNotAdvance_stopsInsteadOfLooping() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1), 2),
+                                         BASE_URL + "/servers?page=2", page("servers", List.of(2), 2)));
+
+            client.listServers()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(servers -> assertThat(ids(servers, Server::id)).containsExactly(1L, 2L));
+
+            assertThat(testHttp.requestedUris()).hasSize(2);
+        }
+
+        @Test
+        void listServers_secondPageFails_failsRatherThanReturningTheFirstPageAlone() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1), 2)));
+
+            client.listServers()
+                  .await()
+                  .onSuccess(servers -> assertThat(servers).as("a partial inventory must not look complete").isNull())
+                  .onFailure(HetznerClientTest::assertServerErrorResponse);
+        }
+
+        @Test
+        void listSshKeys_twoPages_returnsBoth() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/ssh_keys", page("ssh_keys", List.of(1), 2),
+                                         BASE_URL + "/ssh_keys?page=2", page("ssh_keys", List.of(2), null)));
+
+            client.listSshKeys()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(keys -> assertThat(ids(keys, SshKey::id)).containsExactly(1L, 2L));
+        }
+
+        @Test
+        void listNetworks_twoPages_returnsBoth() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/networks", page("networks", List.of(1), 2),
+                                         BASE_URL + "/networks?page=2", page("networks", List.of(2), null)));
+
+            client.listNetworks()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(networks -> assertThat(ids(networks, Network::id)).containsExactly(1L, 2L));
+        }
+
+        @Test
+        void listFirewalls_twoPages_returnsBoth() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/firewalls", page("firewalls", List.of(1), 2),
+                                         BASE_URL + "/firewalls?page=2", page("firewalls", List.of(2), null)));
+
+            client.listFirewalls()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(firewalls -> assertThat(ids(firewalls, Firewall::id)).containsExactly(1L, 2L));
+        }
+
+        @Test
+        void listFirewalls_byLabelSelector_keepsTheSelectorOnEveryPage() {
+            var first = BASE_URL + "/firewalls?label_selector=aether-cluster%3Dc1";
+
+            testHttp.respondByUri(Map.of(first, page("firewalls", List.of(1), 2),
+                                         first + "&page=2", page("firewalls", List.of(2), null)));
+
+            client.listFirewalls("aether-cluster=c1")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(firewalls -> assertThat(ids(firewalls, Firewall::id)).containsExactly(1L, 2L));
+        }
+
+        @Test
+        void listLoadBalancers_twoPages_returnsBoth() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/load_balancers", page("load_balancers", List.of(1), 2),
+                                         BASE_URL + "/load_balancers?page=2", page("load_balancers", List.of(2), null)));
+
+            client.listLoadBalancers()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(balancers -> assertThat(ids(balancers, LoadBalancer::id)).containsExactly(1L, 2L));
+        }
+
+        @Test
+        void listFloatingIps_twoPages_returnsBoth() {
+            testHttp.respondByUri(Map.of(BASE_URL + "/floating_ips", page("floating_ips", List.of(1), 2),
+                                         BASE_URL + "/floating_ips?page=2", page("floating_ips", List.of(2), null)));
+
+            client.listFloatingIps()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(ips -> assertThat(ids(ips, FloatingIp::id)).containsExactly(1L, 2L));
+        }
+
+        private static String page(String listKey, List<Integer> itemIds, Integer nextPage) {
+            var items = itemIds.stream().map(id -> "{\"id\": " + id + "}").collect(Collectors.joining(", "));
+            var next = nextPage == null ? "null" : nextPage.toString();
+
+            return "{\"" + listKey + "\": [" + items + "], \"meta\": {\"pagination\": {\"page\": 1, \"per_page\": 25, "
+                   + "\"previous_page\": null, \"next_page\": " + next + ", \"last_page\": 3, \"total_entries\": 60}}}";
+        }
+
+        private static <T> List<Long> ids(List<T> items, ToLongFunction<T> id) {
+            return items.stream().map(id::applyAsLong).toList();
         }
     }
 
@@ -365,6 +548,8 @@ class HetznerClientTest {
         private final AtomicReference<HttpRequest> capturedRequest;
         private int responseStatus;
         private String responseBody;
+        private Map<String, String> bodiesByUri = Map.of();
+        private final List<String> requestedUris = new ArrayList<>();
 
         TestHttpOperations(AtomicReference<HttpRequest> capturedRequest) {
             this.capturedRequest = capturedRequest;
@@ -375,14 +560,30 @@ class HetznerClientTest {
             this.responseBody = body;
         }
 
+        /// Answers each request from the body registered for its full URI (200), or 500 for a URI no one
+        /// registered, so a request to an unexpected page fails loudly instead of replaying a canned body.
+        void respondByUri(Map<String, String> bodies) {
+            this.bodiesByUri = bodies;
+        }
+
+        List<String> requestedUris() {
+            return List.copyOf(requestedUris);
+        }
+
         @Override
         public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
             capturedRequest.set(request);
-            @SuppressWarnings("unchecked")
-            var result = new HttpResult<>(responseStatus,
-                                          HttpHeaders.of(Map.of(), (a, b) -> true),
-                                          (T) responseBody);
-            return Promise.success(result);
+            requestedUris.add(request.uri().toString());
+            return Promise.success(resultFor(request));
+        }
+
+        @SuppressWarnings("unchecked")
+        private <T> HttpResult<T> resultFor(HttpRequest request) {
+            var byUri = bodiesByUri.get(request.uri().toString());
+            var status = bodiesByUri.isEmpty() ? responseStatus : byUri == null ? 500 : 200;
+            var body = bodiesByUri.isEmpty() ? responseBody : byUri == null ? ERROR_SERVER_RESPONSE : byUri;
+
+            return new HttpResult<>(status, HttpHeaders.of(Map.of(), (a, b) -> true), (T) body);
         }
     }
 
