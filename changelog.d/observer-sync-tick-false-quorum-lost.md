@@ -1,0 +1,2 @@
+### Fixed
+- A joining observer (such as an auto-heal replacement) no longer reports a false CRITICAL `QuorumLost` when a sync-retry tick queued behind its state adoption runs after the adoption. The tick found only a voter's `Active` state settled, moved the observer from `Observing` back to `Syncing` and published PASSIVE, which the application layer treated as quorum loss and answered by quiescing routing on a node whose cluster had never lost quorum.

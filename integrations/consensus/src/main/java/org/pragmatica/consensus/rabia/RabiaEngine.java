@@ -2188,8 +2188,12 @@ public class RabiaEngine<C extends Command> {
         safeExecute(this::doSynchronize);
     }
 
+    /// A sync-retry tick is queued behind whatever adoption is already running, so it can reach the executor
+    /// after that adoption has settled the engine. Both [#isSyncSettled] checks are therefore load-bearing:
+    /// without them a late tick re-enters `Syncing` from `Observing` and publishes PASSIVE for an observer
+    /// that never had a quorum to lose (auto-heal replacements join as observers).
     private void doSynchronize() {
-        if (engineState.get().isActive()) {
+        if (isSyncSettled()) {
             return;
         }
         // Check if we already have enough responses from previous attempt
@@ -2197,7 +2201,7 @@ public class RabiaEngine<C extends Command> {
         // #1447: a round is stuck by its OUTCOME, not by whether adoption ran. An adoption that did not
         // activate (a restore that failed, an activation that was refused) retries and counts like any
         // other round; at clusterSize 1 adoption runs on every round, so this is the only way it counts.
-        if (engineState.get().isActive()) {
+        if (isSyncSettled()) {
             return;
         }
 
@@ -2214,6 +2218,15 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         notifyConsensusStateTransition();
+    }
+
+    /// Synchronization has nothing left to do: the engine is a voter in `Idle`/`InPhase`, or an observer
+    /// that has adopted state. `Observing` is a settled outcome of the sync loop, not a station on the way
+    /// to `Active`, so no tick may move it back to `Syncing`.
+    private boolean isSyncSettled() {
+        var current = engineState.get();
+
+        return current.isActive() || current.isObserving();
     }
 
     /// #660 observability half: the retry loop logged only at TRACE, so a node deadlocked in `Syncing`
