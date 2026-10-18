@@ -97,8 +97,13 @@ sealed interface BootstrapPhaseDeploy {
     private static Result<BootstrapContext> withPersistedLedger(BootstrapContext ctx) {
         return BootstrapStatePersistence.read(ctx.config().cluster().name())
                                         .mapError(cause -> BootstrapStatePersistence.LEDGER_UNREADABLE.apply(cause.message()))
-                                        .map(state -> state.map(BootstrapState::startedNodeIds).or(List.of()))
+                                        .map(BootstrapPhaseDeploy::persistedStartedNodes)
                                         .map(persisted -> mergeStartedNodes(ctx, persisted));
+    }
+
+    private static List<String> persistedStartedNodes(Option<BootstrapState> state) {
+        return state.map(BootstrapState::startedNodeIds)
+                    .or(List.of());
     }
 
     private static BootstrapContext mergeStartedNodes(BootstrapContext ctx, List<String> persisted) {

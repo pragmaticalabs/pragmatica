@@ -48,8 +48,8 @@ public final class ApplyOrchestrator {
         var clusterName = desired.cluster().name();
 
         return loadRequiredState(clusterName, "resume").flatMap(state -> validateResumeState(state, desired))
-                         .flatMap(_ -> computeValidPlan(desired, currentStored))
-                         .flatMap(plan -> executeWithState(plan, currentStored, desired));
+                                .flatMap(_ -> computeValidPlan(desired, currentStored))
+                                .flatMap(plan -> executeWithState(plan, currentStored, desired));
     }
 
     public static Result<ApplyResult> rollback(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
@@ -64,16 +64,14 @@ public final class ApplyOrchestrator {
     private static Result<ApplyState> loadRequiredState(ClusterName clusterName, String verb) {
         return ApplyState.read(clusterName)
                          .mapError(cause -> unreadableState(clusterName, cause))
-                         .flatMap(state -> state.toResult(new ApplyAborted("No apply state found for cluster '"
-                                                                           + clusterName
-                                                                           + "'. Nothing to "
-                                                                           + verb
-                                                                           + ".")));
+                         .flatMap(state -> state.toResult(new ApplyAborted("No apply state found for cluster '" + clusterName
+                                                                          + "'. Nothing to " + verb
+                                                                          + ".")));
     }
 
     private static Cause unreadableState(ClusterName clusterName, Cause cause) {
-        return new ApplyAborted("The apply state for cluster '" + clusterName + "' is unreadable and was left untouched: "
-                                + cause.message());
+        return new ApplyAborted("The apply state for cluster '" + clusterName
+                               + "' is unreadable and was left untouched: " + cause.message());
     }
 
     private static Result<DiffPlan> computeValidPlan(ClusterBootstrapConfig desired,

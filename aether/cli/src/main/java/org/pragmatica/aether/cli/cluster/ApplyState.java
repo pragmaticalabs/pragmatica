@@ -109,7 +109,9 @@ public record ApplyState(ClusterName clusterName,
         }
 
         return Result.lift(PersistenceError::new,
-                           () -> Files.readString(path)).flatMap(ApplyState::fromJson).map(Option::some);
+                           () -> Files.readString(path))
+                     .flatMap(ApplyState::fromJson)
+                     .map(Option::some);
     }
 
     static Result<Unit> delete(ClusterName clusterName) {
