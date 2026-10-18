@@ -1539,8 +1539,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      requestId));
     }
 
-    /// A [ForwardError] names its own status (413 for a request no cluster frame can carry, 504 for a
-    /// non-idempotent request that was not retried); every other forward failure stays a 504.
+    /// A [ForwardError] names its own status: 503 per the 2026-10-07 ruling (know 14a3606152), whose detail says
+    /// whether the outcome is unknown or nothing was applied, and 413 for a request no cluster frame can carry. Every
+    /// failure the forwarder produces is one; a cause from anywhere else keeps the former 504.
     private static HttpStatus forwardFailureStatus(Cause cause) {
         return cause instanceof ForwardError forwardError
                ? forwardError.status()

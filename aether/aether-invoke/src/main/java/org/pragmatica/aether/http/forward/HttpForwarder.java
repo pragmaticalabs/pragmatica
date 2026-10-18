@@ -436,7 +436,7 @@ public interface HttpForwarder {
 
                 if (connectedNodes.isEmpty()) {
                     log.warn("No connected nodes available for route {} {} [{}]", httpMethod, pathPrefix, requestId);
-                    resultPromise.fail(Causes.cause("No available nodes for route"));
+                    resultPromise.fail(ForwardError.NotSent.FACTORY.apply(Causes.cause("No available nodes for route")));
 
                     return resultPromise;
                 }
@@ -452,7 +452,8 @@ public interface HttpForwarder {
                                  Math.min(connectedNodes.size() - 1, maxForwardRetries),
                                  Pipeline.APP,
                                  Deadline.current(),
-                                 1);
+                                 1,
+                                 false);
 
                 return resultPromise;
             }
@@ -464,7 +465,7 @@ public interface HttpForwarder {
 
                 if (connectedNodes.isEmpty()) {
                     log.warn("No connected nodes available for fallback forward [{}]", requestId);
-                    resultPromise.fail(Causes.cause("No connected nodes available"));
+                    resultPromise.fail(ForwardError.NotSent.FACTORY.apply(Causes.cause("No connected nodes available")));
 
                     return resultPromise;
                 }
@@ -480,7 +481,8 @@ public interface HttpForwarder {
                                  Math.min(connectedNodes.size() - 1, maxForwardRetries),
                                  Pipeline.APP,
                                  Deadline.current(),
-                                 1);
+                                 1,
+                                 false);
 
                 return resultPromise;
             }
@@ -599,7 +601,7 @@ public interface HttpForwarder {
 
                 if (connectedCoreNodes.isEmpty()) {
                     log.warn("No connected core nodes available for management forward [{}]", requestId);
-                    resultPromise.fail(Causes.cause("No core nodes available for management API"));
+                    resultPromise.fail(ForwardError.NotSent.FACTORY.apply(Causes.cause("No core nodes available for management API")));
 
                     return resultPromise;
                 }
@@ -615,7 +617,8 @@ public interface HttpForwarder {
                                  Math.min(connectedCoreNodes.size() - 1, maxForwardRetries),
                                  Pipeline.MANAGEMENT,
                                  deadline,
-                                 1);
+                                 1,
+                                 false);
 
                 return resultPromise;
             }
@@ -694,8 +697,8 @@ public interface HttpForwarder {
                                                                                    cause));
             }
 
-            /// A [ForwardError] is final (A1: a non-idempotent attempt that may have been delivered, or a request no
-            /// frame can carry), so this outer loop must not re-send it to the same or a re-resolved owner either.
+            /// A terminal [ForwardError] is final (A1: a non-idempotent attempt that may have been delivered, or a
+            /// request no frame can carry), so this outer loop must not re-send it to the same or a re-resolved owner.
             private void onTaskGroupForwardFailure(TaskGroup group,
                                                    NodeId owner,
                                                    HttpRequestContext requestContext,
@@ -709,7 +712,7 @@ public interface HttpForwarder {
                           cause.message(),
                           retriesRemaining,
                           requestId);
-                if (cause instanceof ForwardError) {
+                if (cause instanceof ForwardError && cause.isTerminal()) {
                     resultPromise.fail(cause);
 
                     return;
@@ -767,7 +770,8 @@ public interface HttpForwarder {
                                  0,
                                  Pipeline.MANAGEMENT,
                                  deadline,
-                                 budgetShares);
+                                 budgetShares,
+                                 false);
 
                 return resultPromise;
             }
@@ -1007,10 +1011,11 @@ public interface HttpForwarder {
                                           int retriesRemaining,
                                           Pipeline pipeline,
                                           Deadline deadline,
-                                          int budgetShares) {
+                                          int budgetShares,
+                                          boolean delivered) {
                 if (deadline.expired(BUDGET_FLOOR)) {
                     log.warn("Request budget exhausted for {} [{}], not trying further nodes", routeIdentity, requestId);
-                    resultPromise.fail(BUDGET_EXHAUSTED);
+                    resultPromise.fail(exhausted(delivered, BUDGET_EXHAUSTED));
 
                     return;
                 }
@@ -1025,7 +1030,8 @@ public interface HttpForwarder {
                                        retriesRemaining,
                                        pipeline,
                                        deadline,
-                                       budgetShares);
+                                       budgetShares,
+                                       delivered);
 
                     return;
                 }
@@ -1050,6 +1056,7 @@ public interface HttpForwarder {
                                                                 pipeline,
                                                                 deadline,
                                                                 budgetShares,
+                                                                delivered,
                                                                 failure));
             }
 
@@ -1074,13 +1081,14 @@ public interface HttpForwarder {
                                             int retriesRemaining,
                                             Pipeline pipeline,
                                             Deadline deadline,
-                                            int budgetShares) {
+                                            int budgetShares,
+                                            boolean delivered) {
                 if (retriesRemaining > 0) {
                     if (deadline.expired(BUDGET_FLOOR)) {
                         log.warn("Request budget exhausted for {} [{}], not waiting for candidates",
                                  routeIdentity,
                                  requestId);
-                        resultPromise.fail(BUDGET_EXHAUSTED);
+                        resultPromise.fail(exhausted(delivered, BUDGET_EXHAUSTED));
 
                         return;
                     }
@@ -1099,13 +1107,14 @@ public interface HttpForwarder {
                                                           retriesRemaining,
                                                           pipeline,
                                                           deadline,
-                                                          budgetShares));
+                                                          budgetShares,
+                                                          delivered));
 
                     return;
                 }
 
                 log.error("No more nodes to try for {} [{}] after all retries exhausted", routeIdentity, requestId);
-                resultPromise.fail(Causes.cause("All nodes failed or unavailable"));
+                resultPromise.fail(exhausted(delivered, Causes.cause("All nodes failed or unavailable")));
             }
 
             private void retryAfterDelay(HttpRequestContext requestContext,
@@ -1115,7 +1124,8 @@ public interface HttpForwarder {
                                          int retriesRemaining,
                                          Pipeline pipeline,
                                          Deadline deadline,
-                                         int budgetShares) {
+                                         int budgetShares,
+                                         boolean delivered) {
                 var freshNodes = freshCandidatesForRoute(routeIdentity, pipeline);
 
                 forwardWithRetry(requestContext,
@@ -1127,7 +1137,8 @@ public interface HttpForwarder {
                                  retriesRemaining - 1,
                                  pipeline,
                                  deadline,
-                                 budgetShares);
+                                 budgetShares,
+                                 delivered);
             }
 
             private void handleRetryOrExhausted(HttpRequestContext requestContext,
@@ -1139,7 +1150,10 @@ public interface HttpForwarder {
                                                 Pipeline pipeline,
                                                 Deadline deadline,
                                                 int budgetShares,
+                                                boolean delivered,
                                                 Cause failure) {
+                var deliveredSoFar = delivered || mayHaveBeenDelivered(failure);
+
                 if (mustNotResend(requestContext.method(), failure)) {
                     log.warn("Forward of non-idempotent {} [{}] failed after it may have been delivered, not retrying: {}",
                              requestContext.method(),
@@ -1165,18 +1179,32 @@ public interface HttpForwarder {
                                      retriesRemaining - 1,
                                      pipeline,
                                      deadline,
-                                     budgetShares);
+                                     budgetShares,
+                                     deliveredSoFar);
                 } else {
                     log.error("All retries exhausted for [{}]", requestId);
-                    resultPromise.fail(Causes.cause("Request failed after all retries"));
+                    resultPromise.fail(exhausted(deliveredSoFar, failure));
                 }
+            }
+
+            /// The hunt is over without an answer. Per the 2026-10-07 ruling (know 14a3606152) the client learns
+            /// which of two things happened: some attempt may have reached a node (outcome unknown), or none
+            /// left this node (nothing applied, safe to retry). Both answer 503; the origin stays in the log.
+            private static ForwardError exhausted(boolean delivered, Cause origin) {
+                return delivered
+                       ? ForwardError.OutcomeUnknown.FACTORY.apply(origin)
+                       : ForwardError.NotSent.FACTORY.apply(origin);
+            }
+
+            private static boolean mayHaveBeenDelivered(Cause failure) {
+                return !(failure instanceof Undelivered);
             }
 
             /// A1: re-sending is safe when the method is idempotent, or when the failure proves the frame never
             /// left. A non-idempotent request whose attempt may have reached the target is not re-sent, because a
             /// second node would process it a second time while the first may still be processing it.
             private static boolean mustNotResend(String method, Cause failure) {
-                return !isIdempotent(method) && !(failure instanceof Undelivered);
+                return !isIdempotent(method) && mayHaveBeenDelivered(failure);
             }
 
             private static boolean isIdempotent(String method) {
@@ -1207,7 +1235,7 @@ public interface HttpForwarder {
                     requestData = serializer.encode(requestContext);
                 } catch (Exception e) {
                     log.error("Failed to serialize request [{}]: {}", requestId, e.getMessage());
-                    resultPromise.fail(Causes.cause("Request serialization failed"));
+                    resultPromise.fail(ForwardError.NotSent.FACTORY.apply(Causes.cause("Request serialization failed")));
 
                     return;
                 }
@@ -1237,7 +1265,7 @@ public interface HttpForwarder {
                     log.warn("Pending forwards limit reached ({}), rejecting forward [{}]",
                              MAX_PENDING_FORWARDS,
                              requestId);
-                    resultPromise.fail(Causes.cause("Too many pending forwards"));
+                    resultPromise.fail(ForwardError.NotSent.FACTORY.apply(Causes.cause("Too many pending forwards")));
 
                     return;
                 }

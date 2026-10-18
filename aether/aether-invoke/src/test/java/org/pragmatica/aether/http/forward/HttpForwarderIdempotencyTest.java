@@ -44,8 +44,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// A1: a forwarded request is re-sent to another node only when that cannot run it twice. A non-idempotent
 /// request (RFC 9110 §9.2.2: POST, PATCH, CONNECT) whose attempt may have been delivered — the hop timed out, or
-/// the target answered with a failure — is NOT re-sent and fails with a 504 naming that. A refusal before write
-/// proves nothing left, so even a POST is retried then. Idempotent methods keep retrying as before.
+/// the target answered with a failure — is NOT re-sent. A refusal before write proves nothing left, so even a POST is
+/// retried then. Idempotent methods keep retrying as before. The client statuses follow the 2026-10-07 ruling
+/// (know 14a3606152): 503 "outcome unknown, may have been applied; retry only an idempotent operation" when an attempt
+/// may have been delivered, 503 "nothing was applied; safe to retry" when none was.
 class HttpForwarderIdempotencyTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId A = nodeId("node-a").unwrap();
@@ -54,7 +56,7 @@ class HttpForwarderIdempotencyTest {
     private static final String PATH = "/api/uploads/1";
 
     @Test
-    void forward_postWhoseFirstHopTimesOut_isSentExactlyOnce_andFailsNotRetried504() {
+    void forward_postWhoseFirstHopTimesOut_isSentExactlyOnce_andFailsNotRetried503() {
         var network = new CountingClusterNetwork(Set.of(A, B), Set.of());
         var forwarder = forwarder(network, "POST");
 
@@ -64,8 +66,9 @@ class HttpForwarderIdempotencyTest {
         assertThat(network.totalSends()).as("a POST that may have been delivered must not be re-sent").isEqualTo(1);
         var failure = failureOf(result);
         assertThat(failure).isInstanceOf(ForwardError.NotRetried.class);
-        assertThat(((ForwardError) failure).status()).isEqualTo(HttpStatus.GATEWAY_TIMEOUT);
-        assertThat(HttpError.clientMessage((Cause) failure)).contains("POST request was NOT retried");
+        assertThat(((ForwardError) failure).status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(HttpError.clientMessage((Cause) failure)).contains("POST request was NOT retried")
+                                                            .contains("outcome unknown, may have been applied; retry only an idempotent operation");
     }
 
     @Test
@@ -79,7 +82,11 @@ class HttpForwarderIdempotencyTest {
         assertThat(network.totalSends()).as("an idempotent GET keeps today's retry").isEqualTo(2);
         assertThat(network.sendsTo(A)).isEqualTo(1);
         assertThat(network.sendsTo(B)).isEqualTo(1);
-        assertThat(failureOf(result)).isNotInstanceOf(ForwardError.class);
+        var failure = failureOf(result);
+        assertThat(failure).as("retried, then exhausted after attempts that may have been delivered")
+                           .isInstanceOf(ForwardError.OutcomeUnknown.class);
+        assertThat(((ForwardError) failure).status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(HttpError.clientMessage((Cause) failure)).contains("outcome unknown, may have been applied");
     }
 
     @Test
@@ -111,7 +118,26 @@ class HttpForwarderIdempotencyTest {
                               .await(timeSpan(5).seconds());
 
         assertThat(network.totalSends()).as("a refusal proves nothing left, so even a POST is retried").isEqualTo(2);
-        assertThat(failureOf(result)).isNotInstanceOf(ForwardError.class);
+        var failure = failureOf(result);
+        assertThat(failure).as("every attempt refused before write: nothing was applied")
+                           .isInstanceOf(ForwardError.NotSent.class);
+        assertThat(((ForwardError) failure).status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(HttpError.clientMessage((Cause) failure)).contains("nothing was applied; safe to retry");
+    }
+
+    /// One attempt may have been delivered (it timed out) and the other was refused before write: the outcome is
+    /// unknown, whichever came last. Both orders are run, because the hunt's node order is not fixed by the test.
+    @Test
+    void forward_getWithOneTimeoutAndOneRefusal_isOutcomeUnknown_inEitherOrder() {
+        for (var refused : List.of(A, B)) {
+            var network = new CountingClusterNetwork(Set.of(A, B), Set.of(refused));
+            var result = forwarder(network, "GET").forward(context("GET", "mixed-" + refused.id()), "GET", PREFIX, "mixed")
+                                                  .await(timeSpan(5).seconds());
+
+            assertThat(network.totalSends()).isEqualTo(2);
+            assertThat(failureOf(result)).as("refused node " + refused.id())
+                                         .isInstanceOf(ForwardError.OutcomeUnknown.class);
+        }
     }
 
     private static HttpForwarder forwarder(ClusterNetwork network, String method) {

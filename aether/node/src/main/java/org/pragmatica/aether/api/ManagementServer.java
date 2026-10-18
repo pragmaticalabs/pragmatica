@@ -1474,7 +1474,7 @@ class ManagementServerImpl implements ManagementServer {
                                       requestId);
     }
 
-    /// A [ForwardError] names its own status (504 for a non-idempotent request that was not retried, 413 for one
+    /// A [ForwardError] names its own status (503 per the 2026-10-07 ruling, know 14a3606152, or 413 for a request
     /// no cluster frame can carry); every other management forward failure stays a 503.
     private static HttpStatus managementForwardFailureStatus(Cause cause) {
         return cause instanceof ForwardError forwardError
