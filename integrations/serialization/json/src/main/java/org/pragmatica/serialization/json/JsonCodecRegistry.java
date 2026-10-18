@@ -112,9 +112,18 @@ sealed interface JsonCodecRegistry {
         return switch (classes.size()) {
             case 0 -> absent(name, failures(scan), listed);
             case 1 -> instantiate(type, matching.getFirst());
-            default -> JsonCodecs.ConflictingProviders.conflictingProviders(type,
-                                                                            classes.stream().map(JsonCodecRegistry::describe).toList()).result();
+            default -> ambiguous(name, classes);
         };
+    }
+
+    // Defensive: one loader's ServiceLoader yields one class per name, so this needs providers gathered across loaders.
+    private static Result<Option<JsonTypeCodec<?>>> ambiguous(String name, List<? extends Class<?>> classes) {
+        var described = classes.stream().map(JsonCodecRegistry::describe).toList();
+
+        return JsonCodecs.ProviderFailed.providerFailed(name,
+                                                        "more than one provider class of this name was found: " + String.join(", ",
+                                                                                                                              described))
+                                        .result();
     }
 
     private static List<Cause> failures(List<Result<Candidate>> scan) {

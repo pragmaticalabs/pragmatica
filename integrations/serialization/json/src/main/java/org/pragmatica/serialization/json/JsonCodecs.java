@@ -53,44 +53,30 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// artifacts holding different types of one package each list their own providers, so both resolve.
 ///
 /// A lookup never throws, except a `VirtualMachineError` (an exhausted stack or heap), which deliberately propagates:
-/// no `Cause` can carry it. It fails in two cases:
+/// no `Cause` can carry it. It fails with [ProviderFailed] when the provider of the requested name is broken: its class
+/// was found and fails the checks above or cannot be instantiated (a constructor or initialiser that throws, a
+/// `type()` or `codec()` that throws, returns `null` or names another class), or the services files list the name but
+/// the `ServiceLoader` could not load it (the class is missing, does not implement the interface, or has no public
+/// no-argument constructor). A broken entry of **another** name does not change the answer: the `ServiceLoader`
+/// reports such an entry while it is streamed, before its name is known, so the lookup records it, streams on, and
+/// consults it only when no provider of the requested name was found and the services files list that name (then the
+/// recorded failures, which include the requested entry's, are the failure's origin). Building the failure never
+/// throws: an exception's cause chain is walked to a bounded depth and stops at a throwable seen before, and an
+/// exception whose own `toString` throws is described by its class name.
 ///
-/// - [ProviderFailed]: the provider of the requested name is broken. Either its class was found and fails the checks
-///   above or cannot be instantiated (a constructor or initialiser that throws, a `type()` or `codec()` that throws,
-///   returns `null` or names another class), or the services files list the name but the `ServiceLoader` could not
-///   load it (the class is missing, does not implement the interface, or has no public no-argument constructor). A
-///   broken entry of **another** name does not change the answer: the `ServiceLoader` reports such an entry while it
-///   is streamed, before its name is known, so the lookup records it, streams on, and consults it only when no
-///   provider of the requested name was found and the services files list that name (then the recorded failures,
-///   which include the requested entry's, are the failure's origin). Building the failure never throws: an
-///   exception's cause chain is walked to a bounded depth and stops at a throwable seen before, and an exception
-///   whose own `toString` throws is described by its class name.
-/// - [ConflictingProviders]: the providers streamed for the class include more than one distinct provider class of the
-///   requested name, so which one serves it would depend on load order. A single class loader's `ServiceLoader`
-///   yields one class per provider name, so this needs providers gathered across class loaders (a hand-written
-///   provider defined by a second loader under the generated name); it is refused rather than resolved first-wins.
+/// One class loader's `ServiceLoader` yields at most one provider class per name, so a lookup through `codecFor` meets
+/// at most one candidate. Should more than one distinct class of the requested name ever reach the resolution (only
+/// possible for providers gathered across class loaders, never through `codecFor`), it is refused as a
+/// [ProviderFailed] naming them rather than resolved first-wins.
 public sealed interface JsonCodecs {
     /// The generated codec for `type`: empty when `type` is not a `@Json` type its class loader sees, a
-    /// [ProviderFailed] failure when its provider is broken, a [ConflictingProviders] failure when more than one
-    /// provider class claims it.
+    /// [ProviderFailed] failure when its provider is broken.
     ///
     /// The cached answer itself is returned: a repeated lookup allocates nothing. The cast is sound because a
     /// provider is used only when it serves exactly `type`.
     @SuppressWarnings("unchecked")
     static <T> Result<Option<JsonTypeCodec<T>>> codecFor(Class<T> type) {
         return (Result<Option<JsonTypeCodec<T>>>)(Result<?>) JsonCodecRegistry.CODECS.get(type);
-    }
-
-    /// More than one provider class of `type`'s provider name was found; `providers` describes each one (its name and
-    /// the identity of its class loader).
-    record ConflictingProviders(String type, List<String> providers, String message) implements Cause {
-        static ConflictingProviders conflictingProviders(Class<?> type, List<String> providers) {
-            return new ConflictingProviders(type.getName(),
-                                            providers,
-                                            "JSON codec for " + type.getName()
-                                           + " is claimed by more than one provider class: " + String.join(", ",
-                                                                                                           providers));
-        }
     }
 
     /// A provider could not be used: `provider` names its class, or the services entry when the failure is not one

@@ -130,22 +130,19 @@ compiled into two artifacts gets the same provider name in both, which the `Serv
 to the copy the class path finds first, which is the same code.
 
 The lookup never throws, except a `VirtualMachineError` (an exhausted stack or heap), which deliberately propagates
-because no `Cause` can carry it. It fails in two cases:
+because no `Cause` can carry it. It fails with `JsonCodecs.ProviderFailed` when the provider of the class's name is
+broken. Its class was found but is not marked as generated for the class, cannot be instantiated (a constructor or
+initialiser that throws), or its `type()` or `codec()` throws, returns `null` or names another class; or the services
+files list the name but the `ServiceLoader` cannot load it (the class is missing, does not implement
+`JsonCodecProvider`, or has no public no-argument constructor). A broken entry of **another** name never changes the
+answer. The `ServiceLoader` reports an entry it cannot load while streaming, before its name is known, so the lookup
+records it, streams on, and consults the recorded failures only when no provider of the requested name turned up and
+the services files list that name; they are then the failure's origin. Building the failure never throws: a cause
+chain is walked to a bounded depth and stops at a throwable already seen, and an exception that cannot print itself is
+described by its class name.
 
-- `JsonCodecs.ProviderFailed`: the provider of the class's name is broken. Its class was found but is not marked as
-  generated for the class, cannot be instantiated (a constructor or initialiser that throws), or its `type()` or
-  `codec()` throws, returns `null` or names another class; or the services files list the name but the
-  `ServiceLoader` cannot load it (the class is missing, does not implement `JsonCodecProvider`, or has no public
-  no-argument constructor). A broken entry of **another** name never changes the answer. The `ServiceLoader` reports
-  an entry it cannot load while streaming, before its name is known, so the lookup records it, streams on, and
-  consults the recorded failures only when no provider of the requested name turned up and the services files list
-  that name; they are then the failure's origin. Building the failure never throws: a cause chain is walked to a
-  bounded depth and stops at a throwable already seen, and an exception that cannot print itself is described by its
-  class name.
-- `JsonCodecs.ConflictingProviders`: more than one distinct provider class of the class's name was streamed, so which
-  one serves it would depend on load order. One class loader's `ServiceLoader` yields one class per provider name, so
-  this takes providers gathered across class loaders, such as a hand-written provider defined by a second loader under
-  the generated name; it is refused rather than resolved first-wins.
+One class loader's `ServiceLoader` yields at most one provider class per name, so a lookup meets at most one
+candidate for the requested name; there is no first-wins resolution to guard against.
 
 Incremental builds: the services file is written in the last round of a compilation that generated an entry point.
 An entry a previous compilation left in the output is kept while its class still resolves (recompiling some `@Json`

@@ -251,20 +251,22 @@ public class JsonCodecRegistryTest {
         return depth;
     }
 
-    // Two different provider classes of the type's name (a provider defined again by a second class loader, as a
-    // hand-written copy would be): refused in either order, never resolved first-wins.
+    // Defensive path, unreachable through one loader's ServiceLoader: two distinct classes of the type's provider name
+    // (here the same provider defined by two loaders) are refused as a broken provider in either order, never
+    // resolved first-wins.
     @Test
-    void lookup_failsNamingBoth_whenTwoProviderClassesClaimTheType_inEitherOrder() throws Exception {
+    void lookup_fails_whenTwoProviderClassesOfTheNameReachIt_inEitherOrder() throws Exception {
         try (var other = loader(classes)) {
             var first = provider(loader.loadClass("p.GoodJson"));
             var second = provider(other.loadClass("p.GoodJson"));
 
             for (var order : List.of(List.of(first, second), List.of(second, first))) {
-                var conflict = assertInstanceOf(JsonCodecs.ConflictingProviders.class,
-                                                failureOf(JsonCodecRegistry.lookup(type("p.Good"), "p.GoodJson", order, () -> Result.success(true))));
+                var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
+                                              failureOf(JsonCodecRegistry.lookup(type("p.Good"), "p.GoodJson", order, () -> Result.success(true))));
 
-                assertEquals(2, conflict.providers().size(), conflict.providers().toString());
-                assertTrue(conflict.providers().stream().allMatch(described -> described.startsWith("p.GoodJson (class loader ")));
+                assertEquals("p.GoodJson", failed.provider());
+                assertTrue(failed.message().contains("more than one provider class of this name was found: p.GoodJson (class loader "),
+                           failed.message());
             }
         }
     }
