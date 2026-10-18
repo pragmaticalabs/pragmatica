@@ -9,7 +9,6 @@ import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -46,10 +45,9 @@ class StorageFactorySharedTierBootTest {
                                            5);
     }
 
-    private static int closedPort() throws IOException {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        }
+    /// A port nothing listens on: the shared test-port helper issues a free one (#2016).
+    private static int closedPort() {
+        return ClusterTestPorts.freeClusterPort();
     }
 
     private Path credentialsFile() throws IOException {
