@@ -5,7 +5,7 @@
     <parent>
         <artifactId>db</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>1.0.0-rc4</version>
+        <version>1.0.0-rc5</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -106,6 +106,13 @@
                     <excludes>
                         <exclude>**/PerformanceTest.java</exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
                 </configuration>
             </plugin>
         </plugins>

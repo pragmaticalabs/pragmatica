@@ -20,7 +20,7 @@
         <project.build.outputTimestamp>2025-01-01T00:00:00Z</project.build.outputTimestamp>
         <maven.compiler.release>25</maven.compiler.release>
         <jbct.skip>false</jbct.skip>
-        <platform.version>1.0.0-rc4</platform.version>
+        <platform.version>1.0.0-rc5</platform.version>
     </properties>
 
     <dependencies>

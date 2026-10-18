@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>integrations</artifactId>
-        <version>1.0.0-rc4</version>
+        <version>1.0.0-rc5</version>
     </parent>
 
     <artifactId>statemachine</artifactId>
@@ -58,6 +58,13 @@
                         </goals>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
             </plugin>
         </plugins>
     </build>

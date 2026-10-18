@@ -30,12 +30,12 @@ public interface OrderService {
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-annotations</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>slice-processor</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
     <scope>provided</scope>
 </dependency>
 ```

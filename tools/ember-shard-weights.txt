@@ -2,6 +2,7 @@
 # Used only to balance shards; a class missing here still runs, at the default weight. Nested-class time is not in these lines, so a few weights read low.
 # EmberReadCommittedFailoverTest (2 tests, #2087): 58.9 s on bigboy at 40a421bb9 (earlier runs of the one-test version 40.1-51.3 s); weight rounded up.
 # EmberVoterHealTest 116 (#2098): surefire class time on bigboy, 3 runs of f2098-2f21a633a: 116.4 s, 113.4 s, 112.4 s (maximum used).
+# TransportWiringTripwireEmberTest 10 (#2215): surefire class time 9.5 s locally at b04c9bcf13 (load ~6; 2 of 4 tests @Disabled, so re-measure when they are enabled).
 EmberAmnesiacRestartTest 162
 EmberBlackholedReplicaRecoveryTest 94
 EmberBootstrapAdminKeyAuthTest 10
@@ -44,3 +45,4 @@ EmberWorkerDeadSeedTest 40
 EmberWorkerDhtReplicationTest 16
 MinimumLiveIsrTest 0
 EmberVoterHealTest 116
+TransportWiringTripwireEmberTest 10

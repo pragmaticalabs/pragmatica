@@ -79,7 +79,7 @@ the protocol-versioning tracking issue for GA plans).
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>dht</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
 

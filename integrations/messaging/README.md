@@ -56,7 +56,7 @@ router.route(new DomainEvent.UserCreated("user-123"));
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>messaging</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
 
