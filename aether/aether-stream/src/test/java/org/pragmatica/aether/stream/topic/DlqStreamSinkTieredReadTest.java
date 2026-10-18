@@ -84,9 +84,9 @@ class DlqStreamSinkTieredReadTest {
 
         assertThat(manager.partitionBuffer(dlqStream, 0).map(ring -> ring.tailOffset()).or(-1L))
             .as("fixture: the oldest dead letters left the ring").isGreaterThan(0L);
-        awaitUntil(() -> sink.read(TOPIC_STREAM, 10).size() == DEAD_LETTERS);
+        awaitUntil(() -> sink.read(TOPIC_STREAM, 10).await().or(List.of()).size() == DEAD_LETTERS);
 
-        assertThat(sink.read(TOPIC_STREAM, 10)).extracting(DeadLetterHandler.DeadLetterEntry::offset)
+        assertThat(sink.read(TOPIC_STREAM, 10).await().unwrap()).extracting(DeadLetterHandler.DeadLetterEntry::offset)
                                                .as("every dead letter, the evicted ones from the tier, oldest first")
                                                .containsExactly(100L, 101L, 102L, 103L, 104L);
     }
