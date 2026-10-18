@@ -144,7 +144,7 @@ class BacklogSamplerTest {
     @Test
     void start_samplesAgainAfterEveryInterval() {
         var samples = new AtomicInteger();
-        var counting = BacklogSampler.backlogSampler(List.of(BacklogSampler.watched("node", samples::incrementAndGet)), alarm, clock);
+        var counting = BacklogSampler.backlogSampler(List.of(BacklogSampler.Watched.watched("node", samples::incrementAndGet)), alarm, clock);
 
         counting.start();
         clock.advance(BacklogSampler.INTERVAL_MS);
@@ -159,7 +159,7 @@ class BacklogSamplerTest {
     void aTickThatEscapedTheCancellation_findsTheSamplerStopped_andDoesNothing() {
         var armed = new ArrayList<Runnable>();
         var samples = new AtomicInteger();
-        var uncancellable = BacklogSampler.backlogSampler(List.of(BacklogSampler.watched("node", samples::incrementAndGet)),
+        var uncancellable = BacklogSampler.backlogSampler(List.of(BacklogSampler.Watched.watched("node", samples::incrementAndGet)),
                                                           alarm,
                                                           (body, delayMs) -> {
                                                               armed.add(body);

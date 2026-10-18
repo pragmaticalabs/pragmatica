@@ -235,8 +235,9 @@ public final class Fsm2System {
         poller.bind(seams);
         translator.bindMailboxDepth("node", node::mailboxDepth);
         translator.bindMailboxDepth("cluster", cluster::mailboxDepth);
-        var backlog = BacklogSampler.backlogSampler(List.of(BacklogSampler.watched("node", node::mailboxDepth),
-                                                            BacklogSampler.watched("cluster", cluster::mailboxDepth)),
+        var backlog = BacklogSampler.backlogSampler(List.of(BacklogSampler.Watched.watched("node", node::mailboxDepth),
+                                                            BacklogSampler.Watched.watched("cluster",
+                                                                                           cluster::mailboxDepth)),
                                                     translator.backlogAlarm(),
                                                     c.clock());
         var membership = MembershipInputs.membershipInputs(cluster::deliver, c.admissions(), seams);

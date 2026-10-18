@@ -30,10 +30,10 @@ public final class BacklogSampler {
     public static final long INTERVAL_MS = 5_000L;
 
     /// One mailbox to watch: the FSM it belongs to (`node`, `cluster`) and a cheap, thread-safe read of its depth.
-    public record Watched(String fsm, IntSupplier depth) {}
-
-    public static Watched watched(String fsm, IntSupplier depth) {
-        return new Watched(fsm, depth);
+    public record Watched(String fsm, IntSupplier depth) {
+        public static Watched watched(String fsm, IntSupplier depth) {
+            return new Watched(fsm, depth);
+        }
     }
 
     /// Where the alarm goes. Called from the sampler's thread, once per change of state.

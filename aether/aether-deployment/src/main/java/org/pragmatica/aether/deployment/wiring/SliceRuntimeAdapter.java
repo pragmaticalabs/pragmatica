@@ -160,6 +160,7 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     /// design-out: nothing is absorbed. A store operation that fails is the step's own `Failed` outcome, carrying the store's cause, and the node FSM
     /// records it; the recovery only moves the failure from the promise's channel into the outcome the executor delivers.
     private static Promise<LocalOutcome> outcomeOf(Promise<?> operation) {
+        // design-out: the failure keeps its cause and reaches the FSM as the step's Failed outcome.
         return operation.map(_ -> LocalOutcome.done())
                         .recover(LocalOutcome::failed);
     }
@@ -328,7 +329,7 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
 
     private Promise<Unit> submitReleases(Artifact artifact, List<KVCommand<AetherKey>> commands) {
         var cluster = c.cluster().get();
-
+        // FER: a refused release is logged and the cleanup goes on; see releaseLegs.
         return cluster.<Object> apply(commands)
                       .onFailure(cause -> log.warn("Could not release the legs of {} on forced cleanup: {}",
                                                    artifact,
