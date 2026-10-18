@@ -20,7 +20,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.http.CommonContentType;
@@ -34,16 +33,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class HttpServerCompletionTest {
     @Test void start_ephemeralPort_reportsBoundPortAndFlushesResponse() throws Exception {
-        var completion = new AtomicReference<Promise<Unit>>();
+        // The handler hands the completion over after writeAsync returns, which can be after the client has the body.
+        var completion = new java.util.concurrent.CompletableFuture<Promise<Unit>>();
         var server = HttpServer.httpServer(HttpServerConfig.httpServerConfig("test", 0), (_, writer) ->
-            completion.set(writer.writeAsync(HttpStatus.OK, "hello".getBytes(), CommonContentType.TEXT_PLAIN)))
+            completion.complete(writer.writeAsync(HttpStatus.OK, "hello".getBytes(), CommonContentType.TEXT_PLAIN)))
             .await(timeSpan(5).seconds()).unwrap();
         try (var client = HttpClient.newHttpClient()) {
             assertThat(server.port()).isPositive();
             var response = client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port())).build(),
                                        HttpResponse.BodyHandlers.ofString());
             assertThat(response.body()).isEqualTo("hello");
-            assertThat(completion.get().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+            assertThat(completion.get(5, java.util.concurrent.TimeUnit.SECONDS).await(timeSpan(5).seconds()).isSuccess()).isTrue();
         } finally {
             assertThat(server.stop().await(timeSpan(10).seconds()).isSuccess()).isTrue();
         }
