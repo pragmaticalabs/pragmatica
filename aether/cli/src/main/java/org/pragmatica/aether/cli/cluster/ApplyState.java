@@ -96,18 +96,22 @@ public record ApplyState(ClusterName clusterName,
         return Result.lift(PersistenceError::new, () -> doSave(state));
     }
 
-    static Option<ApplyState> load(ClusterName clusterName) {
+    /// ABSENT and UNREADABLE are different facts, as for the bootstrap ledger
+    /// (`BootstrapStatePersistence#read`): absent is `success(none())`, present and parsed is
+    /// `success(some(state))`, present but refused (torn file, unknown resource type, blank id) is a
+    /// FAILURE carrying the parse cause. A caller that would otherwise treat "unreadable" as "none" and
+    /// then write over the file (an older CLI erasing a newer CLI's ledger) must refuse instead.
+    static Result<Option<ApplyState>> read(ClusterName clusterName) {
         var path = stateFilePath(clusterName);
 
         if (!Files.exists(path)) {
-            return none();
+            return success(none());
         }
 
         return Result.lift(PersistenceError::new,
                            () -> Files.readString(path))
                      .flatMap(ApplyState::fromJson)
-                     .onFailure(cause -> System.err.println("Warning: failed to load apply state: " + cause.message()))
-                     .option();
+                     .map(Option::some);
     }
 
     static Result<Unit> delete(ClusterName clusterName) {
@@ -209,7 +213,6 @@ public record ApplyState(ClusterName clusterName,
         return Result.lift(() -> WaveStatus.valueOf(name)).or(WaveStatus.PENDING);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
     private static List<CreatedResource> parseResources(JsonNode node, ClusterName clusterName) {
         if (node.isMissingNode() || node.isNull() || !node.isArray()) {
             return List.of();
@@ -218,11 +221,7 @@ public record ApplyState(ClusterName clusterName,
         var resources = new ArrayList<CreatedResource>();
 
         for (var element : node) {
-            var resource = BootstrapStateJson.parseSingleResourceNode(element, clusterName);
-
-            if (resource != null) {
-                resources.add(resource);
-            }
+            resources.add(BootstrapStateJson.parseSingleResourceNode(element, clusterName));
         }
 
         return List.copyOf(resources);
