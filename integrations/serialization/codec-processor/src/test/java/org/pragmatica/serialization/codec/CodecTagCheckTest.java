@@ -91,6 +91,21 @@ class CodecTagCheckTest {
     }
 
     @Test
+    void roundTrip_decodesAValidCodecTypedField() throws Exception {
+        var loader = loaderOf(compileWith(INNER, PROBE));
+        var buf = encodedProbe(loader);
+        var inner = loader.loadClass("com.example.Inner").getConstructor(int.class).newInstance(9);
+        var expected = loader.loadClass("com.example.Probe")
+                             .getConstructor(int.class, String.class, long.class, loader.loadClass("com.example.Inner"))
+                             .newInstance(7, "x", 8L, inner);
+
+        Object decoded = codecOf(loader).read(buf);
+
+        assertEquals(expected, decoded);
+        assertEquals(0, buf.readableBytes());
+    }
+
+    @Test
     void read_failsWithTagMismatch_whenAPrimitiveTagIsCorrupted() throws Exception {
         var loader = loaderOf(compileWith(INNER, PROBE));
         var buf = encodedProbe(loader);
