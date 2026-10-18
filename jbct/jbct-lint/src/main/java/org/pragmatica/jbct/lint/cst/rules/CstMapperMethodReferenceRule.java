@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -64,7 +65,17 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         var partialSingletons = partialSingletonsByType(root);
 
         return findAllMethods(root).stream()
-                             .flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, ctx));
+                             .flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, ctx))
+                             .filter(distinctReference());
+    }
+
+    /// A method nested in another (an anonymous-class or local-class method) is scanned once on its own and again as part of
+    /// the enclosing method's text, so the same reference is found twice (#1568). One finding per reference: the key is the
+    /// line plus the message, which names `Receiver::method`. Stateful per `analyze` call; the stream is sequential.
+    private static Predicate<Diagnostic> distinctReference() {
+        var seen = new HashSet<String>();
+
+        return diagnostic -> seen.add(diagnostic.line() + ":" + diagnostic.message());
     }
 
     /// Declared name → CST index for every type in the file (used to resolve an `X::m` receiver).

@@ -11,6 +11,7 @@ import org.pragmatica.jbct.shared.SourceFile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -246,6 +247,29 @@ class CstMapperMethodReferenceRuleTest {
                     }
                 }
                 """));
+    }
+
+    /// A reference inside an anonymous-class method was reported once per enclosing method (outer and nested): exactly one.
+    @Test
+    void analyze_referenceInAnonymousClassMethod_reportsOnce() {
+        var count = lint("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object build() {
+                        return new Object() {
+                            Object headerValue(Option<List<String>> o) {
+                                return o.map(List::getFirst);
+                            }
+                        };
+                    }
+                }
+                """).stream()
+                    .filter(diagnostic -> diagnostic.ruleId()
+                                                    .equals(RULE_ID))
+                    .count();
+
+        assertEquals(1L, count);
     }
 
     @Test
