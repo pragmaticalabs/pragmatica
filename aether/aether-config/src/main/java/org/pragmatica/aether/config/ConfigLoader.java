@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.lang.Functions.Fn1;
@@ -92,7 +93,8 @@ public final class ConfigLoader {
             return refuseRemovedTargetRf(doc).flatMap(_ -> parseReadLinearization(doc))
                                         .map(mode -> applyReadLinearization(builder.build(),
                                                                             mode))
-                                        .flatMap(config -> attachSharedTiers(doc, config));
+                                        .flatMap(config -> refuseBlankStoragePaths(doc).flatMap(_ -> attachSharedTiers(doc,
+                                                                                                                       config)));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
@@ -644,6 +646,7 @@ public final class ConfigLoader {
             }
         }
 
+        warnIgnoredStorageSubSections(doc);
         if (!instances.isEmpty()) {
             builder.storage(Map.copyOf(instances));
         }
@@ -652,42 +655,89 @@ public final class ConfigLoader {
     /// #249: every `[storage.<name>.shared]` section, parsed into its instance's [StorageConfig#shared]. An instance
     /// that has only the sub-section gets [StorageConfig#sharedOnly], so the node places it as if `[storage.<name>]`
     /// were absent. A malformed section fails the load with a typed [SharedTierConfig.SharedTierConfigError].
-    /// `streams` has its own builder and takes no shared-tier choice: anything but `kind = "dht"` there is refused.
+    /// `streams` keeps the DHT (anything else is refused) and `encryption` is reserved: both in [SharedTierConfig].
     private static Result<AetherConfig> attachSharedTiers(TomlDocument doc, AetherConfig config) {
         return Result.allOf(sharedSectionInstances(doc).stream().map(name -> sharedTierEntry(doc, name)).toList()).map(entries -> config.withStorage(withSharedTiers(config.storage(),
                                                                                                                                                                      entries)));
     }
 
     private static Result<Map.Entry<String, SharedTierConfig>> sharedTierEntry(TomlDocument doc, String name) {
-        return SharedTierConfig.sharedTierConfig(doc, name)
-                               .flatMap(shared -> refuseStreamsSharedTier(name, shared))
-                               .map(shared -> Map.entry(name, shared));
+        return SharedTierConfig.sharedTierConfig(doc, name).map(shared -> Map.entry(name, shared));
     }
 
+    /// Instances with a `[storage.<name>.shared]` section or anything nested under it (a sub-table, or a dotted key,
+    /// which the TOML parser stores as one), so a sub-table alone still reaches the shared-tier refusals.
     private static List<String> sharedSectionInstances(TomlDocument doc) {
         return doc.sectionNames()
                   .stream()
-                  .filter(ConfigLoader::isSharedSection)
-                  .map(section -> section.substring("storage.".length(),
-                                                    section.length() - ".shared".length()))
-                  .filter(ConfigLoader::isInstanceName)
+                  .map(section -> section.split("\\."))
+                  .filter(ConfigLoader::isUnderSharedSection)
+                  .map(parts -> parts[1])
+                  .distinct()
                   .sorted()
                   .toList();
     }
 
-    private static boolean isSharedSection(String section) {
-        return section.startsWith("storage.") && section.endsWith(".shared");
+    private static boolean isUnderSharedSection(String[] parts) {
+        return parts.length >= 3
+               && "storage".equals(parts[0])
+               && "shared".equals(parts[2]);
     }
 
-    private static boolean isInstanceName(String name) {
-        return ! name.isEmpty() && !name.contains(".");
+    /// #249: a `[storage.<name>.<sub>]` section that is neither the keyring (`[storage.encryption...]`) nor a
+    /// shared tier (`[storage.<name>.shared...]`) has no effect. Before #249 it was read as an instance literally
+    /// named `<name>.<sub>`; it is now ignored, and said so.
+    private static void warnIgnoredStorageSubSections(TomlDocument doc) {
+        var ignored = doc.sectionNames()
+                         .stream()
+                         .filter(section -> section.startsWith("storage."))
+                         .map(section -> section.split("\\."))
+                         .filter(ConfigLoader::isIgnoredSubSection)
+                         .map(parts -> String.join(".", parts))
+                         .sorted()
+                         .toList();
+
+        if (!ignored.isEmpty()) {
+            log.warn("These storage sub-sections are not storage instances and have no effect: {}", ignored);
+        }
     }
 
-    private static Result<SharedTierConfig> refuseStreamsSharedTier(String name, SharedTierConfig shared) {
-        return "streams".equals(name) && !(shared instanceof SharedTierConfig.Dht)
-               ? ConfigError.invalidConfig("[storage.streams.shared] is not supported: the streams instance keeps the "
-                                          + "DHT as its shared tier").result()
-               : success(shared);
+    private static boolean isIgnoredSubSection(String[] parts) {
+        return parts.length >= 3
+               && !"encryption".equals(parts[1])
+               && !"shared".equals(parts[2]);
+    }
+
+    /// #249: an explicit blank `disk_path` or `snapshot_path` is refused. A blank path is what marks an instance
+    /// configured only through `[storage.<name>.shared]` ([StorageConfig#derivesPaths]); written by an operator it
+    /// would make the node silently replace the whole section with the defaults.
+    private static Result<Unit> refuseBlankStoragePaths(TomlDocument doc) {
+        return Option.from(doc.sectionNames()
+                              .stream()
+                              .filter(ConfigLoader::isStorageInstanceSection)
+                              .sorted()
+                              .flatMap(section -> blankPathKeys(doc, section))
+                              .findFirst()).fold(Result::unitResult,
+                                                 blank -> ConfigError.invalidConfig("[" + blank
+                                                                                   + " must not be blank: omit the key to use the default").result());
+    }
+
+    private static boolean isStorageInstanceSection(String section) {
+        var name = section.startsWith("storage.")
+                   ? section.substring("storage.".length())
+                   : "";
+
+        return ! name.isEmpty()
+               && !name.contains(".")
+               && !"encryption".equals(name);
+    }
+
+    private static Stream<String> blankPathKeys(TomlDocument doc, String section) {
+        return Stream.of("disk_path", "snapshot_path")
+                     .filter(key -> doc.getString(section, key)
+                                       .filter(String::isBlank)
+                                       .isPresent())
+                     .map(key -> section + "] " + key);
     }
 
     private static Map<String, StorageConfig> withSharedTiers(Map<String, StorageConfig> storage,

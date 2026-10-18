@@ -4,7 +4,9 @@
 package org.pragmatica.aether.config;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Predicate;
 
@@ -93,6 +95,19 @@ public sealed interface SharedTierConfig {
                                                                                                    InvalidValue::new);
         }
 
+        /// `[storage.encryption.shared]`: `encryption` names the keyring section, never a storage instance.
+        record ReservedInstance(String instance, String message) implements SharedTierConfigError {
+            static final Fn1<ReservedInstance, String> FACTORY = Causes.forOneValue("[storage.%s.shared] is refused: that name is reserved for the keyring section [storage.encryption] and is not a storage instance",
+                                                                                    ReservedInstance::new);
+        }
+
+        /// `[storage.streams.shared]` with a kind other than `dht`. Stream storage is being redesigned separately;
+        /// until that lands the streams instance keeps the in-memory DHT as its shared tier.
+        record StreamsSharedTierUnsupported(String instance, String message) implements SharedTierConfigError {
+            static final Fn1<StreamsSharedTierUnsupported, String> FACTORY = Causes.forOneValue("[storage.%s.shared] supports only kind 'dht': stream storage is being redesigned separately, and until then the streams instance keeps the DHT as its shared tier",
+                                                                                                StreamsSharedTierUnsupported::new);
+        }
+
         record UnknownKey(String instance, String key, String message) implements SharedTierConfigError {
             static final Fn2<UnknownKey, String, String> FACTORY = Causes.forTwoValues("[storage.%s.shared] has no key %s for its kind",
                                                                                        UnknownKey::new);
@@ -123,13 +138,42 @@ public sealed interface SharedTierConfig {
                                      "password",
                                      "token");
 
-    /// Parses `[storage.<instance>.shared]` from `doc`. Absent section -> [Dht].
+    /// The instance name reserved for the keyring section `[storage.encryption]`; it never has a shared tier.
+    String RESERVED_INSTANCE = "encryption";
+    /// The instance built by its own stream-storage arm; it keeps the DHT as its shared tier.
+    String STREAMS_INSTANCE = "streams";
+
+    /// Parses `[storage.<instance>.shared]` from `doc`, together with everything nested under it: a sub-table
+    /// (`[storage.<instance>.shared.<anything>]`) or a dotted key (`aws.secret_access_key = ...`, which the TOML
+    /// parser stores as a sub-table) is refused, as a secret when any of its names is a secret key, and as an
+    /// unknown key otherwise. Secret names match case-insensitively. Absent section and sub-tables -> [Dht].
     static Result<SharedTierConfig> sharedTierConfig(TomlDocument doc, String instance) {
         var section = "storage." + instance + ".shared";
+        var sections = doc.sectionNames()
+                          .stream()
+                          .filter(name -> name.equals(section) || name.startsWith(section + "."))
+                          .sorted()
+                          .toList();
 
-        return doc.hasSection(section)
-               ? refuseSecretKeys(doc, section, instance).flatMap(_ -> byKind(doc, section, instance))
-               : success(dht());
+        return sections.isEmpty()
+               ? success(dht())
+               : refuseReserved(instance).flatMap(_ -> refuseSecretKeys(doc, section, sections, instance))
+                               .flatMap(_ -> refuseSubTables(doc, section, sections, instance))
+                               .flatMap(_ -> byKind(doc, section, instance))
+                               .flatMap(shared -> refuseStreamsOffDht(instance, shared));
+    }
+
+    private static Result<String> refuseReserved(String instance) {
+        return RESERVED_INSTANCE.equals(instance)
+               ? SharedTierConfigError.ReservedInstance.FACTORY.apply(instance).result()
+               : success(instance);
+    }
+
+    /// Stream storage is being redesigned separately; until then `streams` keeps the in-memory DHT shared tier.
+    private static Result<SharedTierConfig> refuseStreamsOffDht(String instance, SharedTierConfig shared) {
+        return STREAMS_INSTANCE.equals(instance) && !(shared instanceof Dht)
+               ? SharedTierConfigError.StreamsSharedTierUnsupported.FACTORY.apply(instance).result()
+               : success(shared);
     }
 
     private static Result<SharedTierConfig> byKind(TomlDocument doc, String section, String instance) {
@@ -233,10 +277,48 @@ public sealed interface SharedTierConfig {
                                                  .filter(parsed -> parsed.millis() > 0);
     }
 
-    private static Result<Set<String>> refuseSecretKeys(TomlDocument doc, String section, String instance) {
-        return firstOf(doc.keys(section), SECRET_KEYS::contains).fold(() -> success(doc.keys(section)),
-                                                                      key -> SharedTierConfigError.InlineSecretRejected.FACTORY.apply(instance,
-                                                                                                                                      key).result());
+    /// Every key under the shared section, named relative to it (`secret_access_key`, `aws.secret_access_key`,
+    /// `creds.token`); refused when any dotted segment of that name is a secret key, whatever its case.
+    private static Result<List<String>> refuseSecretKeys(TomlDocument doc,
+                                                         String section,
+                                                         List<String> sections,
+                                                         String instance) {
+        var names = relativeKeyNames(doc, section, sections);
+
+        return Option.from(names.stream().filter(SharedTierConfig::isSecretName).findFirst()).fold(() -> success(names),
+                                                                                                   key -> SharedTierConfigError.InlineSecretRejected.FACTORY.apply(instance,
+                                                                                                                                                                   key).result());
+    }
+
+    private static Result<List<String>> refuseSubTables(TomlDocument doc,
+                                                        String section,
+                                                        List<String> sections,
+                                                        String instance) {
+        return Option.from(sections.stream().filter(name -> !name.equals(section)).findFirst()).fold(() -> success(sections),
+                                                                                                     sub -> SharedTierConfigError.UnknownKey.FACTORY.apply(instance,
+                                                                                                                                                           sub.substring(section.length() + 1))
+                                                                                                                                                    .result());
+    }
+
+    private static List<String> relativeKeyNames(TomlDocument doc, String section, List<String> sections) {
+        return sections.stream()
+                       .flatMap(name -> doc.keys(name)
+                                           .stream()
+                                           .map(key -> relativeName(section, name, key)))
+                       .sorted()
+                       .toList();
+    }
+
+    private static String relativeName(String section, String name, String key) {
+        return name.equals(section)
+               ? key
+               : name.substring(section.length() + 1) + "." + key;
+    }
+
+    private static boolean isSecretName(String relativeName) {
+        return Arrays.stream(relativeName.split("\\."))
+                     .map(segment -> segment.toLowerCase(Locale.ROOT))
+                     .anyMatch(SECRET_KEYS::contains);
     }
 
     private static Result<Set<String>> refuseUnknownKeys(TomlDocument doc,

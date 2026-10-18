@@ -222,10 +222,88 @@ class ConfigLoaderSharedTierTest {
                 .isInstanceOf(SharedTierConfigError.InvalidValue.class);
         }
 
+        /// Stream storage is redesigned separately; the refusal says why. Mutation that reddens it: drop
+        /// `refuseStreamsOffDht`.
         @Test
-        void streamsSharedS3_isRefused() {
-            assertThat(refusal(S3_SECTION.replace("[storage.content.shared]", "[storage.streams.shared]")).message())
-                .contains("streams");
+        void streamsSharedS3_isRefused_namingTheReason() {
+            var cause = refusal(S3_SECTION.replace("[storage.content.shared]", "[storage.streams.shared]"));
+
+            assertThat(cause).isInstanceOf(SharedTierConfigError.StreamsSharedTierUnsupported.class);
+            assertThat(cause.message()).contains("streams").contains("redesigned").contains("DHT");
+        }
+
+        @Test
+        void streamsSharedDht_isAccepted() {
+            assertThat(load("[storage.streams.shared]\nkind = \"dht\"\n").storage().get("streams").shared())
+                .isEqualTo(SharedTierConfig.dht());
+        }
+
+        /// Mutation that reddens it: drop `refuseReserved` (an instance named `encryption` is then created).
+        @Test
+        void encryptionShared_isReserved_notAnInstance() {
+            assertThat(refusal(S3_SECTION.replace("[storage.content.shared]", "[storage.encryption.shared]")))
+                .isInstanceOf(SharedTierConfigError.ReservedInstance.class);
+        }
+    }
+
+    /// Secrets and unknown keys nested under the shared section: sub-tables, dotted keys, any case. Mutations that
+    /// redden them: inspect only the section's own keys (sub-tables load), or compare secret names case-sensitively.
+    @Nested
+    class NestedUnderShared {
+
+        @Test
+        void secretInASubTable_isRejected() {
+            var cause = refusal(S3_SECTION + "\n[storage.content.shared.creds]\nsecret_access_key = \"wJalrXUtnFEMI\"\n");
+
+            assertThat(cause).isInstanceOf(SharedTierConfigError.InlineSecretRejected.class);
+            assertThat(cause.message()).contains("creds.secret_access_key").doesNotContain("wJalrXUtnFEMI");
+        }
+
+        @Test
+        void secretAsADottedKey_isRejected() {
+            var cause = refusal(S3_SECTION + "aws.secret_access_key = \"wJalrXUtnFEMI\"\n");
+
+            assertThat(cause).isInstanceOf(SharedTierConfigError.InlineSecretRejected.class);
+            assertThat(cause.message()).contains("aws.secret_access_key").doesNotContain("wJalrXUtnFEMI");
+        }
+
+        @Test
+        void secretKey_isRejectedCaseInsensitively() {
+            assertThat(refusal(S3_SECTION + "Secret_Access_Key = \"wJalrXUtnFEMI\"\n"))
+                .isInstanceOf(SharedTierConfigError.InlineSecretRejected.class);
+            assertThat(refusal(S3_SECTION + "AWS.SESSION_TOKEN = \"t\"\n"))
+                .isInstanceOf(SharedTierConfigError.InlineSecretRejected.class);
+        }
+
+        @Test
+        void secretSubTableWithoutTheSharedSection_isRejected() {
+            assertThat(refusal("[storage.content.shared.creds]\npassword = \"p\"\n"))
+                .isInstanceOf(SharedTierConfigError.InlineSecretRejected.class);
+        }
+
+        @Test
+        void nonSecretSubTable_isAnUnknownKey() {
+            var cause = refusal(S3_SECTION + "\n[storage.content.shared.tuning]\nretries = 3\n");
+
+            assertThat(cause).isInstanceOf(SharedTierConfigError.UnknownKey.class);
+            assertThat(cause.message()).contains("tuning");
+        }
+    }
+
+    /// An explicit blank path would read as "configured only through the shared section" and be replaced by the
+    /// defaults wholesale. Mutation that reddens it: drop `refuseBlankStoragePaths`.
+    @Nested
+    class BlankPaths {
+
+        @Test
+        void blankDiskPath_isRefused() {
+            assertThat(refusal("[storage.foo]\ndisk_path = \"\"\nmemory_max_bytes = 1234\n").message())
+                .contains("[storage.foo] disk_path must not be blank");
+        }
+
+        @Test
+        void blankSnapshotPath_isRefused() {
+            assertThat(refusal("[storage.foo]\nsnapshot_path = \" \"\n").message()).contains("snapshot_path");
         }
     }
 }
