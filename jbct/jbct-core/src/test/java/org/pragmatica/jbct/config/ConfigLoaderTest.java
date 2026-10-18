@@ -472,6 +472,36 @@ class ConfigLoaderTest {
         }
 
         @Test
+        void loadFromFile_materialisesAWellTypedFile() throws Exception {
+            var good = tempDir.resolve("good.toml");
+
+            Files.writeString(good, "[format]\nindentSize = 8\n");
+
+            assertThat(ConfigLoader.loadFromFile(good).unwrap().unwrap().formatter().indentSize()).isEqualTo(8);
+        }
+
+        @Test
+        void loadUserConfig_refusesNamingTheUserFile_andReadsAWellTypedOne() throws Exception {
+            var userFile = tempDir.resolve("home").resolve(ConfigLoader.USER_CONFIG_DIR).resolve(ConfigLoader.USER_CONFIG_NAME);
+
+            assertThat(ConfigLoader.loadUserConfig().unwrap().isEmpty()).isTrue();
+            writeUserConfig("[lint]\nfailOnWarning = \"yes\"\n");
+            assertRefused(ConfigLoader.loadUserConfig(), userFile, "lint.failOnWarning", "yes");
+            writeUserConfig("[format]\nindentSize = 8\n");
+            assertThat(ConfigLoader.loadUserConfig().unwrap().unwrap().formatter().indentSize()).isEqualTo(8);
+        }
+
+        @Test
+        void loadProjectConfig_refusesNamingTheProjectFile_andReadsAWellTypedOne() throws Exception {
+            var bad = writeConfig(tempDir.resolve("bad"), "[files]\nmaxFileSize = \"big\"\n");
+            var good = writeConfig(tempDir.resolve("good"), "[format]\nindentSize = 8\n");
+
+            assertRefused(ConfigLoader.loadProjectConfig(bad), bad.resolve(ConfigLoader.PROJECT_CONFIG_NAME), "files.maxFileSize", "big");
+            assertThat(ConfigLoader.loadProjectConfig(good).unwrap().unwrap().formatter().indentSize()).isEqualTo(8);
+            assertThat(ConfigLoader.loadProjectConfig(tempDir.resolve("none")).unwrap().isEmpty()).isTrue();
+        }
+
+        @Test
         void load_succeeds_whenEveryLayerIsWellTyped_andNoLayerExists() throws Exception {
             var project = repositoryRoot("project", "[format]\nmaxLineLength = 100\n");
 

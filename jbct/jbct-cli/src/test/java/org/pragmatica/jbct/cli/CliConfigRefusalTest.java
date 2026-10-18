@@ -117,7 +117,7 @@ class CliConfigRefusalTest {
     void command_stopsNamingFileKeyAndValue_whenConfigKeyHasWrongType(String command) throws Exception {
         var config = config("[format]\nmaxLineLength = \"wide\"\n");
 
-        assertThat(run(command, config)).isEqualTo(CliConfig.CONFIG_ERROR_EXIT);
+        assertThat(run(command, config)).isEqualTo(2);
         assertThat(err.toString(UTF_8)).contains(config.toString())
                                        .contains("format.maxLineLength")
                                        .contains("wide");
@@ -128,7 +128,7 @@ class CliConfigRefusalTest {
     void command_stopsNamingFile_whenConfigHasSyntaxError(String command) throws Exception {
         var config = config("[format\nmaxLineLength = 100\n");
 
-        assertThat(run(command, config)).isEqualTo(CliConfig.CONFIG_ERROR_EXIT);
+        assertThat(run(command, config)).isEqualTo(2);
         assertThat(err.toString(UTF_8)).contains("Invalid JBCT configuration")
                                        .contains(config.toString());
     }
