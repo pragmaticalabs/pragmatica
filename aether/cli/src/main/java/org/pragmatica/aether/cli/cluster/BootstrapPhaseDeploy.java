@@ -305,10 +305,19 @@ sealed interface BootstrapPhaseDeploy {
                                                      .type() == SourceType.CLOUD;
     }
 
+    // #1965: a core source declares its members by `count` (cloud) or by an SSH `hosts=[...]` list, never
+    // both; counting `count` alone made a hosts-declared core source invisible to the discovery gate.
     private static int coreCount(SourceProfile source) {
         return Option.option(source.roles().get(NodeRole.CORE))
-                     .flatMap(role -> role.count())
+                     .map(BootstrapPhaseDeploy::roleSize)
                      .or(0);
+    }
+
+    private static int roleSize(RoleSubTable role) {
+        return role.count()
+                   .or(0) + role.hosts()
+                                .map(List::size)
+                                .or(0);
     }
 
     /// C4 — readiness without inbound ports: poll the provider API for instances carrying
