@@ -8,10 +8,20 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.lang.Option;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
 
 /// #962: [Main#resolveAppHttp] replaces a disabled `[app-http]` whole with the fail-closed default (#573), and that
 /// default must still carry the operator's `[management] security_mode`, which is not part of the app plane.
@@ -79,5 +89,44 @@ class MainAppHttpResolutionTest {
         assertThat(resolved.securityEnabled()).isTrue();
         assertThat(resolved.managementSecurityEnabled()).isFalse();
         assertThat(resolved.port()).isEqualTo(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
+    }
+
+    /// #962: `Main.run` reaches `resolveAppHttp` only through [Main#nodeConfig]. A node config assembled from a file with
+    /// `[management] security_mode = "none"` and an api-key app plane must carry both resolved modes.
+    @Test
+    void nodeConfig_carriesTheResolvedManagementMode() {
+        var config = nodeConfigFrom(load("""
+
+            [app-http]
+            enabled = "true"
+            security_mode = "api-key"
+
+            [management]
+            security_mode = "none"
+            """));
+
+        assertThat(config.appHttp().securityEnabled()).isTrue();
+        assertThat(config.appHttp().managementSecurityEnabled()).isFalse();
+    }
+
+    @Test
+    void nodeConfig_failsClosed_whenThereIsNoConfigFile() {
+        assertThat(nodeConfigFrom(Option.none()).appHttp().managementSecurityEnabled()).isTrue();
+    }
+
+    private static AetherNodeConfig nodeConfigFrom(Option<AetherConfig> aetherConfig) {
+        var self = NodeId.nodeId("main-962").unwrap();
+        var selfInfo = NodeInfo.nodeInfo(self, NodeAddress.nodeAddress("localhost", 8090).unwrap());
+
+        return Main.nodeConfig(self,
+                               List.of(selfInfo),
+                               AetherNodeConfig.MANAGEMENT_DISABLED,
+                               SliceConfig.sliceConfig(),
+                               1,
+                               aetherConfig,
+                               Option.none(),
+                               new Main.TlsBundle(TlsConfig.selfSignedMutual(), mock(CertificateProvider.class)),
+                               Option.none(),
+                               Option.none());
     }
 }

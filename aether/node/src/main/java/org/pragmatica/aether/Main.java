@@ -90,7 +90,7 @@ public record Main(String[] args) {
         new Main(args).run();
     }
 
-    private record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
+    record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
 
     private void run() {
         publishConfigPath();
@@ -113,27 +113,16 @@ public record Main(String[] args) {
         var coreMax = parseCoreMax(aetherConfig);
         var tlsBundle = resolveTls(nodeId, peers, aetherConfig).expect("Failed to resolve TLS configuration at node startup");
         var appHttpTls = aetherConfig.filter(AetherConfig::tlsEnabled).map(_ -> tlsBundle.tls());
-        var config = AetherNodeConfig.builder()
-                                     .self(nodeId)
-                                     .coreNodes(peers)
-                                     .managementPort(managementPort)
-                                     .sliceConfig(sliceConfig)
-                                     // #1777 track 1: placeholder only — the DHT's factors come from the committed
-                                     // `[replication]` section once consensus state is restored
-                                     .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
-                                     .coreMax(coreMax)
-                                     .appHttp(resolveAppHttp(aetherConfig))
-                                     .tls(appHttpTls)
-                                     .quicTls(tlsBundle.tls())
-                                     .certificateProvider(tlsBundle.provider())
-                                     .configProvider(resolveConfigProvider())
-                                     .environment(environment)
-                                     .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
-                                     .storageConfig(resolveStorage(aetherConfig))
-                                     .backupConfig(resolveBackup(aetherConfig))
-                                     .membership(resolveMembership(aetherConfig))
-                                     .streaming(resolveStreaming(aetherConfig))
-                                     .build()
+        var config = nodeConfig(nodeId,
+                                peers,
+                                managementPort,
+                                sliceConfig,
+                                coreMax,
+                                aetherConfig,
+                                appHttpTls,
+                                tlsBundle,
+                                environment,
+                                resolveConfigProvider())
                                      // #298 — stamp the boot-gated cluster identity onto runtime config.
                                      // enforceClusterNamePresent() above already aborted the boot if this
                                      // were missing or malformed, so the value is present and validated.
@@ -150,6 +139,42 @@ public record Main(String[] args) {
 
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
+    }
+
+    /// The node's runtime config from the resolved boot inputs, before the boot-gated stamps `run` applies after it.
+    /// Package-visible so a test can pin what each resolver feeds in: the `[app-http]`/`[management]` security
+    /// resolution (#962) is only reachable through here.
+    static AetherNodeConfig nodeConfig(NodeId nodeId,
+                                       List<NodeInfo> peers,
+                                       int managementPort,
+                                       SliceConfig sliceConfig,
+                                       int coreMax,
+                                       Option<AetherConfig> aetherConfig,
+                                       Option<org.pragmatica.net.tcp.TlsConfig> appHttpTls,
+                                       TlsBundle tlsBundle,
+                                       Option<EnvironmentIntegration> environment,
+                                       Option<ConfigurationProvider> configProvider) {
+        return AetherNodeConfig.builder()
+                               .self(nodeId)
+                               .coreNodes(peers)
+                               .managementPort(managementPort)
+                               .sliceConfig(sliceConfig)
+                               // #1777 track 1: placeholder only — the DHT's factors come from the committed
+                               // `[replication]` section once consensus state is restored
+                               .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
+                               .coreMax(coreMax)
+                               .appHttp(resolveAppHttp(aetherConfig))
+                               .tls(appHttpTls)
+                               .quicTls(tlsBundle.tls())
+                               .certificateProvider(tlsBundle.provider())
+                               .configProvider(configProvider)
+                               .environment(environment)
+                               .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
+                               .storageConfig(resolveStorage(aetherConfig))
+                               .backupConfig(resolveBackup(aetherConfig))
+                               .membership(resolveMembership(aetherConfig))
+                               .streaming(resolveStreaming(aetherConfig))
+                               .build();
     }
 
     static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {

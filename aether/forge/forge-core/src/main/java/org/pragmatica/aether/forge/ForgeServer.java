@@ -376,14 +376,26 @@ public final class ForgeServer {
 
     /// Package-visible with the exit injected (see [#applyApiVersioning]).
     void applyAppHttpSecurity(EmberCluster clusterInstance, IntConsumer exit) {
-        siblingAppConfig(exit).map(AetherConfig::appHttp)
-                        .filter(appHttp -> !appHttp.apiKeys()
-                                                   .isEmpty())
-                        .onPresent(appHttp -> {
-                                       clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
-                                                                           appHttp.apiKeys());
-                                       operatorApiKey.set(adminCapableKey(appHttp));
-                                   });
+        var appHttp = siblingAppConfig(exit).map(AetherConfig::appHttp);
+
+        appHttp.filter(config -> !config.apiKeys()
+                                        .isEmpty())
+               .onPresent(config -> {
+                              clusterInstance.withAppHttpSecurity(config.securityMode(),
+                                                                  config.apiKeys());
+                              operatorApiKey.set(adminCapableKey(config));
+                          });
+        applyManagementSecurityMode(clusterInstance, appHttp);
+    }
+
+    /// #962 — `forge run` honours `[management] security_mode` from the sibling `aether.toml`, independently of the
+    /// key gate above: the management plane's own mode is not a credential. Absent, the embedded nodes inherit the
+    /// app-HTTP mode as before. Note the app-HTTP mode itself stays NONE for a run that declares no keys (see above),
+    /// so `[management] security_mode = "api-key"` with no key declared leaves Forge's own control calls refused
+    /// by the fail-closed plane, which is what that setting asks for.
+    private static void applyManagementSecurityMode(EmberCluster clusterInstance, Option<AppHttpConfig> appHttp) {
+        appHttp.flatMap(AppHttpConfig::managementSecurityMode)
+               .onPresent(mode -> clusterInstance.withManagementSecurityMode(Option.some(mode)));
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the

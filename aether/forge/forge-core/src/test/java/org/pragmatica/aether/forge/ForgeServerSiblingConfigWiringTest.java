@@ -60,4 +60,51 @@ class ForgeServerSiblingConfigWiringTest {
 
         assertThat(exits).as("CONTROL: a valid sibling is not a refusal").isEmpty();
     }
+
+    private static final String KEYED = "[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = true\nsecurity_mode = \"api-key\"\n\n"
+                                        + "[app-http.api-keys.\"k-962\"]\nname = \"ops\"\nroles = [\"admin\"]\nauthorization_role = \"ADMIN\"\n";
+
+    /// #962: `forge run` HONOURS `[management] security_mode` from the sibling `aether.toml`. A keyed api-key app plane with
+    /// `[management] security_mode = "none"` yields embedded nodes whose app plane authenticates and whose management plane does not.
+    @Test
+    void applyAppHttpSecurity_honoursManagementNone_whileTheAppPlaneIsApiKey(@TempDir Path dir) throws Exception {
+        var ember = EmberCluster.emberCluster();
+
+        serverWithSibling(dir, KEYED + "\n[management]\nsecurity_mode = \"none\"\n").applyAppHttpSecurity(ember, code -> {});
+
+        var appHttp = ember.appHttpConfigFor(8070);
+
+        assertThat(appHttp.securityEnabled()).as("the app plane authenticates").isTrue();
+        assertThat(appHttp.managementSecurityEnabled()).as("the management plane is open, as configured").isFalse();
+    }
+
+    /// Control: the same keyed sibling without a `[management]` section inherits, so the management plane authenticates too.
+    @Test
+    void applyAppHttpSecurity_withoutManagementSection_inheritsTheAppMode(@TempDir Path dir) throws Exception {
+        var ember = EmberCluster.emberCluster();
+
+        serverWithSibling(dir, KEYED).applyAppHttpSecurity(ember, code -> {});
+
+        assertThat(ember.appHttpConfigFor(8070).managementSecurityEnabled()).isTrue();
+    }
+
+    /// The management mode is independent of the key gate: no keys leave the app plane NONE (unchanged), yet an explicit
+    /// `[management] security_mode = "api-key"` still arms the management plane.
+    @Test
+    void applyAppHttpSecurity_honoursManagementApiKey_evenWithoutKeys(@TempDir Path dir) throws Exception {
+        var ember = EmberCluster.emberCluster();
+
+        serverWithSibling(dir, "[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[management]\nsecurity_mode = \"api-key\"\n").applyAppHttpSecurity(ember, code -> {});
+
+        var appHttp = ember.appHttpConfigFor(8070);
+
+        assertThat(appHttp.securityEnabled()).as("no keys: the app plane stays NONE, as before").isFalse();
+        assertThat(appHttp.managementSecurityEnabled()).isTrue();
+    }
+
+    /// Control: a Forge cluster with no sibling setting stays as it was, management open under the NONE app plane.
+    @Test
+    void emberCluster_defaultsToAnOpenManagementPlane() {
+        assertThat(EmberCluster.emberCluster().appHttpConfigFor(8070).managementSecurityEnabled()).isFalse();
+    }
 }

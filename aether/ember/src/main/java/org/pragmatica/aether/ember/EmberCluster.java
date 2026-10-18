@@ -199,6 +199,7 @@ public final class EmberCluster {
     /// could reach the node. That made Aether's own local simulator unable to demonstrate the
     /// access-control model applications are expected to declare.
     private final AtomicReference<SecurityMode> appHttpSecurityMode = new AtomicReference<>(SecurityMode.NONE);
+    private final AtomicReference<Option<SecurityMode>> managementSecurityMode = new AtomicReference<>(Option.empty());
 
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());
 
@@ -424,6 +425,29 @@ public final class EmberCluster {
     public void withAppHttpSecurity(SecurityMode securityMode, Map<String, ApiKeyEntry> apiKeys) {
         appHttpSecurityMode.set(securityMode);
         appHttpApiKeys.set(Map.copyOf(apiKeys));
+    }
+
+    /// Give the Management API of EVERY node in this cluster its own security mode (#962), as `[management]
+    /// security_mode` does on a production node. `Option.empty()` (the default) inherits the app-HTTP mode. MUST be
+    /// called before [#start]. Forge feeds it from the sibling `aether.toml`.
+    @Contract
+    public void withManagementSecurityMode(Option<SecurityMode> mode) {
+        managementSecurityMode.set(mode);
+    }
+
+    /// The `[app-http]` section every node of this cluster gets, with the management plane's own mode (#962).
+    public AppHttpConfig appHttpConfigFor(int appHttpPort) {
+        return AppHttpConfig.appHttpConfig(true,
+                                           appHttpPort,
+                                           appHttpApiKeys.get(),
+                                           AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                           appHttpSecurityMode.get(),
+                                           Option.empty(),
+                                           HttpProtocol.H1,
+                                           apiVersioningDetection.get(),
+                                           apiVersionHeaderName.get())
+                            .unwrap()
+                            .withManagementSecurityMode(managementSecurityMode.get());
     }
 
     /// TEST SEAM (streaming A-WAL) — set the writable, restart-stable base data dir for EVERY node in
@@ -1511,16 +1535,7 @@ public final class EmberCluster {
                                           Option.empty(),
                                           quicTls,
                                           TtmConfig.ttmConfig(),
-                                          AppHttpConfig.appHttpConfig(true,
-                                                                      appHttpPort,
-                                                                      appHttpApiKeys.get(),
-                                                                      AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
-                                                                      appHttpSecurityMode.get(),
-                                                                      Option.empty(),
-                                                                      HttpProtocol.H1,
-                                                                      apiVersioningDetection.get(),
-                                                                      apiVersionHeaderName.get())
-                                                       .unwrap(),
+                                          appHttpConfigFor(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           Option.some(nodeConfiguration(nodeId)),
                                           Option.some(emberEnvironment()),
