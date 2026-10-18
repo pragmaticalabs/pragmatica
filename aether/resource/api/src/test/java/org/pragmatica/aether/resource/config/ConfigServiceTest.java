@@ -245,4 +245,41 @@ class ConfigServiceTest {
             .onFailureRun(Assertions::fail)
             .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
     }
+
+    /// #1455: a present-but-wrong-typed key used to read as an absent one.
+    @Test
+    void typedReads_wrongTypedValue_failsNamingKeyAndValue() {
+        configService.loadToml(ConfigScope.GLOBAL, "[db]\nport = \"80x\"\nssl = \"yes\"\nratio = \"half\"\ntags = \"a\"\n")
+                     .onFailureRun(Assertions::fail);
+
+        assertFails(configService.getInt("db", "port").await(), "db.port", "80x");
+        assertFails(configService.getBoolean("db", "ssl").await(), "db.ssl", "yes");
+        assertFails(configService.getDouble("db", "ratio").await(), "db.ratio", "half");
+        assertFails(configService.getStringList("db", "tags").await(), "db.tags", "a");
+        assertFails(configService.getInt(ConfigScope.GLOBAL, "db", "port").await(), "db.port", "80x");
+        assertFails(configService.getBoolean(ConfigScope.GLOBAL, "db", "ssl").await(), "db.ssl", "yes");
+        assertFails(configService.getDouble(ConfigScope.GLOBAL, "db", "ratio").await(), "db.ratio", "half");
+        assertFails(configService.getStringList(ConfigScope.GLOBAL, "db", "tags").await(), "db.tags", "a");
+    }
+
+    @Test
+    void typedReads_absentKey_isNone_andNearerWellTypedScopeShadowsFartherWrongTypedOne() {
+        configService.loadToml(ConfigScope.GLOBAL, "[db]\nport = \"80x\"\n").onFailureRun(Assertions::fail);
+        configService.loadToml(ConfigScope.NODE, "[db]\nport = 5432\n").onFailureRun(Assertions::fail);
+
+        configService.getInt("db", "missing")
+                     .await()
+                     .onFailureRun(Assertions::fail)
+                     .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+        configService.getInt("db", "port")
+                     .await()
+                     .onFailureRun(Assertions::fail)
+                     .onSuccess(opt -> assertThat(opt).isEqualTo(Option.some(5432)));
+    }
+
+    private static void assertFails(org.pragmatica.lang.Result<?> result, String key, String raw) {
+        result.onSuccess(value -> Assertions.fail(key + " must fail, read " + value))
+              .onFailure(cause -> assertThat(cause.message()).contains(key)
+                                                             .contains(raw));
+    }
 }

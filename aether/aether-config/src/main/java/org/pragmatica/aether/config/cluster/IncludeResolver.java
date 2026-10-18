@@ -35,7 +35,15 @@ public final class IncludeResolver {
 
         return doc.getStringList("", "include")
                   .map(includes -> resolveIncludes(doc, baseDir, visited, depth, includes))
-                  .or(success(doc));
+                  .or(() -> refuseMistypedInclude(doc));
+    }
+
+    // #1455: `include = "base.toml"` (a string, not an array) read as no include at all and the
+    // base document was silently left out of the composed config.
+    private static Result<TomlDocument> refuseMistypedInclude(TomlDocument doc) {
+        return doc.rawValue("", "include")
+                  .fold(() -> success(doc),
+                        raw -> new ClusterConfigError.ParseFailed("include must be an array of strings, got \"" + raw + "\"").result());
     }
 
     private static Result<TomlDocument> resolveIncludes(TomlDocument doc,
