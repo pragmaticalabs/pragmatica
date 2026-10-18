@@ -589,8 +589,8 @@ public final class NodeReplacementWiring {
                                         .instanceListed(node, source)
                                         .onSuccess(listed -> {
                                   if (listed) {
-                                  seen.add(node);
-                              }
+                                      seen.add(node);
+                                  }
                               })
                                         .<Unit> map(_ -> Unit.unit())
                                         .recover(_ -> Unit.unit()))
@@ -617,10 +617,10 @@ public final class NodeReplacementWiring {
                                              in.ctm()
                                                .instanceListed(node, source)
                                                .onSuccess(listed -> {
-                                             if (listed) {
-                                             seen.add(node);
-                                         }
-                                         })
+                                                 if (listed) {
+                                                     seen.add(node);
+                                                 }
+                                             })
                                                .onResultRun(() -> observing.remove(node));
 
                                              return Unit.unit();

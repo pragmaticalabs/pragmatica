@@ -963,10 +963,10 @@ public final class OwnerActivation {
               .filter(ActivationBlock.PeerEventExceedsReadCap.class::isInstance)
               .onPresent(block -> {
                   synchronized (alarmOrder) {
-                  if (blocks.remove(key, block)) {
-                  ended(block);
-              }
-              }
+                      if (blocks.remove(key, block)) {
+                          ended(block);
+                      }
+                  }
               });
 
         return answered.size() < peers.size()

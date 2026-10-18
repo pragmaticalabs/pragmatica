@@ -417,8 +417,8 @@ public final class WorkerMetadataClient {
                                                    assignedWorker = projection.entries()
                                                                               .get(new AetherKey.ActivationDirectiveKey(self)) instanceof AetherValue.ActivationDirectiveValue directive && AetherValue.ActivationDirectiveValue.WORKER.equals(directive.role());
                                                    if (assignedWorker) {
-                                                   projectionReady.run();
-                                               }
+                                                       projectionReady.run();
+                                                   }
 
                                                    store.replayNotifications();
                                                });

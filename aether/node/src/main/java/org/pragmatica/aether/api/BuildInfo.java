@@ -23,8 +23,8 @@ public record BuildInfo(String buildTimestamp, String buildVersion) {
                                "build-info.properties")
                  .onSuccess(is -> {
                      try {
-                     props.load(is);
-                 } catch (Exception ignored) {}
+                         props.load(is);
+                     } catch (Exception ignored) {}
                  });
 
         return new BuildInfo(props.getProperty("build.timestamp", "unknown"),

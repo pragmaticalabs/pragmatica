@@ -108,13 +108,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return delegate.provisionNode(spec, binding)
                        .fold(result -> result.fold(cause -> {
                                                        if (cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded) {
-                                                       return recordRefusal(node,
-                                                                            spec.context().sourceName(),
-                                                                            binding).flatMap(_ -> releaseRefusal(node,
-                                                                                                                 spec.context()
-                                                                                                                     .sourceName(),
-                                                                                                                 binding).fold(_ -> cause.promise()));
-                                                   }
+                                                           return recordRefusal(node,
+                                                                                spec.context().sourceName(),
+                                                                                binding).flatMap(_ -> releaseRefusal(node,
+                                                                                                                     spec.context()
+                                                                                                                         .sourceName(),
+                                                                                                                     binding).fold(_ -> cause.promise()));
+                                                       }
 
                                                        return cause.promise();
                                                    },
@@ -456,18 +456,18 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return delegate.listInstances(filter, source, binding)
                        .flatMap(instances -> {
                                     if (leader().isEmpty()) {
-                                    return Promise.success(instances);
-                                }
+                                        return Promise.success(instances);
+                                    }
 
                                     var pass = Promise.unitPromise();
 
                                     for (int offset = 0; offset < instances.size(); offset += 128) {
-                                    var batch = List.copyOf(instances.subList(offset,
-                                                                              Math.min(offset + 128,
-                                                                                       instances.size())));
+                                        var batch = List.copyOf(instances.subList(offset,
+                                                                                  Math.min(offset + 128,
+                                                                                           instances.size())));
 
-                                    pass = pass.flatMap(_ -> observeBound(batch, source, binding));
-                                }
+                                        pass = pass.flatMap(_ -> observeBound(batch, source, binding));
+                                    }
 
                                     return pass.map(_ -> instances);
                                 });
@@ -483,8 +483,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                           .flatMap(binding -> delegate.instancesForNode(node, source, binding)
                                                       .flatMap(instances -> {
                                                                    if (leader().isEmpty()) {
-                                                                   return Promise.success(instances);
-                                                               }
+                                                                       return Promise.success(instances);
+                                                                   }
 
                                                                    return instances.isEmpty()
                                                                           ? releaseConfirmed(node, source, binding).map(_ -> instances)
@@ -820,8 +820,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return delegate.instancesForNode(node, source, expectedBinding)
                        .flatMap(instances -> {
                                     if (leader().isEmpty()) {
-                                    return Promise.success(instances);
-                                }
+                                        return Promise.success(instances);
+                                    }
 
                                     return instances.isEmpty()
                                            ? releaseConfirmed(node, source, expectedBinding).map(_ -> instances)

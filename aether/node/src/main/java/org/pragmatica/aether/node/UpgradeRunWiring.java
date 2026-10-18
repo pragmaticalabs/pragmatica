@@ -125,10 +125,12 @@ public final class UpgradeRunWiring {
         fsm.memberStates()
            .forEach((id, state) -> {
                         if (NodeReplacementWiring.alive(Option.option(state))) {
-                        members.put(id,
-                                    new UpgradeRunPlanner.Member(fsm.memberDescriptor(id).map(d -> d.role()).or("core"),
-                                                                 in.version().apply(id)));
-                    }
+                            members.put(id,
+                                        new UpgradeRunPlanner.Member(fsm.memberDescriptor(id)
+                                                                        .map(d -> d.role())
+                                                                        .or("core"),
+                                                                     in.version().apply(id)));
+                        }
                     });
 
         return members;

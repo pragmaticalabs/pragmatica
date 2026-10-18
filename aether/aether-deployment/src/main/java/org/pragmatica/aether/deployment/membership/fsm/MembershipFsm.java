@@ -648,21 +648,21 @@ public final class MembershipFsm {
                        tracking.updateDescriptor(admittedDescriptor);
                        if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
                                                                                                                                                      observedAgoMs)))) {
-                       return;
-                   }
+                           return;
+                       }
 
                        if (tracking.descriptor()
                                    .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "governor report")) {
-                       return;
-                   }
+                           return;
+                       }
 
                        tracking.dispatch(new MembershipEvent.GovernorHealthy(bootToken,
                                                                              community,
                                                                              governor,
                                                                              governorTerm));
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
-                       tracking.dispatch(new UpHysteresisMet());
-                   }
+                           tracking.dispatch(new UpHysteresisMet());
+                       }
                    }));
     }
 
@@ -678,13 +678,13 @@ public final class MembershipFsm {
                        tracking.updateDescriptor(descriptor);
                        if (tracking.descriptor()
                                    .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "worker admission")) {
-                       return;
-                   }
+                           return;
+                       }
 
                        tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(bootToken));
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
-                       tracking.dispatch(new UpHysteresisMet());
-                   }
+                           tracking.dispatch(new UpHysteresisMet());
+                       }
                    }));
     }
 

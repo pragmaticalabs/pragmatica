@@ -112,17 +112,17 @@ class KvStoreApiKeyValidator implements SecurityValidator {
                         ApiKeyValue.class,
                         (_, keyValue) -> {
                             if (match.get() != null) {
-                            return;
-                        }
+                                return;
+                            }
 
                             if (!keyValue.isValidForAuth()) {
-                            return;
-                        }
+                                return;
+                            }
 
                             if (MessageDigest.isEqual(candidateHashBytes,
                                                       keyValue.keyHash().getBytes(StandardCharsets.UTF_8))) {
-                            match.set(keyValue);
-                        }
+                                match.set(keyValue);
+                            }
                         });
         var matched = match.get();
 

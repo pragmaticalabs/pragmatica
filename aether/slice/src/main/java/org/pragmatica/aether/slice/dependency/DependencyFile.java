@@ -84,10 +84,10 @@ public record DependencyFile(List<ArtifactDependency> shared,
                                   })
                        .onFailure(cause -> {
                                       if (cause == ArtifactDependency.EMPTY_LINE || cause == ArtifactDependency.COMMENT_LINE || cause == ArtifactDependency.SECTION_HEADER) {
-                                      skipFlag.set(true);
-                                  } else {
-                                      errorHolder.set(cause);
-                                  }
+                                          skipFlag.set(true);
+                                      } else {
+                                          errorHolder.set(cause);
+                                      }
                                   });
             if (skipFlag.get()) {
                 continue;

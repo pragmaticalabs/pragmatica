@@ -75,10 +75,10 @@ final class JwtSignatureVerifier {
         var half = raw.length / 2;
         var r = trimLeadingZeros(raw, 0, half);
         var s = trimLeadingZeros(raw, half, raw.length);
-        var rLen = r.length + (r[0]< 0
+        var rLen = r.length + (r[0] < 0
                                ? 1
                                : 0);
-        var sLen = s.length + (s[0]< 0
+        var sLen = s.length + (s[0] < 0
                                ? 1
                                : 0);
         var totalLen = 2 + rLen + 2 + sLen;

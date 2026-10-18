@@ -2609,8 +2609,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                        })
                        .onFailure(_ -> {
                            if (wrote.get()) {
-                           restoreWitness(streamName, partition, wal);
-                       }
+                               restoreWitness(streamName, partition, wal);
+                           }
                        })
                        .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                     partition,
