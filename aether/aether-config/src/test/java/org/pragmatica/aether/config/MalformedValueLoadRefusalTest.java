@@ -258,4 +258,46 @@ class MalformedValueLoadRefusalTest {
             path = "/var/backups"
             """), "[backup] enabled", "yes");
     }
+
+    @Test
+    void unparseableDurationWithAMillisecondsSibling_isRefusedNotDefaulted() {
+        assertRefusedWithAllowed(WorkerConfigLoader.loadFromString("""
+            [worker]
+            core_nodes = ["core-1:localhost:6000"]
+            heartbeat_interval = "soon"
+            """), "worker.heartbeat_interval", "soon", "a duration such as 30s");
+        assertRefusedWithAllowed(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [dht.replication]
+            cooldown_delay = "soon"
+            """), "dht.replication.cooldown_delay", "soon", "a duration such as 30s");
+        assertThat(WorkerConfigLoader.loadFromString("""
+            [worker]
+            core_nodes = ["core-1:localhost:6000"]
+            heartbeat_interval = "5s"
+            """).isSuccess()).isTrue();
+    }
+
+    @Test
+    void unparseableByteSize_isRefusedNamingKeyAndValue() {
+        assertRefused(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            max_read_response_bytes = "huge"
+            """), "streaming.max_read_response_bytes", "huge");
+        assertThat(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            max_read_response_bytes = "8MB"
+            """).isSuccess()).isTrue();
+    }
 }
