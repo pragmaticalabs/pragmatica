@@ -9,6 +9,7 @@ import java.util.Map;
 
 import org.pragmatica.aether.resource.http.HttpClient;
 import org.pragmatica.aether.resource.notification.NotificationSender;
+import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.testkit.MapResourceProvider.ResourceKey;
@@ -16,7 +17,10 @@ import org.pragmatica.aether.testkit.container.ContainerResource;
 import org.pragmatica.aether.testkit.fake.CapturingNotificationSender;
 import org.pragmatica.aether.testkit.fake.CapturingPublisher;
 import org.pragmatica.aether.testkit.fake.FakeHttpClient;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.IntrinsicConfigProvider;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.io.TimeSpan;
@@ -36,11 +40,14 @@ import org.pragmatica.lang.io.TimeSpan;
 /// }
 /// ```
 public final class SliceTestKit<T> {
+    private static final String CONFIG_SOURCE = "slice-test-kit";
+    private static final String SLICE_UNDER_TEST = "slice-under-test";
     private static final TimeSpan BUILD_TIMEOUT = TimeSpan.timeSpan(60).seconds();
 
     private final Fn1<Promise<T>, SliceCreationContext> factory;
     private final Map<ResourceKey, Object> resources = new LinkedHashMap<>();
     private final Map<ResourceKey, ContainerResource<?>> containerSpecs = new LinkedHashMap<>();
+    private Option<ConfigurationProvider> config = Option.none();
 
     private SliceTestKit(Fn1<Promise<T>, SliceCreationContext> factory) {
         this.factory = factory;
@@ -80,6 +87,20 @@ public final class SliceTestKit<T> {
         return this;
     }
 
+    /// Supply configuration as flat `section.key` entries, e.g. `"deployed.endpoint.port"`. The slice reads it through
+    /// the same facade a deployed slice gets, so `@ResourceQualifier(type = ConfigurationSection.class)` parameters are
+    /// parsed by the real generated factory code and delivered as the parsed record (#897).
+    public SliceTestKit<T> withConfig(Map<String, String> values) {
+        return withConfig(IntrinsicConfigProvider.intrinsicConfigProvider(CONFIG_SOURCE, values));
+    }
+
+    /// Supply configuration from any provider, e.g. one layering a TOML document over overrides.
+    public SliceTestKit<T> withConfig(ConfigurationProvider provider) {
+        config = Option.some(provider);
+
+        return this;
+    }
+
     /// Provision this coordinate via a testcontainer instead of a fake (spec §5.2).
     public SliceTestKit<T> withContainer(Class<?> resourceType, String configSection, ContainerResource<?> spec) {
         containerSpecs.put(new ResourceKey(resourceType, configSection), spec);
@@ -93,12 +114,20 @@ public final class SliceTestKit<T> {
     public SliceUnderTest<T> build() {
         var provisioned = provisionContainers();
         var provider = MapResourceProvider.mapResourceProvider(resources);
-        var ctx = SliceCreationContext.sliceCreationContext(NoOpSliceInvoker.INSTANCE, provider);
+        var ctx = creationContext(provider);
 
         return factory.apply(ctx)
                       .await(BUILD_TIMEOUT)
                       .fold(TestKitFailures::raise,
                             client -> DefaultSliceUnderTest.defaultSliceUnderTest(client, resources, provisioned));
+    }
+
+    private SliceCreationContext creationContext(MapResourceProvider provider) {
+        return config.map(source -> ConfigFacade.configFacade(SLICE_UNDER_TEST, source))
+                     .map(facade -> SliceCreationContext.sliceCreationContext(NoOpSliceInvoker.INSTANCE,
+                                                                              provider,
+                                                                              facade))
+                     .or(() -> SliceCreationContext.sliceCreationContext(NoOpSliceInvoker.INSTANCE, provider));
     }
 
     private List<ContainerResource<?>> provisionContainers() {
