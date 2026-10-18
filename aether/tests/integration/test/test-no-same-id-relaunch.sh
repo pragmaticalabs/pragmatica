@@ -50,6 +50,8 @@ ALLOW=(
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MultiPartitionCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableEntityTimerDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
+  'aether/ember/src/test/java/org/pragmatica/aether/ember/EmberOwnerRestartAckedTailTripwireTest.java|stop[(][)] then .*start[(][)] in tearDown[(][)]|@AfterEach cleanup: tearDown only stops the cluster and deletes its directory, it never starts it; the census pairs it with the start() of the LifecycleSettled helper by method name'
+  'aether/ember/src/test/java/org/pragmatica/aether/ember/EmberOwnerRestartAckedTailTripwireTest.java|stop[(][)] then .*start[(][)] in stop[(][)]|stop-only helper (LifecycleSettled.stop): the census method extent runs on into the sibling start() helper, so the pair is a detector artefact, not a relaunch in this body'
 )
 # An entry is `path|regex|reason`; a regex may itself contain `|`, so the reason is the LAST field and the path
 # the FIRST: everything between is the regex.
