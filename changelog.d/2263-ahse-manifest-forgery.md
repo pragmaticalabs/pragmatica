@@ -1,4 +1,4 @@
-### Security (2026-10-18 — pending: an AHSE upload could pose as a chunk manifest)
+### Security (2026-10-18 — #2263: an AHSE upload could pose as a chunk manifest)
 - **A `ContentStore` upload beginning with `AHSE-MANIFEST:` was read as a manifest.** Reading it returned the blocks it named (a confused-deputy read), and deleting it released them, which could let another file's chunks be collected. Every value the store writes under a name now carries a typed envelope whose kind byte (`D` content, `M` manifest) is written by the store, so an upload is always returned verbatim. [verified: integrations/storage/src/test/java/org/pragmatica/storage/ContentStoreManifestFramingTest.java]
 - Manifest fields are length-prefixed, so a name containing `|` round-trips and its delete releases its chunks. [verified: ContentStoreManifestFramingTest]
 - Values written before the envelope stay readable, legacy manifests included (parsed from the right, so a legacy name with `|` reads too). A legacy value cannot be classified safely: a pre-upgrade upload beginning with the magic still reads as a manifest until it is rewritten or deleted. [verified: ContentStoreManifestFramingTest]
