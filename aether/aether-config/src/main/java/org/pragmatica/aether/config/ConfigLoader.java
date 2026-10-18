@@ -91,7 +91,8 @@ public final class ConfigLoader {
 
             return refuseRemovedTargetRf(doc).flatMap(_ -> parseReadLinearization(doc))
                                         .map(mode -> applyReadLinearization(builder.build(),
-                                                                            mode));
+                                                                            mode))
+                                        .flatMap(config -> attachSharedTiers(doc, config));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
@@ -635,7 +636,8 @@ public final class ConfigLoader {
                 // global keyring section, not a per-instance `[storage.<name>]` one -- excluded here so
                 // it is never misread as a storage instance literally named "encryption". Parsed
                 // separately by `populateStorageEncryptionConfig`.
-                if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.startsWith("encryption.")) {
+                // #249: a dotted name is a sub-section of an instance (`[storage.<name>.shared]`), not an instance.
+                if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.contains(".")) {
                     warnIgnoredStreamsKeys(doc, instanceName, sectionName);
                     instances.put(instanceName, storageFromSection(doc, sectionName));
                 }
@@ -645,6 +647,63 @@ public final class ConfigLoader {
         if (!instances.isEmpty()) {
             builder.storage(Map.copyOf(instances));
         }
+    }
+
+    /// #249: every `[storage.<name>.shared]` section, parsed into its instance's [StorageConfig#shared]. An instance
+    /// that has only the sub-section gets [StorageConfig#sharedOnly], so the node places it as if `[storage.<name>]`
+    /// were absent. A malformed section fails the load with a typed [SharedTierConfig.SharedTierConfigError].
+    /// `streams` has its own builder and takes no shared-tier choice: anything but `kind = "dht"` there is refused.
+    private static Result<AetherConfig> attachSharedTiers(TomlDocument doc, AetherConfig config) {
+        return Result.allOf(sharedSectionInstances(doc).stream().map(name -> sharedTierEntry(doc, name)).toList()).map(entries -> config.withStorage(withSharedTiers(config.storage(),
+                                                                                                                                                                     entries)));
+    }
+
+    private static Result<Map.Entry<String, SharedTierConfig>> sharedTierEntry(TomlDocument doc, String name) {
+        return SharedTierConfig.sharedTierConfig(doc, name)
+                               .flatMap(shared -> refuseStreamsSharedTier(name, shared))
+                               .map(shared -> Map.entry(name, shared));
+    }
+
+    private static List<String> sharedSectionInstances(TomlDocument doc) {
+        return doc.sectionNames()
+                  .stream()
+                  .filter(ConfigLoader::isSharedSection)
+                  .map(section -> section.substring("storage.".length(),
+                                                    section.length() - ".shared".length()))
+                  .filter(ConfigLoader::isInstanceName)
+                  .sorted()
+                  .toList();
+    }
+
+    private static boolean isSharedSection(String section) {
+        return section.startsWith("storage.") && section.endsWith(".shared");
+    }
+
+    private static boolean isInstanceName(String name) {
+        return ! name.isEmpty() && !name.contains(".");
+    }
+
+    private static Result<SharedTierConfig> refuseStreamsSharedTier(String name, SharedTierConfig shared) {
+        return "streams".equals(name) && !(shared instanceof SharedTierConfig.Dht)
+               ? ConfigError.invalidConfig("[storage.streams.shared] is not supported: the streams instance keeps the "
+                                          + "DHT as its shared tier").result()
+               : success(shared);
+    }
+
+    private static Map<String, StorageConfig> withSharedTiers(Map<String, StorageConfig> storage,
+                                                              List<Map.Entry<String, SharedTierConfig>> shared) {
+        var merged = new HashMap<>(storage);
+
+        shared.forEach(entry -> merged.put(entry.getKey(), withShared(storage, entry)));
+
+        return Map.copyOf(merged);
+    }
+
+    private static StorageConfig withShared(Map<String, StorageConfig> storage,
+                                            Map.Entry<String, SharedTierConfig> entry) {
+        return Option.option(storage.get(entry.getKey()))
+                     .map(existing -> existing.withShared(entry.getValue()))
+                     .or(() -> StorageConfig.sharedOnly(entry.getValue()));
     }
 
     /// #253: the global `[storage.encryption]` keyring -- `active_key_id` + `streams_encrypted`, plus
