@@ -81,10 +81,11 @@ public sealed interface MediaTypeTypeChecker {
     /// @return none when valid, some(errorMessage) for a binary or multipart route with parameters
     static Option<String> checkBodyRouteParams(String category, boolean hasParams, String methodName) {
         return hasParams && (category.equals("BINARY") || category.equals("MULTIPART"))
-               ? Option.some("Slice method '" + methodName + "': a route consuming category " + category
-                             + " cannot declare path or query parameters: its single byte[]/MultipartRequest parameter"
-                             + " cannot carry them, so they would be dropped. Remove them from the route, or send"
-                             + " them inside the body")
+               ? Option.some("Slice method '" + methodName
+                            + "': a route consuming category " + category
+                            + " cannot declare path or query parameters: its single byte[]/MultipartRequest parameter"
+                            + " cannot carry them, so they would be dropped. Remove them from the route, or send"
+                            + " them inside the body")
                : Option.none();
     }
 

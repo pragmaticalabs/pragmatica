@@ -364,6 +364,7 @@ public interface HttpForwarder {
             /// client (or the forwarding sender) is gone, so starting one only feeds zombie work.
             private static final TimeSpan BUDGET_FLOOR = timeSpan(200).millis();
             private static final Cause BUDGET_EXHAUSTED = Causes.cause("Request budget exhausted before a node answered");
+
             /// RFC 9110 §9.2.2. Every other method, and any method this node cannot name, is treated as
             /// non-idempotent: a forwarded attempt that may have been delivered is never re-sent for it.
             private static final Set<HttpMethod> IDEMPOTENT_METHODS = EnumSet.of(HttpMethod.GET,
@@ -379,13 +380,10 @@ public interface HttpForwarder {
             enum Undelivered implements Cause {
                 TARGET_NOT_CONNECTED("Target node not connected; nothing was sent"),
                 SEND_REFUSED("Transport refused the forward before writing it");
-
                 private final String message;
-
                 Undelivered(String message) {
                     this.message = message;
                 }
-
                 @Override
                 public String message() {
                     return message;
@@ -718,7 +716,13 @@ public interface HttpForwarder {
                     return;
                 }
 
-                retryTaskGroupOrFail(group, requestContext, requestId, resultPromise, retriesRemaining, deadline, () -> cause);
+                retryTaskGroupOrFail(group,
+                                     requestContext,
+                                     requestId,
+                                     resultPromise,
+                                     retriesRemaining,
+                                     deadline,
+                                     () -> cause);
             }
 
             private void retryTaskGroupOrFail(TaskGroup group,
@@ -1197,14 +1201,14 @@ public interface HttpForwarder {
             }
 
             private static boolean mayHaveBeenDelivered(Cause failure) {
-                return !(failure instanceof Undelivered);
+                return ! (failure instanceof Undelivered);
             }
 
             /// A1: re-sending is safe when the method is idempotent, or when the failure proves the frame never
             /// left. A non-idempotent request whose attempt may have reached the target is not re-sent, because a
             /// second node would process it a second time while the first may still be processing it.
             private static boolean mustNotResend(String method, Cause failure) {
-                return !isIdempotent(method) && mayHaveBeenDelivered(failure);
+                return ! isIdempotent(method) && mayHaveBeenDelivered(failure);
             }
 
             private static boolean isIdempotent(String method) {

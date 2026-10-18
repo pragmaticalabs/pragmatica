@@ -219,7 +219,9 @@ public interface ClusterNetwork {
     ///
     /// Default falls back to the TTL-bounded `send` and reports [WriteOutcome.Sent] — the conservative answer
     /// for a transport without per-write outcome tracking: it never claims a frame was not sent.
-    default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message, TimeSpan offlineTtl) {
+    default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId,
+                                                                          M message,
+                                                                          TimeSpan offlineTtl) {
         send(nodeId, message, offlineTtl);
 
         return Promise.success(new WriteOutcome.Sent(nodeId));

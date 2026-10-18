@@ -53,6 +53,8 @@ sealed interface ContentEnvelope {
     /// The payload of an enveloped value of the given kind; empty for any other kind or an unenveloped value.
     static Option<byte[]> payloadOf(byte kind, byte[] value) {
         return kindOf(value).filter(actual -> actual == kind)
-                            .map(_ -> Arrays.copyOfRange(value, marker().length + 1, value.length));
+                     .map(_ -> Arrays.copyOfRange(value,
+                                                  marker().length + 1,
+                                                  value.length));
     }
 }

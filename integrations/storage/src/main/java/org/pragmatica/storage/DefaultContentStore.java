@@ -80,7 +80,8 @@ final class DefaultContentStore implements ContentStore {
     /// manifest, whatever its bytes begin with.
     private Promise<RefSwap> putDirect(String name, byte[] content) {
         return frameCompress(content).async()
-                            .flatMap(framed -> storage.swapRef(name, ContentEnvelope.wrap(ContentEnvelope.DIRECT, framed)));
+                            .flatMap(framed -> storage.swapRef(name,
+                                                               ContentEnvelope.wrap(ContentEnvelope.DIRECT, framed)));
     }
 
     /// Each chunk holds only `put`'s credit and no name, so a put that fails part-way would leave
@@ -194,9 +195,8 @@ final class DefaultContentStore implements ContentStore {
     }
 
     private Promise<Option<byte[]>> resolveLegacy(byte[] rawData) {
-        return ContentManifest.fromLegacyBytes(rawData)
-                              .fold(() -> frameDecompressAndWrap(rawData),
-                                    this::reassembleFromManifest);
+        return ContentManifest.fromLegacyBytes(rawData).fold(() -> frameDecompressAndWrap(rawData),
+                                                             this::reassembleFromManifest);
     }
 
     private Promise<Option<byte[]>> frameDecompressAndWrap(byte[] data) {

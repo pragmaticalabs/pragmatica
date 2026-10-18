@@ -1075,7 +1075,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId, M message, TimeSpan offlineTtl) {
+    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId,
+                                                                         M message,
+                                                                         TimeSpan offlineTtl) {
         if (blackholed) {
             return Promise.success(new WriteOutcome.Sent(peerId));
         }

@@ -107,7 +107,14 @@ public record HttpServerConfig(String name,
     }
 
     public HttpServerConfig withChunkedWrite() {
-        return new HttpServerConfig(name, port, tls, maxContentLength, webSocketEndpoints, true, socketOptions, readTimeout);
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    true,
+                                    socketOptions,
+                                    readTimeout);
     }
 
     public HttpServerConfig withReadTimeout(TimeSpan readTimeout) {

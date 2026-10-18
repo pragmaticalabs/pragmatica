@@ -23,8 +23,7 @@ public interface ErrorMapper {
     static ErrorMapper defaultMapper() {
         return cause -> switch (cause) {
             case HttpError he -> he;
-            case MultipartError multipartError -> multipartError.httpStatus()
-                                                                .with(multipartError);
+            case MultipartError multipartError -> multipartError.httpStatus().with(multipartError);
             default -> HttpError.httpError(unmappedStatus(cause), cause);
         };
     }

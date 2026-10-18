@@ -42,12 +42,9 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     /// Serialize manifest to bytes for storage: envelope kind `M`, length-prefixed fields.
     public byte[] toBytes() {
         var nameBytes = name.getBytes(StandardCharsets.UTF_8);
-        var idBytes = chunkBlockIds.stream()
-                                   .map(id -> id.getBytes(StandardCharsets.UTF_8))
-                                   .toList();
+        var idBytes = chunkBlockIds.stream().map(id -> id.getBytes(StandardCharsets.UTF_8)).toList();
         var size = Integer.BYTES + nameBytes.length + Long.BYTES + Integer.BYTES + idBytes.stream()
-                                                                                          .mapToInt(id -> Integer.BYTES
-                                                                                                          + id.length)
+                                                                                          .mapToInt(id -> Integer.BYTES + id.length)
                                                                                           .sum();
         var body = ByteBuffer.allocate(size)
                              .putInt(nameBytes.length)
@@ -65,8 +62,7 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     /// Returns None for anything else, enveloped direct content included.
     public static Option<ContentManifest> fromBytes(byte[] data) {
         return ContentEnvelope.isEnveloped(data)
-               ? ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, data)
-                                .flatMap(ContentManifest::parseEnveloped)
+               ? ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, data).flatMap(ContentManifest::parseEnveloped)
                : fromLegacyBytes(data);
     }
 
@@ -76,7 +72,8 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     }
 
     static Option<ContentManifest> parseEnveloped(byte[] payload) {
-        return Result.lift(Causes::fromThrowable, () -> decode(ByteBuffer.wrap(payload)))
+        return Result.lift(Causes::fromThrowable,
+                           () -> decode(ByteBuffer.wrap(payload)))
                      .option()
                      .flatMap(manifest -> manifest);
     }
@@ -85,7 +82,8 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
         var name = readString(buffer);
         var totalSize = buffer.getLong();
         var count = buffer.getInt();
-        var ids = new ArrayList<String>(Math.max(0, Math.min(count, buffer.remaining() / Integer.BYTES)));
+        var ids = new ArrayList<String>(Math.max(0,
+                                                 Math.min(count, buffer.remaining() / Integer.BYTES)));
 
         for (int i = 0; i < count; i++) {
             ids.add(readString(buffer));
@@ -108,7 +106,12 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     static Option<ContentManifest> fromLegacyBytes(byte[] data) {
         var headerBytes = MAGIC_HEADER.getBytes(StandardCharsets.UTF_8);
 
-        if (data.length < headerBytes.length || !Arrays.equals(data, 0, headerBytes.length, headerBytes, 0, headerBytes.length)) {
+        if (data.length < headerBytes.length || !Arrays.equals(data,
+                                                               0,
+                                                               headerBytes.length,
+                                                               headerBytes,
+                                                               0,
+                                                               headerBytes.length)) {
             return none();
         }
 
@@ -132,15 +135,24 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
         return none();
     }
 
+    private static Option<ContentManifest> matchingCount(String name,
+                                                         long totalSize,
+                                                         int declared,
+                                                         int count,
+                                                         List<String> ids) {
+        return declared == count
+               ? some(contentManifest(name, totalSize, ids))
+               : none();
+    }
+
     private static Option<ContentManifest> legacyCandidate(String[] parts, int countIndex, int count) {
-        var name = String.join("|", Arrays.asList(parts).subList(0, countIndex - 1));
+        var name = String.join("|",
+                               Arrays.asList(parts).subList(0, countIndex - 1));
         var ids = Arrays.asList(parts).subList(countIndex + 1, parts.length);
 
         return Result.all(Number.parseLong(parts[countIndex - 1]),
                           Number.parseInt(parts[countIndex]))
-                     .map((totalSize, declared) -> declared == count
-                                                   ? some(contentManifest(name, totalSize, ids))
-                                                   : Option.<ContentManifest> none())
+                     .map((totalSize, declared) -> matchingCount(name, totalSize, declared, count, ids))
                      .option()
                      .flatMap(opt -> opt);
     }

@@ -430,7 +430,6 @@ public final class ConfigLoader {
                                                   httpProtocol,
                                                   apiVersioningDetection,
                                                   apiVersionHeaderName).unwrap();
-
         var readTimeout = parseTimeSpan(doc, "app-http", "read_timeout", AppHttpConfig.DEFAULT_READ_TIMEOUT);
         var withReadTimeout = appHttp.withReadTimeout(readTimeout);
 

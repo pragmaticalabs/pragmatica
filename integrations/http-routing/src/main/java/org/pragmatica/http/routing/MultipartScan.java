@@ -11,6 +11,8 @@ import java.util.Map;
 
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// The structural reading of a multipart/form-data request that Netty's decoder does not give: the boundary taken
 /// from a Content-Type in any letter case, whether the body ends with its close delimiter, and which filename-less
@@ -27,11 +29,15 @@ sealed interface MultipartScan {
 
     /// The boundary and optional charset of a multipart/form-data Content-Type, read case-insensitively.
     record Framing(String boundary, Option<String> charset) {
+        static Framing framing(String boundary, Option<String> charset) {
+            return new Framing(boundary, charset);
+        }
+
         /// The Content-Type handed to Netty: media type and parameter names in lowercase (Netty matches them
         /// case-sensitively), the boundary quoted so any RFC 2046 boundary character survives.
         String normalizedContentType() {
             return MULTIPART_FORM_DATA + "; boundary=\"" + boundary + "\"" + charset.map(cs -> "; charset=" + cs)
-                                                                                 .or("");
+                                                                                    .or("");
         }
     }
 
@@ -39,10 +45,13 @@ sealed interface MultipartScan {
     /// part: its Content-Type when it declared one other than `text/plain`, empty otherwise. Thread-confined working
     /// data of one parse, consumed by [#nextFieldType(String)].
     record Parts(boolean closed, Map<String, Deque<Option<String>>> fieldTypes) {
+        static Parts parts(boolean closed, Map<String, Deque<Option<String>>> fieldTypes) {
+            return new Parts(closed, fieldTypes);
+        }
+
         /// The declared Content-Type of the next filename-less part named `name`, in body order.
         Option<String> nextFieldType(String name) {
-            return Option.option(fieldTypes.get(name))
-                         .flatMap(queue -> Option.option(queue.pollFirst()))
+            return option(fieldTypes.get(name)).flatMap(queue -> option(queue.pollFirst()))
                          .flatMap(type -> type);
         }
     }
@@ -59,9 +68,9 @@ sealed interface MultipartScan {
     static Option<Framing> framing(String contentType) {
         var parameters = parameters(contentType);
 
-        return Option.option(parameters.get("boundary"))
-                     .filter(boundary -> !boundary.isEmpty())
-                     .map(boundary -> new Framing(boundary, Option.option(parameters.get("charset"))));
+        return option(parameters.get("boundary")).filter(boundary -> !boundary.isEmpty())
+                     .map(boundary -> Framing.framing(boundary,
+                                                      option(parameters.get("charset"))));
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Byte-level scan of delimiter lines and part headers
@@ -79,7 +88,7 @@ sealed interface MultipartScan {
             }
 
             if (startsWith(body, after, "--")) {
-                return new Parts(true, fieldTypes);
+                return Parts.parts(true, fieldTypes);
             }
 
             var headersStart = delimiterLineEnd(body, after);
@@ -92,26 +101,25 @@ sealed interface MultipartScan {
             var headersEnd = headerBlockEnd(body, headersStart);
 
             if (headersEnd < 0) {
-                return new Parts(false, fieldTypes);
+                return Parts.parts(false, fieldTypes);
             }
 
             recordPart(new String(body, headersStart, headersEnd - headersStart, StandardCharsets.UTF_8), fieldTypes);
             position = indexOf(body, delimiter, headersEnd);
         }
 
-        return new Parts(false, fieldTypes);
+        return Parts.parts(false, fieldTypes);
     }
 
     /// One part's header block. A part with a filename is a file to Netty already and is not recorded; a nested
     /// `multipart/*` part becomes files inside Netty too.
     private static void recordPart(String headerBlock, Map<String, Deque<Option<String>>> fieldTypes) {
         var headers = partHeaders(headerBlock);
-        var contentType = Option.option(headers.get("content-type"));
+        var contentType = option(headers.get("content-type"));
 
-        Option.option(headers.get("content-disposition"))
-              .map(MultipartScan::parameters)
+        option(headers.get("content-disposition")).map(MultipartScan::parameters)
               .filter(params -> !params.containsKey("filename") && !params.containsKey("filename*"))
-              .flatMap(params -> Option.option(params.get("name")))
+              .flatMap(params -> option(params.get("name")))
               .onPresent(fieldName -> recordField(fieldTypes, fieldName, contentType));
     }
 
@@ -139,7 +147,8 @@ sealed interface MultipartScan {
             return;
         }
 
-        fieldTypes.computeIfAbsent(cleanName(fieldName), _ -> new ArrayDeque<>())
+        fieldTypes.computeIfAbsent(cleanName(fieldName),
+                                   _ -> new ArrayDeque<>())
                   .addLast(contentType.filter(type -> !mediaType(type).equals("text/plain")));
     }
 
@@ -156,7 +165,8 @@ sealed interface MultipartScan {
             }
         }
 
-        return cleaned.toString().trim();
+        return cleaned.toString()
+                      .trim();
     }
 
     /// `type; key=value; key="quoted;value"` → lowercase keys to unquoted values. The leading token is skipped.

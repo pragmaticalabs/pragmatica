@@ -48,10 +48,10 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
-import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -281,7 +281,10 @@ final class NettyHttpServer implements HttpServer {
 
             sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
             // I3: reader-idle events; HttpRequestHandler closes the connection on one unless a response is pending
-            pipeline.addLast(new IdleStateHandler(config.readTimeout().millis(), 0, 0, TimeUnit.MILLISECONDS));
+            pipeline.addLast(new IdleStateHandler(config.readTimeout().millis(),
+                                                  0,
+                                                  0,
+                                                  TimeUnit.MILLISECONDS));
             pipeline.addLast(new HttpServerCodec());
             pipeline.addLast(new HttpObjectAggregator(config.maxContentLength()));
             if (config.chunkedWriteEnabled()) {
@@ -425,6 +428,7 @@ final class NettyHttpServer implements HttpServer {
 
                 return;
             }
+
             var requestContext = createRequestContext(requestId, request);
             var responseWriter = new NettyResponseWriter(ctx,
                                                          requestId,
@@ -432,7 +436,6 @@ final class NettyHttpServer implements HttpServer {
                                                          pendingResponses::decrementAndGet);
 
             pendingResponses.incrementAndGet();
-
             try {
                 handler.accept(requestContext, responseWriter);
             } catch (Exception e) {
@@ -445,12 +448,14 @@ final class NettyHttpServer implements HttpServer {
         /// `GET /bad-request` for an unreadable request line, the real line with no body for oversized headers)
         /// marked by a failed `decoderResult()`. It must never reach the handler as a real request: it is answered
         /// and the connection is closed, because the decoder's position in the byte stream is no longer trustworthy.
-        private static void rejectUndecodable(ChannelHandlerContext ctx, String requestId, FullHttpRequest request) {
+        private void rejectUndecodable(ChannelHandlerContext ctx, String requestId, FullHttpRequest request) {
             var cause = request.decoderResult().cause();
             var status = undecodableStatus(cause, request);
 
             log.debug("Rejecting undecodable request {} with {}: {}", requestId, status.code(), cause.getMessage());
-            new NettyResponseWriter(ctx, requestId, false, () -> {}).error(status, status.message());
+            pendingResponses.incrementAndGet();
+            new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(status,
+                                                                                                    status.message());
         }
 
         /// An over-long line with no headers decoded is the request line (414); an over-long line after the headers
@@ -502,7 +507,8 @@ final class NettyHttpServer implements HttpServer {
             var webSocket = option(ctx.channel().attr(WS_STATE).get()).flatMap(opt -> opt).isPresent();
 
             if (pendingResponses.get() == 0 && !webSocket) {
-                log.debug("Closing HTTP connection {}: no request bytes within the read timeout", ctx.channel().remoteAddress());
+                log.debug("Closing HTTP connection {}: no request bytes within the read timeout",
+                          ctx.channel().remoteAddress());
                 ctx.close();
             }
         }
@@ -632,7 +638,6 @@ final class NettyHttpServer implements HttpServer {
             var future = ctx.writeAndFlush(response);
 
             future.addListener(_ -> onWritten.run());
-
             if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);
             }

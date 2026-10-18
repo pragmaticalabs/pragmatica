@@ -36,20 +36,16 @@ public sealed interface MultipartError extends HttpStatusAware {
         MISSING_BOUNDARY("Multipart Content-Type has no boundary parameter", HttpStatus.BAD_REQUEST),
         MISSING_CLOSE_DELIMITER("Multipart body is incomplete or malformed: no closing boundary delimiter",
                                 HttpStatus.BAD_REQUEST);
-
         private final String message;
         private final HttpStatus status;
-
         General(String message, HttpStatus status) {
             this.message = message;
             this.status = status;
         }
-
         @Override
         public String message() {
             return message;
         }
-
         @Override
         public HttpStatus httpStatus() {
             return status;
@@ -85,7 +81,7 @@ public sealed interface MultipartError extends HttpStatusAware {
     /// The body has more parts than the parser's limit (see [MultipartParser#DEFAULT_MAX_PARTS]).
     record TooManyParts(int maxParts, String message) implements MultipartError {
         static final Fn1<TooManyParts, Integer> FACTORY = Causes.forOneValue("Multipart body has more than %d parts",
-                                                                            TooManyParts::new);
+                                                                             TooManyParts::new);
 
         @Override
         public HttpStatus httpStatus() {

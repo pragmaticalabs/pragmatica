@@ -30,6 +30,7 @@ import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -65,6 +66,8 @@ import io.netty.util.concurrent.ScheduledFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Promise.resolved;
 
 
@@ -277,9 +280,11 @@ final class Http3Server {
         private Http3HeadersFrame headersFrame;
         private ByteBuf bodyData;
         private boolean rejected;
-        private Option<ScheduledFuture<?>> bodyDeadline = Option.none();
+        private Option<ScheduledFuture<?>> bodyDeadline = none();
 
-        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength, TimeSpan readTimeout) {
+        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
+                            int maxContentLength,
+                            TimeSpan readTimeout) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
             this.readTimeout = readTimeout;
@@ -295,16 +300,16 @@ final class Http3Server {
 
         private void armBodyDeadline(ChannelHandlerContext ctx) {
             if (readTimeout.nanos() > 0) {
-                bodyDeadline = Option.some(ctx.executor()
-                                              .schedule(() -> rejectBodyTimeout(ctx),
-                                                        readTimeout.nanos(),
-                                                        TimeUnit.NANOSECONDS));
+                bodyDeadline = some(ctx.executor()
+                                       .schedule(() -> rejectBodyTimeout(ctx),
+                                                 readTimeout.nanos(),
+                                                 TimeUnit.NANOSECONDS));
             }
         }
 
         private void cancelBodyDeadline() {
             bodyDeadline.onPresent(deadline -> deadline.cancel(false));
-            bodyDeadline = Option.none();
+            bodyDeadline = none();
         }
 
         @Override
@@ -328,6 +333,7 @@ final class Http3Server {
             dispatch(ctx);
         }
 
+        @Contract
         @Override
         public void handlerRemoved(ChannelHandlerContext ctx) {
             cancelBodyDeadline();

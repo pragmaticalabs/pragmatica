@@ -6,6 +6,8 @@ import java.util.Map;
 
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// Parsed multipart request providing access to form fields and file uploads.
 ///
@@ -54,14 +56,12 @@ public record MultipartRequest(Map<String, List<String>> fieldValues, List<FileU
 
     /// Get a form field value by name: the first one, when the name repeats.
     public Option<String> field(String name) {
-        return Option.option(fieldValues.get(name))
-                     .map(List::getFirst);
+        return option(fieldValues.get(name)).map(List::getFirst);
     }
 
     /// Every value of a form field, in body order; empty when the field is absent.
     public List<String> fieldValues(String name) {
-        return Option.option(fieldValues.get(name))
-                     .or(List.of());
+        return option(fieldValues.get(name)).or(List.of());
     }
 
     /// Check if this request contains any files.

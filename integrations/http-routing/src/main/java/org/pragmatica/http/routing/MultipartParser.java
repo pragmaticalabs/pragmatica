@@ -75,8 +75,7 @@ public sealed interface MultipartParser {
         return Option.option(contentType)
                      .toResult(MultipartError.General.MISSING_CONTENT_TYPE)
                      .filter(MultipartError.General.NOT_MULTIPART, MultipartParser::isMultipart)
-                     .flatMap(ct -> MultipartScan.framing(ct)
-                                                 .toResult(MultipartError.General.MISSING_BOUNDARY))
+                     .flatMap(ct -> MultipartScan.framing(ct).toResult(MultipartError.General.MISSING_BOUNDARY))
                      .flatMap(framing -> parseFramed(body, framing, uri, maxParts));
     }
 
@@ -137,8 +136,8 @@ public sealed interface MultipartParser {
     }
 
     /// A part whose content cannot be read fails the whole parse: it is never silently left out.
-    private static MultipartRequest extractMultipartData(HttpPostRequestDecoder decoder,
-                                                         MultipartScan.Parts parts) throws IOException {
+    @SuppressWarnings("JBCT-EX-01")  // Netty data accessors throw IOException; the caller lifts it in doParse
+    private static MultipartRequest extractMultipartData(HttpPostRequestDecoder decoder, MultipartScan.Parts parts) throws IOException {
         var fields = new LinkedHashMap<String, List<String>>();
         var files = new ArrayList<FileUpload>();
 
@@ -149,6 +148,7 @@ public sealed interface MultipartParser {
         return new MultipartRequest(fields, files);
     }
 
+    @SuppressWarnings("JBCT-EX-01")  // Netty data accessors throw IOException; the caller lifts it in doParse
     private static void collectHttpData(InterfaceHttpData data,
                                         MultipartScan.Parts parts,
                                         Map<String, List<String>> fields,
@@ -164,6 +164,7 @@ public sealed interface MultipartParser {
     }
 
     /// I13: Netty makes every filename-less part an attribute; one that declared a non-text Content-Type is a file.
+    @SuppressWarnings("JBCT-EX-01")  // Netty data accessors throw IOException; the caller lifts it in doParse
     private static void collectAttribute(Attribute attribute,
                                          MultipartScan.Parts parts,
                                          Map<String, List<String>> fields,
@@ -173,8 +174,7 @@ public sealed interface MultipartParser {
         if (declaredType.isPresent()) {
             files.add(FileUpload.fileUpload(attribute.getName(), "", declaredType.unwrap(), attribute.get()));
         } else {
-            fields.computeIfAbsent(attribute.getName(), _ -> new ArrayList<>())
-                  .add(attribute.getValue());
+            fields.computeIfAbsent(attribute.getName(), _ -> new ArrayList<>()).add(attribute.getValue());
         }
     }
 

@@ -38,8 +38,7 @@ public sealed interface ForwardError extends HttpError {
     /// could execute it twice, so it is not re-sent.
     @SuppressWarnings("JBCT-CAUSE-04")
     record NotRetried(String method, Cause origin, String message) implements ForwardError, Cause.Wrapped, Cause.Terminal {
-        static final Fn2<NotRetried, String, Cause> FACTORY = Causes.forTwoValues("%s request was NOT retried on another node: "
-                                                                                  + OUTCOME_UNKNOWN_TEXT,
+        static final Fn2<NotRetried, String, Cause> FACTORY = Causes.forTwoValues("%s request was NOT retried on another node: " + OUTCOME_UNKNOWN_TEXT,
                                                                                   NotRetried::new);
 
         @Override
@@ -76,7 +75,7 @@ public sealed interface ForwardError extends HttpError {
     /// The encoded request does not fit one cluster frame, so no node could receive it. Nothing was sent.
     record TooLargeToForward(int requestBytes, String message) implements ForwardError, Cause.Terminal {
         static final Fn1<TooLargeToForward, Integer> FACTORY = Causes.forOneValue("Request too large to forward to the node serving this route (%d bytes encoded)",
-                                                                                 TooLargeToForward::new);
+                                                                                  TooLargeToForward::new);
 
         @Override
         public HttpStatus status() {
