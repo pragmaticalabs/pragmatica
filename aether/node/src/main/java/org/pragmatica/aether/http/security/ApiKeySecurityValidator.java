@@ -103,9 +103,7 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     private static Option<String> extractCaseSensitive(Map<String, List<String>> headers) {
-        return Option.option(headers.get(API_KEY_HEADER))
-                     .flatMap(values -> Option.from(values.stream()
-                                                          .findFirst()));
+        return Option.option(headers.get(API_KEY_HEADER)).flatMap(values -> Option.from(values.stream().findFirst()));
     }
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
@@ -113,8 +111,7 @@ class ApiKeySecurityValidator implements SecurityValidator {
                            .stream()
                            .filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
-                           .flatMap(values -> Option.option(values)
-                                                    .stream())
+                           .flatMap(values -> Option.option(values).stream())
                            .flatMap(List::stream)
                            .findFirst();
 
