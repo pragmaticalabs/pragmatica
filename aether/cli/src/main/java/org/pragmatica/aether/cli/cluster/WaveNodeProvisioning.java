@@ -71,10 +71,11 @@ sealed interface WaveNodeProvisioning {
     /// peers from the cluster itself. Either missing refuses the provision: a node minted without them cannot join,
     /// and a paid VM that never joins is the failure this path existed to produce (#1695).
     static Result<JoinInputs> resolveJoinInputs(ClusterName clusterName) {
-        return clusterSecret(clusterName).toResult(new JoinInputsUnavailable(clusterName,
-                                                                             "no cluster secret: neither this machine's bootstrap state for the cluster nor " + CLUSTER_SECRET_ENV
-                                                                            + " holds one"))
-                            .flatMap(secret -> livePeers(clusterName).map(peers -> new JoinInputs(secret, peers)));
+        return resolveJoinInputs(clusterName, System::getenv);
+    }
+
+    static Result<JoinInputs> resolveJoinInputs(ClusterName clusterName, Fn1<String, String> env) {
+        return clusterSecret(clusterName, env).flatMap(secret -> livePeers(clusterName).map(peers -> new JoinInputs(secret, peers)));
     }
 
     /// Provision `count` CLOUD nodes of `role` from `source`, each under a freshly minted id.
@@ -203,11 +204,27 @@ sealed interface WaveNodeProvisioning {
                       .or(List.of());
     }
 
-    private static Option<String> clusterSecret(ClusterName clusterName) {
-        return BootstrapStatePersistence.load(clusterName)
-                                        .map(BootstrapState::clusterSecret)
-                                        .filter(secret -> !secret.isBlank())
-                                        .orElse(() -> ambientSecret(System::getenv));
+    /// The cluster secret a joining node must carry: this machine's bootstrap state for the cluster, else the
+    /// operator's own. A ledger that is present but UNREADABLE (torn, or holding an entry this CLI does not
+    /// know) refuses the provision: reading it as "no ledger" would fall through to the ambient secret, and if
+    /// that differs from the ledger's the rendered nodes boot unable to join, on paid VMs.
+    private static Result<String> clusterSecret(ClusterName clusterName, Fn1<String, String> env) {
+        return BootstrapStatePersistence.read(clusterName)
+                                        .mapError(cause -> new JoinInputsUnavailable(clusterName,
+                                                                                     "the bootstrap state for the cluster is unreadable and was left untouched: "
+                                                                                    + cause.message()))
+                                        .flatMap(state -> persistedOrAmbient(clusterName, state, env));
+    }
+
+    private static Result<String> persistedOrAmbient(ClusterName clusterName,
+                                                     Option<BootstrapState> state,
+                                                     Fn1<String, String> env) {
+        return state.map(BootstrapState::clusterSecret)
+                    .filter(secret -> !secret.isBlank())
+                    .orElse(() -> ambientSecret(env))
+                    .toResult(new JoinInputsUnavailable(clusterName,
+                                                        "no cluster secret: neither this machine's bootstrap state for the cluster nor " + CLUSTER_SECRET_ENV
+                                                       + " holds one"));
     }
 
     /// The operator's own secret: `AETHER_CLUSTER_SECRET` or the file `AETHER_CLUSTER_SECRET_FILE` names (#828), so an operator who
