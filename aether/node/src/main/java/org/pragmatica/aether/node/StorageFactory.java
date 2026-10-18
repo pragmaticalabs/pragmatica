@@ -47,6 +47,7 @@ import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 import org.pragmatica.storage.StorageTier;
+import org.pragmatica.storage.TierLevel;
 import org.pragmatica.storage.WritePolicy;
 
 import org.slf4j.Logger;
@@ -106,6 +107,10 @@ public final class StorageFactory {
     /// #1052: the stop signal for callers that own no node lifecycle (tests, [#verifyDhtMarker]'s
     /// two-argument entry point). `AetherNode` passes its `PeriodicTasks` cancellation instead.
     private static final BooleanSupplier NEVER_STOPPED = () -> false;
+    private static final String STATE_DIR_PROPERTY = "aether.state.dir";
+    private static final String STATE_DIR_ENV = "AETHER_STATE_DIR";
+    private static final String DEFAULT_STATE_DIR = "/var/lib/aether";
+    private static final String SENTINEL_DIR = "volume-sentinels";
 
     private StorageFactory() {}
 
@@ -949,7 +954,7 @@ public final class StorageFactory {
                                                            STREAM_SNAPSHOT_MUTATION_THRESHOLD,
                                                            STREAM_SNAPSHOT_INTERVAL_MILLIS,
                                                            STREAM_SNAPSHOT_RETENTION_COUNT,
-                                                           nodeId);
+                                                           nodeId).withVolumeSentinel(volumeSentinel(tiers, snapshotDir));
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
         var demotionManager = DemotionManager.demotionManager(tiers, metadataStore, DemotionConfig.demotionConfig());
@@ -1328,7 +1333,8 @@ public final class StorageFactory {
                                                       Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
         var instance = StorageInstance.storageInstance(name, tiers, metadataStore);
-        var snapshotConfig = buildSnapshotConfig(config, nodeId);
+        var snapshotConfig = buildSnapshotConfig(config, nodeId).withVolumeSentinel(volumeSentinel(tiers,
+                                                                                                   Path.of(config.snapshotPath())));
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
         var demotionManager = DemotionManager.demotionManager(tiers, metadataStore, DemotionConfig.demotionConfig());
@@ -1348,6 +1354,36 @@ public final class StorageFactory {
                                              garbageCollector,
                                              dhtMarkerCheck);
         });
+    }
+
+    /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED
+    /// (a [TierLevel#LOCAL_DISK] tier is in `tiers`). A degraded tier -- memory + DHT, the ordinary
+    /// state wherever `/data` is not writable -- has no durable volume to lose, so it gets none and
+    /// keeps booting on empty metadata. The sentinel lives under the node's state directory on the
+    /// boot filesystem (`-Daether.state.dir`, else `AETHER_STATE_DIR`, else `/var/lib/aether`), one
+    /// file per snapshot directory, named by that directory's path.
+    static Option<Path> volumeSentinel(List<StorageTier> tiers, Path snapshotPath) {
+        return tiers.stream()
+                    .anyMatch(StorageFactory::isLocalDisk)
+               ? Option.some(stateDir().resolve(SENTINEL_DIR).resolve(sentinelName(snapshotPath)))
+               : Option.none();
+    }
+
+    private static boolean isLocalDisk(StorageTier tier) {
+        return tier.level() == TierLevel.LOCAL_DISK;
+    }
+
+    private static String sentinelName(Path snapshotPath) {
+        return snapshotPath.toAbsolutePath()
+                           .normalize()
+                           .toString()
+                           .replaceAll("[^A-Za-z0-9]", "_") + ".id";
+    }
+
+    private static Path stateDir() {
+        return Path.of(Option.option(System.getProperty(STATE_DIR_PROPERTY))
+                             .orElse(() -> Option.option(System.getenv(STATE_DIR_ENV)))
+                             .or(DEFAULT_STATE_DIR));
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {

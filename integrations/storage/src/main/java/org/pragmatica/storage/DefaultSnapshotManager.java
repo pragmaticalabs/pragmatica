@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -59,12 +60,17 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private static final String SNAPSHOT_PARTIAL = "snapshot.partial";
     private static final String LATEST_PARTIAL = "LATEST.partial";
     private static final HexFormat HEX = HexFormat.of();
+    /// #1473: the volume-identity file INSIDE the snapshot directory; its twin, the sentinel, lives
+    /// outside the volume ([SnapshotConfig#volumeSentinel]). The id is a random UUID, minted at the
+    /// first successful snapshot write.
+    private static final String VOLUME_MARKER = ".volume-id";
 
     private final MetadataStore metadataStore;
     private final SnapshotConfig config;
     private final Function<Path, Result<Unit>> fsync;
     private final AtomicLong lastSnapshotEpoch = new AtomicLong();
     private final AtomicBoolean snapshotInProgress = new AtomicBoolean();
+    private final AtomicBoolean volumeStampWarned = new AtomicBoolean();
     /// Serialises [#forceSnapshot]. The `maybeSnapshot` CAS only coalesces TICKS; `forceSnapshot`
     /// is also called from the HTTP route (`StorageRoutes.triggerSnapshot`) on another thread. A
     /// loser WAITS rather than coalescing: a forced snapshot must reflect state at or after the
@@ -126,6 +132,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var snapshot = captureSnapshot();
 
         return writeSnapshotToDisk(snapshot).onSuccess(_ -> recordSnapshotTaken(snapshot))
+                                  .onSuccess(_ -> stampVolumeIdentity())
                                   .onFailure(cause -> LOG.warn("Snapshot write failed: {}",
                                                                cause.message()))
                                   .map(_ -> snapshot);
@@ -221,13 +228,21 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// directory force, a power loss could resurface the PREVIOUS snapshot at boot -- a lower bound than
     /// the one truncation already used, with the records in between gone from the WAL.
     private Result<Unit> writeAtomically(String partialName, Path target, String content) {
-        var partial = config.snapshotPath().resolve(partialName);
+        return writeAtomically(config.snapshotPath().resolve(partialName),
+                               target,
+                               content);
+    }
 
-        return writeDurably(partial, content).flatMap(_ -> moveAtomic(partial, target))
-                           .flatMap(_ -> forceDirectory(config.snapshotPath()))
-                           .onFailure(_ -> deleteIfExists(partial))
-                           .mapToUnit()
-                           .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
+    /// The partial is a sibling of `target` (#1473 extends this to the sentinel, which lives outside the
+    /// snapshot directory), so the rename never crosses a filesystem, and the directory forced is the
+    /// one holding the renamed entry.
+    private Result<Unit> writeAtomically(Path partial, Path target, String content) {
+        return createDirectories(target.getParent()).flatMap(_ -> writeDurably(partial, content))
+                                .flatMap(_ -> moveAtomic(partial, target))
+                                .flatMap(_ -> forceDirectory(target.getParent()))
+                                .onFailure(_ -> deleteIfExists(partial))
+                                .mapToUnit()
+                                .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
     }
 
     private Result<Unit> writeDurably(Path path, String content) {
@@ -361,7 +376,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// and the second was not even WARNed when `LATEST` was the missing part.
     private Result<Option<MetadataSnapshot>> nothingRestored(Option<Path> unreadableLatest, List<Path> candidates) {
         if (candidates.isEmpty() && !exists(config.snapshotPath().resolve(LATEST_POINTER))) {
-            return Result.success(none());
+            return verifyVolumeIdentity().map(_ -> none());
         }
 
         return new SnapshotError.NothingRestorable(describeLatest(unreadableLatest), candidates.size()).<Option<MetadataSnapshot>> result()
@@ -376,6 +391,88 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// snapshots tear AFTER a good boot would otherwise fail every tick in silence.
     private static void reportNothingRestorable(Cause cause) {
         LOG.warn("{}", cause.message());
+    }
+
+    /// #1473: "nothing on disk" is a first boot only when no sentinel says this node wrote a volume
+    /// before. The sentinel lives outside the volume, so an unmounted mount point (an empty, listable
+    /// directory that is NOT the volume) cannot erase it; the matching `.volume-id` inside the
+    /// directory is what a remount of the right volume brings back. No sentinel configured means the
+    /// disk tier is degraded (or the node keeps no state directory): there is no durable volume to
+    /// lose, so the old first-boot reading stands.
+    private Result<Unit> verifyVolumeIdentity() {
+        return config.volumeSentinel()
+                     .map(this::checkAgainstSentinel)
+                     .or(Result.success(Unit.unit()));
+    }
+
+    private Result<Unit> checkAgainstSentinel(Path sentinel) {
+        if (!exists(sentinel)) {
+            return Result.success(Unit.unit());
+        }
+
+        return readString(sentinel).mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
+                         .map(String::trim)
+                         .filter(new SnapshotError.VolumeNotPreviouslyWritten(config.snapshotPath(),
+                                                                              sentinel),
+                                 this::volumeCarriesId)
+                         .mapToUnit();
+    }
+
+    private boolean volumeCarriesId(String id) {
+        return readString(config.snapshotPath().resolve(VOLUME_MARKER)).map(String::trim)
+                         .map(id::equals)
+                         .or(false);
+    }
+
+    /// #1473: once a snapshot has been written, the volume gets its identity: the marker inside the
+    /// snapshot directory first, the sentinel outside it second, so a crash between the two leaves a
+    /// marker with no sentinel, which the next write adopts. A sentinel that already exists is never
+    /// rewritten here: if it disagrees with the marker, restore is what reports it.
+    ///
+    /// FER: a failed stamp is logged and the snapshot stands. The snapshot is already durable; what
+    /// is lost is only the guard against an unmounted volume until a later write succeeds. Warned
+    /// once per manager, not every tick.
+    private void stampVolumeIdentity() {
+        config.volumeSentinel()
+              .map(this::ensureSentinel)
+              .onPresent(result -> result.onFailure(this::warnVolumeStampFailed));
+    }
+
+    private Result<Unit> ensureSentinel(Path sentinel) {
+        if (exists(sentinel)) {
+            return Result.success(Unit.unit());
+        }
+
+        return existingOrNewVolumeId().flatMap(id -> writeAtomically(sentinel.resolveSibling(sentinel.getFileName()
+                                                                                            + ".partial"),
+                                                                     sentinel,
+                                                                     id));
+    }
+
+    private Result<String> existingOrNewVolumeId() {
+        var markerPath = config.snapshotPath().resolve(VOLUME_MARKER);
+
+        return readString(markerPath).map(String::trim)
+                         .filter(SnapshotError.INTEGRITY_CHECK_FAILED,
+                                 id -> !id.isEmpty())
+                         .orElse(() -> mintVolumeId(markerPath));
+    }
+
+    private Result<String> mintVolumeId(Path markerPath) {
+        var id = UUID.randomUUID().toString();
+
+        return writeAtomically(config.snapshotPath().resolve(VOLUME_MARKER + ".partial"),
+                               markerPath,
+                               id).map(_ -> id);
+    }
+
+    private void warnVolumeStampFailed(Cause cause) {
+        if (volumeStampWarned.compareAndSet(false, true)) {
+            LOG.warn("Volume identity could not be recorded for {} ({}); an unmounted volume will not be detected "
+                    + "until a later snapshot records it",
+                     config.snapshotPath(),
+                     cause.message());
+        }
     }
 
     private static String describeLatest(Option<Path> unreadableLatest) {
