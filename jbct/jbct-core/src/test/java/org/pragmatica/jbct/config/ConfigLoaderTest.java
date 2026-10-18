@@ -416,7 +416,7 @@ class ConfigLoaderTest {
 
             assertRefused(result, project.resolve(ConfigLoader.PROJECT_CONFIG_NAME));
             result.onSuccess(config -> org.junit.jupiter.api.Assertions.fail("syntax error must refuse, loaded " + config))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.LayerInvalid.class));
+                  .onFailure(cause -> assertThat(cause.message()).contains("Invalid JBCT configuration"));
         }
 
         @Test
