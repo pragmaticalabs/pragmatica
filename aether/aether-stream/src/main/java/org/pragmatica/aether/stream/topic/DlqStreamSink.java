@@ -170,7 +170,8 @@ public record DlqStreamSink(Deserializer deserializer,
     /// epoch's start ([StreamPartitionManager#unverifiedFrom]), and the read from offset 0 then returns only the prefix below it,
     /// with no sign that more exists. An inspection that listed that prefix would read as the whole DLQ, so it is refused with
     /// the transient `ReplicaNotVerified` instead. Asked after the read: the verdict the read itself was served under.
-    private Promise<StreamPartitionManager.EpochRead> wholeOrRefused(String dlqStream, StreamPartitionManager.EpochRead read) {
+    private Promise<StreamPartitionManager.EpochRead> wholeOrRefused(String dlqStream,
+                                                                     StreamPartitionManager.EpochRead read) {
         return manager.unverifiedFrom(dlqStream, 0)
                       .fold(() -> Promise.success(read),
                             start -> new StreamError.ReplicaNotVerified(dlqStream, 0, start).<StreamPartitionManager.EpochRead> promise());
