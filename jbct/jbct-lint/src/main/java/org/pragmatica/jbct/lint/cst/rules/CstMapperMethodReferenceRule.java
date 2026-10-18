@@ -24,7 +24,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// The #483 shape was `.map(Type::methodThatThrows)` — a method reference, not an inline lambda.
 /// A method reference in mapper position (`map`/`flatMap`/`filter`/`replaceResult`/`fold`) flags when:
 ///   1. its name marks a throwing accessor (`*OrThrow` / the JDK `orElseThrow`, case-insensitive),
-///      regardless of resolvability, or
+///      or a container partial accessor (`getFirst` / `getLast`, and `Iterator::next`), regardless of
+///      resolvability, or
 ///   2. its target method — resolved by the reference's receiver — is declared exactly once in this
 ///      compilation unit with a partial body (R-A's op set).
 ///
@@ -174,7 +175,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                        Option<Integer> enclosingType,
                                        Map<String, Integer> typeIdxByName,
                                        Map<Integer, Set<String>> partialSingletons) {
-        if (isThrowingName(refName)) {
+        if (isThrowingName(refName) || isPartialAccessorReference(receiver, refName)) {
             return true;
         }
 
@@ -187,6 +188,12 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         return "this".equals(receiver)
                ? enclosingType
                : Option.option(typeIdxByName.get(receiver));
+    }
+
+    /// `List::getFirst` / `List::getLast` resolve to no type in the file (an imported JDK type), so the body scan cannot see
+    /// them; their names are the evidence (#1568). `next` is only partial on an `Iterator`, so it needs the receiver too.
+    private boolean isPartialAccessorReference(String receiver, String refName) {
+        return MapperSafety.PARTIAL_ACCESSOR_NAMES.contains(refName) || "Iterator".equals(receiver) && "next".equals(refName);
     }
 
     /// `*OrThrow` (container convention) or the JDK `orElseThrow`, matched case-insensitively so
@@ -210,7 +217,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                      "Partial method reference '" + receiver + "::" + refName
                                     + "' in mapper - make the mapper total or lift to a typed Cause",
                                      "A method reference in map/flatMap/filter/replaceResult/fold whose target throws "
-                                    + "(name ends with OrThrow, or its same-type body uses a partial accessor) can hang "
+                                    + "(name ends with OrThrow, is getFirst/getLast, or its same-type body uses a partial accessor) can hang "
                                     + "a Promise when the throw is swallowed (#483). Return a Result/Promise instead.")
                          .withExample("""
             // Before: method ref to a throwing accessor

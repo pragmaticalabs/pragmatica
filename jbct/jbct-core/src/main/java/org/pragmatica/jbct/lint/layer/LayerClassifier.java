@@ -22,7 +22,7 @@ import org.pragmatica.lang.Option;
 ///      order (domain, application, adapter, bootstrap).
 ///   2. **Book-layout conventions** — a package is classified by the layer keyword among its dotted
 ///      segments: `domain` -> domain; `application` / `usecase` -> application; `adapter` /
-///      `integration` / `infra` -> adapter; `bootstrap` / `main` -> bootstrap. The deepest
+///      `integration` / `infra` -> adapter; `bootstrap` / `main` / `config` -> bootstrap (the book's `config/` wiring package). The deepest
 ///      (rightmost) matching segment wins, so a slice's `...registeruser.domain` sub-package reads as
 ///      domain even though it lives under a `usecase` ancestor.
 ///
@@ -47,7 +47,8 @@ public final class LayerClassifier {
                                                                            Map.entry("integration", Layer.ADAPTER),
                                                                            Map.entry("infra", Layer.ADAPTER),
                                                                            Map.entry("bootstrap", Layer.BOOTSTRAP),
-                                                                           Map.entry("main", Layer.BOOTSTRAP));
+                                                                           Map.entry("main", Layer.BOOTSTRAP),
+                                                                           Map.entry("config", Layer.BOOTSTRAP));
 
     /// Convention slice-root marker: the immediate child of a `usecase` segment is a slice root.
     private static final String SLICE_CONVENTION_SEGMENT = "usecase";

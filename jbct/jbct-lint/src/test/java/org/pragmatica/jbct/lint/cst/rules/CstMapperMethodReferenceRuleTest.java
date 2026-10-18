@@ -207,6 +207,60 @@ class CstMapperMethodReferenceRuleTest {
                 """));
     }
 
+    /// #1568 item 1: `xs -> xs.getFirst()` is JBCT-TOT-01; the method-reference spelling of the same partial accessor
+    /// must be caught too, even though `List` is an imported type the file does not declare.
+    @Test
+    void analyze_importedTypeGetFirstReference_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(List::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_importedTypeGetLastReference_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Option<List<String>> o) {
+                        return o.map(List::getLast);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_iteratorNextReference_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                import java.util.Iterator;
+                class Handler {
+                    Object run(Result<Iterator<String>> r) {
+                        return r.map(Iterator::next);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_totalImportedAccessorReference_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(List::size);
+                    }
+                }
+                """));
+    }
+
     @Test
     void analyze_suppressWarnings_suppressesRule() {
         assertFalse(hasRule("""

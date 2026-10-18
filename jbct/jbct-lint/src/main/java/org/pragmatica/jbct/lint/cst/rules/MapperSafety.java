@@ -70,6 +70,12 @@ public sealed interface MapperSafety permits MapperSafety.unused {
                                          + "|\\.orElseThrow\\s*\\("
                                          + "|\\.iterator\\s*\\(\\s*\\)\\s*\\.next\\s*\\(\\s*\\)");
 
+    /// Container partial accessors that take no argument, so a method REFERENCE to them (`List::getFirst`) is as partial as the
+    /// lambda `xs -> xs.getFirst()`. Shared by JBCT-TOT-02 (flags the reference by name) and JBCT-STY-05 (must not suggest
+    /// rewriting a lambda that TOT-01 catches into a reference TOT-01 cannot see). Bare `get` is deliberately absent, for the
+    /// reason given on [#PARTIAL_OP].
+    Set<String> PARTIAL_ACCESSOR_NAMES = Set.of("getFirst", "getLast");
+
     /// Java single-line and text-block string literals — masked before op-scanning so a partial-op
     /// pattern never matches inside a literal, and so a string argument (`get("key")`) is never
     /// seen as empty / integer parens.
@@ -179,6 +185,29 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// argument rather than empty parens.
     static String maskForOps(String code) {
         return blankComments(fillMatches(code, STRING_LITERAL.matcher(code), '#'));
+    }
+
+    /// Comment-only view of `code`: everything except comment text becomes a space (newlines preserved). Strings are blanked
+    /// first so a `//` inside a literal is not read as a comment, and so a tag spelled only in a literal is not found.
+    static String commentsOnly(String code) {
+        var noStrings = blankStrings(code);
+        var sb = new StringBuilder(noStrings);
+        var comments = COMMENT.matcher(noStrings);
+        var keep = new boolean[noStrings.length()];
+
+        while (comments.find()) {
+            for (var i = comments.start(); i < comments.end(); i++) {
+                keep[i] = true;
+            }
+        }
+
+        for (var i = 0; i < sb.length(); i++) {
+            if (!keep[i] && sb.charAt(i) != '\n' && sb.charAt(i) != '\r') {
+                sb.setCharAt(i, ' ');
+            }
+        }
+
+        return sb.toString();
     }
 
     /// Replaces every string-literal character with a space (newlines preserved).
