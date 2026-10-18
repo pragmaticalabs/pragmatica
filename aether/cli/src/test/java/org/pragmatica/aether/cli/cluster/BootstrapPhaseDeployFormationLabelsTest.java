@@ -64,6 +64,27 @@ class BootstrapPhaseDeployFormationLabelsTest {
                                            List.of());
     }
 
+    private static SourceProfile sshHostsSource(String name, List<String> hosts) {
+        var roles = Map.of(NodeRole.CORE,
+                           RoleSubTable.roleSubTable(Option.empty(), Option.some(hosts), Option.empty(), "default"));
+
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
+                                           SourceType.SSH,
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           roles,
+                                           List.of());
+    }
+
     private static ClusterBootstrapConfig config(Map<String, SourceProfile> sources) {
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
@@ -100,6 +121,25 @@ class BootstrapPhaseDeployFormationLabelsTest {
         assertThat(BootstrapPhaseDeploy.discoveryAssembly(config(Map.of("dc", source("dc", SourceType.SSH, 3)))))
                 .as("SSH sources have no provider API to discover through")
                 .isFalse();
+    }
+
+    /// #1965: an SSH core source that declares its members as `hosts=[...]` has an empty `count`; it is
+    /// still a core-bearing source, so a cloud core source next to it is a two-source cluster and must
+    /// not take the discovery path (which would render install-only user data and skip the SSH push gate).
+    @Test
+    void discoveryAssembly_refuses_whenASecondCoreSourceDeclaresHostsInsteadOfCount() {
+        assertThat(BootstrapPhaseDeploy.discoveryAssembly(config(Map.of("eu",
+                                                                        source("eu", SourceType.CLOUD, 3),
+                                                                        "dc",
+                                                                        sshHostsSource("dc", List.of("10.0.0.1", "10.0.0.2")))))).as(
+                "cores in an SSH hosts=[...] source count as core sources — two sources, legacy path")
+                .isFalse();
+    }
+
+    @Test
+    void discoveryAssembly_refuses_forASingleSshHostsCoreSource() {
+        assertThat(BootstrapPhaseDeploy.discoveryAssembly(config(Map.of("dc",
+                                                                        sshHostsSource("dc", List.of("10.0.0.1")))))).isFalse();
     }
 
     @Test

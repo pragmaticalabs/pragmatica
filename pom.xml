@@ -211,11 +211,6 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>dns</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>serialization-api</artifactId>
                 <version>${project.version}</version>
             </dependency>

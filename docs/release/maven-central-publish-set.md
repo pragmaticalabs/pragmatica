@@ -174,7 +174,6 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/metrics` | `org.pragmatica-lite:metrics` | pom | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/metrics/micrometer` | `org.pragmatica-lite:micrometer` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net` | `org.pragmatica-lite:net` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of http-client) |
-| `integrations/net/dns` | `org.pragmatica-lite:dns` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net/http-client` | `org.pragmatica-lite:http-client` | jar | publish | compile/runtime dependency of jbct-core |
 | `integrations/net/http-server` | `org.pragmatica-lite:http-server` | jar | publish | seed: a library that applications built on Pragmatica consume directly (published rc1-rc3, dropped in rc4 by mistake) |
 | `integrations/net/http-types` | `org.pragmatica-lite:http-types` | jar | publish | compile/runtime dependency of http-routing |
@@ -235,4 +234,4 @@ The limits are cumulative per month, so a second release in the same month needs
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-40 modules publish, 140 skip (180 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+40 modules publish, 139 skip (179 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
