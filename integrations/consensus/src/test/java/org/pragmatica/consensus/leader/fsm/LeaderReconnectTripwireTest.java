@@ -31,6 +31,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,6 +69,7 @@ class LeaderReconnectTripwireTest {
         final FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness;
         final LeaderElectionContext ctx;
         final FsmBackedLeaderManager manager;
+        final AtomicInteger sends = new AtomicInteger();
 
         Follower() {
             var router = MessageRouter.mutable();
@@ -100,7 +102,7 @@ class LeaderReconnectTripwireTest {
             });
             ctx = holder.get();
             ctx.enablePreVote(LONG);
-            router.addRoute(Send.class, (Consumer<Send>) _ -> {});
+            router.addRoute(Send.class, (Consumer<Send>) _ -> sends.incrementAndGet());
             manager = new FsmBackedLeaderManager(harness.fsm(), ctx, false);
             harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
             harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL));
@@ -124,6 +126,27 @@ class LeaderReconnectTripwireTest {
         follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
 
         return follower;
+    }
+
+    @Test
+    void leaderManager_asksNoPreVoteQuestion_whenTheLeaderReconnects() {
+        follower = new Follower();
+        follower.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2, N3), ObservationSource.QUIC));
+        var sendsAfterTheDisconnect = follower.sends.get();
+
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+
+        assertThat(sendsAfterTheDisconnect).as("control: losing the leader starts a pre-vote round").isPositive();
+        assertThat(follower.sends.get()).as("a reconnect is a join, not another loss of the leader").isEqualTo(sendsAfterTheDisconnect);
+    }
+
+    @Test
+    void leaderManager_keepsOnlyEligibleNodesInTheView_whenAPeerReconnects() {
+        follower = new Follower();
+        follower.ctx.installVoters(List.of(N1, N2));
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+
+        assertThat(follower.ctx.currentTopology()).as("view after the reconnect, node-3 is not a voter").containsExactlyInAnyOrder(N1, N2);
     }
 
     @Test
