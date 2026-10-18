@@ -26,9 +26,15 @@ import java.util.Arrays;
 import java.util.UUID;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.serialization.json.JsonOptions;
 
 
 /// Growable UTF-8 output buffer, called by generated codecs. Reusable through [#reset].
+///
+/// Of the [JsonOptions], only `nullInclusion` concerns writing, and it costs only an empty `Option` component
+/// ([#writeEmpty]): leaving out an object's leading members would leave the next member's comma after the `{`, so
+/// the omission records that comma's position and the comma is removed when the bytes are taken ([#toByteArray],
+/// [#buffer], [#size]), which costs one comparison per document otherwise.
 @Contract
 public final class JsonWriter {
     private static final byte[] HEX = "0123456789ABCDEF".getBytes(StandardCharsets.ISO_8859_1);
@@ -65,9 +71,17 @@ public final class JsonWriter {
         ESCAPE['\t'] = 't';
     }
 
+    private static final int[] NO_DROPS = new int[0];
+
     private byte[] buf;
     private int pos;
     private final StringBuilder number = new StringBuilder(32);
+    // Whether an empty Option component is left out rather than written as null.
+    private boolean omitEmpty;
+    // Positions, in increasing order, just after an object's `{` where every member so far was left out: the comma
+    // the next member writes there is removed by compact.
+    private int[] drops = NO_DROPS;
+    private int dropCount;
 
     private JsonWriter(int capacity) {
         this.buf = new byte[capacity];
@@ -77,22 +91,90 @@ public final class JsonWriter {
         return new JsonWriter(Math.max(64, initialCapacity));
     }
 
+    /// Empties the writer for a new document written under [JsonOptions#DEFAULTS].
     public JsonWriter reset() {
+        return reset(JsonOptions.DEFAULTS);
+    }
+
+    /// Empties the writer for a new document written under `options`.
+    public JsonWriter reset(JsonOptions options) {
         pos = 0;
+        dropCount = 0;
+        omitEmpty = options.nullInclusion() == JsonOptions.NullInclusion.EXCLUDE;
 
         return this;
     }
 
+    /// A copy of the complete document. This and [#buffer] and [#size] finish the left-out members' bookkeeping, so
+    /// take them once the value is written, never in the middle of an object.
     public byte[] toByteArray() {
+        compact();
+
         return Arrays.copyOf(buf, pos);
     }
 
     public byte[] buffer() {
+        compact();
+
         return buf;
     }
 
     public int size() {
+        compact();
+
         return pos;
+    }
+
+    /// An empty `Option` record component, whose pre-encoded name is `name`: the name and `null`, or nothing when the
+    /// options exclude empty values. Called only for an empty value, so including costs nothing more than before.
+    public void writeEmpty(byte[] name) {
+        if (omitEmpty) {
+            omitMember();
+
+            return;
+        }
+
+        writeRaw(name);
+        writeNull();
+    }
+
+    // Nothing is written. If nothing was written in this object yet either (the last byte is its `{`), the next member
+    // will write its leading comma here: record the position once.
+    private void omitMember() {
+        if (buf[pos - 1] == '{' && (dropCount == 0 || drops[dropCount - 1] != pos)) {
+            if (dropCount == drops.length) {
+                drops = Arrays.copyOf(drops, Math.max(8, dropCount << 1));
+            }
+
+            drops[dropCount++] = pos;
+        }
+    }
+
+    private void compact() {
+        if (dropCount > 0) {
+            removeDroppedCommas();
+        }
+    }
+
+    // A recorded position holds the comma of the member that followed the left-out ones, or the object's `}` when
+    // every member was left out; only a comma is removed.
+    private void removeDroppedCommas() {
+        var out = drops[0];
+        var in = drops[0];
+
+        for (int k = 0; k < dropCount; k++) {
+            var at = drops[k];
+
+            System.arraycopy(buf, in, buf, out, at - in);
+            out += at - in;
+            in = at < pos && buf[at] == ','
+                 ? at + 1
+                 : at;
+        }
+
+        System.arraycopy(buf, in, buf, out, pos - in);
+        pos = out + pos - in;
+        dropCount = 0;
     }
 
     public void writeByte(char b) {

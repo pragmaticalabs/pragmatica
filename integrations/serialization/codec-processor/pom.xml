@@ -28,15 +28,15 @@
             <artifactId>serialization-json-codegen</artifactId>
             <version>${project.version}</version>
         </dependency>
-
-        <!-- Testing -->
-        <!-- @Json and the runtime its generated codecs compile against -->
+        <!-- NamingStrategy for -Ajson.naming (json-codegen carries it too); in tests, @Json and the runtime the
+             generated codecs compile against -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>serialization-json</artifactId>
             <version>${project.version}</version>
-            <scope>test</scope>
         </dependency>
+
+        <!-- Testing -->
         <!-- Jackson annotations on @Json fixtures: the generator must refuse such types -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

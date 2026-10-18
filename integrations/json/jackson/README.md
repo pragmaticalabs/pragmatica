@@ -38,6 +38,24 @@ JsonMapper mapper = JsonMapper.jsonMapper()
     .build();
 ```
 
+### Agreeing with the generated JSON codecs
+
+`JsonMapper.valueObjectJsonMapper()` writes the wire form the generated codecs of `serialization-json` write (value
+objects bare, `@JsonName` honoured). Under deploy-time options and a build-time naming strategy, give the mapper the
+same ones:
+
+```java
+JsonMapper mapper = JsonMapper.jsonMapper()
+    .withPragmaticaTypes()
+    .withValueObjects()
+    .withNaming(NamingStrategy.SNAKE_CASE)   // what the codecs were compiled with (-Ajson.naming)
+    .withOptions(options)                    // the JsonOptions the codecs are bound to
+    .build();
+```
+
+`withOptions` maps each option onto Jackson (Option inclusion, `FAIL_ON_UNKNOWN_PROPERTIES`,
+`STRICT_DUPLICATE_DETECTION`, `StreamReadConstraints`); see the `serialization-json` README for the table.
+
 ### Pragmatica Type Serialization
 
 `Result<T>` serializes as `{"success": true, "value": {...}}` or `{"success": false, "error": {...}}`.
@@ -61,3 +79,4 @@ mapper.readString(json, User.class)
 
 - Jackson 3.0+ (`tools.jackson.core:jackson-databind`)
 - `pragmatica-lite-core`
+- `serialization-json` (core only): `JsonOptions`, `NamingStrategy`, `@JsonName`

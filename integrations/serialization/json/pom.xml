@@ -20,10 +20,12 @@
             <artifactId>core</artifactId>
         </dependency>
 
-        <!-- Testing: Jackson is the oracle the runtime's output is compared against. -->
+        <!-- Testing: Jackson is the oracle the runtime's output is compared against. Plain jackson-databind, not
+             Pragmatica's jackson module: that module depends on this one (JsonMapper#withOptions), and a test
+             dependency back on it would be a reactor cycle. -->
         <dependency>
-            <groupId>org.pragmatica-lite</groupId>
-            <artifactId>jackson</artifactId>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

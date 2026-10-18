@@ -18,10 +18,21 @@ package org.pragmatica.json;
 
 import java.util.function.Consumer;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.serialization.json.JsonOptions;
+import org.pragmatica.serialization.json.NamingStrategy;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
+import tools.jackson.core.StreamReadConstraints;
+import tools.jackson.core.StreamReadFeature;
+import tools.jackson.core.json.JsonFactory;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.json.JsonMapper.Builder;
 
 import static org.pragmatica.json.JsonError.PathNotFound.pathNotFound;
@@ -185,10 +196,38 @@ public interface JsonMapper {
         /// @return This builder
         JsonMapperBuilder withPragmaticaTypes();
 
-        /// Registers ValueObjectModule: JBCT value objects travel as their bare component.
+        /// Registers ValueObjectModule: JBCT value objects travel as their bare component, and `@JsonName` renames
+        /// a record component or an enum constant, as in the generated JSON codecs.
         ///
         /// @return This builder
         JsonMapperBuilder withValueObjects();
+
+        /// Applies deploy-time [JsonOptions], each mapped onto Jackson so this mapper keeps the wire form and the
+        /// accept/refuse decisions of generated codecs under the same options (`codec.withOptions(options)`):
+        ///
+        /// - `nullInclusion` `EXCLUDE`: an empty `Option` property is left out (an as-property inclusion override
+        ///   for `Option`, judged by `OptionSerializer#isEmpty`); `INCLUDE` writes `null`, as without options. Map
+        ///   values and list elements keep `null`.
+        /// - `failOnUnknown`: `DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES`.
+        /// - `failOnDuplicate`: `StreamReadFeature.STRICT_DUPLICATE_DETECTION`.
+        /// - the limits: `StreamReadConstraints` (`maxNestingDepth`, `maxNumberLength`, `maxDocumentLength`, and
+        ///   `maxStringLength` for both `maxStringLength` and `maxNameLength`).
+        ///
+        /// Called again, the last options win.
+        ///
+        /// @param options The options
+        ///
+        /// @return This builder
+        JsonMapperBuilder withOptions(JsonOptions options);
+
+        /// Names properties with `naming`, the build-time strategy the generated codecs were compiled with
+        /// (`-Ajson.naming`), through the Jackson strategy that translates names identically. A property renamed by
+        /// `@JsonName` keeps its name (with [#withValueObjects]).
+        ///
+        /// @param naming The naming strategy
+        ///
+        /// @return This builder
+        JsonMapperBuilder withNaming(NamingStrategy naming);
 
         /// Configures underlying Jackson JsonMapper via builder.
         ///
@@ -259,6 +298,8 @@ public interface JsonMapper {
 
         static final class BuilderImpl implements JsonMapperBuilder {
             private final java.util.List<Consumer<Builder>> configurators = new java.util.ArrayList<>();
+            // Stream read constraints belong to the parser factory, which the mapper builder is created from.
+            private Option<StreamReadConstraints> constraints = Option.none();
 
             @Override
             public JsonMapperBuilder withPragmaticaTypes() {
@@ -271,6 +312,60 @@ public interface JsonMapper {
             }
 
             @Override
+            public JsonMapperBuilder withOptions(JsonOptions options) {
+                constraints = Option.some(constraintsOf(options));
+
+                return configure(builder -> applyOptions(builder, options));
+            }
+
+            @Override
+            public JsonMapperBuilder withNaming(NamingStrategy naming) {
+                return configure(builder -> applyNaming(builder, naming));
+            }
+
+            private static StreamReadConstraints constraintsOf(JsonOptions options) {
+                return StreamReadConstraints.builder()
+                                            .maxNestingDepth(options.maxDepth())
+                                            .maxStringLength(options.maxStringLength())
+                                            .maxNameLength(options.maxStringLength())
+                                            .maxNumberLength(options.maxNumberLength())
+                                            .maxDocumentLength(options.maxDocumentSize())
+                                            .build();
+            }
+
+            @Contract
+            private static void applyOptions(Builder builder, JsonOptions options) {
+                builder.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
+                                  options.failOnUnknown())
+                       .configure(StreamReadFeature.STRICT_DUPLICATE_DETECTION,
+                                  options.failOnDuplicate())
+                       .withConfigOverride(Option.class,
+                                           override -> override.setIncludeAsProperty(optionInclusion(options.nullInclusion())));
+            }
+
+            // As-property inclusion: it judges properties declared as Option and leaves an Option map value or list
+            // element alone (null, as generated code writes it), where the type's plain inclusion would drop map
+            // entries too.
+            private static JsonInclude.Value optionInclusion(JsonOptions.NullInclusion inclusion) {
+                return switch (inclusion) {
+                    case INCLUDE -> JsonInclude.Value.empty();
+                    case EXCLUDE -> JsonInclude.Value.construct(JsonInclude.Include.NON_EMPTY,
+                                                                JsonInclude.Include.USE_DEFAULTS);
+                };
+            }
+
+            // AS_DECLARED is Jackson's own default, as JdkHttpClient applies JsonConfig's CAMEL_CASE.
+            @Contract
+            private static void applyNaming(Builder builder, NamingStrategy naming) {
+                switch (naming) {
+                    case AS_DECLARED -> {}
+                    case SNAKE_CASE -> builder.propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+                    case KEBAB_CASE -> builder.propertyNamingStrategy(PropertyNamingStrategies.KEBAB_CASE);
+                    case PASCAL_CASE -> builder.propertyNamingStrategy(PropertyNamingStrategies.UPPER_CAMEL_CASE);
+                }
+            }
+
+            @Override
             public JsonMapperBuilder configure(Consumer<Builder> configurator) {
                 configurators.add(configurator);
 
@@ -279,11 +374,18 @@ public interface JsonMapper {
 
             @Override
             public JsonMapper build() {
-                var builder = tools.jackson.databind.json.JsonMapper.builder();
+                var builder = constraints.map(BuilderImpl::constrainedBuilder)
+                                         .or(tools.jackson.databind.json.JsonMapper::builder);
 
                 configurators.forEach(c -> c.accept(builder));
 
                 return new JsonMapperImpl(builder.build());
+            }
+
+            private static Builder constrainedBuilder(StreamReadConstraints constraints) {
+                return tools.jackson.databind.json.JsonMapper.builder(JsonFactory.builder()
+                                                                                 .streamReadConstraints(constraints)
+                                                                                 .build());
             }
         }
     }

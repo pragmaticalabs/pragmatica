@@ -15,12 +15,18 @@
 
     <!-- A plain library, deliberately not an annotation processor: no META-INF/services entry, so a processor
          that depends on it (the slice processor) does not drag another processor onto every module's path.
-         Beyond javax.lang.model it needs only core, which both processors already carry. -->
+         Beyond javax.lang.model it needs core, which both processors already carry, and serialization-json (core
+         only) for NamingStrategy: the name translation is applied at build time by the generator and stated once,
+         in the runtime module the Jackson side also reads. -->
 
     <dependencies>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
         </dependency>
     </dependencies>
 

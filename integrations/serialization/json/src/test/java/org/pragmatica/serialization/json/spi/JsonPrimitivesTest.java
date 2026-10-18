@@ -17,7 +17,6 @@ package org.pragmatica.serialization.json.spi;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.json.JsonMapper;
 import org.pragmatica.serialization.json.JsonError;
 
 import java.math.BigDecimal;
@@ -30,7 +29,10 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonPrimitivesTest {
-    static final JsonMapper JACKSON = JsonMapper.defaultJsonMapper();
+    // Plain Jackson 3: the oracle writes scalars only, which the Pragmatica module never touched; that module now
+    // depends on this one.
+    static final tools.jackson.databind.json.JsonMapper JACKSON = tools.jackson.databind.json.JsonMapper.builder()
+                                                                                                        .build();
 
     static JsonReader reader(String json) {
         return JsonReader.jsonReader()
@@ -240,8 +242,7 @@ class JsonPrimitivesTest {
             writer.reset()
                   .writeString(text);
             var ours = new String(writer.toByteArray(), StandardCharsets.UTF_8);
-            var expected = new String(JACKSON.writeAsBytes(text)
-                                             .unwrap(), StandardCharsets.UTF_8);
+            var expected = new String(JACKSON.writeValueAsBytes(text), StandardCharsets.UTF_8);
             assertEquals(expected, ours);
             assertEquals(text, reader(ours).readString());
         }
@@ -302,7 +303,7 @@ class JsonPrimitivesTest {
             }
             var text = sb.toString();
             writer.reset().writeString(text);
-            assertEquals(new String(JACKSON.writeAsBytes(text).unwrap(), StandardCharsets.UTF_8),
+            assertEquals(new String(JACKSON.writeValueAsBytes(text), StandardCharsets.UTF_8),
                          new String(writer.toByteArray(), StandardCharsets.UTF_8));
         }
     }

@@ -47,7 +47,11 @@ import static org.pragmatica.lang.Option.some;
 /// The static combinators ([#listOf], [#setOf], [#optionOf], [#mapOf]) wrap a codec into one for a container
 /// of its type. They write the same bytes and accept and refuse the same documents as the container code the
 /// generator emits for a component of that type.
-public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
+///
+/// Every codec reads and writes under its `options` ([JsonOptions#DEFAULTS] unless bound by [#withOptions]). They
+/// govern the whole document: a combinator's codec applies its own options to everything inside it, whatever the
+/// options of the element codec it was built from.
+public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader, JsonOptions options) {
     /// Appends `value` to the writer; cannot fail. `void` because it drives the [JsonWriter] carve-out.
     @FunctionalInterface
     public interface BodyWriter<T> {
@@ -60,8 +64,15 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
         T read(JsonReader in);
     }
 
+    /// A codec under [JsonOptions#DEFAULTS].
     public static <T> JsonTypeCodec<T> jsonTypeCodec(BodyWriter<T> writer, BodyReader<T> reader) {
-        return new JsonTypeCodec<>(writer, reader);
+        return new JsonTypeCodec<>(writer, reader, JsonOptions.DEFAULTS);
+    }
+
+    /// This codec reading and writing under `options`: `BuyRequestJson.CODEC.withOptions(options)`,
+    /// `JsonTypeCodec.listOf(BuyRequestJson.CODEC).withOptions(options)`, or a codec from `JsonCodecs.codecFor`.
+    public JsonTypeCodec<T> withOptions(JsonOptions options) {
+        return new JsonTypeCodec<>(writer, reader, options);
     }
 
     /// Decodes the whole of `json`.
@@ -74,7 +85,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     /// region is not copied, a failure's position is an offset into the whole of `json`, not into the region.
     public Result<T> decode(byte[] json, int offset, int length) {
         return isInside(json.length, offset, length)
-               ? read(JsonReader.jsonReader().reset(json, offset, length))
+               ? read(JsonReader.jsonReader().reset(json, offset, length, options))
                : JsonError.InvalidRange.FACTORY.apply(offset, length, json.length).result();
     }
 
@@ -86,7 +97,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     /// Decodes the whole of `json` with a reader the caller reuses; the reader is reset first, so its previous
     /// input and failure are forgotten.
     public Result<T> decode(JsonReader in, byte[] json) {
-        return read(in.reset(json));
+        return read(in.reset(json, 0, json.length, options));
     }
 
     /// Encodes `value` into a fresh writer.
@@ -96,7 +107,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
 
     /// Encodes `value` with a writer the caller reuses; the writer is reset first and returns a copy of its bytes.
     public byte[] encode(JsonWriter out, T value) {
-        writer.write(out.reset(), value);
+        writer.write(out.reset(options), value);
 
         return out.toByteArray();
     }
@@ -121,7 +132,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     }
 
     /// A JSON object with free-form string keys, decoded into a mutable `LinkedHashMap` in document order; a
-    /// repeated key keeps its last value.
+    /// repeated key keeps its last value, unless the options refuse duplicates.
     public static <V> JsonTypeCodec<Map<String, V>> mapOf(JsonTypeCodec<V> values) {
         return jsonTypeCodec((out, map) -> writeObject(out, map, values.writer()), in -> readObject(in, values.reader()));
     }
@@ -201,7 +212,9 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
 
         if (in.beginObject()) {
             for (var more = in.firstEntry(); more; more = in.nextEntry()) {
-                values.put(in.readKey(), value.read(in));
+                if (values.put(in.readKey(), value.read(in)) != null) {
+                    in.repeatedKey();
+                }
             }
         }
 
