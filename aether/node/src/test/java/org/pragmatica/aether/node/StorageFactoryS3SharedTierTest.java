@@ -39,6 +39,7 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.EncryptingStorageTier;
 import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.storage.EncryptionKeyring;
+import org.pragmatica.storage.LocalDiskTier;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.HttpWaitStrategy;
 
@@ -60,7 +61,11 @@ class StorageFactoryS3SharedTierTest {
     private static final String ACCESS_KEY = System.getProperty("aether.s3.accessKey", "minioadmin");
     private static final String SECRET_KEY = System.getProperty("aether.s3.secretKey", "minioadmin");
     private static final boolean PATH_STYLE = Boolean.parseBoolean(System.getProperty("aether.s3.pathStyle", "true"));
-    private static final String MINIO_IMAGE = System.getProperty("aether.s3.image", "cgr.dev/chainguard/minio:latest");
+    /// Pinned by digest, not `:latest`: the test pulls third-party code into CI, and a moving tag would run whatever
+    /// was pushed last, unreviewed (supply chain) and unreproducible. Chainguard's free tier serves only `latest`,
+    /// so the digest is the only stable reference; bump it deliberately. `-Daether.s3.image` overrides it.
+    private static final String MINIO_DIGEST = "cgr.dev/chainguard/minio@sha256:709099319add48dfb44aa596a7070d3ddd8dd04d7ae881765719aec29df9e510";
+    private static final String MINIO_IMAGE = System.getProperty("aether.s3.image", MINIO_DIGEST);
     private static final String NODE_ID = "node-s3";
     private static final byte[] PLAINTEXT = "s3-shared-tier-plaintext-block-249".getBytes(StandardCharsets.UTF_8);
 
@@ -195,6 +200,73 @@ class StorageFactoryS3SharedTierTest {
                       .onSuccess(_ -> fail("a keyring-less boot over an encrypted prefix must be refused"))
                       .onFailure(cause -> assertThat(chainHas(cause, EncryptionError.EncryptedTierRequiresKeyring.class)).as(cause.message())
                                                                                                                  .isTrue());
+    }
+
+    /// #852 for the bucket: a boot refused by a guard (here the content disk, which holds a plaintext block and no
+    /// marker) writes no S3 marker, so backing the keyring out boots. Mutation that reddens it: write the S3 marker
+    /// during admission (`S3SharedTier#armEncrypted`) instead of in the commit phase.
+    @Test
+    void refusedBoot_leavesNoS3Marker_andAKeyringlessBootThenSucceeds() throws IOException {
+        var s3 = s3Config(ACCESS_KEY, SECRET_KEY);
+        seedPlaintextBlock(tempDir.resolve("content").resolve("blocks"));
+
+        createContent(s3, Option.some(keyring("k1")))
+            .onSuccess(_ -> fail("the content disk holds plaintext: enabling encryption must be refused"))
+            .onFailure(cause -> assertThat(chainHas(cause, EncryptionError.EnablingOverExistingPlaintext.class)).as(cause.message())
+                                                                                                         .isTrue());
+
+        assertThat(markerPresent()).as("a refused boot stamps no bucket").isFalse();
+        createContent(s3, Option.none()).onFailure(cause -> fail("the keyring-less boot must succeed: " + cause.message()));
+    }
+
+    /// Turning encryption on over a prefix that already holds plaintext blocks is refused at boot, as the local
+    /// disk refuses it, and nothing is stamped. Mutation that reddens it: `S3SharedTier#requireEmpty` always passes.
+    @Test
+    void encryptingOverAPlaintextPrefix_isRefused() throws IOException {
+        var s3 = s3Config(ACCESS_KEY, SECRET_KEY);
+        var plain = createContent(s3, Option.none()).fold(cause -> fail(cause.message()), setups -> setups);
+        plain.get("content").instance().put(PLAINTEXT).await().onFailure(cause -> fail(cause.message()));
+
+        StorageFactory.createAll(Map.of("content", StorageConfig.sharedOnly(s3)), NODE_ID, Option.none(), Option.some(keyring("k1")),
+                                 defaultsInFreshDir())
+                      .onSuccess(_ -> fail("enabling encryption over a plaintext prefix must be refused"))
+                      .onFailure(cause -> assertThat(chainHas(cause, EncryptionError.EnablingOverExistingPlaintext.class)).as(cause.message())
+                                                                                                                     .isTrue());
+
+        assertThat(markerPresent()).isFalse();
+    }
+
+    /// A shared-only `artifacts` is placed exactly as the synthesized default, including encryption tracking the
+    /// keyring. Mutation that reddens it: place it on the bare defaults (`StorageFactory#derivedPaths`'s artifacts
+    /// case), which leave it unencrypted.
+    @Test
+    void sharedOnlyArtifacts_isPlacedAsTheSynthesizedDefault_encryptedWithAKeyring() throws IOException {
+        var setups = StorageFactory.createAll(Map.of("artifacts", StorageConfig.sharedOnly(s3Config(ACCESS_KEY, SECRET_KEY))),
+                                              NODE_ID,
+                                              Option.none(),
+                                              Option.some(keyring("k1")),
+                                              defaults())
+                                   .fold(cause -> fail(cause.message()), s -> s);
+
+        var id = setups.get("artifacts").instance().put(PLAINTEXT).await().fold(cause -> fail(cause.message()), blockId -> blockId);
+
+        assertThat(new String(Arrays.copyOf(rawObject(keyOf(id)), 4), StandardCharsets.US_ASCII)).as("artifacts tracks the keyring")
+                                                                                                  .isEqualTo("AEC1");
+        assertThat(Files.isDirectory(tempDir.resolve("storage"))).as("artifacts keeps the default disk path").isTrue();
+    }
+
+    private boolean markerPresent() {
+        return raw.getObject(prefix + EncryptingStorageTier.MARKER_FILE_NAME)
+                  .await()
+                  .fold(cause -> fail(cause.message()), Option::isPresent);
+    }
+
+    private static void seedPlaintextBlock(Path dir) {
+        LocalDiskTier.localDiskTier(dir, 64L * 1024 * 1024)
+                     .unwrap()
+                     .put(BlockId.blockId(PLAINTEXT).unwrap(), PLAINTEXT)
+                     .await()
+                     .onFailure(cause -> fail("seeding a plaintext block failed: " + cause.message()));
     }
 
     @Test

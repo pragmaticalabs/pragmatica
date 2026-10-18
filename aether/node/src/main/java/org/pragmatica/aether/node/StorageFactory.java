@@ -201,12 +201,20 @@ public final class StorageFactory {
     ///
     /// #852: `armedDisk` is the encrypted local-disk tier whose `.encryption-enabled` marker is NOT
     /// yet written — [#createAll] commits every instance's marker only after every instance's guard
-    /// has passed, so a boot refused by one instance stamps no sibling's directory.
+    /// has passed, so a boot refused by one instance stamps no sibling's directory. #249: `sharedMarker`
+    /// is the same for an encrypted S3 shared tier's `{prefix}.encryption-enabled` object.
     private record TierBuild(List<StorageTier> tiers,
                              Option<DhtMarkerCheck> dhtMarkerCheck,
-                             Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+                             Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk,
+                             Option<S3SharedTier.PendingMarker> sharedMarker) {
         private TierBuild(List<StorageTier> tiers, Option<DhtMarkerCheck> dhtMarkerCheck) {
-            this(tiers, dhtMarkerCheck, Option.empty());
+            this(tiers, dhtMarkerCheck, Option.empty(), Option.empty());
+        }
+
+        private TierBuild(List<StorageTier> tiers,
+                          Option<DhtMarkerCheck> dhtMarkerCheck,
+                          Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+            this(tiers, dhtMarkerCheck, armedDisk, Option.empty());
         }
 
         /// #858: the single (possibly absent) shared tier plus its DHT marker check, before either is folded
@@ -214,7 +222,13 @@ public final class StorageFactory {
         /// because a shared tier is at most one tier, never a list. #249: the tier is the DHT
         /// ([#maybeEncryptDht], marker check present) or an S3 bucket ([S3SharedTier], admitted at
         /// construction, so no post-formation marker check).
-        private record SharedBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {}
+        private record SharedBuild(Option<StorageTier> tier,
+                                   Option<DhtMarkerCheck> markerCheck,
+                                   Option<S3SharedTier.PendingMarker> pendingMarker) {
+            private SharedBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {
+                this(tier, markerCheck, Option.empty());
+            }
+        }
     }
 
     /// #250: fan out demotion across every storage setup so leader-pinned activation
@@ -612,7 +626,7 @@ public final class StorageFactory {
     /// reverse guard would otherwise refuse on after a back-out.
     private static Result<Map<String, StorageSetup>> admit(List<Result<PendingSetup>> results) {
         return Result.firstFailureOf(results)
-                     .flatMap(StorageFactory::commitDiskMarkers)
+                     .flatMap(StorageFactory::commitMarkers)
                      .map(setups -> setups.stream()
                                           .collect(Collectors.toMap(StorageSetup::name,
                                                                     Function.identity())));
@@ -624,21 +638,29 @@ public final class StorageFactory {
     /// a crash part-way through the pass. Re-running the same config completes the set: the stamped
     /// instances' guards short-circuit on marker-present and the unstamped ones re-arm over their still
     /// empty directories.
-    private static Result<List<StorageSetup>> commitDiskMarkers(List<PendingSetup> pending) {
-        return Result.allOf(pending.stream().map(PendingSetup::commitDiskMarker).toList()).map(_ -> pending.stream()
-                                                                                                           .map(PendingSetup::setup)
-                                                                                                           .toList());
+    private static Result<List<StorageSetup>> commitMarkers(List<PendingSetup> pending) {
+        return Result.allOf(pending.stream().map(PendingSetup::commitMarkers).toList()).map(_ -> pending.stream()
+                                                                                                        .map(PendingSetup::setup)
+                                                                                                        .toList());
     }
 
-    /// #852: a fully assembled [StorageSetup] plus the disk-marker write [#createAll] has not yet
-    /// performed for it.
-    private record PendingSetup(StorageSetup setup, Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
-        private Result<Unit> commitDiskMarker() {
-            return armedDisk.map(disk -> disk.commitMarker()
-                                             .mapError(cause -> Causes.cause("Failed to create storage '" + setup.name()
-                                                                            + "': " + cause.message(),
-                                                                             Option.some(cause))))
-                            .or(Result.success(unit()));
+    /// #852: a fully assembled [StorageSetup] plus the marker writes [#createAll] has not yet performed for it:
+    /// the local disk's, and (#249) the S3 shared tier's.
+    private record PendingSetup(StorageSetup setup,
+                                Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk,
+                                Option<S3SharedTier.PendingMarker> sharedMarker) {
+        private PendingSetup(StorageSetup setup, Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+            this(setup, armedDisk, Option.empty());
+        }
+
+        private Result<Unit> commitMarkers() {
+            return armedDisk.map(EncryptingStorageTier.ArmedLocalDisk::commitMarker)
+                            .or(Result.success(unit()))
+                            .flatMap(_ -> sharedMarker.map(S3SharedTier.PendingMarker::commit)
+                                                      .or(Result.success(unit())))
+                            .mapError(cause -> Causes.cause("Failed to create storage '" + setup.name()
+                                                           + "': " + cause.message(),
+                                                            Option.some(cause)));
         }
     }
 
@@ -761,7 +783,7 @@ public final class StorageFactory {
                                                      Path streamDataDir,
                                                      String nodeId,
                                                      Option<EncryptionKeyring> keyring) {
-        return armStreamStorage(new StreamSetupRequest(dhtClient, streamDataDir, nodeId, keyring)).flatMap(pending -> pending.commitDiskMarker()
+        return armStreamStorage(new StreamSetupRequest(dhtClient, streamDataDir, nodeId, keyring)).flatMap(pending -> pending.commitMarkers()
                                                                                                                              .map(_ -> pending.setup()));
     }
 
@@ -1048,7 +1070,8 @@ public final class StorageFactory {
                                                          config,
                                                          nodeId,
                                                          build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
-                                                                                                               build.armedDisk())));
+                                                                                                               build.armedDisk(),
+                                                                                                               build.sharedMarker())));
     }
 
     /// #249: the shared tier is built first -- for S3 that includes its boot probe -- so a tier that refuses
@@ -1075,8 +1098,9 @@ public final class StorageFactory {
                                                             Option<EncryptionKeyring> keyring) {
         return switch (shared) {
             case SharedTierConfig.Dht _ -> Result.success(maybeEncryptDht(name, dhtClient, name + "-blocks", keyring));
-            case SharedTierConfig.S3 s3 -> S3SharedTier.s3SharedTier(name, s3, nodeId, keyring).map(tier -> new TierBuild.SharedBuild(Option.some(tier),
-                                                                                                                                      Option.empty()));
+            case SharedTierConfig.S3 s3 -> S3SharedTier.s3SharedTier(name, s3, nodeId, keyring).map(admitted -> new TierBuild.SharedBuild(Option.some(admitted.tier()),
+                                                                                                                                          Option.empty(),
+                                                                                                                                          admitted.pendingMarker()));
         };
     }
 
@@ -1366,7 +1390,7 @@ public final class StorageFactory {
                                             Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
         var tiers = sharedBuild.tier().map(shared -> appended(baseTiers, shared)).or(baseTiers);
 
-        return new TierBuild(tiers, sharedBuild.markerCheck(), armedDisk);
+        return new TierBuild(tiers, sharedBuild.markerCheck(), armedDisk, sharedBuild.pendingMarker());
     }
 
     private static List<StorageTier> appended(List<StorageTier> baseTiers, StorageTier last) {

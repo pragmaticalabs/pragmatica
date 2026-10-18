@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.cloud.aws.s3.S3Client;
@@ -187,6 +188,19 @@ public final class RemoteTier implements StorageTier {
         var key = keyPrefix + name;
 
         return request("PUT", key, () -> s3Client.putObject(key, content, CONTENT_TYPE));
+    }
+
+    /// Up to `limit` keys under the prefix other than boot-probe objects (any node's): what the prefix already
+    /// holds. Used before encryption is first enabled over the prefix, so plaintext blocks are refused rather than
+    /// stranded. Needs list-after-write from the endpoint to see objects written just before.
+    public Promise<List<String>> existingObjects(int limit) {
+        return request("LIST", keyPrefix, () -> s3Client.listObjects(keyPrefix, limit)).map(this::withoutProbes);
+    }
+
+    private List<String> withoutProbes(List<String> keys) {
+        return keys.stream()
+                   .filter(key -> !key.startsWith(keyPrefix + PROBE_DIRECTORY))
+                   .toList();
     }
 
     private <T> Promise<T> request(String operation, String key, Fn0<Promise<T>> call) {
