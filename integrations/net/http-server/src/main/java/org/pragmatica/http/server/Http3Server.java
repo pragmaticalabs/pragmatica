@@ -243,13 +243,21 @@ final class Http3Server {
     /// Accumulates headers and data frames, then dispatches
     /// to the shared request handler when input closes.
     /// Each stream gets its own instance — no @Sharable needed.
-    private static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
+    ///
+    /// A body over `maxContentLength` is answered 413 as soon as it crosses the limit and is never dispatched
+    /// (I1: it was cut to the limit and dispatched as if complete). A HEADERS frame after the first is a trailer
+    /// section and never replaces the request headers (I16). The body buffer is released on every exit: dispatch,
+    /// rejection, a stream that closes without headers, and a stream torn down before its input closed.
+    ///
+    /// Package-private so the server-level tests can drive it in an `EmbeddedChannel`.
+    static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
         private static final Logger log = LoggerFactory.getLogger(Http3RequestHandler.class);
 
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
         private Http3HeadersFrame headersFrame;
         private ByteBuf bodyData;
+        private boolean rejected;
 
         Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
             this.handler = handler;
@@ -258,22 +266,34 @@ final class Http3Server {
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
-            headersFrame = frame;
+            if (headersFrame == null) {
+                headersFrame = frame;
+            }
         }
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3DataFrame dataFrame) {
-            appendData(dataFrame.content());
+            if (!rejected) {
+                appendData(ctx, dataFrame.content());
+            }
+
             ReferenceCountUtil.release(dataFrame);
         }
 
         @Override
         protected void channelInputClosed(ChannelHandlerContext ctx) {
-            if (headersFrame == null) {
+            if (headersFrame == null || rejected) {
+                releaseBody();
+
                 return;
             }
 
             dispatch(ctx);
+        }
+
+        @Override
+        public void handlerRemoved(ChannelHandlerContext ctx) {
+            releaseBody();
         }
 
         @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
@@ -290,15 +310,42 @@ final class Http3Server {
             }
         }
 
-        private void appendData(ByteBuf content) {
-            if (bodyData == null) {
-                bodyData = Unpooled.buffer(Math.min(content.readableBytes(), maxContentLength));
+        private void appendData(ChannelHandlerContext ctx, ByteBuf content) {
+            var buffered = bodyData == null
+                           ? 0
+                           : bodyData.readableBytes();
+
+            if ((long) buffered + content.readableBytes() > maxContentLength) {
+                rejectTooLarge(ctx);
+
+                return;
             }
 
-            var bytesToRead = Math.min(content.readableBytes(), maxContentLength - bodyData.readableBytes());
+            if (bodyData == null) {
+                bodyData = Unpooled.buffer(content.readableBytes());
+            }
 
-            if (bytesToRead > 0) {
-                bodyData.writeBytes(content, bytesToRead);
+            bodyData.writeBytes(content);
+        }
+
+        private void rejectTooLarge(ChannelHandlerContext ctx) {
+            rejected = true;
+            releaseBody();
+            log.debug("HTTP/3 request body exceeds {} bytes, answering 413", maxContentLength);
+            new Http3ResponseWriter(ctx, IdGenerator.generate("req")).error(HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                                                                            "Request body exceeds the " + maxContentLength
+                                                                            + "-byte limit");
+        }
+
+        /// Package-private test seam: whether a body buffer is still held, so a test can assert every exit released it.
+        boolean holdsBodyBuffer() {
+            return bodyData != null;
+        }
+
+        private void releaseBody() {
+            if (bodyData != null) {
+                bodyData.release();
+                bodyData = null;
             }
         }
 
@@ -319,14 +366,14 @@ final class Http3Server {
         }
 
         private byte[] extractBody() {
-            if (bodyData == null || !bodyData.isReadable()) {
+            if (bodyData == null) {
                 return new byte[0];
             }
 
             var bytes = new byte[bodyData.readableBytes()];
 
             bodyData.readBytes(bytes);
-            bodyData.release();
+            releaseBody();
 
             return bytes;
         }
