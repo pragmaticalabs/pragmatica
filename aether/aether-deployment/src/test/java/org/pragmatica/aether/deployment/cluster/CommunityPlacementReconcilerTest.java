@@ -100,6 +100,10 @@ class CommunityPlacementReconcilerTest {
     }
 
     private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout) {
+        return controller(self, limit, timeout, System::currentTimeMillis);
+    }
+
+    private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout, java.util.function.LongSupplier clock) {
         return CommunityPlacementReconciler.communityPlacementReconciler(self, store,
             commands -> {
                 var hook = beforeCommit;
@@ -107,7 +111,7 @@ class CommunityPlacementReconcilerTest {
                 hook.run();
                 return Promise.success(store.process(store.createBatch(commands)));
             }, () -> true,
-            ready::contains, () -> Set.of(CORE, OLD), () -> limit, actuator, escalations::add, (node, cause) -> retirementRefusals.add(node), org.pragmatica.lang.io.TimeSpan.timeSpan(timeout).millis());
+            ready::contains, () -> Set.of(CORE, OLD), () -> limit, actuator, escalations::add, (node, cause) -> retirementRefusals.add(node), org.pragmatica.lang.io.TimeSpan.timeSpan(timeout).millis(), clock);
     }
 
     private void initialize() {
@@ -439,6 +443,26 @@ class CommunityPlacementReconcilerTest {
         assertThat(reconciler.onDrainCompleted(OLD, current().operationId()).await().unwrap()).isTrue();
         reconciler.reconcile().await().unwrap();
         assertThat(effects).contains("terminate");
+    }
+
+    /// #1535 item 7: the drain deadline reads the injected clock, not the wall clock, so it can be stepped exactly.
+    @Test
+    void drainDeadline_followsTheInjectedClock() {
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000_000L);
+        var clocked = controller(CORE, 10, 1_000, now::get);
+
+        initialize();
+        clocked.reconcile().await().unwrap();
+        clocked.reconcile().await().unwrap();
+        replacementReady();
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.DRAIN_REQUESTED);
+        now.addAndGet(900);
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).as("inside the 1000 ms drain window").isEqualTo(PlacementOperationPhase.DRAIN_REQUESTED);
+        now.addAndGet(200);
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).as("past the window by the injected clock alone").isEqualTo(PlacementOperationPhase.DRAIN_UNCERTAIN);
     }
 
     @org.junit.jupiter.params.ParameterizedTest

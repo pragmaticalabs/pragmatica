@@ -44,6 +44,7 @@ import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.ConnectionError;
+import org.pragmatica.consensus.net.InboundMessageAuthority;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
@@ -1260,17 +1261,49 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         quicMetrics.onMessageReceived();
-        if (message instanceof Message.Wired wired && org.pragmatica.consensus.net.InboundMessageAuthority.isBound(sender,
-                                                                                                                   wired,
-                                                                                                                   proposalRelayMembership) && inboundMessagePolicy.test(sender,
-                                                                                                                                                                         wired) && inboundFaultFilter.test(sender,
-                                                                                                                                                                                                           wired)) {
-            router.route(wired);
+        if (message instanceof Message.Wired wired) {
+            routeWired(sender, wired);
         } else {
             log.trace("Non-routable message from {}: {}",
                       sender,
                       option(message).map(Object::getClass).map(Class::getSimpleName));
         }
+    }
+
+    /// Routes a wired message past the three inbound refusal gates, in order: origin binding, the
+    /// installed policy, the fault filter. Each refusal is counted on its own counter (#1535).
+    @Contract
+    private void routeWired(NodeId sender, Message.Wired wired) {
+        if (!InboundMessageAuthority.isBound(sender, wired, proposalRelayMembership)) {
+            refuse("claimed origin is not the authenticated peer", sender, wired, quicMetrics.onUnboundDrop());
+        } else if (!inboundMessagePolicy.test(sender, wired)) {
+            refuse("inbound message policy", sender, wired, quicMetrics.onPolicyDrop());
+        } else if (!inboundFaultFilter.test(sender, wired)) {
+            log.trace("Inbound fault filter dropped {} from {}",
+                      wired.getClass().getSimpleName(),
+                      sender);
+            quicMetrics.onFaultFilterDrop();
+        } else {
+            router.route(wired);
+        }
+    }
+
+    /// Operator-visible refusal: WARN on the first and then on every power-of-two occurrence, so a peer
+    /// that keeps sending refused traffic cannot flood the log. The counter carries the exact total.
+    @Contract
+    private void refuse(String gate, NodeId sender, Message.Wired wired, long total) {
+        if (isLoggedRefusal(total)) {
+            log.warn("Refused inbound {} from {} ({}); {} refused by this gate so far",
+                     wired.getClass().getSimpleName(),
+                     sender,
+                     gate,
+                     total);
+        }
+    }
+
+    /// The first refusal and every power-of-two occurrence after it (1, 2, 4, 8, ...) is logged.
+    static boolean isLoggedRefusal(long total) {
+        return Long.bitCount(total) == 1;
     }
 
     /// Consensus defence in depth (terminal removal): traffic from a retired NodeId — whether the
