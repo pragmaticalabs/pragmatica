@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -136,21 +137,35 @@ public sealed interface AwsSigV4Signer {
              + "\n" + payloadHash;
     }
 
-    /// SigV4's canonical query string: the (already URI-encoded) `name=value` pairs sorted by name, then value,
-    /// with a bare name given an empty value. #249: the raw query was signed in request order, so S3
-    /// ListObjectsV2 (`list-type`, `prefix`, `max-keys`) failed with `SignatureDoesNotMatch`.
+    /// SigV4's canonical query string: the (already URI-encoded) parameters sorted by encoded NAME, then by encoded
+    /// value, each written `name=value`, a bare name given an empty value. #249: the raw query was signed in request
+    /// order, so S3 ListObjectsV2 failed with `SignatureDoesNotMatch`. Sorting whole `name=value` strings instead of
+    /// (name, value) pairs is wrong whenever one name is a prefix of another and the next character sorts before
+    /// `=` (`a=2&a-b=1`, `InstanceId.1` beside `InstanceId.10`); botocore sorts the pairs, and so does this.
     static String canonicalQuery(String rawQuery) {
         return Arrays.stream(rawQuery.split("&"))
                      .filter(pair -> !pair.isEmpty())
-                     .map(AwsSigV4Signer::withValue)
-                     .sorted()
+                     .map(QueryParameter::queryParameter)
+                     .sorted(QueryParameter.ORDER)
+                     .map(QueryParameter::canonical)
                      .collect(Collectors.joining("&"));
     }
 
-    private static String withValue(String pair) {
-        return pair.contains("=")
-               ? pair
-               : pair + "=";
+    /// One encoded query parameter; a bare name has an empty value.
+    record QueryParameter(String name, String value) {
+        static final Comparator<QueryParameter> ORDER = Comparator.comparing(QueryParameter::name).thenComparing(QueryParameter::value);
+
+        static QueryParameter queryParameter(String pair) {
+            var eq = pair.indexOf('=');
+
+            return eq < 0
+                   ? new QueryParameter(pair, "")
+                   : new QueryParameter(pair.substring(0, eq), pair.substring(eq + 1));
+        }
+
+        String canonical() {
+            return name + "=" + value;
+        }
     }
 
     private static String buildCredentialScope(String dateStamp, String region, String service) {
