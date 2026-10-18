@@ -49,10 +49,8 @@ public interface PgNotificationConfigParser {
                 var name = sectionName.substring(PREFIX.length());
 
                 if (!name.contains(".")) {
-                    var datasource = doc.getString(sectionName, "datasource")
-                                        .or("database");
-                    var channels = doc.getStringList(sectionName, "channels")
-                                      .or(List.of());
+                    var datasource = doc.getString(sectionName, "datasource").or("database");
+                    var channels = doc.getStringList(sectionName, "channels").or(List.of());
 
                     result.put(name, PgNotificationConfig.pgNotificationConfig(datasource, channels));
                 }

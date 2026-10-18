@@ -125,30 +125,50 @@ final class InMemoryConfigService implements ConfigService {
     // service query must tell the two apart, so a wrong-typed key fails the read naming key and
     // value. The read goes through a view with its own ledger: the stored documents live as long as
     // the service, and their ledgers would otherwise collect every repeated wrong-typed read.
-    private <T> Promise<Option<T>> typedHierarchical(String section, String key, String expected, ValueGetter<T> getter) {
+    private <T> Promise<Option<T>> typedHierarchical(String section,
+                                                     String key,
+                                                     String expected,
+                                                     ValueGetter<T> getter) {
         return firstTyped(0, section, key, expected, getter);
     }
 
-    private <T> Promise<Option<T>> firstTyped(int from, String section, String key, String expected, ValueGetter<T> getter) {
+    private <T> Promise<Option<T>> firstTyped(int from,
+                                              String section,
+                                              String key,
+                                              String expected,
+                                              ValueGetter<T> getter) {
         return from == HIERARCHY.size()
                ? Promise.success(Option.none())
-               : typedIn(HIERARCHY.get(from), section, key, expected, getter)
-                   .flatMap(found -> found.fold(() -> firstTyped(from + 1, section, key, expected, getter),
-                                                value -> Promise.success(Option.some(value))));
+               : typedIn(HIERARCHY.get(from), section, key, expected, getter).flatMap(found -> found.fold(() -> firstTyped(from + 1,
+                                                                                                                           section,
+                                                                                                                           key,
+                                                                                                                           expected,
+                                                                                                                           getter),
+                                                                                                          value -> Promise.success(Option.some(value))));
     }
 
-    private <T> Promise<Option<T>> typedIn(ConfigScope scope, String section, String key, String expected, ValueGetter<T> getter) {
-        var view = new TomlDocument(documents.get(scope).sections(), documents.get(scope).tableArrays());
+    private <T> Promise<Option<T>> typedIn(ConfigScope scope,
+                                           String section,
+                                           String key,
+                                           String expected,
+                                           ValueGetter<T> getter) {
+        var view = new TomlDocument(documents.get(scope).sections(),
+                                    documents.get(scope).tableArrays());
 
         return getter.get(view, section, key)
                      .fold(() -> absentOrMistyped(view, section, key, expected),
                            value -> Promise.success(Option.some(value)));
     }
 
-    private static <T> Promise<Option<T>> absentOrMistyped(TomlDocument view, String section, String key, String expected) {
+    private static <T> Promise<Option<T>> absentOrMistyped(TomlDocument view,
+                                                           String section,
+                                                           String key,
+                                                           String expected) {
         return view.rawValue(section, key)
                    .fold(() -> Promise.success(Option.none()),
-                         raw -> new ConfigError.TypeMismatch(section + "." + key, expected, String.valueOf(raw)).promise());
+                         raw -> new ConfigError.TypeMismatch(section + "." + key,
+                                                             expected,
+                                                             String.valueOf(raw)).promise());
     }
 
     private static final List<ConfigScope> HIERARCHY = List.of(ConfigScope.SLICE, ConfigScope.NODE, ConfigScope.GLOBAL);

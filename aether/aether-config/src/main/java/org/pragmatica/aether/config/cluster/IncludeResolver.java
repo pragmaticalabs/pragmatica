@@ -43,7 +43,8 @@ public final class IncludeResolver {
     private static Result<TomlDocument> refuseMistypedInclude(TomlDocument doc) {
         return doc.rawValue("", "include")
                   .fold(() -> success(doc),
-                        raw -> new ClusterConfigError.ParseFailed("include must be an array of strings, got \"" + raw + "\"").result());
+                        raw -> new ClusterConfigError.ParseFailed("include must be an array of strings, got \"" + raw
+                                                                 + "\"").result());
     }
 
     private static Result<TomlDocument> resolveIncludes(TomlDocument doc,
