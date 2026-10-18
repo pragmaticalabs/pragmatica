@@ -11,7 +11,6 @@
 package org.pragmatica.consensus.leader.fsm;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
@@ -36,17 +35,17 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Tripwire pair for A-03 (cluster T assessment, rc4 `7c786db0d3`): a follower's link to its leader flaps. The
-/// transport emits `PeerDisconnected` (view without the leader) and, on re-attach, `PeerReconnected` (view with it,
-/// see `QuicReconnectObservationControlTest` for the producer side). `LeaderManager.peerReconnected` has an empty
-/// body, and the leader FSM stores its topology by replacement from the last event, so the follower keeps a live,
-/// reconnected leader out of its view and keeps "suspecting" it until some unrelated topology event replaces the view
-/// (second review: deposing needs a majority of the electorate to doubt; the effect is a stale follower plus a standing
-/// pre-vote retry loop, not a lone deposition).
+/// A-03 (cluster T assessment, rc4 `7c786db0d3`): a follower's link to its leader flaps. The transport emits
+/// `PeerDisconnected` (view without the leader) and, on re-attach, `PeerReconnected` (view with it, see
+/// `QuicReconnectObservationControlTest` for the producer side). The leader FSM stores its topology by replacement
+/// from the last event, so `LeaderManager.peerReconnected` must dispatch `NodeAdded` like `peerJoined`; when it did
+/// nothing the follower kept a live, reconnected leader out of its view and kept "suspecting" it until some unrelated
+/// topology event replaced the view (second review: deposing needs a majority of the electorate to doubt; the effect
+/// was a stale follower plus a standing pre-vote retry loop, not a lone deposition).
 ///
 /// Level: the real FSM, context and pre-vote of one follower (the construction of `LeaderPreVoteTest`), fed the two
-/// transport events. Nothing is mocked; the consumer is the unit under test, which is where the fix lives
-/// (`peerReconnected` dispatches like `peerJoined`, no interface change).
+/// transport events. Nothing is mocked; the consumer is the unit under test. The real transport producing the
+/// events is in `LeaderReconnectTransportTest` (NT-A10).
 @Timeout(30)
 class LeaderReconnectTripwireTest {
     private static final NodeId N1 = new NodeId("node-1");
@@ -128,26 +127,10 @@ class LeaderReconnectTripwireTest {
     }
 
     @Test
-    void leaderManager_keepsAReconnectedLeaderOutOfTheView_afterTheLeaderLinkFlapped() {
-        var flapped = afterTheLeaderLinkFlapped();
-
-        assertThat(flapped.followsTheLeader()).as("control: the follower still follows node 1 (pre-vote holds it in Led)").isTrue();
-        assertThat(flapped.ctx.currentTopology())
-            .as("TRIPWIRE A-03: after PeerReconnected(node-1, view with node-1) the follower's topology still omits the "
-                + "leader; peerReconnected is a no-op. Reconnect now refreshes the view. Delete this tripwire and "
-                + "enable leaderManager_restoresTheLeaderToTheView_afterItReconnects.")
-            .doesNotContain(N1);
-        assertThat(flapped.suspectsTheLeader())
-            .as("TRIPWIRE A-03: the follower keeps suspecting a leader that is connected again")
-            .isTrue();
-    }
-
-    @Disabled("A-03: enable when LeaderManager.peerReconnected refreshes the follower's topology like peerJoined. "
-              + "Today red: the reconnected leader stays out of the view and stays suspected.")
-    @Test
     void leaderManager_restoresTheLeaderToTheView_afterItReconnects() {
         var flapped = afterTheLeaderLinkFlapped();
 
+        assertThat(flapped.followsTheLeader()).as("control: the follower still follows node 1 (pre-vote holds it in Led)").isTrue();
         assertThat(flapped.ctx.currentTopology()).as("view after the leader reconnected").contains(N1);
         assertThat(flapped.suspectsTheLeader()).as("follower suspects a connected leader").isFalse();
     }

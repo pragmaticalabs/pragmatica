@@ -469,11 +469,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerJoined(PeerJoined peerJoined) {
-            fsm.dispatch(new ClusterFsmEvent.NodeAdded(peerJoined.nodeId(),
-                                                       peerJoined.topology()
-                                                                 .stream()
-                                                                 .filter(context::isEligible)
-                                                                 .toList()));
+            dispatchNodeAdded(peerJoined.nodeId(), peerJoined.topology());
             if (localMode) {
                 electLocallyIfPossible();
             }
@@ -514,7 +510,15 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerReconnected(PeerReconnected peerReconnected) {
-        // Transparent — peer is already known to the FSM via prior PeerJoined. No event.
+            // A peer evicted and re-attached was removed from the stored topology by the eviction's NodeGone, and the
+            // FSM replaces its topology wholesale from the last event, so a reconnect must restore it the way a join
+            // does; otherwise a follower keeps suspecting a leader whose link is back (leader not in topology).
+            dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology());
+        }
+
+        private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology) {
+            fsm.dispatch(new ClusterFsmEvent.NodeAdded(nodeId,
+                                                       topology.stream().filter(context::isEligible).toList()));
         }
 
         @Contract
