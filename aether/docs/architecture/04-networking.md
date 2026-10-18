@@ -99,7 +99,7 @@ Multiplexes all inter-node messages over QUIC streams. A connection carries eigh
 | Lane | Index | Carries |
 |------|-------|---------|
 | CONSENSUS | 0 | Rabia proposals, votes, decisions, batches; forwarded apply requests |
-| KV | 1 | Community placement, governor authority and community health messages |
+| KV | 1 | Community placement, governor authority and community health messages; the KV-sync snapshot request and response |
 | METRICS | 2 | ClusterSync ping/pong, deployment and source metrics |
 | INVOKE | 3 | Cross-node slice invocation requests and responses |
 | FORWARD | 4 | HTTP, entity and stream forwards, replication |

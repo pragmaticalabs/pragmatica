@@ -90,7 +90,7 @@ Each connection carries eight lanes, one QUIC stream per lane, all long-lived (o
 | Lane index | Lane | Purpose |
 |------------|------|---------|
 | 0 | CONSENSUS | Rabia proposals, votes, decisions, batches; forwarded apply requests |
-| 1 | KV | Community placement, governor authority and community health messages |
+| 1 | KV | Community placement, governor authority and community health messages; the KV-sync snapshot request and response |
 | 2 | METRICS | ClusterSync ping/pong, deployment and source metrics |
 | 3 | INVOKE | Cross-node slice invocation requests and responses |
 | 4 | FORWARD | HTTP, entity and stream forwards, replication |
