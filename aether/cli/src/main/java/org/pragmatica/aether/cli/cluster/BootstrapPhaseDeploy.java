@@ -1210,16 +1210,14 @@ sealed interface BootstrapPhaseDeploy {
                                                     SourceProfile source,
                                                     NodeRole role,
                                                     String nodeId) {
-        var profile = Option.option(source.roles().get(role))
-                            .map(RoleSubTable::runtimeRef)
-                            .flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
+        var runtimeRef = Option.option(source.roles().get(role)).map(RoleSubTable::runtimeRef);
+        var profile = runtimeRef.flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
         var type = profile.map(RuntimeProfile::type).or(RuntimeType.CONTAINER);
 
         if (type != RuntimeType.CONTAINER) {
             return new BootstrapError.DeploymentFailed(nodeId,
                                                        "SSH source '" + sourceNameOf(source)
-                                                      + "' declares runtime '" + profile.map(RuntimeProfile::name)
-                                                                                        .or("?")
+                                                      + "' declares runtime '" + runtimeRef.or("?")
                                                       + "' of type " + type
                                                       + "; only CONTAINER can be launched over SSH in this release (#1090)").result();
         }

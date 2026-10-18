@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -73,16 +72,15 @@ class ClusterBootstrapOrchestratorTest {
             sourceNameOrDefault("forge"), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
-            Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
+            Map.of(NodeRole.CORE, roleSubTable(some(coreCount), none(), none(), RUNTIME_REF)),
             List.of()
         );
 
-        return clusterBootstrapConfig(
-            "1", clusterIdentity(clusterName, "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity(clusterName, "1.0.0").unwrap(),
             defaultCoreTopology(),
             Map.of("forge", forgeSource),
-            Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.EMBER, none(), none())),
-            infrastructureConfig(NetworkingType.MANUAL),
+            Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.EMBER, none(), none())),
+            infrastructureConfig(),
             defaultOperationsConfig()
         , java.util.Map.of());
     }
