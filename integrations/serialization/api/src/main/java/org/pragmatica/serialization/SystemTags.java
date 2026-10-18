@@ -638,10 +638,10 @@ public interface SystemTags {
         // #2087: the owner's visible position, announced to its replicas. 2140 and 2141 went to #2118, so this takes the
         // next free slot (scanned across every open PR head and every origin branch on 2026-10-11).
         pin(table, 2142, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
-        // #1155: the durable in-flight claim of a SINGLE-mode scheduled task. 2143..2162 are taken by open PR heads and origin
-        // branches (scanned across all of them on 2026-10-18), so this takes the next free slots.
-        pin(table, 2163, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskClaimKey");
-        pin(table, 2164, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue");
+        // #1155: the durable in-flight claim of a SINGLE-mode scheduled task. 2143..2162 are taken by origin branches and 2163..2165 by
+        // #2265 (scanned across all refs on 2026-10-18), so this takes the next free slots.
+        pin(table, 2166, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskClaimKey");
+        pin(table, 2167, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue");
         // ---- 2143..16383 RESERVED ----
         rejectDuplicateTags(table);
 

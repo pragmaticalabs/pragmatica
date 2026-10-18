@@ -90,6 +90,32 @@ public interface ScheduledTaskManager {
     boolean tryClaim(ScheduledTaskKey key);
     /// Releases a claim taken via [#tryClaim].
     void release(ScheduledTaskKey key);
+
+    /// A manual run's hold on a task (`/trigger`, `/inject`): the in-process claim and, for a SINGLE-mode task, the
+    /// cluster claim a scheduled fire takes, so a manual run cannot overlap a fire on the leader or on another node
+    /// (#1155). The holder MUST call [ManualClaim#release] exactly once, after its invocation settles.
+    interface ManualClaim {
+        Promise<Unit> release();
+    }
+
+    /// Claims `task` for a manual run: a hold when no fire or other manual run holds it, none when one does. The default
+    /// takes the in-process claim only, which is all a manager without a cluster claim store has.
+    default Promise<Option<ManualClaim>> claimForManualRun(ScheduledTask task) {
+        var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+
+        return Promise.success(tryClaim(key)
+                               ? Option.some(inProcessHold(key))
+                               : Option.none());
+    }
+
+    private ManualClaim inProcessHold(ScheduledTaskKey key) {
+        return () -> {
+            release(key);
+
+            return Promise.success(Unit.unit());
+        };
+    }
+
     /// How long a fire against a REMOTE callee is awaited for its completion before its outcome is recorded as UNKNOWN
     /// (#1930). The in-flight claim of a task is held for this long, so a SINGLE-mode task whose callee runs for longer than
     /// the invocation timeout is still not started a second time on the next tick; it is the longest a lost response can keep a task from
@@ -103,7 +129,8 @@ public interface ScheduledTaskManager {
     /// fire in flight, up to the bound; past the bound the next fire runs; a SINGLE-mode fire is also claimed in cluster state
     /// ([ScheduledTaskClaims], #1155), so a leader elected mid-fire does not start a second run while the claim stands, and
     /// takes the task over only once the claim is stale (older than the bound plus a margin), after which the old run's outcome
-    /// is not recorded and the old run itself, not cancellable, has still executed; the `/inject` route takes no claim.
+    /// is not recorded and the old run itself, not cancellable, has still executed; the `/trigger` and `/inject` routes take the same claim
+    /// ([ManualClaim]).
     TimeSpan DEFAULT_COMPLETION_BOUND = TimeSpan.timeSpan(10).minutes();
 
     /// The bound the manager awaits a remote fire for (see [#DEFAULT_COMPLETION_BOUND]); the trigger route holds the same
@@ -1138,6 +1165,27 @@ public interface ScheduledTaskManager {
         @Override
         public void release(ScheduledTaskKey key) {
             ctx.release(key);
+        }
+
+        @Override
+        public Promise<Option<ManualClaim>> claimForManualRun(ScheduledTask task) {
+            var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+
+            return ctx.claim(key)
+                   ? ctx.claims.acquire(task)
+                               .map(ticket -> heldBy(key, ticket))
+                   : Promise.success(Option.none());
+        }
+
+        private Option<ManualClaim> heldBy(ScheduledTaskKey key, Option<ScheduledTaskClaims.Ticket> ticket) {
+            return ticket.map(held -> manualHold(key, held))
+                         .onEmpty(() -> ctx.release(key));
+        }
+
+        private ManualClaim manualHold(ScheduledTaskKey key, ScheduledTaskClaims.Ticket ticket) {
+            return () -> ticket.release()
+                               .onResultRun(() -> ctx.release(key))
+                               .mapToUnit();
         }
 
         @Override

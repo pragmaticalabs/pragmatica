@@ -325,6 +325,37 @@ class ScheduledSingleModeNoOverlapTest {
         }
     }
 
+    /// #1155: a manual run (`/trigger`, `/inject`) takes the same cluster claim a scheduled fire does, so it cannot overlap a
+    /// fire running on another node's leader, and a fire cannot start over a manual run.
+    @Test
+    @Timeout(60)
+    void manualRun_takesTheClusterClaim_soItNeverOverlapsAFireOnAnotherNode() {
+        var leader = new Node(SELF, 60_000);
+        var other = new Node(new NodeId("leader2"), 60_000);
+        var task = new ScheduledTask(SECTION, ARTIFACT, METHOD, SELF, "1s", "", ExecutionMode.SINGLE, false);
+
+        try {
+            leader.becomeLeader();
+            await(() -> !leader.sent.isEmpty(), 5_000);
+
+            assertThat(other.manager.claimForManualRun(task).await().unwrap().isPresent()).as("a fire on another node holds the claim").isFalse();
+
+            leader.answerFirst();
+            await(() -> state.get(stateKey()) != null && state.get(stateKey()).totalExecutions() == 1, 5_000);
+            leader.stopLeading(other.self);
+            var manual = other.manager.claimForManualRun(task).await().unwrap();
+
+            assertThat(manual.isPresent()).as("the fire released: the manual run may take the claim").isTrue();
+            assertThat(leader.manager.claimForManualRun(task).await().unwrap().isPresent()).as("a manual run holds the claim over a fire").isFalse();
+
+            manual.unwrap().release().await();
+            assertThat(leader.manager.claimForManualRun(task).await().unwrap().isPresent()).as("released").isTrue();
+        } finally {
+            leader.stop();
+            other.stop();
+        }
+    }
+
     private static void await(BooleanSupplier condition, long timeoutMs) {
         var deadline = System.currentTimeMillis() + timeoutMs;
 
