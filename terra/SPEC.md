@@ -41,7 +41,7 @@ Add a Maven blueprint assembler that resolves/rebuilds Terra artifacts, checks c
 
 ## Implementation reconciliation
 
-The first increment is implemented on `feat/terra-runtime`, based on `release-1.0.0-rc4` at `c39009df6`. Subsequent milestones remain design scope and are not part of its completion claim.
+The first increment is implemented. Subsequent milestones remain design scope and are not part of its completion claim.
 
 | Clause | Implementation and evidence |
 | --- | --- |
