@@ -23,18 +23,25 @@ import static org.pragmatica.lang.Unit.unit;
 /// Distributed entries carry their own expiry (#279 item 3): the DHT has no expiry primitive, so each
 /// stored value is a self-identifying envelope -- a 4-byte header (three `0xFF` bytes and a format
 /// version), the writer's wall-clock expiry (epoch millis, 8 bytes big-endian), then the encoded value.
-/// A read past the expiry is a miss. Expiry is enforced lazily, on read, and the expired entry is left
-/// in place to be overwritten by the next put: [DHTClient] has no compare-and-remove, so removing it
-/// would race a concurrent fresh put and could delete that fresh value. An entry nobody writes again
-/// therefore stays in the DHT. Expiry compares clocks across nodes, so a node whose clock runs ahead of
-/// the writer's sees entries expire early by that skew, and one that runs behind sees them live late by it.
+/// A read past the expiry is a miss, and the expired entry is removed so that it does not accumulate
+/// (idempotency keys are unique per request, so entries nobody rewrites would grow without bound).
+///
+/// The removal is NOT conditional. Search space: [DHTClient], [DistributedDHTClient], `DHTMessage` and
+/// the storage engines under `integrations/dht`. Replicas keep a per-entry HLC version, but the client
+/// exposes neither a versioned read nor a remove-if-unchanged: `RemoveRequest` carries only the remove's
+/// own fresh stamp, which supersedes any older copy (a remove is a tombstone, last-writer-wins). So the
+/// expired entry is re-read immediately before the remove and removed only if it is still byte-identical
+/// to the expired one, which narrows the window to one DHT round trip but cannot close it: a fresh put of
+/// the same key landing in that window is deleted. For the distributed idempotency store that means a
+/// completed-outcome record can be lost and a retry re-runs the method. Expiry compares clocks across
+/// nodes, so a node whose clock runs ahead of the writer's sees entries expire early by that skew, and
+/// one that runs behind sees them live late by it.
 ///
 /// The header makes the envelope distinguishable from every value written before it existed. Those
 /// start with a VLQ type tag (`SliceCodec.writeCompact`) and tags stay below 2^21, so a tag is at most
 /// 3 bytes and its last byte has the high bit clear: no legacy value can begin with three bytes that all
-/// have the high bit set. A value without the header is read as a miss and removed. That removal is
-/// unconditional (same missing primitive), so it can race a fresh put, but only for a key still holding
-/// a pre-envelope value, i.e. during an upgrade.
+/// have the high bit set. A value without the header is read as a miss and removed, with the same
+/// unconditional removal and the same window.
 final class DHTCacheBackend implements CacheBackend {
     private static final byte[] HEADER = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 1};
 
@@ -124,17 +131,29 @@ final class DHTCacheBackend implements CacheBackend {
 
     private Promise<Option<Object>> unexpired(Object key, byte[] stored) {
         return hasHeader(stored)
-               ? liveValue(stored)
-               : discarded(key);
+               ? liveValue(key, stored)
+               : expired(key, stored);
     }
 
     private boolean hasHeader(byte[] stored) {
         return stored.length >= HEADER_BYTES && Arrays.equals(stored, 0, HEADER.length, HEADER, 0, HEADER.length);
     }
 
-    private Promise<Option<Object>> liveValue(byte[] stored) {
+    private Promise<Option<Object>> liveValue(Object key, byte[] stored) {
         return expiryMillis(stored) > clockMillis.getAsLong()
                ? decoded(Arrays.copyOfRange(stored, HEADER_BYTES, stored.length))
+               : expired(key, stored);
+    }
+
+    private Promise<Option<Object>> expired(Object key, byte[] expiredBytes) {
+        return dhtClient.get(namespacedKey(key))
+                        .flatMap(current -> removeIfUnchanged(key, expiredBytes, current));
+    }
+
+    private Promise<Option<Object>> removeIfUnchanged(Object key, byte[] expiredBytes, Option<byte[]> current) {
+        return current.filter(bytes -> Arrays.equals(bytes, expiredBytes))
+                      .isPresent()
+               ? discarded(key)
                : Promise.success(Option.none());
     }
 

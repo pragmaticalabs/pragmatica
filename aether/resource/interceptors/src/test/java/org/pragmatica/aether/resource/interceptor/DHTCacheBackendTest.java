@@ -132,18 +132,18 @@ class DHTCacheBackendTest {
     }
 
     @Test
-    void get_afterTheTtlElapses_isAMissAndLeavesTheEntryInPlace() {
+    void get_afterTheTtlElapses_isAMissAndRemovesTheEntry() {
         backend.put("key1", "world").await();
         clock.addAndGet(60_000L);
 
         var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
 
         assertThat(result.isEmpty()).as("an entry past its TTL is a miss").isTrue();
-        assertThat(storage.containsKey("test-ns:key1")).as("and is not removed: removal cannot be conditional").isTrue();
+        assertThat(storage.containsKey("test-ns:key1")).as("and the expired entry is removed").isFalse();
     }
 
     @Test
-    void get_expiredEntryOverwrittenBetweenReadAndMiss_keepsTheFreshValue() {
+    void get_expiredEntryOverwrittenBeforeTheReread_keepsTheFreshValue() {
         backend.put("key1", "old").await();
         clock.addAndGet(60_000L);
         dhtClient.afterGet = () -> storage.put("test-ns:key1",
@@ -154,7 +154,37 @@ class DHTCacheBackendTest {
         var second = backend.get("key1").await().fold(_ -> Option.none(), v -> v);
 
         assertThat(first.isEmpty()).as("the read saw the expired value").isTrue();
-        assertThat(second.unwrap()).as("the concurrent fresh put survives the expired read").isEqualTo("fresh");
+        assertThat(second.unwrap()).as("the re-read sees the fresh put, so it is not removed").isEqualTo("fresh");
+    }
+
+    /// KNOWN residual window (see the class doc): [DHTClient] has no compare-and-remove, so a fresh put that
+    /// lands after the re-read and before the remove is deleted. Pinned so the behaviour stays visible; if a
+    /// conditional remove ever exists this test should be turned around.
+    @Test
+    void get_expiredEntryOverwrittenAfterTheRereadBeforeTheRemove_losesTheFreshValue_knownWindow() {
+        backend.put("key1", "old").await();
+        clock.addAndGet(60_000L);
+        dhtClient.beforeRemove = () -> storage.put("test-ns:key1",
+                                                   DHTCacheBackend.envelope(clock.get() + 60_000L, "fresh".getBytes(UTF_8)));
+
+        backend.get("key1").await();
+
+        assertThat(storage.containsKey("test-ns:key1")).as("the fresh put is lost in the window").isFalse();
+    }
+
+    @Test
+    void get_manyDistinctExpiredKeys_areRemovedByTheirReads() {
+        for (var i = 0; i < 50; i++) {
+            backend.put("key" + i, "v" + i).await();
+        }
+        assertThat(storage).hasSize(50);
+        clock.addAndGet(60_000L);
+
+        for (var i = 0; i < 50; i++) {
+            backend.get("key" + i).await();
+        }
+
+        assertThat(storage).as("expired entries do not accumulate").isEmpty();
     }
 
     @Test
@@ -239,6 +269,7 @@ class DHTCacheBackendTest {
     private static final class FakeDHTClient implements DHTClient {
         private final ConcurrentHashMap<String, byte[]> storage;
         Runnable afterGet = () -> {};
+        Runnable beforeRemove = () -> {};
 
         FakeDHTClient(ConcurrentHashMap<String, byte[]> storage) {
             this.storage = storage;
@@ -260,6 +291,7 @@ class DHTCacheBackendTest {
 
         @Override
         public Promise<Boolean> remove(byte[] key) {
+            beforeRemove.run();
             var removed = storage.remove(new String(key, UTF_8)) != null;
             return Promise.success(removed);
         }

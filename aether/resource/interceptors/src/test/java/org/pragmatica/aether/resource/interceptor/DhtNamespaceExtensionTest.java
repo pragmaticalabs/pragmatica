@@ -110,24 +110,68 @@ class DhtNamespaceExtensionTest {
         assertThat(runs).hasValue(2);
     }
 
-    /// An expired record read must not delete a record a concurrent writer stored between the read and
-    /// the miss: the DHT has no compare-and-remove, so the expired read leaves the entry alone. The
-    /// method fails here so the interceptor does not overwrite the entry; what remains is the fresh record.
+    /// An expired record is re-read just before it is removed, so a fresh record stored before that re-read
+    /// survives. The method fails so the interceptor does not overwrite the entry: what remains is the record.
     @Test
-    void distributedIdempotency_expiredRecordReadRacingAFreshPut_keepsTheFreshRecord() {
+    void distributedIdempotency_expiredRecordOverwrittenBeforeTheReread_keepsTheFreshRecord() {
         var interceptor = idempotencyInterceptor("dedup-race");
+        var storedKey = seedExpiredRecord(interceptor);
+        var fresh = DHTCacheBackend.envelope(Long.MAX_VALUE, "fresh-outcome".getBytes(UTF_8));
+        replicated.afterGet = () -> replicated.storage.put(storedKey, fresh);
+
+        var outcome = interceptor.intercept(failingMethod()).apply("call-1").await();
+
+        assertThat(outcome.isFailure()).as("the expired record was a miss, so the method ran").isTrue();
+        assertThat(replicated.storage.get(storedKey)).as("the fresh record survives").isEqualTo(fresh);
+    }
+
+    /// KNOWN residual window (see the DHTCacheBackend class doc): there is no compare-and-remove, so a completed
+    /// record stored after the re-read and before the remove is deleted, and a retry re-runs the method.
+    @Test
+    void distributedIdempotency_expiredRecordOverwrittenBeforeTheRemove_losesTheRecordAndRetryReruns_knownWindow() {
+        var interceptor = idempotencyInterceptor("dedup-window");
+        var storedKey = seedExpiredRecord(interceptor);
+        replicated.beforeRemove = () -> replicated.storage.put(storedKey,
+                                                               DHTCacheBackend.envelope(Long.MAX_VALUE, "fresh-outcome".getBytes(UTF_8)));
+        interceptor.intercept(failingMethod()).apply("call-1").await();
+        replicated.beforeRemove = () -> {};
+        var runs = new AtomicInteger();
+        Fn1<Promise<String>, String> retry = request -> Promise.success("rerun-" + runs.incrementAndGet());
+
+        var outcome = interceptor.intercept(retry).apply("call-1").await();
+
+        assertThat(replicated.storage.get(storedKey)).as("the fresh record was deleted").isNotEqualTo(
+            DHTCacheBackend.envelope(Long.MAX_VALUE, "fresh-outcome".getBytes(UTF_8)));
+        assertThat(outcome.unwrap()).as("the retry re-ran the method").isEqualTo("rerun-1");
+    }
+
+    @Test
+    void distributedIdempotency_manyDistinctExpiredRecords_doNotAccumulate() {
+        var interceptor = idempotencyInterceptor("dedup-accumulate");
+        Fn1<Promise<String>, String> ok = request -> Promise.success("done-" + request);
+        for (var i = 0; i < 20; i++) {
+            interceptor.intercept(ok).apply("call-" + i).await().unwrap();
+        }
+        replicated.storage.replaceAll((_, stored) -> DHTCacheBackend.envelope(1L, "x".getBytes(UTF_8)));
+
+        for (var i = 0; i < 20; i++) {
+            interceptor.intercept(failingMethod()).apply("call-" + i).await();
+        }
+
+        assertThat(replicated.storage).as("expired records are removed by the reads that find them").isEmpty();
+    }
+
+    private String seedExpiredRecord(IdempotencyMethodInterceptor interceptor) {
         Fn1<Promise<String>, String> ok = request -> Promise.success("done-" + request);
         interceptor.intercept(ok).apply("call-1").await().unwrap();
         var storedKey = replicated.storage.keySet().iterator().next();
-        var fresh = DHTCacheBackend.envelope(Long.MAX_VALUE, "fresh-outcome".getBytes(UTF_8));
+
         replicated.storage.put(storedKey, DHTCacheBackend.envelope(1L, "expired-outcome".getBytes(UTF_8)));
-        replicated.afterGet = () -> replicated.storage.put(storedKey, fresh);
-        Fn1<Promise<String>, String> failing = _ -> METHOD_FAILED.promise();
+        return storedKey;
+    }
 
-        var outcome = interceptor.intercept(failing).apply("call-1").await();
-
-        assertThat(outcome.isFailure()).as("the expired record was a miss, so the method ran").isTrue();
-        assertThat(replicated.storage.get(storedKey)).as("the concurrent fresh record survives").isEqualTo(fresh);
+    private static Fn1<Promise<String>, String> failingMethod() {
+        return _ -> METHOD_FAILED.promise();
     }
 
     private IdempotencyMethodInterceptor idempotencyInterceptor(String name) {
@@ -143,6 +187,7 @@ class DhtNamespaceExtensionTest {
     private static final class RecordingDhtClient implements DHTClient {
         final ConcurrentHashMap<String, byte[]> storage = new ConcurrentHashMap<>();
         Runnable afterGet = () -> {};
+        Runnable beforeRemove = () -> {};
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
@@ -161,6 +206,8 @@ class DhtNamespaceExtensionTest {
 
         @Override
         public Promise<Boolean> remove(byte[] key) {
+            beforeRemove.run();
+
             return Promise.success(storage.remove(new String(key, UTF_8)) != null);
         }
 
