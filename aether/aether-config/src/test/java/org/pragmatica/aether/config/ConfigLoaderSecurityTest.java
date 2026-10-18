@@ -249,6 +249,33 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadFromString_parsesReadTimeout() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            read_timeout = "15s"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().readTimeout().millis()).isEqualTo(15_000L));
+    }
+
+    @Test
+    void loadFromString_usesDefaultReadTimeout_whenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().readTimeout()).isEqualTo(AppHttpConfig.DEFAULT_READ_TIMEOUT));
+    }
+
+    @Test
     void loadFromString_usesDefaultMaxRequestSize_whenNotSpecified() {
         var toml = MINIMAL_CLUSTER + """
 

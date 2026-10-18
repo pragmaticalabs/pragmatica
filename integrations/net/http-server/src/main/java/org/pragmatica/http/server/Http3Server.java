@@ -34,6 +34,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.IdGenerator;
 
 import io.netty.bootstrap.Bootstrap;
@@ -50,6 +51,7 @@ import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.http3.Http3DataFrame;
+import io.netty.handler.codec.http3.Http3ErrorCode;
 import io.netty.handler.codec.http3.Http3Headers;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
@@ -59,6 +61,7 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.concurrent.ScheduledFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -156,6 +159,7 @@ final class Http3Server {
                                      EventLoopGroup group,
                                      boolean ownsGroup) {
         var maxContentLength = config.maxContentLength();
+        var readTimeout = config.readTimeout();
         var codec = Http3.newQuicServerCodecBuilder()
                          .sslContext(quicSslContext)
                          .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
@@ -164,7 +168,7 @@ final class Http3Server {
                          .initialMaxStreamDataBidirectionalRemote(1_000_000)
                          .initialMaxStreamsBidirectional(100)
                          .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
-                         .handler(new QuicConnectionInitializer(handler, maxContentLength))
+                         .handler(new QuicConnectionInitializer(handler, maxContentLength, readTimeout))
                          .build();
         var bootstrap = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec);
 
@@ -208,16 +212,22 @@ final class Http3Server {
     private static class QuicConnectionInitializer extends ChannelInitializer<QuicChannel> {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
+        private final TimeSpan readTimeout;
 
-        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
+        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
+                                  int maxContentLength,
+                                  TimeSpan readTimeout) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
+            this.readTimeout = readTimeout;
         }
 
         @Override
         protected void initChannel(QuicChannel ch) {
             ch.pipeline()
-              .addLast(new Http3ServerConnectionHandler(new Http3StreamInitializer(handler, maxContentLength)));
+              .addLast(new Http3ServerConnectionHandler(new Http3StreamInitializer(handler,
+                                                                                   maxContentLength,
+                                                                                   readTimeout)));
         }
     }
 
@@ -226,15 +236,19 @@ final class Http3Server {
     private static class Http3StreamInitializer extends ChannelInitializer<QuicStreamChannel> {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
+        private final TimeSpan readTimeout;
 
-        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
+        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
+                               int maxContentLength,
+                               TimeSpan readTimeout) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
+            this.readTimeout = readTimeout;
         }
 
         @Override
         protected void initChannel(QuicStreamChannel ch) {
-            ch.pipeline().addLast(new Http3RequestHandler(handler, maxContentLength));
+            ch.pipeline().addLast(new Http3RequestHandler(handler, maxContentLength, readTimeout));
         }
     }
 
@@ -249,26 +263,48 @@ final class Http3Server {
     /// section and never replaces the request headers (I16). The body buffer is released on every exit: dispatch,
     /// rejection, a stream that closes without headers, and a stream torn down before its input closed.
     ///
+    /// I3: QUIC closes a silent connection after its 5 s idle timeout, but a client sending a byte every few seconds
+    /// keeps a stream open for ever. The request therefore has a deadline, `readTimeout` from its HEADERS frame to the
+    /// end of its body; past it the request is answered 408 and never dispatched.
+    ///
     /// Package-private so the server-level tests can drive it in an `EmbeddedChannel`.
     static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
         private static final Logger log = LoggerFactory.getLogger(Http3RequestHandler.class);
 
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
+        private final TimeSpan readTimeout;
         private Http3HeadersFrame headersFrame;
         private ByteBuf bodyData;
         private boolean rejected;
+        private Option<ScheduledFuture<?>> bodyDeadline = Option.none();
 
-        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
+        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength, TimeSpan readTimeout) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
+            this.readTimeout = readTimeout;
         }
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
             if (headersFrame == null) {
                 headersFrame = frame;
+                armBodyDeadline(ctx);
             }
+        }
+
+        private void armBodyDeadline(ChannelHandlerContext ctx) {
+            if (readTimeout.nanos() > 0) {
+                bodyDeadline = Option.some(ctx.executor()
+                                              .schedule(() -> rejectBodyTimeout(ctx),
+                                                        readTimeout.nanos(),
+                                                        TimeUnit.NANOSECONDS));
+            }
+        }
+
+        private void cancelBodyDeadline() {
+            bodyDeadline.onPresent(deadline -> deadline.cancel(false));
+            bodyDeadline = Option.none();
         }
 
         @Override
@@ -282,6 +318,7 @@ final class Http3Server {
 
         @Override
         protected void channelInputClosed(ChannelHandlerContext ctx) {
+            cancelBodyDeadline();
             if (headersFrame == null || rejected) {
                 releaseBody();
 
@@ -293,6 +330,7 @@ final class Http3Server {
 
         @Override
         public void handlerRemoved(ChannelHandlerContext ctx) {
+            cancelBodyDeadline();
             releaseBody();
         }
 
@@ -329,12 +367,29 @@ final class Http3Server {
         }
 
         private void rejectTooLarge(ChannelHandlerContext ctx) {
-            rejected = true;
-            releaseBody();
             log.debug("HTTP/3 request body exceeds {} bytes, answering 413", maxContentLength);
-            new Http3ResponseWriter(ctx, IdGenerator.generate("req")).error(HttpStatus.REQUEST_ENTITY_TOO_LARGE,
-                                                                            "Request body exceeds the " + maxContentLength
-                                                                            + "-byte limit");
+            reject(ctx,
+                   HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                   "Request body exceeds the " + maxContentLength + "-byte limit");
+        }
+
+        private void rejectBodyTimeout(ChannelHandlerContext ctx) {
+            if (!rejected) {
+                log.debug("HTTP/3 request body not complete within {}, answering 408", readTimeout);
+                reject(ctx, HttpStatus.REQUEST_TIMEOUT, "Request body not received within the read timeout");
+            }
+        }
+
+        /// Answers without dispatching, then asks the client to stop sending (RFC 9114 §4.1.1: a server that does
+        /// not need the rest of the request may abort reading it, with H3_NO_ERROR, after a complete response).
+        private void reject(ChannelHandlerContext ctx, HttpStatus status, String message) {
+            rejected = true;
+            cancelBodyDeadline();
+            releaseBody();
+            new Http3ResponseWriter(ctx, IdGenerator.generate("req")).error(status, message);
+            if (ctx.channel() instanceof QuicStreamChannel stream) {
+                stream.shutdownInput(Http3ErrorCode.H3_NO_ERROR.code());
+            }
         }
 
         /// Package-private test seam: whether a body buffer is still held, so a test can assert every exit released it.

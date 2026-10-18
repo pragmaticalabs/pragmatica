@@ -10,6 +10,7 @@ import java.util.Set;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -23,7 +24,8 @@ public record AppHttpConfig(boolean enabled,
                             HttpProtocol httpProtocol,
                             ApiVersioningDetection apiVersioningDetection,
                             String apiVersionHeaderName,
-                            Option<AppTls> tls) {
+                            Option<AppTls> tls,
+                            TimeSpan readTimeout) {
     /// Operator-supplied TLS identity for the USER-facing app-HTTP listener.
     ///
     /// The app port must not reuse the cluster identity. That certificate is issued by the
@@ -40,6 +42,11 @@ public record AppHttpConfig(boolean enabled,
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;
     public static final String DEFAULT_API_VERSION_HEADER = "API-Version";
+    /// `[app-http] read_timeout`: how long the listener waits on a client's request bytes before giving up on the
+    /// connection (HTTP/1.1: no byte while no response is pending; HTTP/3: the whole request body). 60 s mirrors
+    /// nginx's `client_body_timeout` default and the http-server default; it is a guess, not a measurement. A
+    /// zero or negative value disables the bound.
+    public static final TimeSpan DEFAULT_READ_TIMEOUT = TimeSpan.timeSpan(60).seconds();
 
     public AppHttpConfig {
         apiKeys = Map.copyOf(apiKeys);
@@ -65,7 +72,8 @@ public record AppHttpConfig(boolean enabled,
                                          httpProtocol,
                                          apiVersioningDetection,
                                          apiVersionHeaderName,
-                                         Option.empty()));
+                                         Option.empty(),
+                                         DEFAULT_READ_TIMEOUT));
     }
 
     /// Attach an operator-supplied TLS identity to this listener. See [AppTls].
@@ -79,7 +87,23 @@ public record AppHttpConfig(boolean enabled,
                                  httpProtocol,
                                  apiVersioningDetection,
                                  apiVersionHeaderName,
-                                 Option.some(appTls));
+                                 Option.some(appTls),
+                                 readTimeout);
+    }
+
+    /// Replace the read timeout. See [#DEFAULT_READ_TIMEOUT].
+    public AppHttpConfig withReadTimeout(TimeSpan readTimeout) {
+        return new AppHttpConfig(enabled,
+                                 port,
+                                 apiKeys,
+                                 maxRequestSize,
+                                 securityMode,
+                                 jwtConfig,
+                                 httpProtocol,
+                                 apiVersioningDetection,
+                                 apiVersionHeaderName,
+                                 tls,
+                                 readTimeout);
     }
 
     public static Result<AppHttpConfig> appHttpConfig(boolean enabled,

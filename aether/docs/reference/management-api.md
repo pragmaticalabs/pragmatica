@@ -6504,7 +6504,16 @@ The `max_request_size` field accepts human-readable data size values:
 | `MB` | `"5MB"` | 5,242,880 |
 | `GB` | `"1GB"` | 1,073,741,824 |
 
-Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`.
+Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike.
+
+#### Read timeout
+
+```toml
+[app-http]
+read_timeout = "60s"    # Default: 60s. Zero disables.
+```
+
+How long the listener waits on a client's request bytes. Over HTTP/1.1, a connection that sends no byte for this long while no response is pending (a stalled body, an idle keep-alive connection) is closed. Over HTTP/3, QUIC already closes a silent connection after 5 s, so the bound is on the whole request: a body not complete within `read_timeout` of its headers receives `408 Request Timeout` and is not dispatched. Upgraded WebSocket connections are exempt.
 
 ### Multipart File Upload
 

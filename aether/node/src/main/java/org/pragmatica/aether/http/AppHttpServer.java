@@ -564,7 +564,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
                                                              config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+                                           .withMaxContentLength(config.maxRequestSize())
+                                           .withReadTimeout(config.readTimeout());
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -597,7 +598,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     private HttpServerConfig buildServerConfig() {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+                                           .withMaxContentLength(config.maxRequestSize())
+                                           .withReadTimeout(config.readTimeout());
         // #967: never demand a client certificate from callers of a USER-facing listener. The node's
         // cluster TlsConfig is Mutual, so building this listener from it made every slice request
         // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
@@ -710,7 +712,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+                                           .withMaxContentLength(config.maxRequestSize())
+                                           .withReadTimeout(config.readTimeout());
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                              ? this::handleRequestWithAltSvc
@@ -746,7 +749,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
                                                              config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+                                           .withMaxContentLength(config.maxRequestSize())
+                                           .withReadTimeout(config.readTimeout());
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,

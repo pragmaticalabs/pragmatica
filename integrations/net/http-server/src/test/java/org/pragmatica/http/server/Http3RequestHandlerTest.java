@@ -17,6 +17,7 @@ package org.pragmatica.http.server;
 
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -28,12 +29,14 @@ import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3Headers;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// I1/I16 at the server's HTTP/3 request-stream handler, driven in an `EmbeddedChannel` (the module has no QUIC
+/// I1/I16/I3 at the server's HTTP/3 request-stream handler, driven in an `EmbeddedChannel` (the module has no QUIC
 /// client): an over-limit body is answered 413 and never dispatched, trailers never replace the request headers,
 /// and the body buffer is released on every exit.
 class Http3RequestHandlerTest {
@@ -42,10 +45,14 @@ class Http3RequestHandlerTest {
     private final List<HttpRequest> dispatched = new CopyOnWriteArrayList<>();
 
     private EmbeddedChannel channel() {
+        return channel(timeSpan(60).seconds());
+    }
+
+    private EmbeddedChannel channel(TimeSpan readTimeout) {
         return new EmbeddedChannel(new Http3Server.Http3RequestHandler((request, response) -> {
             dispatched.add(request);
             response.okText("ok");
-        }, LIMIT));
+        }, LIMIT, readTimeout));
     }
 
     private static DefaultHttp3HeadersFrame requestHeaders() {
@@ -131,6 +138,45 @@ class Http3RequestHandlerTest {
 
         assertThat(dispatched).isEmpty();
         assertThat(handler.holdsBodyBuffer()).isFalse();
+        channel.finishAndReleaseAll();
+    }
+
+    /// I3: a stream that keeps trickling (QUIC's 5 s idle never fires) is bounded by the request deadline.
+    @Test
+    void bodyNotCompleteWithinReadTimeout_isAnswered408_andNeverDispatched() throws InterruptedException {
+        var channel = channel(timeSpan(100).millis());
+        var handler = (Http3Server.Http3RequestHandler) channel.pipeline().first();
+
+        channel.writeInbound(requestHeaders());
+        channel.writeInbound(data(10));
+        Thread.sleep(300);
+        channel.runScheduledPendingTasks();
+        channel.writeInbound(data(10));
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+
+        assertThat(dispatched).as("a request past its body deadline must not be dispatched").isEmpty();
+        assertThat(responseStatus(channel)).isEqualTo("408");
+        assertThat(handler.holdsBodyBuffer()).isFalse();
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void bodyCompleteWithinReadTimeout_isDispatched() throws InterruptedException {
+        var channel = channel(timeSpan(300).millis());
+
+        channel.writeInbound(requestHeaders());
+        channel.writeInbound(data(10));
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        Thread.sleep(400);
+        channel.runScheduledPendingTasks();
+
+        assertThat(dispatched).hasSize(1);
+        assertThat(responseStatus(channel)).isEqualTo("200");
+        Object rest;
+        while ((rest = channel.readOutbound()) != null) {
+            assertThat(rest).as("no late 408 after the deadline was cancelled").isNotInstanceOf(Http3HeadersFrame.class);
+            ReferenceCountUtil.release(rest);
+        }
         channel.finishAndReleaseAll();
     }
 

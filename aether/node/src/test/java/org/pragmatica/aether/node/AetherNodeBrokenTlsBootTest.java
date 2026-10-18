@@ -54,7 +54,7 @@ class AetherNodeBrokenTlsBootTest {
         var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
                                         base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
                                         base.apiVersionHeaderName(),
-                                        Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")));
+                                        Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")), base.readTimeout());
 
         assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1, appPort);
     }
@@ -78,7 +78,7 @@ class AetherNodeBrokenTlsBootTest {
         var base = AppHttpConfig.insecureAppHttpConfig(freePort());
         var appOff = new AppHttpConfig(false, base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
                                        base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
-                                       base.apiVersionHeaderName(), Option.none());
+                                       base.apiVersionHeaderName(), Option.none(), base.readTimeout());
 
         assertRefused(appOff, freePort(), brokenTls, HttpProtocol.H3, 0);
     }
@@ -89,7 +89,7 @@ class AetherNodeBrokenTlsBootTest {
         var base = AppHttpConfig.insecureAppHttpConfig(freePort());
         var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
                                         base.jwtConfig(), HttpProtocol.H3, base.apiVersioningDetection(),
-                                        base.apiVersionHeaderName(), Option.none());
+                                        base.apiVersionHeaderName(), Option.none(), base.readTimeout());
         var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
 
         assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, brokenTls, HttpProtocol.H1, 0);
@@ -111,7 +111,7 @@ class AetherNodeBrokenTlsBootTest {
                                         base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
                                         base.apiVersionHeaderName(),
                                         Option.some(new AppHttpConfig.AppTls(dir.resolve("app.crt").toString(),
-                                                                             dir.resolve("app.key").toString())));
+                                                                             dir.resolve("app.key").toString())), base.readTimeout());
 
         assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1, appPort);
     }

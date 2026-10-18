@@ -431,7 +431,10 @@ public final class ConfigLoader {
                                                   apiVersioningDetection,
                                                   apiVersionHeaderName).unwrap();
 
-        builder.appHttp(parseAppTls(doc).map(appHttp::withTls).or(appHttp));
+        var readTimeout = parseTimeSpan(doc, "app-http", "read_timeout", AppHttpConfig.DEFAULT_READ_TIMEOUT);
+        var withReadTimeout = appHttp.withReadTimeout(readTimeout);
+
+        builder.appHttp(parseAppTls(doc).map(withReadTimeout::withTls).or(withReadTimeout));
     }
 
     /// `[app-http.tls]` — an operator-supplied certificate for the USER-facing listener.

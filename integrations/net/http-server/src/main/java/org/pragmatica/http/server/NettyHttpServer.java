@@ -19,6 +19,8 @@ import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 import org.pragmatica.http.*;
@@ -46,6 +48,9 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.timeout.IdleState;
+import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
@@ -275,6 +280,8 @@ final class NettyHttpServer implements HttpServer {
             var pipeline = ch.pipeline();
 
             sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
+            // I3: reader-idle events; HttpRequestHandler closes the connection on one unless a response is pending
+            pipeline.addLast(new IdleStateHandler(config.readTimeout().millis(), 0, 0, TimeUnit.MILLISECONDS));
             pipeline.addLast(new HttpServerCodec());
             pipeline.addLast(new HttpObjectAggregator(config.maxContentLength()));
             if (config.chunkedWriteEnabled()) {
@@ -389,6 +396,10 @@ final class NettyHttpServer implements HttpServer {
 
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final Map<String, WebSocketEndpoint> wsEndpoints;
+        /// Requests dispatched whose response write has not completed. Written from whatever thread completes the
+        /// response, read on the event loop, hence atomic. While it is non-zero the client is waiting on us, so a
+        /// silent connection is not idle.
+        private final AtomicInteger pendingResponses = new AtomicInteger();
 
         HttpRequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                            Map<String, WebSocketEndpoint> wsEndpoints) {
@@ -415,7 +426,12 @@ final class NettyHttpServer implements HttpServer {
                 return;
             }
             var requestContext = createRequestContext(requestId, request);
-            var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
+            var responseWriter = new NettyResponseWriter(ctx,
+                                                         requestId,
+                                                         HttpUtil.isKeepAlive(request),
+                                                         pendingResponses::decrementAndGet);
+
+            pendingResponses.incrementAndGet();
 
             try {
                 handler.accept(requestContext, responseWriter);
@@ -434,7 +450,7 @@ final class NettyHttpServer implements HttpServer {
             var status = undecodableStatus(cause, request);
 
             log.debug("Rejecting undecodable request {} with {}: {}", requestId, status.code(), cause.getMessage());
-            new NettyResponseWriter(ctx, requestId, false).error(status, status.message());
+            new NettyResponseWriter(ctx, requestId, false, () -> {}).error(status, status.message());
         }
 
         /// An over-long line with no headers decoded is the request line (414); an over-long line after the headers
@@ -472,7 +488,23 @@ final class NettyHttpServer implements HttpServer {
                 endpointOf(handshake).onPresent(endpoint -> open(ctx, endpoint));
             }
 
+            if (evt instanceof IdleStateEvent idle && idle.state() == IdleState.READER_IDLE) {
+                closeIfIdle(ctx);
+            }
+
             super.userEventTriggered(ctx, evt);
+        }
+
+        /// I3: no byte for the read timeout and no response owed means a stalled request (its aggregation buffer
+        /// pinned) or an idle keep-alive connection: close it. A connection awaiting its response is waiting on us,
+        /// and an upgraded WebSocket is legitimately silent, so neither is closed.
+        private void closeIfIdle(ChannelHandlerContext ctx) {
+            var webSocket = option(ctx.channel().attr(WS_STATE).get()).flatMap(opt -> opt).isPresent();
+
+            if (pendingResponses.get() == 0 && !webSocket) {
+                log.debug("Closing HTTP connection {}: no request bytes within the read timeout", ctx.channel().remoteAddress());
+                ctx.close();
+            }
         }
 
         /// #2184: the endpoint is resolved from the handshake itself, so the session exists only once the
@@ -558,14 +590,17 @@ final class NettyHttpServer implements HttpServer {
         private final ChannelHandlerContext ctx;
         private final String requestId;
         private final boolean keepAlive;
+        private final Runnable onWritten;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
 
         private final java.util.concurrent.atomic.AtomicBoolean written = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive) {
+        /// `onWritten` runs once, when the response write completes (succeeded or failed).
+        NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive, Runnable onWritten) {
             this.ctx = ctx;
             this.requestId = requestId;
             this.keepAlive = keepAlive;
+            this.onWritten = onWritten;
             this.responseHeaders = new DefaultHttpHeaders();
         }
 
@@ -595,6 +630,8 @@ final class NettyHttpServer implements HttpServer {
 
             response.headers().add(responseHeaders);
             var future = ctx.writeAndFlush(response);
+
+            future.addListener(_ -> onWritten.run());
 
             if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);

@@ -76,7 +76,7 @@ class AppHttpServerH3BindFailureTest {
         var base = AppHttpConfig.insecureAppHttpConfig(port);
         var config = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
                                        base.jwtConfig(), protocol, base.apiVersioningDetection(), base.apiVersionHeaderName(),
-                                       base.tls());
+                                       base.tls(), base.readTimeout());
 
         return AppHttpServer.appHttpServer(config,
                                            ForwardingTimeouts.forwardingTimeouts(),
