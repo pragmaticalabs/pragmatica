@@ -338,4 +338,16 @@ public sealed interface DHTMessage extends ProtocolMessage {
                                  List<KeyValue> entries,
                                  boolean refused,
                                  Option<byte[]> next) implements DHTMessage {}
+
+    /// A verified single-replica read of a CONTENT-ADDRESSED key (A6): `sha256` is the digest the value hashes to. The
+    /// replica answers only while it is fresh for the key's partition and authoritative for it ([RepairPlane]); otherwise
+    /// it answers as a replica catching up, which the reader takes as a miss. A get (`existsOnly` false) is answered
+    /// with a [GetResponse], which the reader hash-checks; an exists (`existsOnly` true) with an [ExistsResponse] that
+    /// is positive only if the replica's own copy hashes to `sha256`.
+    record VerifiedReadRequest(String requestId, NodeId sender, byte[] key, byte[] sha256, boolean existsOnly) implements DHTMessage {
+        public VerifiedReadRequest {
+            key = key.clone();
+            sha256 = sha256.clone();
+        }
+    }
 }

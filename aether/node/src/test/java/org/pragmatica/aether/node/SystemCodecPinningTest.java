@@ -74,10 +74,17 @@ class SystemCodecPinningTest {
     /// answers the read in place of its events, and an answer that succeeds carries none), so it is not steady-state traffic, and
     /// no one-byte slot is free to give it.
     ///
-    /// The A6 repair-plane trio (`StampDigestRequest`, `MigrationPageRequest`, `MigrationPageResponse`) is exempt because no
-    /// one-byte slot is free to give it, and the second byte is negligible against what each message is: a stamp digest
-    /// request is one per owned partition per co-replica per anti-entropy round (the digest it answers is unchanged), and a
-    /// page request or response exists only while a partition is being repaired, with a page carrying up to 16 MiB.
+    /// The A6 repair-plane types ([#A6_REPAIR_PLANE], matched by full name) are exempt because no one-byte slot is free
+    /// to give them. The page pair and the verified read are not small-message traffic: a page exists only while a
+    /// partition is repaired and carries up to 16 MiB, and a verified read answers with a content block. The stamp digest
+    /// request IS steady-state traffic — it replaces the one-byte legacy digest request, one per owned partition per
+    /// co-replica per anti-entropy round — so for it the exemption costs one byte per such message, next to a digest
+    /// response that is unchanged; that cost is accepted because there is no slot to give it.
+    private static final Set<String> A6_REPAIR_PLANE = Set.of("org.pragmatica.dht.DHTMessage.StampDigestRequest",
+                                                                                 "org.pragmatica.dht.DHTMessage.MigrationPageRequest",
+                                                                                 "org.pragmatica.dht.DHTMessage.MigrationPageResponse",
+                                                                                 "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
+
     @Test
     void hotProtocolTypes_fitInTheOneByteWindow() {
         var hot = SystemTags.TAGS.entrySet()
@@ -87,9 +94,7 @@ class SystemCodecPinningTest {
                                                   && !entry.getKey().endsWith(".LeaderPreVoteRequest")
                                                   && !entry.getKey().endsWith(".LeaderPreVoteResponse")
                                                   && !entry.getKey().endsWith(".CommitAdvance")
-                                                  && !entry.getKey().endsWith(".StampDigestRequest")
-                                                  && !entry.getKey().endsWith(".MigrationPageRequest")
-                                                  && !entry.getKey().endsWith(".MigrationPageResponse")
+                                                  && !A6_REPAIR_PLANE.contains(entry.getKey())
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))
                                  .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))

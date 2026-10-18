@@ -406,6 +406,8 @@ class DHTRepairPlaneTest {
             var key = contentKey(sha);
 
             assertThat(reader.client().put(key, block).await().isSuccess()).isTrue();
+            // a replica serves a verified read only once its own round has synced it (D4)
+            cluster.members.values().forEach(member -> member.antiEntropy().synchronizeNow());
 
             return new Stored(cluster, reader, block, sha, key);
         }
@@ -414,13 +416,17 @@ class DHTRepairPlaneTest {
             return cluster.sentOfType(DHTMessage.GetRequest.class).size();
         }
 
+        private static int remoteReads(RepairCluster cluster) {
+            return cluster.sentOfType(DHTMessage.VerifiedReadRequest.class).size();
+        }
+
         /// One corrupt replica — here the reader's own, which it tries first — is detected by the hash check, the
         /// read moves to the next replica, returns the right bytes and counts the fallback. Red when the hash check is
         /// skipped (the corrupt bytes come back) or the fallback is removed (nothing comes back).
         @Test
         void oneCorruptReplica_returnsTheCorrectBytes_andCountsTheFallback() throws Exception {
             var stored = stored();
-            var before = getRequests(stored.cluster());
+            var before = remoteReads(stored.cluster());
 
             stored.reader().engine().corrupt(stored.key());
 
@@ -431,18 +437,18 @@ class DHTRepairPlaneTest {
             assertThat(repair.verifiedReadFallbacks()).isEqualTo(1);
             assertThat(repair.verifiedReadMismatches()).isEqualTo(1);
             assertThat(repair.verifiedReadQuorumFallbacks()).isZero();
-            assertThat(getRequests(stored.cluster()) - before).as("one remote replica was asked, not a quorum").isEqualTo(1);
+            assertThat(remoteReads(stored.cluster()) - before).as("one remote replica was asked, not a quorum").isEqualTo(1);
         }
 
         @Test
         void healthyReplicas_areReadFromOneReplicaOnly() throws Exception {
             var stored = stored();
-            var before = getRequests(stored.cluster());
+            var before = remoteReads(stored.cluster());
 
             var read = stored.reader().client().getContentAddressed(stored.key(), stored.sha()).await().unwrap();
 
             assertThat(read.unwrap()).isEqualTo(stored.block());
-            assertThat(getRequests(stored.cluster()) - before).as("the local replica answered").isZero();
+            assertThat(remoteReads(stored.cluster()) - before).as("the local replica answered").isZero();
             assertThat(stored.reader().node().repair().verifiedReadFallbacks()).isZero();
         }
 

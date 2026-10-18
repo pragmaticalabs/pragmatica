@@ -4221,6 +4221,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageResponse.class,
                                                     dhtAntiEntropy::onMigrationPageResponse));
+        // A6: the freshness-gated verified read of content-addressed keys; answered with a Get- or ExistsResponse
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.VerifiedReadRequest.class,
+                                                    request -> dhtNode.handleVerifiedReadRequest(request,
+                                                                                                 response -> dhtNetwork.send(request.sender(),
+                                                                                                                             response))));
         // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
         // drain can confirm the chunk reached a surviving replica before halting.
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));

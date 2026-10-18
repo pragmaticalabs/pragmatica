@@ -175,7 +175,15 @@ public final class DhtStorageTier implements StorageTier {
 
     @Override
     public Promise<Boolean> exists(BlockId id) {
-        return admission().flatMap(_ -> dhtClient.exists(buildKey(id)));
+        return admission().flatMap(_ -> probe(id));
+    }
+
+    /// The exists of a content-addressed value takes the same verified path as its get, so the two agree (A6, D5): it is
+    /// positive exactly when a read would return the block. Any other value takes the quorum exists.
+    private Promise<Boolean> probe(BlockId id) {
+        return addressing == Addressing.CONTENT
+               ? dhtClient.existsContentAddressed(buildKey(id), id.hash())
+               : dhtClient.exists(buildKey(id));
     }
 
     @Override

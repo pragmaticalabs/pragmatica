@@ -54,6 +54,14 @@ public interface DHTClient {
         return get(key);
     }
 
+    /// Whether a CONTENT-ADDRESSED value exists (A6, D5), answered by the same path as
+    /// [#getContentAddressed(byte[], byte[])] so the two agree: positive exactly when a verified copy would be returned.
+    /// This default is the plain quorum [#exists(byte[])], for clients with no single-replica path (test doubles);
+    /// [DistributedDHTClient] overrides it.
+    default Promise<Boolean> existsContentAddressed(byte[] key, byte[] sha256) {
+        return exists(key);
+    }
+
     /// Get a value by string key.
     default Promise<Option<byte[]>> get(String key) {
         return get(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));

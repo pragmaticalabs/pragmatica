@@ -17,6 +17,7 @@ package org.pragmatica.dht;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -25,6 +26,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 /// The node-wide state of the DHT repair plane (A6): the page budget, the peers that speak only the legacy repair
@@ -37,10 +40,35 @@ import org.pragmatica.lang.NullReturn;
 /// question costs one unanswered round, never a broken connection. An older node announces itself: its own
 /// anti-entropy asks this node legacy questions ([DHTMessage.DigestRequest], [DHTMessage.MigrationDataRequest]).
 /// Such a sender is recorded as legacy, and this node then asks it in the legacy protocol, so repair with it keeps
-/// working (at the legacy cost: a value-reading digest and a whole-partition pull). Any new-type message from the
-/// peer clears the record, which is what happens when it restarts upgraded. A node that is new never asks a legacy
-/// question of a peer it has not recorded as legacy, so two new nodes never fall back.
+/// working (at the legacy cost: a value-reading digest and a whole-partition pull).
+///
+/// The record never latches. Every round, this node also sends each peer it holds as legacy one
+/// [DHTMessage.StampDigestRequest] probe: an older node drops it, and a node that is current answers it. Either a
+/// probe answer or a new-type message from the peer is CURRENT EVIDENCE: it clears the record, and for one freshness
+/// window afterwards a legacy question from that peer does not re-record it. Two current nodes that hold each other as
+/// legacy, after a restart under the same identity in either order, therefore both return to the stamp protocol
+/// within one round of either side's probe. A peer that really runs the old version produces no current evidence,
+/// and its next legacy question after the window records it again.
+///
+/// ## Freshness: the bound on how long a removed block stays readable (D4)
+/// A replica serves a verified single-replica read ([DistributedDHTClient#getContentAddressed]) only while it is
+/// FRESH for the key's partition: within the last freshness window (K anti-entropy intervals, default 2) its own
+/// rounds SYNCED it with at least max(1, RF − W) co-replicas, a sync being a digest match or a completed pull from
+/// that peer. A remove that was acknowledged reached at least W replicas, so at most RF − W − 1 co-replicas other
+/// than a stale one lack the tombstone; a sync with RF − W distinct co-replicas therefore includes one that holds
+/// it, and that sync delivers it. A replica that missed a remove thus serves the removed block for at most one
+/// freshness window after its last sync before the remove, whatever stops it syncing since (a partition, ring
+/// disagreement, a failing store). Repair is pull-only, so only the replica's own rounds count.
 public final class RepairPlane {
+    /// The anti-entropy intervals a replica may go without a sync and still serve verified reads (default K = 2).
+    public static final int DEFAULT_FRESHNESS_INTERVALS = 2;
+
+    /// The default freshness window: K intervals of the default anti-entropy period.
+    public static final TimeSpan DEFAULT_FRESHNESS_WINDOW = TimeSpan.timeSpan(DEFAULT_FRESHNESS_INTERVALS * DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL.millis()).millis();
+
+    /// How long a verified read waits for one replica before also asking the next (spec A3b: 200 ms).
+    public static final TimeSpan DEFAULT_HEDGE_DELAY = TimeSpan.timeSpan(200).millis();
+
     private final AtomicReference<PageBudget> pageBudget = new AtomicReference<>(PageBudget.DEFAULT);
     private final Set<NodeId> legacyPeers = ConcurrentHashMap.newKeySet();
     /// Partitions whose digest differed from a co-replica's, by partition index, with the peers they differed
@@ -52,6 +80,14 @@ public final class RepairPlane {
     private final AtomicLong verifiedReadFallbacks = new AtomicLong();
     private final AtomicLong verifiedReadMismatches = new AtomicLong();
     private final AtomicLong verifiedReadQuorumFallbacks = new AtomicLong();
+    private final AtomicReference<TimeSpan> freshnessWindow = new AtomicReference<>(DEFAULT_FRESHNESS_WINDOW);
+    private final AtomicReference<TimeSpan> hedgeDelay = new AtomicReference<>(DEFAULT_HEDGE_DELAY);
+
+    /// When each co-replica last synced this node for each partition (wall clock), by partition index.
+    private final ConcurrentHashMap<Integer, ConcurrentHashMap<NodeId, Long>> syncedAt = new ConcurrentHashMap<>();
+
+    /// When each peer last showed it speaks the current protocol (wall clock).
+    private final ConcurrentHashMap<NodeId, Long> currentEvidenceAt = new ConcurrentHashMap<>();
 
     private RepairPlane() {}
 
@@ -70,16 +106,86 @@ public final class RepairPlane {
         pageBudget.set(budget);
     }
 
-    /// `peer` asked a legacy repair question: it speaks only the legacy protocol.
+    /// Record `peer` as legacy unconditionally (an older node's own view of its peers, in tests).
     @Contract
     void noteLegacyPeer(NodeId peer) {
         legacyPeers.add(peer);
     }
 
-    /// `peer` sent a new-type repair message: it speaks the current protocol.
+    /// Clear the legacy record of `peer` without evidence (a restarted node's empty view, in tests).
     @Contract
     void noteCurrentPeer(NodeId peer) {
         legacyPeers.remove(peer);
+        currentEvidenceAt.remove(peer);
+    }
+
+    /// `peer` asked a legacy repair question at `atMillis`: recorded as legacy unless it showed current evidence within
+    /// the freshness window.
+    @Contract
+    void noteLegacyQuestion(NodeId peer, long atMillis) {
+        if (Option.option(currentEvidenceAt.get(peer))
+                  .filter(at -> at >= atMillis - freshnessWindow.get()
+                                                                .millis())
+                  .isEmpty()) {
+            legacyPeers.add(peer);
+        }
+    }
+
+    /// `peer` sent a new-type repair message, or answered a stamp probe, at `atMillis`: it speaks the current protocol.
+    @Contract
+    void noteCurrentEvidence(NodeId peer, long atMillis) {
+        currentEvidenceAt.put(peer, atMillis);
+        legacyPeers.remove(peer);
+    }
+
+    /// Peers held as legacy now: each is probed with a stamp digest request every round.
+    Set<NodeId> legacyPeers() {
+        return Set.copyOf(legacyPeers);
+    }
+
+    /// The window within which a sync keeps this node fresh, and current evidence outweighs a legacy question.
+    public TimeSpan freshnessWindow() {
+        return freshnessWindow.get();
+    }
+
+    /// Use `window` as the freshness window (the anti-entropy process sets K × its interval).
+    @Contract
+    public void useFreshnessWindow(TimeSpan window) {
+        freshnessWindow.set(window);
+    }
+
+    /// How long a verified read waits for one replica before also asking the next.
+    public TimeSpan hedgeDelay() {
+        return hedgeDelay.get();
+    }
+
+    /// Use `delay` as the hedge delay of verified reads from now on.
+    @Contract
+    public void useHedgeDelay(TimeSpan delay) {
+        hedgeDelay.set(delay);
+    }
+
+    /// This node's own round synced it with `peer` for the partition at `atMillis`: a digest match or a completed pull.
+    @Contract
+    void noteSynced(int partitionIndex, NodeId peer, long atMillis) {
+        syncedAt.computeIfAbsent(partitionIndex, _ -> new ConcurrentHashMap<>()).put(peer, atMillis);
+    }
+
+    /// Whether at least `required` of `coReplicas` synced this node for the partition within the freshness window.
+    boolean fresh(int partitionIndex, List<NodeId> coReplicas, int required, long nowMillis) {
+        var cutoff = nowMillis - freshnessWindow.get().millis();
+
+        return Option.option(syncedAt.get(partitionIndex))
+                     .map(peers -> syncedSince(peers, coReplicas, cutoff))
+                     .or(0L) >= required;
+    }
+
+    private static long syncedSince(Map<NodeId, Long> peers, List<NodeId> coReplicas, long cutoff) {
+        return coReplicas.stream()
+                         .filter(peer -> Option.option(peers.get(peer))
+                                               .filter(at -> at >= cutoff)
+                                               .isPresent())
+                         .count();
     }
 
     /// Whether `peer` is recorded as speaking only the legacy protocol.
@@ -105,12 +211,15 @@ public final class RepairPlane {
     @Contract
     void forgetPeer(NodeId peer) {
         diverged.keySet().forEach(index -> noteRepaired(index, peer));
+        syncedAt.values().forEach(peers -> peers.remove(peer));
         legacyPeers.remove(peer);
+        currentEvidenceAt.remove(peer);
     }
 
     @Contract
     void forgetPartition(int partitionIndex) {
         diverged.remove(partitionIndex);
+        syncedAt.remove(partitionIndex);
     }
 
     /// `null` drops the entry once its last peer is repaired, per the `computeIfPresent` contract.

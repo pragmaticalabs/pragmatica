@@ -25,6 +25,7 @@ import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -39,7 +40,9 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 
@@ -57,6 +60,10 @@ final class RepairCluster {
     final Set<NodeId> legacyNodes = ConcurrentHashMap.newKeySet();
     final Set<NodeId> departing = ConcurrentHashMap.newKeySet();
     final Set<NodeId> unreachable = ConcurrentHashMap.newKeySet();
+    /// Directed links that drop every message, as `from>to` (an asymmetric partition).
+    final Set<String> cutLinks = ConcurrentHashMap.newKeySet();
+    /// The wall clock every node reads (tombstone ages, freshness): starts at real time, moved by [#advance].
+    final AtomicLong clock = new AtomicLong(System.currentTimeMillis());
     final AtomicInteger droppedUnknownTypes = new AtomicInteger();
     /// Page requests delivered before exactly ONE is lost (every later one is delivered); negative: none is lost.
     final AtomicInteger pageRequestsDelivered = new AtomicInteger(-1);
@@ -76,11 +83,13 @@ final class RepairCluster {
     private void add(NodeId id) {
         var ring = ConsistentHashRing.<NodeId>consistentHashRing();
         var engine = new CountingEngine();
-        DHTNetwork network = this::deliver;
+        DHTNetwork network = (target, message) -> deliver(id, target, message);
 
         allIds(id).forEach(ring::addNode);
 
         var node = DHTNode.dhtNode(id, engine, ring, config);
+
+        node.useWallClock(clock::get);
         var antiEntropy = DHTAntiEntropy.dhtAntiEntropy(node, network, config, departing::contains);
         var rebalancer = DHTRebalancer.dhtRebalancer(node, network, config);
         var client = DistributedDHTClient.distributedDHTClient(node, network, config);
@@ -101,15 +110,25 @@ final class RepairCluster {
         return members.get(new NodeId(id));
     }
 
-    private void deliver(NodeId target, ProtocolMessage message) {
+    /// Move every node's wall clock forward by `millis`.
+    void advance(long millis) {
+        clock.addAndGet(millis);
+    }
+
+    void cut(String from, String to) {
+        cutLinks.add(from + ">" + to);
+    }
+
+    private void deliver(NodeId from, NodeId target, ProtocolMessage message) {
         sent.add(Map.entry(target, message));
         measure(message);
 
-        if (unreachable.contains(target) || pageRequestLost(message)) {
+        if (unreachable.contains(target) || pageRequestLost(message) || cutLinks.contains(from.id() + ">" + target.id())) {
             return;
         }
 
-        if (legacyNodes.contains(target) && introducedByA6(message)) {
+        // an older node neither understands nor ever emits the message types A6 introduced
+        if ((legacyNodes.contains(target) || legacyNodes.contains(from)) && introducedByA6(message)) {
             droppedUnknownTypes.incrementAndGet();
 
             return;
@@ -127,7 +146,8 @@ final class RepairCluster {
     private static boolean introducedByA6(ProtocolMessage message) {
         return message instanceof DHTMessage.StampDigestRequest
                || message instanceof DHTMessage.MigrationPageRequest
-               || message instanceof DHTMessage.MigrationPageResponse;
+               || message instanceof DHTMessage.MigrationPageResponse
+               || message instanceof DHTMessage.VerifiedReadRequest;
     }
 
     private void measure(ProtocolMessage message) {
@@ -166,18 +186,21 @@ final class RepairCluster {
         var node = member.node();
 
         switch (message) {
-            case DHTMessage.GetRequest r -> node.handleGetRequest(r, resp -> deliver(r.sender(), resp));
+            case DHTMessage.GetRequest r -> node.handleGetRequest(r, resp -> deliver(member.id(), r.sender(), resp));
             case DHTMessage.GetResponse r -> member.client().onGetResponse(r);
-            case DHTMessage.PutRequest r -> node.handlePutRequest(r, resp -> deliver(r.sender(), resp));
+            case DHTMessage.PutRequest r -> node.handlePutRequest(r, resp -> deliver(member.id(), r.sender(), resp));
             case DHTMessage.PutResponse r -> member.client().onPutResponse(r);
-            case DHTMessage.DigestRequest r -> node.handleDigestRequest(r, resp -> deliver(r.sender(), resp));
-            case DHTMessage.StampDigestRequest r -> node.handleStampDigestRequest(r, resp -> deliver(r.sender(), resp));
+            case DHTMessage.DigestRequest r -> node.handleDigestRequest(r, resp -> deliver(member.id(), r.sender(), resp));
+            case DHTMessage.StampDigestRequest r -> node.handleStampDigestRequest(r, resp -> deliver(member.id(), r.sender(), resp));
             case DHTMessage.DigestResponse r -> member.antiEntropy().onDigestResponse(r);
-            case DHTMessage.MigrationDataRequest r -> node.handleMigrationDataRequest(r, resp -> deliver(r.sender(), resp));
-            case DHTMessage.MigrationPageRequest r -> node.handleMigrationPageRequest(r, resp -> deliver(r.sender(), resp));
+            case DHTMessage.MigrationDataRequest r -> node.handleMigrationDataRequest(r, resp -> deliver(member.id(), r.sender(), resp));
+            case DHTMessage.MigrationPageRequest r -> node.handleMigrationPageRequest(r, resp -> deliver(member.id(), r.sender(), resp));
             case DHTMessage.MigrationDataResponse r -> member.antiEntropy().onMigrationDataResponse(r);
             case DHTMessage.MigrationPageResponse r -> member.antiEntropy().onMigrationPageResponse(r);
             case DHTMessage.MigrationDataAck r -> member.rebalancer().onMigrationDataAck(r);
+            case DHTMessage.ExistsRequest r -> node.handleExistsRequest(r, resp -> deliver(member.id(), r.sender(), resp));
+            case DHTMessage.ExistsResponse r -> member.client().onExistsResponse(r);
+            case DHTMessage.VerifiedReadRequest r -> node.handleVerifiedReadRequest(r, resp -> deliver(member.id(), r.sender(), resp));
             default -> { }
         }
     }
@@ -233,6 +256,8 @@ final class RepairCluster {
     /// memory engine's index and are not counted: they carry no value.
     static final class CountingEngine implements StorageEngine {
         private final MemoryStorageEngine inner = memoryStorageEngine();
+        /// When set, every replica copy fails to store, as a failing disk would.
+        final AtomicBoolean failReplicaWrites = new AtomicBoolean();
         final AtomicInteger valueReads = new AtomicInteger();
         private final Set<String> corrupted = ConcurrentHashMap.newKeySet();
 
@@ -332,6 +357,10 @@ final class RepairCluster {
 
         @Override
         public Promise<Boolean> putReplica(DHTMessage.KeyValue entry, boolean createIfAbsent) {
+            if (failReplicaWrites.get()) {
+                return Causes.cause("injected store failure").promise();
+            }
+
             return inner.putReplica(entry, createIfAbsent);
         }
 

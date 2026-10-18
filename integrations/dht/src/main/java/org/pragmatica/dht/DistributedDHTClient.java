@@ -15,7 +15,6 @@
  */
 package org.pragmatica.dht;
 
-import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
@@ -211,28 +210,59 @@ public final class DistributedDHTClient implements DHTClient {
                                                                  targets.size()));
     }
 
-    /// Verified single-replica read (A6, spec A3b): the local engine first when this node is a replica, then each
-    /// other live replica in ring order, one at a time, until one returns bytes that hash to `sha256`. A miss, a
-    /// tombstone, a failure, a timeout or a hash mismatch moves on to the next replica and is counted
-    /// ([RepairPlane#verifiedReadFallbacks]; a mismatch also as [RepairPlane#verifiedReadMismatches]). Each replica
-    /// gets an equal share of the operation timeout, so this phase never outlasts one operation.
+    /// Verified single-replica read (A6, spec A3b), hedged (D2) and gated by freshness (D4).
     ///
-    /// When no single replica yields a verified copy, the read falls back to the quorum [#get(byte[])] — its
-    /// tombstone ordering and its bounded fallback probe (#428) — and returns that answer only if it, too, hashes
-    /// right. Returning one replica's copy is sound only because the key names the bytes: a verified copy cannot be
-    /// stale. One semantic difference is accepted for such keys: a replica that has not yet received a remove may
-    /// serve the removed block's (correct) bytes, where a quorum read might have answered absent.
+    /// The local engine is asked first when this node is a replica, then the other live replicas in ring order; the
+    /// next replica is asked as soon as the previous one answered with a miss or has not answered within the hedge
+    /// delay ([RepairPlane#hedgeDelay], 200 ms by default). The first copy that hashes to `sha256` wins. A replica
+    /// answers only while it is fresh for the key's partition ([DHTNode#verifiedReadServable]); a replica that is not,
+    /// a peer that speaks only the legacy protocol (it would drop the request), a tombstone, a failure and a hash
+    /// mismatch are all misses. Moving past a replica is counted ([RepairPlane#verifiedReadFallbacks]; a mismatch also
+    /// as [RepairPlane#verifiedReadMismatches]).
+    ///
+    /// When no replica yields a verified copy, the quorum [#get(byte[])] decides — its tombstone ordering and its
+    /// bounded fallback probe (#428) — and its answer is returned only if it, too, hashes right. The verified phase may
+    /// use half the operation timeout and the quorum fallback the rest, so the whole read is bounded by ONE operation
+    /// timeout. Returning one replica's copy is sound only because the key names the bytes: a verified copy cannot be
+    /// stale. A replica that missed a remove can serve the removed block's bytes only while it is fresh, which bounds
+    /// that window by the freshness window ([RepairPlane]).
     @Override
     public Promise<Option<byte[]>> getContentAddressed(byte[] key, byte[] sha256) {
+        return contentAddressed(key, sha256, false);
+    }
+
+    /// The exists of a content-addressed key, by the same gated, hedged path as [#getContentAddressed] (D5): positive
+    /// exactly when a fresh replica holds a copy that hashes to `sha256`, or else when the quorum read returns one. A
+    /// remote replica checks the hash itself and returns no bytes.
+    @Override
+    public Promise<Boolean> existsContentAddressed(byte[] key, byte[] sha256) {
+        return contentAddressed(key, sha256, true).map(Option::isPresent);
+    }
+
+    private Promise<Option<byte[]>> contentAddressed(byte[] key, byte[] sha256, boolean existsOnly) {
         if (!node.replicationResolved()) {
             return DHTError.REPLICATION_UNRESOLVED.promise();
         }
 
         var candidates = localFirst(targetNodes(key));
+        var startNanos = System.nanoTime();
+        var timeoutNanos = config.get().operationTimeout().nanos();
+        var phaseDeadline = startNanos + timeoutNanos / 2;
+        var readDeadline = startNanos + timeoutNanos;
 
         return candidates.isEmpty()
                ? DHTError.NO_AVAILABLE_NODES.promise()
-               : readVerified(key, sha256, candidates, 0);
+               : HedgedRead.hedgedRead(candidates,
+                                       target -> verifiedProbe(target, key, sha256, existsOnly, phaseDeadline),
+                                       node.repair().hedgeDelay(),
+                                       node.repair()::noteVerifiedReadFallback)
+                           .flatMap(found -> orQuorum(found, key, sha256, readDeadline));
+    }
+
+    private Promise<Option<byte[]>> orQuorum(Option<byte[]> found, byte[] key, byte[] sha256, long readDeadline) {
+        return found.isPresent()
+               ? Promise.success(found)
+               : quorumVerified(key, sha256, readDeadline);
     }
 
     private List<NodeId> localFirst(List<NodeId> targets) {
@@ -243,58 +273,71 @@ public final class DistributedDHTClient implements DHTClient {
                : targets;
     }
 
-    private Promise<Option<byte[]>> readVerified(byte[] key, byte[] sha256, List<NodeId> candidates, int index) {
-        return index >= candidates.size()
-               ? quorumVerified(key, sha256)
-               : readReplicaAt(key, sha256, candidates, index);
-    }
-
-    private Promise<Option<byte[]>> readReplicaAt(byte[] key, byte[] sha256, List<NodeId> candidates, int index) {
-        var replica = candidates.get(index);
-        var source = replica.id();
-
-        return readOneReplica(replica,
-                              key,
-                              replicaTimeout(candidates.size())).map(entry -> hashCheckedValue(entry, sha256, source))
-                             .flatMap(verified -> verifiedOrNext(verified, key, sha256, candidates, index));
-    }
-
-    private Promise<Option<byte[]>> verifiedOrNext(Option<byte[]> verified,
-                                                   byte[] key,
-                                                   byte[] sha256,
-                                                   List<NodeId> candidates,
-                                                   int index) {
-        return verified.isPresent()
-               ? Promise.success(verified)
-               : nextReplica(key, sha256, candidates, index);
-    }
-
-    private Promise<Option<byte[]>> nextReplica(byte[] key, byte[] sha256, List<NodeId> candidates, int index) {
-        node.repair().noteVerifiedReadFallback();
-
-        return readVerified(key, sha256, candidates, index + 1);
-    }
-
-    private TimeSpan replicaTimeout(int candidates) {
-        return TimeSpan.timeSpan(Math.max(1L,
-                                          config.get().operationTimeout().millis() / candidates)).millis();
-    }
-
-    /// One replica's entry for `key`. A failure or a timeout is a miss here (FER: the read degrades forward to the
-    /// next replica, and ultimately to the quorum read, so one slow or failing replica costs its share of the
-    /// timeout, never the read). An absent answer from a replica still catching up fails its slot like any read.
-    private Promise<Option<DHTMessage.KeyValue>> readOneReplica(NodeId target, byte[] key, TimeSpan timeout) {
-        Promise<Option<DHTMessage.KeyValue>> answer = promise();
-        var collector = QuorumCollector.newestEntryCollector(1, 1, answer);
-
+    /// One candidate's verified answer, or a miss; never a failure.
+    private Promise<Option<byte[]>> verifiedProbe(NodeId target,
+                                                  byte[] key,
+                                                  byte[] sha256,
+                                                  boolean existsOnly,
+                                                  long deadlineNanos) {
         if (target.equals(node.nodeId())) {
-            handleLocalGet(key, collector);
-        } else {
-            sendRemoteGet(target, key, collector);
+            return localVerified(key, sha256);
         }
 
-        return answer.timeout(timeout)
-                     .recover(_ -> none());
+        return node.repair()
+                   .isLegacyPeer(target)
+               ? Promise.success(none())
+               : remoteVerified(target, key, sha256, existsOnly, deadlineNanos);
+    }
+
+    /// The local replica answers under the same freshness gate a remote one applies to itself. A store that cannot be
+    /// read is a miss (FER: the read moves to the next replica).
+    private Promise<Option<byte[]>> localVerified(byte[] key, byte[] sha256) {
+        return node.verifiedReadServable(node.ring().partitionFor(key))
+               ? node.storage()
+                     .getEntry(key)
+                     .map(entry -> hashCheckedValue(entry, sha256, "the local replica"))
+                     .recover(_ -> none())
+               : Promise.success(none());
+    }
+
+    /// A remote replica's answer to a [DHTMessage.VerifiedReadRequest]. A refusal (not fresh), a failure or a timeout
+    /// at the deadline is a miss (FER: the read degrades forward to the next replica, then to the quorum read).
+    private Promise<Option<byte[]>> remoteVerified(NodeId target,
+                                                   byte[] key,
+                                                   byte[] sha256,
+                                                   boolean existsOnly,
+                                                   long deadlineNanos) {
+        Promise<Option<DHTMessage.KeyValue>> answer = promise();
+        var collector = QuorumCollector.newestEntryCollector(1, 1, answer);
+        var correlationId = IdGenerator.generate();
+
+        track(correlationId, collector);
+        dispatchTracked(target,
+                        new DHTMessage.VerifiedReadRequest(correlationId, node.nodeId(), key, sha256, existsOnly),
+                        correlationId,
+                        collector);
+
+        return answer.timeout(remaining(deadlineNanos))
+                     .recover(_ -> none())
+                     .map(entry -> verifiedAnswer(entry,
+                                                  sha256,
+                                                  target.id(),
+                                                  existsOnly));
+    }
+
+    /// A get answer carries the bytes, checked here; an exists answer is positive only after the replica checked them.
+    private Option<byte[]> verifiedAnswer(Option<DHTMessage.KeyValue> entry,
+                                          byte[] sha256,
+                                          String source,
+                                          boolean existsOnly) {
+        return existsOnly
+               ? entry.filter(kv -> !kv.tombstone())
+                      .map(_ -> NO_BYTES)
+               : hashCheckedValue(entry, sha256, source);
+    }
+
+    private static TimeSpan remaining(long deadlineNanos) {
+        return TimeSpan.timeSpan(Math.max(1L, deadlineNanos - System.nanoTime())).nanos();
     }
 
     /// The live value of `entry` when its bytes hash to `sha256`; a tombstone or an absent entry is a miss.
@@ -305,7 +348,7 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private boolean hashMatches(byte[] value, byte[] sha256, String source) {
-        var matches = sha256Of(value).map(digest -> MessageDigest.isEqual(digest, sha256)).or(false);
+        var matches = ContentHash.matches(value, sha256);
 
         if (!matches) {
             node.repair().noteVerifiedReadMismatch();
@@ -315,16 +358,13 @@ public final class DistributedDHTClient implements DHTClient {
         return matches;
     }
 
-    private static Result<byte[]> sha256Of(byte[] value) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> MessageDigest.getInstance("SHA-256").digest(value));
-    }
-
-    /// No replica yielded a verified copy: the quorum read decides, and its answer is returned only if verified.
-    private Promise<Option<byte[]>> quorumVerified(byte[] key, byte[] sha256) {
+    /// No replica yielded a verified copy: the quorum read decides within what is left of the operation timeout, and
+    /// its answer is returned only if verified.
+    private Promise<Option<byte[]>> quorumVerified(byte[] key, byte[] sha256, long readDeadline) {
         node.repair().noteVerifiedReadQuorumFallback();
 
-        return get(key).map(value -> value.filter(present -> hashMatches(present, sha256, "the quorum read")));
+        return get(key).timeout(remaining(readDeadline))
+                  .map(value -> value.filter(present -> hashMatches(present, sha256, "the quorum read")));
     }
 
     @Override

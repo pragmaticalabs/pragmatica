@@ -871,6 +871,74 @@ public final class DHTNode {
                                                                                  readiness)));
     }
 
+    /// Whether this node may answer a verified single-replica read for `partition` (A6, D4): it is authoritative for the
+    /// partition, and FRESH for it — its own rounds synced it with at least max(1, RF − W) co-replicas within the
+    /// freshness window ([RepairPlane]). A partition still catching up is never fresh: its copies are no evidence.
+    public boolean verifiedReadServable(Partition partition) {
+        return readiness(partition).authoritative() && repair.fresh(partition.value(),
+                                                                    coReplicasOf(partition),
+                                                                    syncsRequired(),
+                                                                    nowMillis());
+    }
+
+    private List<NodeId> coReplicasOf(Partition partition) {
+        return ring.nodesFor(partition,
+                             config().effectiveReplicationFactor(ring.nodeCount()))
+                   .stream()
+                   .filter(peer -> !peer.equals(nodeId))
+                   .toList();
+    }
+
+    /// RF − W co-replica syncs guarantee one with a replica that acknowledged any remove; at least one in every case.
+    private int syncsRequired() {
+        var current = config();
+        var replicationFactor = current.effectiveReplicationFactor(ring.nodeCount());
+
+        return Math.max(1,
+                        replicationFactor - current.effectiveWriteQuorum(ring.nodeCount()));
+    }
+
+    /// Handle a verified single-replica read (A6, D4/D5). A node that is not fresh for the key's partition answers as a
+    /// replica catching up, so the reader moves on and, when no replica qualifies, falls back to the quorum read: a
+    /// replica that missed a remove therefore serves the removed block for at most one freshness window. A store that
+    /// cannot be read answers the same way (FER: the read degrades to the next replica, never to a false absent).
+    @Contract
+    public void handleVerifiedReadRequest(DHTMessage.VerifiedReadRequest request,
+                                          Consumer<DHTMessage> responseHandler) {
+        if (!verifiedReadServable(ring.partitionFor(request.key()))) {
+            responseHandler.accept(refusedVerifiedRead(request));
+
+            return;
+        }
+
+        storage.getEntry(request.key())
+               .onSuccess(entry -> responseHandler.accept(verifiedReadAnswer(request, entry)))
+               .onFailure(_ -> responseHandler.accept(refusedVerifiedRead(request)));
+    }
+
+    private DHTMessage refusedVerifiedRead(DHTMessage.VerifiedReadRequest request) {
+        return request.existsOnly()
+               ? new DHTMessage.ExistsResponse(request.requestId(), nodeId, false, Readiness.CATCHING_UP)
+               : new DHTMessage.GetResponse(request.requestId(), nodeId, Option.none(), Readiness.CATCHING_UP);
+    }
+
+    private DHTMessage verifiedReadAnswer(DHTMessage.VerifiedReadRequest request, Option<DHTMessage.KeyValue> entry) {
+        return request.existsOnly()
+               ? verifiedExistsAnswer(request, entry)
+               : getResponse(request.requestId(), entry, Readiness.SERVING);
+    }
+
+    /// An exists is positive only for a live copy that hashes to the key's digest; anything else is a miss.
+    private DHTMessage verifiedExistsAnswer(DHTMessage.VerifiedReadRequest request, Option<DHTMessage.KeyValue> entry) {
+        return entry.filter(kv -> !kv.tombstone())
+                    .filter(kv -> ContentHash.matches(kv.value(),
+                                                      request.sha256()))
+                    .<DHTMessage> map(kv -> existsResponse(request.requestId(),
+                                                           some(kv),
+                                                           Readiness.SERVING))
+                    .or(() -> refusedVerifiedRead(request));
+    }
+
     private DHTMessage.GetResponse getResponse(String requestId,
                                                Option<DHTMessage.KeyValue> entry,
                                                Readiness readiness) {
@@ -1061,7 +1129,7 @@ public final class DHTNode {
     public void handleDigestRequest(DHTMessage.DigestRequest request,
                                     Consumer<DHTMessage.DigestResponse> responseHandler) {
         noteHeardFrom(request.sender());
-        repair.noteLegacyPeer(request.sender());
+        repair.noteLegacyQuestion(request.sender(), nowMillis());
         repair.noteLegacyExchange();
         var partition = Partition.at(request.partitionStart());
         var readiness = readiness(partition);
@@ -1084,7 +1152,7 @@ public final class DHTNode {
     public void handleStampDigestRequest(DHTMessage.StampDigestRequest request,
                                          Consumer<DHTMessage.DigestResponse> responseHandler) {
         noteHeardFrom(request.sender());
-        repair.noteCurrentPeer(request.sender());
+        repair.noteCurrentEvidence(request.sender(), nowMillis());
         var partition = Partition.at(request.partition());
         var readiness = readiness(partition);
 
@@ -1124,7 +1192,7 @@ public final class DHTNode {
     @Contract
     public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
                                            Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
-        repair.noteLegacyPeer(request.sender());
+        repair.noteLegacyQuestion(request.sender(), nowMillis());
         repair.noteLegacyExchange();
         var partition = Partition.at(request.partitionStart());
 
@@ -1165,7 +1233,7 @@ public final class DHTNode {
     @Contract
     public void handleMigrationPageRequest(DHTMessage.MigrationPageRequest request,
                                            Consumer<DHTMessage.MigrationPageResponse> responseHandler) {
-        repair.noteCurrentPeer(request.sender());
+        repair.noteCurrentEvidence(request.sender(), nowMillis());
         var partition = Partition.at(request.partition());
 
         if (!isReplicaOf(request.sender(), partition)) {

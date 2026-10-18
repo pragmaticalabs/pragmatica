@@ -124,6 +124,10 @@ public final class DHTAntiEntropy {
     /// Where an interrupted periodic paged pull resumes (A6): the last key applied from that peer for that
     /// partition. Cleared when the pull reaches the partition's last page.
     private final ConcurrentHashMap<PullKey, byte[]> resumeAt = new ConcurrentHashMap<>();
+    /// Stamp digest probes sent to peers held as legacy, by correlation id: an answer is current evidence ([RepairPlane]).
+    private final ConcurrentHashMap<String, PendingProbe> stampProbes = new ConcurrentHashMap<>();
+
+    private record PendingProbe(NodeId peer, long createdAtNanos) {}
 
     private DHTAntiEntropy(DHTNode node,
                            DHTNetwork network,
@@ -141,6 +145,8 @@ public final class DHTAntiEntropy {
         this.clock = clock;
         node.ring().onNodeRemoved(this::dropRoundsAsking);
         node.ring().onNodeRemoved(this::forgetRepairPeer);
+        node.repair()
+            .useFreshnessWindow(TimeSpan.timeSpan(RepairPlane.DEFAULT_FRESHNESS_INTERVALS * antiEntropyInterval.millis()).millis());
     }
 
     /// Create an anti-entropy process for the given node with default interval.
@@ -309,6 +315,7 @@ public final class DHTAntiEntropy {
     private void synchronizePartitions() {
         expireStalePendingDigests();
         purgeStrays();
+        probeLegacyPeers();
         var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
         var owned = 0;
 
@@ -882,6 +889,23 @@ public final class DHTAntiEntropy {
         agreementVotes.keySet().retainAll(pendingDigests.keySet());
         catchUpDigests.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
         pendingPulls.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
+        stampProbes.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
+    }
+
+    /// One stamp digest probe per peer held as legacy, every round (D1): an older node drops it, a current one answers,
+    /// and the answer clears the record. The legacy record therefore never latches between two current nodes.
+    private void probeLegacyPeers() {
+        node.repair().legacyPeers().stream().filter(node.ring().nodes()::contains).forEach(this::sendStampProbe);
+    }
+
+    private void sendStampProbe(NodeId peer) {
+        var correlationId = IdGenerator.generate();
+
+        stampProbes.put(correlationId, new PendingProbe(peer, System.nanoTime()));
+        sendLoudly(peer,
+                   new DHTMessage.StampDigestRequest(correlationId, node.nodeId(), 0),
+                   "stamp protocol probe",
+                   () -> stampProbes.remove(correlationId));
     }
 
     /// Handle a digest response from a remote peer.
@@ -889,6 +913,9 @@ public final class DHTAntiEntropy {
     @Contract
     public void onDigestResponse(DHTMessage.DigestResponse response) {
         node.noteHeardFrom(response.sender());
+        Option.option(stampProbes.remove(response.requestId())).onPresent(probe -> node.repair()
+                                                                                       .noteCurrentEvidence(probe.peer(),
+                                                                                                            node.nowMillis()));
         Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> voteAndCompare(pending, response));
         Option.option(catchUpDigests.remove(response.requestId())).onPresent(pending -> onCatchUpDigest(pending,
                                                                                                         response));
@@ -916,6 +943,7 @@ public final class DHTAntiEntropy {
                       pending.partitionIndex(),
                       pending.peer().id());
             node.repair().noteRepaired(pending.partitionIndex(), pending.peer());
+            noteSyncedIfAuthoritative(pending, response);
             resumeAt.remove(new PullKey(pending.peer(), pending.partitionIndex()));
 
             return;
@@ -1014,7 +1042,22 @@ public final class DHTAntiEntropy {
     private void notePulled(PendingPull pull, boolean applied) {
         if (applied) {
             node.repair().noteRepaired(pull.partitionIndex(), pull.peer());
+            noteSynced(pull.partitionIndex(), pull.peer());
         }
+    }
+
+    /// A digest match with a SERVING peer syncs this node with it (D4): this node held what the peer held when it
+    /// answered. A peer still catching up is no evidence of what the partition holds.
+    @Contract
+    private void noteSyncedIfAuthoritative(PendingDigest pending, DHTMessage.DigestResponse response) {
+        if (response.readiness().authoritative()) {
+            noteSynced(pending.partitionIndex(), pending.peer());
+        }
+    }
+
+    @Contract
+    private void noteSynced(int partitionIndex, NodeId peer) {
+        node.repair().noteSynced(partitionIndex, peer, node.nowMillis());
     }
 
     /// Handle one page of a paged pull (A6). Only the answer to a page request this node sent is applied — its
@@ -1038,7 +1081,7 @@ public final class DHTAntiEntropy {
         }
 
         pendingPulls.remove(response.requestId());
-        node.repair().noteCurrentPeer(response.sender());
+        node.repair().noteCurrentEvidence(response.sender(), node.nowMillis());
         if (response.refused()) {
             onRefusedPull(pull);
 
@@ -1121,6 +1164,7 @@ public final class DHTAntiEntropy {
     private void finishRepairPull(PullKey key) {
         resumeAt.remove(key);
         node.repair().noteRepaired(key.partitionIndex(), key.peer());
+        noteSynced(key.partitionIndex(), key.peer());
     }
 
     private void onCatchUpPage(PendingPull pull, CatchUpRound round, DHTMessage.MigrationPageResponse response) {

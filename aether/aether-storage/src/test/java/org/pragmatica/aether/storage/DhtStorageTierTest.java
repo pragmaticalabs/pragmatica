@@ -92,6 +92,24 @@ class DhtStorageTierTest {
             assertThat(dhtClient.lastDigest.get()).isEqualTo(blockId.hash());
         }
 
+        /// D5: the exists of a content-addressed block takes the same verified path as its get, so the two agree. Red when
+        /// exists stays on the quorum.
+        @Test
+        void contentTier_existsThroughTheVerifiedPath_likeItsGet() {
+            var contentTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", Promise.UNIT,
+                                                            DhtStorageTier.Addressing.CONTENT);
+            var blockId = blockIdOf(SAMPLE_CONTENT);
+
+            contentTier.put(blockId, SAMPLE_CONTENT).await();
+
+            assertThat(contentTier.exists(blockId).await().unwrap()).isTrue();
+            assertThat(dhtClient.contentAddressedExists.get()).isEqualTo(1);
+            assertThat(dhtClient.quorumExists.get()).isZero();
+            assertThat(dhtClient.lastDigest.get()).isEqualTo(blockId.hash());
+            assertThat(tier.exists(blockId).await().unwrap()).as("control: an opaque tier keeps the quorum exists").isTrue();
+            assertThat(dhtClient.quorumExists.get()).isEqualTo(1);
+        }
+
         /// Opaque values (ciphertext under a keyring) and every tier built without a choice keep the quorum read.
         /// Red when the content-addressed path is applied to them.
         @Test
@@ -322,6 +340,16 @@ class DhtStorageTierTest {
         private final AtomicInteger quorumReads = new AtomicInteger();
         private final AtomicInteger contentAddressedReads = new AtomicInteger();
         private final AtomicReference<byte[]> lastDigest = new AtomicReference<>();
+        private final AtomicInteger quorumExists = new AtomicInteger();
+        private final AtomicInteger contentAddressedExists = new AtomicInteger();
+
+        @Override
+        public Promise<Boolean> existsContentAddressed(byte[] key, byte[] sha256) {
+            contentAddressedExists.incrementAndGet();
+            lastDigest.set(sha256);
+
+            return Promise.success(store.containsKey(keyString(key)));
+        }
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
@@ -351,6 +379,8 @@ class DhtStorageTierTest {
 
         @Override
         public Promise<Boolean> exists(byte[] key) {
+            quorumExists.incrementAndGet();
+
             return Promise.success(store.containsKey(keyString(key)));
         }
 

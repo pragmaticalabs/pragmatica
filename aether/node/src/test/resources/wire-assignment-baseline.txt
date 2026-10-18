@@ -385,6 +385,7 @@ SHAPE org.pragmatica.dht.DHTMessage$PutResponse (requestId:java.lang.String,send
 SHAPE org.pragmatica.dht.DHTMessage$RemoveRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[],version:long,epochIncarnation:long,epochTerm:long,epochCounter:long,replicationVersion:long)
 SHAPE org.pragmatica.dht.DHTMessage$RemoveResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,found:boolean,fenced:boolean,replicationStale:boolean,fenceUnknown:boolean,writePending:boolean)
 SHAPE org.pragmatica.dht.DHTMessage$StampDigestRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,partition:int)
+SHAPE org.pragmatica.dht.DHTMessage$VerifiedReadRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[],sha256:byte[],existsOnly:boolean)
 SHAPE org.pragmatica.dht.Partition (value:int)
 SHAPE org.pragmatica.lang.Option$None ()
 SHAPE org.pragmatica.lang.Option$Some (value:T)
@@ -792,6 +793,7 @@ TAG  org.pragmatica.dht.DHTMessage$Readiness 90
 TAG  org.pragmatica.dht.DHTMessage$RemoveRequest 66
 TAG  org.pragmatica.dht.DHTMessage$RemoveResponse 67
 TAG  org.pragmatica.dht.DHTMessage$StampDigestRequest 2163
+TAG  org.pragmatica.dht.DHTMessage$VerifiedReadRequest 2166
 TAG  org.pragmatica.dht.Partition 68
 TAG  org.pragmatica.lang.Option$None 1
 TAG  org.pragmatica.lang.Option$Some 2
