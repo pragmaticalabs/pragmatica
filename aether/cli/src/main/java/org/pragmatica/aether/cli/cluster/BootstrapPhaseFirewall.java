@@ -46,7 +46,7 @@ public sealed interface BootstrapPhaseFirewall {
     record unused() implements BootstrapPhaseFirewall {}
 
     /// REQ-5.1.8.3 — the cluster (8090) and management (8080) ports are OPERATOR-managed and must
-    /// never be opened here, consistent with `[infrastructure.networking] type = "manual"`.
+    /// never be opened here, consistent with the manual networking model.
     /// Only `app_http` is ever auto-opened, and only under REQ-5.1.8.2.
     String HETZNER_PROVIDER = "hetzner";
     String AWS_PROVIDER = "aws";

@@ -11,7 +11,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
@@ -48,8 +47,7 @@ class ClusterSecretGenerationTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(3),
+                                                  RoleSubTable.roleSubTable(Option.some(3),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -57,19 +55,17 @@ class ClusterSecretGenerationTest {
     }
 
     private static RuntimeProfile defaultRuntime() {
-        return RuntimeProfile.runtimeProfile("default",
-                                             RuntimeType.CONTAINER,
+        return RuntimeProfile.runtimeProfile(RuntimeType.CONTAINER,
                                              Option.some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
                                              Option.empty());
     }
 
     private static ClusterBootstrapConfig minimalConfig() {
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", threeCoreCloudSource()),
                                                              Map.of("default", defaultRuntime()),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
