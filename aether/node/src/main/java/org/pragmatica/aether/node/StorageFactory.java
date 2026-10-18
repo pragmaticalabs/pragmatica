@@ -1211,7 +1211,30 @@ public final class StorageFactory {
     /// cancelled sibling's output promise resolves at once, but its retry loop keeps attempting until
     /// `stopped` fires, because core `Retry` does not observe its output. On a refusal that happens
     /// immediately: `Main#exitWithError` in production, `abortStart`'s stop in Ember.
+    ///
+    /// #1170 round 2: two phases, the DHT counterpart of [#createAll]'s guard-then-commit. A check with no
+    /// keyring only READS the namespace marker and can refuse; a check with a keyring WRITES it. Written
+    /// alongside a sibling's refusal, the marker outlives the refused boot, and backing that instance out
+    /// to `encrypted = false` is then refused by it. So every refusing check runs first and the writes
+    /// follow only once all of them have admitted: design-out, nothing to take back. BOUND: a write that
+    /// itself fails terminally (the node stopping mid-way) can leave markers its earlier siblings wrote.
+    /// The writes' gates are resolved with the refusal, so a caller racing them fails with the real cause
+    /// instead of waiting out the admission timeout.
     static Promise<Unit> verifyDhtMarkers(DHTClient client, List<DhtMarkerCheck> checks, BooleanSupplier stopped) {
+        var writes = checks.stream().filter(StorageFactory::writesMarker).toList();
+        var guards = checks.stream().filter(check -> !writesMarker(check)).toList();
+
+        return verifyEach(client, guards, stopped).flatMap(_ -> verifyEach(client, writes, stopped))
+                         .onFailure(cause -> writes.forEach(check -> check.readGate()
+                                                                          .resolve(cause.result())));
+    }
+
+    private static boolean writesMarker(DhtMarkerCheck check) {
+        return check.effectiveKeyring()
+                    .isPresent();
+    }
+
+    private static Promise<Unit> verifyEach(DHTClient client, List<DhtMarkerCheck> checks, BooleanSupplier stopped) {
         if (checks.isEmpty()) {
             return Promise.UNIT;
         }

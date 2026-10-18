@@ -1110,6 +1110,44 @@ class StorageFactoryEncryptionTest {
                                          .isTrue();
     }
 
+    /// #1170 round 2: the DHT side of the same boundary. `vault`'s check WRITES its namespace marker; if
+    /// that lands before `plain`'s check refuses, the refused boot has stamped the DHT and backing
+    /// `vault` out to `encrypted = false` is then refused by the very marker the refused boot left.
+    /// The marker writes therefore wait until every refusing check has passed.
+    @Test
+    void admitDhtMarkers_writesNoDhtMarker_whenAnotherInstanceRefusesTheBoot() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var boot = bootRefusedByDht(dhtClient, tempDir.resolve("plain-disk-1170-dht"), tempDir.resolve("vault-disk-1170-dht"));
+
+        StorageFactory.admitDhtMarkers(dhtClient, boot, () -> false).await();
+
+        assertThat(dhtClient.get("vault-blocks/" + EncryptingStorageTier.MARKER_FILE_NAME).await().unwrap().isPresent())
+                .as("a refused boot must not stamp the DHT namespace of a sibling")
+                .isFalse();
+        boot.get("vault").dhtMarkerCheck().onPresent(check -> assertThat(check.readGate().isResolved())
+                .as("the sibling's gate is resolved with the refusal, not left to the admission timeout")
+                .isTrue());
+    }
+
+    @Test
+    void admitDhtMarkers_bootsAfterBackOut_whenTheRefusedBootWouldHaveStampedTheDht() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var plainDisk = tempDir.resolve("plain-disk-1170-dht-backout");
+        var vaultDisk = tempDir.resolve("vault-disk-1170-dht-backout");
+        var refused = bootRefusedByDht(dhtClient, plainDisk, vaultDisk);
+
+        StorageFactory.admitDhtMarkers(dhtClient, refused, () -> false).await();
+
+        var backedOut = createAllOrFail(Map.of("plain", storageConfigAt(plainDisk, true),
+                                               "vault", storageConfigAt(vaultDisk, false)),
+                                        Option.some(dhtClient),
+                                        Option.some(singleKeyRing("key-1")));
+
+        StorageFactory.admitDhtMarkers(dhtClient, backedOut, () -> false)
+                      .await()
+                      .onFailure(cause -> fail("backing the sibling out to encrypted = false must boot: " + cause.message()));
+    }
+
     @Test
     void admitDhtMarkers_keepsDiskMarker_whenCiphertextAlreadyLandedBesideIt() throws IOException {
         var dhtClient = new InMemoryDHTClient();
