@@ -202,17 +202,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final TimeSpan RECONCILE_TICK = TimeSpan.timeSpan(5L).seconds();
     private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
+
     /// Minimum spacing between reconciler dials to a peer SWIM reports alive: the lower jitter bound of the
     /// initial delay (4 s). With SWIM alive the backoff cap equals its initial value; a peer SWIM does not see
     /// alive keeps the 60 s cap. The spacing sits below the smallest gap between two jittered ticks
     /// (`RECONCILE_TICK` - `RECONCILE_TICK_JITTER_MS` = 4.2 s), so every tick may dial.
     private static final long RECONCILE_ALIVE_SPACING_MS = Math.round(RECONCILE_BACKOFF_INITIAL_MS * JitterUtil.LIGHT_MIN_FACTOR);
+
     /// Each fixed-rate tick runs a random `[0, RECONCILE_TICK_JITTER_MS)` after its slot, drawn per node and per
     /// tick, so nodes that all see a healed peer (same start time, same tick phase) do not dial it in lockstep.
     /// The jitter acts on the dial instant itself; a jitter on the spacing gate alone cannot, because the dial
     /// only ever happens on a tick.
     private static final long RECONCILE_TICK_JITTER_MS = 800L;
-
     /// Multiple of the QUIC hello/handshake timeout after which a peer pinned in CONNECTING is
     /// treated as a hung dial and force-evicted by the reconciler so a fresh re-dial can proceed.
     /// A dial that neither completes (`onPeerConnected`) nor fails (`onConnectFailed`) — e.g. a
@@ -772,7 +773,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// task via `CancellableTask.set` which cancels the old future first.
     @Contract
     private void startMissingPeerReconciler() {
-        var future = SharedScheduler.scheduleAtFixedRate(this::scheduleJitteredReconcileTick, RECONCILE_TICK, RECONCILE_TICK);
+        var future = SharedScheduler.scheduleAtFixedRate(this::scheduleJitteredReconcileTick,
+                                                         RECONCILE_TICK,
+                                                         RECONCILE_TICK);
 
         reconcilerTask.set(future);
         log.debug("Missing-peer reconciler scheduled (tick={}ms, backoff initial={}ms, cap={}ms)",
@@ -2729,7 +2732,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// The deferred tick re-checks `isRunning`, so a tick pending at `stop()` is a no-op.
     @Contract
     void scheduleJitteredReconcileTick() {
-        var _ = SharedScheduler.schedule(this::reconcileMissingPeersTick, TimeSpan.timeSpan(reconcileTickOffsetMs.getAsLong()).millis());
+        var _ = SharedScheduler.schedule(this::reconcileMissingPeersTick,
+                                         TimeSpan.timeSpan(reconcileTickOffsetMs.getAsLong()).millis());
     }
 
     /// Test seam — replaces the random tick offset with a fixed one.
@@ -3115,9 +3119,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// the next tick instead of waiting out the attempt time earned at the 60 s cap.
     private boolean reconcileBackoffAllows(PeerState state, long nowMs) {
         return swimLivenessAllows(state.peerId())
-               ? state.reconcileBackoffAllowsWhileAlive(nowMs,
-                                                        RECONCILE_BACKOFF_INITIAL_MS,
-                                                        RECONCILE_ALIVE_SPACING_MS)
+               ? state.reconcileBackoffAllowsWhileAlive(nowMs, RECONCILE_BACKOFF_INITIAL_MS, RECONCILE_ALIVE_SPACING_MS)
                : state.reconcileBackoffAllows(nowMs,
                                               RECONCILE_BACKOFF_INITIAL_MS,
                                               RECONCILE_BACKOFF_CAP_MS,

@@ -707,9 +707,7 @@ public final class PeerState {
     /// There is no jitter here: the gate is only evaluated on a reconciler tick, so a jittered threshold below
     /// one tick cannot move a dial instant. The caller picks a spacing below the smallest gap between two ticks,
     /// so every tick may dial; de-synchronisation across nodes comes from the tick offset.
-    public synchronized boolean reconcileBackoffAllowsWhileAlive(long nowMs,
-                                                                 long initialMs,
-                                                                 long spacingMs) {
+    public synchronized boolean reconcileBackoffAllowsWhileAlive(long nowMs, long initialMs, long spacingMs) {
         if (nowMs < Math.min(reconcileNextAttemptMs, reconcileLastAttemptMs + spacingMs)) {
             return false;
         }
