@@ -295,6 +295,21 @@ class CommunityPlacementReconcilerTest {
         assertThat(escalations).hasSize(1);
     }
 
+    /// The factory production wires (no clock argument) stamps with the wall clock.
+    @Test
+    void factoryWithoutAClock_stampsWithTheWallClock() {
+        var production = CommunityPlacementReconciler.communityPlacementReconciler(CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true,
+            ready::contains, () -> Set.of(CORE, OLD), () -> 10, actuator, escalations::add, (node, cause) -> {},
+            org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis());
+        var before = System.currentTimeMillis();
+
+        initialize();
+        production.reconcile().await().unwrap();
+
+        assertThat(current().startedAt()).isBetween(before, System.currentTimeMillis());
+    }
+
     @Test
     void implicitSurplusWaitsForQuiescenceAcknowledgementWithoutExplicitPolicy() {
         initialize();
