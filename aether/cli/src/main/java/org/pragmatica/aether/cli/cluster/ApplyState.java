@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.json.JsonMapper;
@@ -90,6 +91,11 @@ public record ApplyState(ClusterName clusterName,
     }
 
     private static final Path AETHER_DIR = Path.of(System.getProperty("user.home"), ".aether", "clusters");
+
+    /// Where one cluster's apply state lives. Every read, write and delete resolves through here, which is
+    /// the seam a test replaces to prove a code path never touches the state store (same pattern as
+    /// `ClusterTargetMixin#registryLoader`).
+    static Function<ClusterName, Path> stateDirResolver = name -> AETHER_DIR.resolve(name.value());
     private static final String STATE_FILE_NAME = "apply-state.json";
 
     static Result<Unit> save(ApplyState state) {
@@ -116,7 +122,7 @@ public record ApplyState(ClusterName clusterName,
 
     @SuppressWarnings("JBCT-EX-01")
     private static Unit doSave(ApplyState state) throws Exception {
-        var dir = AETHER_DIR.resolve(state.clusterName().value());
+        var dir = stateDirResolver.apply(state.clusterName());
 
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(STATE_FILE_NAME), toJson(state));
@@ -134,7 +140,7 @@ public record ApplyState(ClusterName clusterName,
     }
 
     private static Path stateFilePath(ClusterName clusterName) {
-        return AETHER_DIR.resolve(clusterName.value()).resolve(STATE_FILE_NAME);
+        return stateDirResolver.apply(clusterName).resolve(STATE_FILE_NAME);
     }
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();

@@ -188,7 +188,7 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
    ping -c 10 node2
    ```
 
-### Issue: `cluster apply --resume`/`--rollback` Failed Part-Way
+### Issue: `cluster apply --resume` Failed Part-Way
 
 The wave rollout behind `--resume` is dormant in rc4 and `--rollback` is refused as not implemented (#686); plain `cluster apply` performs scale-only writes and never reaches this.
 

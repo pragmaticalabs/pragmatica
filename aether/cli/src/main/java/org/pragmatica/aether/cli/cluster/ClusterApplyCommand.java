@@ -63,16 +63,18 @@ class ClusterApplyCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        return rollback
+               ? refuseRollback()
+               : applyWithTarget();
+    }
+
+    private Integer applyWithTarget() {
         return clusterTarget.applyOverrides()
                             .map(_ -> dispatch())
                             .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
     private int dispatch() {
-        if (rollback) {
-            return refuseRollback();
-        }
-
         if (resume) {
             return handleResume();
         }
@@ -88,7 +90,8 @@ class ClusterApplyCommand implements Callable<Integer> {
 
     /// Owner ruling (#686): `--rollback` fails honestly until the wave rollout is decided. The flag used
     /// to be accepted and then ran the normal apply path, which looked like a rollback that did nothing.
-    /// Refused before the config is read or the cluster is called, so no side effect precedes the refusal.
+    /// Refused first of all, before `--cluster` resolution reads the registry and before the config, the
+    /// apply state or the cluster are touched, so no side effect (and no other error) precedes the refusal.
     private int refuseRollback() {
         return onFailure(ROLLBACK_NOT_IMPLEMENTED);
     }
@@ -133,7 +136,7 @@ class ClusterApplyCommand implements Callable<Integer> {
 
     /// #1487 — `--cluster <name>` (from [ClusterTargetMixin]) both selects the target cluster and, mirroring
     /// `aether cluster bootstrap --cluster`, rewrites the TOML's `[cluster] name` to it before the config is sent
-    /// (default path) or parsed and diffed (`--resume`, `--rollback`). A cluster bootstrapped with `--cluster X`
+    /// (default path) or parsed and diffed (`--resume`). A cluster bootstrapped with `--cluster X`
     /// persists `X`; `cluster.name` is immutable, so applying the unmodified file (named `Y`) would otherwise be
     /// refused. Without `--cluster` (or with a blank one) the file is used unchanged.
     static Result<String> withClusterNameOverride(String rawToml, Option<String> override) {

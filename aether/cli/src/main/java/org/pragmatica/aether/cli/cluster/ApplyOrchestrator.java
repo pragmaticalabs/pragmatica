@@ -53,15 +53,6 @@ public final class ApplyOrchestrator {
                          .flatMap(plan -> executeWithState(plan, currentStored, desired));
     }
 
-    public static Result<ApplyResult> rollback(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
-        var clusterName = desired.cluster().name();
-
-        return ApplyState.load(clusterName)
-                         .toResult(new ApplyAborted("No apply state found for cluster '" + clusterName
-                                                   + "'. Nothing to rollback."))
-                         .flatMap(state -> executeRollback(state, currentStored, desired));
-    }
-
     private static Result<DiffPlan> computeValidPlan(ClusterBootstrapConfig desired,
                                                      ClusterBootstrapConfig currentStored) {
         return rejectImmutableChanges(ClusterBootstrapConfigDiff.diff(currentStored, desired));
@@ -188,40 +179,6 @@ public final class ApplyOrchestrator {
         }
 
         return success(state);
-    }
-
-    private static Result<ApplyResult> executeRollback(ApplyState state,
-                                                       ClusterBootstrapConfig stored,
-                                                       ClusterBootstrapConfig desired) {
-        logRollback(state);
-        var clusterName = state.clusterName();
-        var destroyedCount = state.destroyedNodeIds().size();
-        var createdCount = state.createdResources().size();
-
-        if (destroyedCount == 0 && createdCount == 0) {
-            ApplyState.delete(clusterName);
-
-            return success(applyResult(ClusterBootstrapConfigDiff.diff(stored, desired), 0, 0, 0));
-        }
-
-        destroyCreatedResources(state);
-        ApplyState.delete(clusterName);
-
-        return success(applyResult(ClusterBootstrapConfigDiff.diff(stored, desired), 0, createdCount, 0));
-    }
-
-    @Contract
-    private static void logRollback(ApplyState state) {
-        System.out.println("Rolling back apply for cluster '" + state.clusterName() + "'");
-        System.out.println("  Created resources to destroy: " + state.createdResources().size());
-        System.out.println("  Destroyed nodes to note: " + state.destroyedNodeIds().size());
-    }
-
-    @Contract
-    private static void destroyCreatedResources(ApplyState state) {
-        for (var resource : state.createdResources()) {
-            System.out.println("  Rollback: destroying " + resource.description());
-        }
     }
 
     public record ApplyAborted(String detail) implements Cause {

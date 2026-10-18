@@ -2690,7 +2690,7 @@ aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--res
 | `--rollback` | **Not implemented, see #686**: prints that `--rollback` is not implemented and exits non-zero (1) before reading the file or contacting the cluster; takes precedence over `--resume` |
 | `--full-check` | Run full network pre-flight checks |
 
-**Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
+**Plain `apply` (no `--resume`) actuates scale changes only.** It diffs the config
 file against what's stored and classifies every change: a role's worker/core count going up or
 down is applied immediately as a fenced desired-count write, for which the worker reconciler then
 provisions or drains nodes. Any other kind of change in the same file — adding/removing a source
@@ -2706,7 +2706,7 @@ applicable through `apply` in rc4.** `apply` performs scale-only plans via the l
 desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
 new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
 wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
-through the cloud provider) are entered only through `--resume`/`--rollback`, and they are
+through the cloud provider) are entered only through `--resume`, and they are
 deliberately not wired to plain `apply` — a client-side rollout would be a second actuation
 authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
 is a separate ticket).
