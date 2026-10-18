@@ -41,6 +41,21 @@ class ManagementSecurityModeTest {
     }
 
     @Test
+    void absent_inheritsJwtFromTheAppPlane_andArmsTheManagementPlane() {
+        var appHttp = load("""
+
+            [app-http]
+            enabled = "true"
+            security_mode = "jwt"
+            jwks_url = "https://auth.example.com/jwks.json"
+            """);
+
+        assertThat(appHttp.securityMode()).isEqualTo(SecurityMode.JWT);
+        assertThat(appHttp.managementSecurityMode().isEmpty()).isTrue();
+        assertThat(appHttp.managementSecurityEnabled()).as("jwt is not none: the management plane authenticates with API keys").isTrue();
+    }
+
+    @Test
     void absent_inheritsNoneFromTheAppPlane() {
         var appHttp = load("""
 

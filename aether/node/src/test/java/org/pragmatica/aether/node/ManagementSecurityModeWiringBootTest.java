@@ -11,12 +11,14 @@ import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
@@ -47,6 +49,7 @@ class ManagementSecurityModeWiringBootTest {
 
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final String PROBE_PATH = "/api/v1/no-such-route";
+    private static final String CONFIGURED_KEY = "k-962-configured-key";
 
     private AetherNode node;
 
@@ -89,10 +92,27 @@ class ManagementSecurityModeWiringBootTest {
                                .isNotIn(401, 403);
     }
 
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void configuredKey_authenticatesOnTheArmedManagementPlane() throws Exception {
+        var port = boot(appHttp(SecurityMode.API_KEY, Map.of(CONFIGURED_KEY, ApiKeyEntry.apiKeyEntry("ops", Set.of()))));
+
+        assertThat(probe(port, Option.some(CONFIGURED_KEY))).as("the key declared in [app-http.api-keys] is accepted by the management plane")
+                                                           .isNotIn(401, 403);
+        assertThat(probe(port, Option.some("not-" + CONFIGURED_KEY))).as("control: an unknown key is refused")
+                                                                     .isIn(401, 403);
+        assertThat(probe(port)).as("control: no key is refused")
+                               .isEqualTo(401);
+    }
+
     private static AppHttpConfig appHttp(SecurityMode mode) {
+        return appHttp(mode, Map.of());
+    }
+
+    private static AppHttpConfig appHttp(SecurityMode mode, Map<String, ApiKeyEntry> apiKeys) {
         return AppHttpConfig.appHttpConfig(false,
                                            AppHttpConfig.DEFAULT_APP_HTTP_PORT,
-                                           Map.of(),
+                                           apiKeys,
                                            AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
                                            mode,
                                            Option.empty(),
@@ -114,9 +134,16 @@ class ManagementSecurityModeWiringBootTest {
     }
 
     private static int probe(int managementPort) throws Exception {
-        var request = HttpRequest.newBuilder(URI.create("http://localhost:" + managementPort + PROBE_PATH))
-                                 .GET()
-                                 .build();
+        return probe(managementPort, Option.none());
+    }
+
+    private static int probe(int managementPort, Option<String> apiKey) throws Exception {
+        var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + managementPort + PROBE_PATH))
+                                 .GET();
+
+        apiKey.onPresent(key -> builder.header("X-API-Key", key));
+
+        var request = builder.build();
 
         return HttpClient.newHttpClient()
                          .send(request, HttpResponse.BodyHandlers.discarding())

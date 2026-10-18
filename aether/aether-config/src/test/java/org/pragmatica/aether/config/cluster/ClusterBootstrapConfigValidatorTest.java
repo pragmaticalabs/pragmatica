@@ -86,11 +86,24 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigWithManagement(String securityMode, String cidr) {
+        return cloudConfigWithManagementOverlay(Map.of("app-http", Map.of("security_mode", securityMode)), cidr);
+    }
+
+    /// An overlay with an explicit `[app-http]` mode and/or `[management]` table (#962). Either mode may be absent.
+    private static ClusterBootstrapConfig cloudConfigWithModes(Option<String> appMode, Option<String> managementMode, String cidr) {
+        var overlay = new java.util.HashMap<String, Object>();
+
+        appMode.onPresent(mode -> overlay.put("app-http", Map.of("security_mode", mode)));
+        managementMode.onPresent(mode -> overlay.put("management", Map.of("security_mode", mode)));
+        return cloudConfigWithManagementOverlay(overlay, cidr);
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithManagementOverlay(Map<String, Object> tables, String cidr) {
         var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
         var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
                             firewallRule(8080, "tcp", cidr, none()));
-        var overlay = new TomlDocument(Map.of("app-http", Map.of("security_mode", securityMode)));
+        var overlay = new TomlDocument(tables);
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
@@ -656,6 +669,55 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_publicManagementPortWithAuthEnabled_succeeds() {
             validate(cloudConfigWithPublicManagement("api_key"))
                 .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-24"));
+        }
+
+        /// PF-24 judges the EFFECTIVE management mode (#962), never the app plane's mode alone. Each helper call
+        /// is `validate` on a source whose management port is open to 0.0.0.0/0 unless stated.
+        private static boolean refusedAsPf24(ClusterBootstrapConfig config) {
+            return validate(config).fold(cause -> cause.message().contains("PF-24"), _ -> false);
+        }
+
+        @Test
+        void validate_managementNoneWhileAppHttpIsApiKey_returnsPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), some("none"), "0.0.0.0/0"))).isTrue();
+        }
+
+        @Test
+        void validate_managementApiKeyWhileAppHttpIsNone_isNotPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), some("api-key"), "0.0.0.0/0"))).isFalse();
+        }
+
+        @Test
+        void validate_managementAbsent_inheritsAppHttpNone_returnsPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), none(), "0.0.0.0/0"))).isTrue();
+        }
+
+        @Test
+        void validate_managementAbsent_inheritsAppHttpApiKey_isNotPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), none(), "0.0.0.0/0"))).isFalse();
+        }
+
+        @Test
+        void validate_managementNoneWithNoAppHttpMode_returnsPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(none(), some("none"), "0.0.0.0/0"))).isTrue();
+        }
+
+        @Test
+        void validate_managementNoneIsReadLikeTheNode_paddedAndOddCased() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), some("  None "), "0.0.0.0/0"))).isTrue();
+        }
+
+        /// The node reads any management value other than `none` as api-key, so a typo or `jwt` closes the plane:
+        /// PF-24 must not refuse it, even while the app plane says none.
+        @Test
+        void validate_managementTypoOrJwt_isNotPf24_evenWhileAppHttpIsNone() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), some("nnone"), "0.0.0.0/0"))).isFalse();
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), some("jwt"), "0.0.0.0/0"))).isFalse();
+        }
+
+        @Test
+        void validate_managementNoneOnAScopedPort_isNotPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), some("none"), "203.0.113.0/24"))).isFalse();
         }
 
         @Test

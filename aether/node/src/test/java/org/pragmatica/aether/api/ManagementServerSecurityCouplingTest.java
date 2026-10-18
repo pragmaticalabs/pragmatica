@@ -100,7 +100,10 @@ class ManagementServerSecurityCouplingTest {
         server(validator, true).onHttpForwardRequest(forwardRequest());
 
         assertThat(serializer.status()).isEqualTo(401);
-        assertThat(serializer.bodyText()).contains("Management API").contains("X-API-Key header required");
+        assertThat(serializer.bodyText()).contains("Management API")
+                                         .contains("authentication refused")
+                                         .contains("X-API-Key header required")
+                                         .doesNotContain("authorization_role");
     }
 
     @Test
