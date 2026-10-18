@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
@@ -461,8 +462,42 @@ class SliceRuntimeAdapterTest {
 
         cluster.script = _ -> Causes.cause("quorum paused").promise();
 
-        assertThat(adapterOver(cluster).run(new NodeFsmEffect.LocalOp(1, 0, Option.some(ORDERS), LocalStep.FORCED_CLEANUP, 0, Option.none())).await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
+        try (var logs = new LogCapture(SliceRuntimeAdapter.class.getName())) {
+            assertThat(adapterOver(cluster).run(new NodeFsmEffect.LocalOp(1, 0, Option.some(ORDERS), LocalStep.FORCED_CLEANUP, 0, Option.none())).await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
+            assertThat(store.calls).containsExactly("deactivate " + ORDERS, "unload " + ORDERS);
+            assertThat(logs.lines()).as("the refusal is logged, not swallowed silently")
+                                    .anySatisfy(line -> assertThat(line.message()).contains("Could not release the legs of " + ORDERS).contains("quorum paused"));
+        }
+    }
+
+    /// Both steps of the removal failed: the step reports the deactivation's failure, the first one, and the unload still ran.
+    @Test
+    void forcedCleanup_whenBothTheDeactivationAndTheUnloadFail_reportsTheDeactivation() {
+        var deactivation = Causes.cause("stop failed");
+
+        store.deactivateFailure = deactivation;
+        store.unloadFailure = Causes.cause("class loader would not close");
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+
+        assertThat(run(LocalStep.FORCED_CLEANUP)).isEqualTo(LocalOutcome.failed(deactivation));
         assertThat(store.calls).containsExactly("deactivate " + ORDERS, "unload " + ORDERS);
+    }
+
+    /// Which legs a forced cleanup may remove: the node-scoped ones (this node's topic subscription row, its stream reference counts), and none of
+    /// the cluster-scoped ones (stream registration, scheduled task).
+    @Test
+    void nodeScoped_keepsTheTopicRowsAndTheReferenceCounts_andDropsTheClusterScopedLegs() {
+        var topic = removalOf("topic");
+        var reference = removalOf("reference");
+        var registration = removalOf("registration");
+        var task = removalOf("task");
+
+        var kept = SliceRuntimeAdapter.nodeScoped(List.of(LegCommand.legCommand(LegCommand.LegKind.TOPIC_SUBSCRIPTION, topic),
+                                                          LegCommand.legCommand(LegCommand.LegKind.STREAM_REGISTRATION, registration),
+                                                          LegCommand.legCommand(LegCommand.LegKind.STREAM_REF, reference),
+                                                          LegCommand.legCommand(LegCommand.LegKind.SCHEDULED_TASK, task)));
+
+        assertThat(kept).containsExactly(topic, reference);
     }
 
     /// A deactivation that fails must not leave the slice in the store (the FSM has already recorded it as not loaded): the unload still runs, and the
@@ -485,6 +520,10 @@ class SliceRuntimeAdapterTest {
         store.unloadFailure = cause;
 
         assertThat(run(LocalStep.FORCED_CLEANUP)).isEqualTo(LocalOutcome.failed(cause));
+    }
+
+    private static KVCommand<AetherKey> removalOf(String name) {
+        return new KVCommand.Remove<>(new AetherKey.SliceTargetKey(Artifact.artifact("org.example:" + name + ":1.0.0").unwrap().base()));
     }
 
     private SliceRuntimeAdapter adapterOver(StubCluster cluster) {

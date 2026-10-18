@@ -137,11 +137,11 @@ public final class LocalOpExecutor implements LocalOps {
     }
 
     /// Resolves when no op is queued or running, the compensating `UNPUBLISH` of a stale publisher included (it is a queued op like any other).
-    /// A closed executor holds nothing, so it is idle.
+    /// A closed executor holds nothing, so it is idle: `close()` clears the lanes and nothing is enqueued after it.
     @Override
     public Promise<Unit> idle() {
         synchronized (lock) {
-            if (closed || lanes.isEmpty()) {
+            if (lanes.isEmpty()) {
                 return Promise.unitPromise();
             }
 
@@ -158,7 +158,7 @@ public final class LocalOpExecutor implements LocalOps {
         var due = new ArrayList<Promise<Unit>>();
 
         synchronized (lock) {
-            if (closed || lanes.isEmpty()) {
+            if (lanes.isEmpty()) {
                 due.addAll(idleWaiters);
                 idleWaiters.clear();
             }

@@ -389,6 +389,29 @@ class Fsm2SystemTest {
             }
         }
 
+        /// The bound the system gives a stop by default is the design's ten seconds: a stop with a stuck consumer is still waiting after a second, and
+        /// is released the moment the consumer is.
+        @Test
+        void drainNode_withTheDefaultBound_keepsWaitingForAStuckConsumer_andEndsWhenItIsFreed() throws InterruptedException {
+            var release = new CountDownLatch(1);
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withDefaultStopWait().assembled()) {
+                harness.selfReadyHook = () -> awaitRelease(release);
+                harness.router.route(ClusterStateNotification.active());
+                harness.awaitThat(() -> harness.selfReady.get() >= 1);
+
+                var stopper = Thread.ofPlatform().start(harness.system.unwrap()::drainNode);
+
+                await().during(Duration.ofMillis(1_500)).atMost(Duration.ofSeconds(5)).until(stopper::isAlive);
+                release.countDown();
+                stopper.join(5_000);
+
+                assertThat(stopper.isAlive()).as("freed consumer, finished drain").isFalse();
+            } finally {
+                release.countDown();
+            }
+        }
+
         @Test
         void drainNode_ofAnIdleNode_returnsWithoutAWarning() {
             try (var logs = new LogCapture(Fsm2System.class.getName());
@@ -449,7 +472,7 @@ class Fsm2SystemTest {
                 fillAboveTheRaiseThreshold(system);
                 clock.advance(BacklogSampler.INTERVAL_MS);
 
-                harness.awaitThat(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG));
+                await().atMost(Duration.ofSeconds(2)).until(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG));
                 assertThat(harness.warnings).filteredOn(warning -> warning.code() == OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG)
                                             .extracting(warning -> warning.subject())
                                             .containsExactly("core-1/node");
@@ -458,9 +481,44 @@ class Fsm2SystemTest {
                 harness.awaitThat(() -> system.nodeInterpreter().mailboxDepth() < BacklogSampler.CLEAR_BELOW);
                 clock.advance(BacklogSampler.INTERVAL_MS);
 
-                harness.awaitThat(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED));
+                await().atMost(Duration.ofSeconds(2)).until(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED));
             } finally {
                 release.countDown();
+            }
+        }
+
+        /// The cluster FSM's mailbox is watched too, under its own subject: held at `Rebuild` (the seams are sampled on its consumer), it backs up
+        /// while the node FSM, idle, does not.
+        @Test
+        void aClusterMailboxAboveTenThousand_raisesTheBacklogWarning_onTheClusterSubjectOnly() {
+            var clock = new ManualClock();
+            var release = new CountDownLatch(1);
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withClock(clock).assembled()) {
+                harness.countedCoresHook = () -> holdTheClusterConsumer(release);
+                harness.commitLeader();
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                harness.awaitThat(() -> harness.system.unwrap().clusterInterpreter().mailboxDepth() == 0 && harness.samples.get() >= 2);
+                var system = harness.system.unwrap();
+
+                for (var i = 0; i <= BacklogSampler.RAISE_ABOVE; i++) {
+                    system.clusterInterpreter().deliver(new ClusterInput.Flush());
+                }
+
+                clock.advance(BacklogSampler.INTERVAL_MS);
+
+                await().atMost(Duration.ofSeconds(2)).until(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG));
+                assertThat(harness.warnings).filteredOn(warning -> warning.code() == OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG)
+                                            .extracting(warning -> warning.subject())
+                                            .containsExactly("core-1/cluster");
+            } finally {
+                release.countDown();
+            }
+        }
+
+        private void holdTheClusterConsumer(CountDownLatch release) {
+            if (Thread.currentThread().getName().equals("deploy-fsm-cluster")) {
+                awaitRelease(release);
             }
         }
 

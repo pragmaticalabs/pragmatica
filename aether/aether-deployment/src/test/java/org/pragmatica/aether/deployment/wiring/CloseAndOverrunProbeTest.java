@@ -60,6 +60,9 @@ class CloseAndOverrunProbeTest {
                     Thread.currentThread().interrupt();
                 }
             }
+            if (input.equals("close-self")) {
+                close();
+            }
             steps.add((closingRan ? "after-close:" : "") + input);
             return Unit.unit();
         }
@@ -413,6 +416,61 @@ class CloseAndOverrunProbeTest {
             probe.release.countDown();
             await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
         }
+    }
+
+    /// The stop returns only once the consumer thread is gone, so nothing of the interpreter outlives `close()`.
+    @RepeatedTest(20)
+    void close_returnsOnlyAfterTheConsumerThreadHasExited() {
+        var before = threadsNamed("deploy-fsm-probe");
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.close();
+
+        assertThat(threadsNamed("deploy-fsm-probe")).as("no consumer of this probe is still alive").isSubsetOf(before);
+    }
+
+    private static java.util.Set<Thread> threadsNamed(String name) {
+        return Thread.getAllStackTraces()
+                     .keySet()
+                     .stream()
+                     .filter(thread -> thread.getName().equals(name) && thread.isAlive())
+                     .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /// A stop whose waiting thread is interrupted goes on at once: the consumer is stuck in an input, so joining it would only double the wait.
+    @Test
+    void aCloseInterruptedWhileWaiting_goesOnAtOnce_withoutJoiningTheStuckConsumer() throws Exception {
+        try (var logs = new LogCapture(FsmRuntime.class.getName(), FsmMailbox.class.getName())) {
+            var probe = new Probe(new ManualTimerService(), 30_000L);
+
+            probe.start();
+            probe.deliver("block");
+            assertThat(probe.blocking.await(5, TimeUnit.SECONDS)).isTrue();
+
+            var closer = Thread.ofPlatform().start(probe::close);
+
+            await().atMost(Duration.ofSeconds(5)).until(() -> probe.mailboxDepth() == 1); // the Close marker is queued
+            closer.interrupt();
+            closer.join(2_000);
+
+            assertThat(closer.isAlive()).as("close() came back right after the interrupt, not after a second wait").isFalse();
+            assertThat(logs.lines()).anySatisfy(line -> assertThat(line.message()).contains("Interrupted while closing"));
+            probe.release.countDown();
+            await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
+        }
+    }
+
+    /// A stop requested from inside the consumer (an inline subscriber closing the system) retires the mailbox too: nothing is accepted afterwards.
+    @Test
+    void aCloseOnTheConsumerThread_refusesFurtherInput() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.deliver("close-self");
+        await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
+
+        assertThat(probe.deliver("after")).as("the mailbox is closed").isFalse();
     }
 
     @Test

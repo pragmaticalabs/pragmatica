@@ -337,7 +337,7 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
                       .recover(_ -> Unit.unit());
     }
 
-    private static List<KVCommand<AetherKey>> nodeScoped(List<LegCommand> legs) {
+    static List<KVCommand<AetherKey>> nodeScoped(List<LegCommand> legs) {
         return legs.stream()
                    .filter(leg -> leg.kind() == LegCommand.LegKind.TOPIC_SUBSCRIPTION || leg.kind() == LegCommand.LegKind.STREAM_REF)
                    .map(LegCommand::command)

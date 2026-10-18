@@ -375,6 +375,24 @@ class ClusterFsmInterpreterTest {
             }
         }
 
+        /// An activation whose snapshot read failed rests in Rebuilding, a leader's FSM all the same: the restore re-incarnates it, and this time the
+        /// snapshot is read.
+        @Test
+        void aRestoreWhileRebuilding_reincarnatesIt_too() {
+            try (var rig = new ClusterRig()) {
+                rig.failNextSnapshot = true;
+                rig.interpreter.activate();
+                rig.settle();
+                assertThat(rig.interpreter.state()).isInstanceOf(ClusterState.Rebuilding.class);
+
+                rig.interpreter.stateRestored();
+                rig.awaitThat(() -> rig.metric("StateRestored", "reincarnated") == 1);
+                rig.settle();
+
+                assertThat(rig.isActive()).isTrue();
+            }
+        }
+
         /// The reason the rule is expected never to fire: Dormant is the ordinary state at a restore.
         @Test
         void aRestoreUnderADormantFsm_doesNothing_andIsCountedSkipped() {

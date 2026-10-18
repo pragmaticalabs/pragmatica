@@ -580,6 +580,26 @@ class NodeFsmInterpreterTest {
         }
     }
 
+    /// B14 on the node FSM: a restore is bracketed by the genuine quorum edges and its replay burst is dropped by the core rule, so the node FSM needs
+    /// nothing; the hook still arrives and is counted, so a restore the node ignored is visible.
+    @Nested
+    class StateRestored {
+        @Test
+        void aRestore_isIgnoredByTheNodeFsm_andCounted() {
+            try (var rig = new NodeRig()) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).enter();
+                rig.awaitState(ORDERS, SliceObservedState.LOADED);
+                var before = rig.interpreter.model();
+
+                rig.interpreter.stateRestored();
+                rig.awaitThat(() -> rig.metric("StateRestored", "ignored") == 1);
+                rig.settle();
+
+                assertThat(rig.interpreter.model()).as("the restore stepped nothing").isEqualTo(before);
+            }
+        }
+    }
+
     /// Design 7 (2a): the drain of a node's stop. MT-15 is "skip the node drain": the drain that resolves before the SUSPENDs have run.
     @Nested
     class Drain {

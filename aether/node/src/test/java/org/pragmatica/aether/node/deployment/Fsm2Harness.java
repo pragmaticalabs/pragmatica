@@ -85,8 +85,11 @@ final class Fsm2Harness implements AutoCloseable {
     final AtomicInteger selfReady = new AtomicInteger();
     /// Run on the node consumer after each `SelfReady` effect: a test that needs the consumer held (a backlog, a stalled stop) blocks in it.
     volatile Runnable selfReadyHook = () -> {};
+    /// Run wherever the seams are sampled, which includes the cluster consumer at `Rebuild`: a test that needs that consumer held blocks in it.
+    volatile Runnable countedCoresHook = () -> {};
     /// The bound a stop gives each interpreter (design 7, 2b); the design's 10 s unless a test shortens it, before `assembled()`.
     private long stopWaitMs = NodeFsmInterpreter.STOP_WAIT_MS;
+    private boolean defaultStopWait;
     final List<String> exits = Collections.synchronizedList(new ArrayList<>());
     final EngineMarkerGuard guard;
     final DeploymentWiring wiring;
@@ -178,6 +181,13 @@ final class Fsm2Harness implements AutoCloseable {
         return this;
     }
 
+    /// Builds the system through the one-argument factory, the one production calls, so its default bound is the one under test.
+    Fsm2Harness withDefaultStopWait() {
+        defaultStopWait = true;
+
+        return this;
+    }
+
     private void selfReadied() {
         selfReady.incrementAndGet();
         selfReadyHook.run();
@@ -192,6 +202,7 @@ final class Fsm2Harness implements AutoCloseable {
 
     private Set<NodeId> countedCores() {
         samples.incrementAndGet();
+        countedCoresHook.run();
 
         return Set.of(SELF, PEER);
     }
@@ -206,7 +217,9 @@ final class Fsm2Harness implements AutoCloseable {
         entries.addAll(wiring.guardEntries());
         entries.forEach(this::register);
         if (wiring.isFsm2() && !worker) {
-            wiring.attach(Fsm2System.fsm2System(collaborators(), stopWaitMs));
+            wiring.attach(defaultStopWait
+                          ? Fsm2System.fsm2System(collaborators())
+                          : Fsm2System.fsm2System(collaborators(), stopWaitMs));
         }
         wiring.start();
         system = wiring.system();

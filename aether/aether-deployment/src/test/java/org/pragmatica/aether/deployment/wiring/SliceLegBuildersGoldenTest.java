@@ -432,6 +432,21 @@ class SliceLegBuildersGoldenTest {
         assertThat(builders.teardown(ARTIFACT, slice)).isEmpty();
     }
 
+    /// Nothing bound to release means nothing to read the registry for: a slice without a blueprint's stream bindings leaves the cluster untouched.
+    @Test
+    void streamReferenceReleases_withoutBindings_doNotReachForTheCluster() throws Exception {
+        var untouched = new SliceLegBuilders(new SliceLegBuilders.Sources(SELF,
+                                                                         sliceStore,
+                                                                         kv,
+                                                                         () -> {
+                                                                             throw new AssertionError("the cluster was read for a release nobody bound");
+                                                                         },
+                                                                         () -> CLOCK,
+                                                                         () -> OperatorWarningSink.handingOffTo(adapterWarnings::add)));
+
+        assertThat(untouched.teardown(ARTIFACT, new RuntimeFixtures.StreamRoleSlice())).isEmpty();
+    }
+
     private void bindTwoStreamRoles() {
         var blueprint = BlueprintId.blueprintId(BLUEPRINT);
         var events = ResourceAddress.resourceAddress("ticketing", "events", "1.0.0").unwrap();

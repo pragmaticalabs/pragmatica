@@ -133,11 +133,46 @@ class BacklogSamplerTest {
         assertThat(events).containsExactly("raised node 20000", "cleared node 0");
 
         sampler.stop();
+        assertThat(clock.armedCount()).as("a stopped sampler holds no timer").isZero();
+
         node.set(30_000);
         clock.advance(BacklogSampler.INTERVAL_MS * 3);
 
         assertThat(events).as("a stopped sampler says nothing").hasSize(2);
-        assertThat(clock.armedCount()).as("and holds no timer").isZero();
+    }
+
+    @Test
+    void start_samplesAgainAfterEveryInterval() {
+        var samples = new AtomicInteger();
+        var counting = BacklogSampler.backlogSampler(List.of(BacklogSampler.watched("node", samples::incrementAndGet)), alarm, clock);
+
+        counting.start();
+        clock.advance(BacklogSampler.INTERVAL_MS);
+        clock.advance(BacklogSampler.INTERVAL_MS);
+        clock.advance(BacklogSampler.INTERVAL_MS);
+
+        assertThat(samples).as("one at start, one per interval").hasValue(4);
+    }
+
+    /// A tick already running when `stop` is called cannot be recalled by the timer: it must find the sampler stopped, sample nothing, and arm nothing.
+    @Test
+    void aTickThatEscapedTheCancellation_findsTheSamplerStopped_andDoesNothing() {
+        var armed = new ArrayList<Runnable>();
+        var samples = new AtomicInteger();
+        var uncancellable = BacklogSampler.backlogSampler(List.of(BacklogSampler.watched("node", samples::incrementAndGet)),
+                                                          alarm,
+                                                          (body, delayMs) -> {
+                                                              armed.add(body);
+
+                                                              return () -> {};
+                                                          });
+
+        uncancellable.start();
+        uncancellable.stop();
+        armed.getFirst().run();
+
+        assertThat(samples).as("only the sample taken at start").hasValue(1);
+        assertThat(armed).as("and no further tick armed").hasSize(1);
     }
 
     @Test

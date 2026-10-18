@@ -71,6 +71,8 @@ final class ClusterRig implements AutoCloseable {
     volatile Seams supplied;
     /// The seams the model held at the end of its last `Rebuild` step.
     volatile Seams atRebuild;
+    /// The next snapshot read fails once: the `Rebuild` of that activation is lost, and the FSM rests in `Rebuilding`.
+    volatile boolean failNextSnapshot;
 
     ClusterRig() {
         this(FsmRuntime.STOP_WAIT_MS);
@@ -113,6 +115,10 @@ final class ClusterRig implements AutoCloseable {
 
     private Seams seams() {
         snapshots.incrementAndGet();
+        if (failNextSnapshot) {
+            failNextSnapshot = false;
+            throw new IllegalStateException("snapshot unavailable");
+        }
 
         return supplied != null
                ? supplied
