@@ -462,9 +462,9 @@ public final class StorageFactory {
     /// placed as if `[storage.<name>]` were absent -- `artifacts` and `content` exactly as their synthesized
     /// defaults (paths and keyring-tracking `encrypted`), any other name on the bare defaults, as an empty
     /// `[storage.<name>]` section would be -- and keeps its shared tier.
-    private static Map<String, StorageConfig> withDerivedPaths(Map<String, StorageConfig> configs,
-                                                               StorageConfig defaults,
-                                                               boolean encrypted) {
+    static Map<String, StorageConfig> withDerivedPaths(Map<String, StorageConfig> configs,
+                                                       StorageConfig defaults,
+                                                       boolean encrypted) {
         var placed = new LinkedHashMap<String, StorageConfig>();
 
         configs.forEach((name, config) -> placed.put(name, derivedPaths(name, config, configs, defaults, encrypted)));

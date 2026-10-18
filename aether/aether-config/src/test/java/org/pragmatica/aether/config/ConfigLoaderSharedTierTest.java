@@ -340,8 +340,8 @@ class ConfigLoaderSharedTierTest {
         }
     }
 
-    /// An explicit blank path would read as "configured only through the shared section" and be replaced by the
-    /// defaults wholesale. Mutation that reddens it: drop `refuseBlankStoragePaths`.
+    /// An explicit blank path names no directory; the node would place the instance on it as written. Mutation that
+    /// reddens it: drop `refuseBlankStoragePaths`.
     @Nested
     class BlankPaths {
 

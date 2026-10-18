@@ -18,6 +18,11 @@ import org.pragmatica.lang.Verify;
 ///
 /// `shared` (#249) is the instance's cluster-shared last tier, from `[storage.<instance>.shared]`: the in-memory
 /// DHT by default, or an S3-compatible bucket ([SharedTierConfig]).
+///
+/// `derivesPaths` (#249) is true only for a [#sharedOnly] configuration: no `[storage.<instance>]` section was
+/// written, so the node derives this instance's paths (and, for the synthesized instances, its `encrypted` default)
+/// as if the section were absent. Every other shape carries false and is placed exactly as written -- a blank
+/// `diskPath` included, which no longer reads as "derive".
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -27,14 +32,16 @@ public record StorageConfig(long memoryMaxBytes,
                             int snapshotRetentionCount,
                             String walPath,
                             boolean encrypted,
-                            SharedTierConfig shared) {
+                            SharedTierConfig shared,
+                            boolean derivesPaths) {
     /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
     /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
     /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
     public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
     private static final String DEFAULT_ROOT = "/data/aether";
 
-    /// The pre-#249 shape: the shared tier is the in-memory DHT ([SharedTierConfig#dht()]), today's behaviour.
+    /// The pre-#249 shape: the shared tier is the in-memory DHT ([SharedTierConfig#dht()]), today's behaviour, and the
+    /// paths are used as written ([#derivesPaths] false).
     public StorageConfig(long memoryMaxBytes,
                          long diskMaxBytes,
                          String diskPath,
@@ -53,7 +60,8 @@ public record StorageConfig(long memoryMaxBytes,
              snapshotRetentionCount,
              walPath,
              encrypted,
-             SharedTierConfig.dht());
+             SharedTierConfig.dht(),
+             false);
     }
 
     public static StorageConfig storageConfig() {
@@ -146,13 +154,14 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotRetentionCount,
                                  walPath,
                                  encrypted,
-                                 shared);
+                                 shared,
+                                 derivesPaths);
     }
 
     /// #249: an instance configured ONLY through `[storage.<name>.shared]`, with no `[storage.<name>]`
     /// section of its own. Paths are left empty to mean "as if the section were absent": the node resolves
     /// them as it would for a missing section -- the synthesized `artifacts`/`content` placement for those
-    /// two, the bare defaults for any other name ([#derivesPaths]).
+    /// two, the bare defaults for any other name. It is the only factory that sets [#derivesPaths].
     public static StorageConfig sharedOnly(SharedTierConfig shared) {
         var defaults = storageConfig();
 
@@ -165,15 +174,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
                                  defaults.encrypted(),
-                                 shared);
-    }
-
-    /// True for a [#sharedOnly] configuration: no `[storage.<name>]` section was written, so the node
-    /// derives this instance's paths (and, for the synthesized instances, its `encrypted` default).
-    public boolean derivesPaths() {
-        return Option.option(diskPath)
-                     .filter(Verify.Is::notBlank)
-                     .isEmpty();
+                                 shared,
+                                 true);
     }
 
     /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.

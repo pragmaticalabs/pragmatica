@@ -710,9 +710,10 @@ public final class ConfigLoader {
                && !"shared".equals(parts[2]);
     }
 
-    /// #249: an explicit blank `disk_path` or `snapshot_path` is refused. A blank path is what marks an instance
-    /// configured only through `[storage.<name>.shared]` ([StorageConfig#derivesPaths]); written by an operator it
-    /// would make the node silently replace the whole section with the defaults.
+    /// #249: an explicit blank `disk_path` or `snapshot_path` is refused. It names no directory, and the node places a
+    /// written section exactly as written ([StorageConfig#derivesPaths] is set only for a shared-only instance), so a
+    /// blank path would resolve against the node's working directory instead of the default the operator most
+    /// likely meant by it. Omitting the key is how the default is selected.
     private static Result<Unit> refuseBlankStoragePaths(TomlDocument doc) {
         return Option.from(doc.sectionNames()
                               .stream()
