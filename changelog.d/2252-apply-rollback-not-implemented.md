@@ -1,0 +1,3 @@
+### Fixed (2026-10-18 — #2252: `aether cluster apply --rollback` accepted the flag and did nothing; part of #686)
+- **`--rollback` now fails honestly.** It prints `--rollback is not implemented (#686); nothing was changed` and exits 1 before reading the config or contacting the cluster; it takes precedence over `--resume`. Previously it ran the apply path, which records no resources to roll back (#1726). `[verified: aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/ClusterApplyRollbackNotImplementedTest.java]`
+- `reference/cli.md`, the troubleshooting runbook and the option's help text say it is not implemented.
