@@ -16,7 +16,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Functions.Fn3;
 
 /// #1406 — a timed append loop that measures a STEADY ownership epoch, and says so when it did not.
 ///
@@ -43,10 +43,11 @@ public sealed interface SteadyEpochAppends {
     }
 
     /// The epoch observed after the loop differs from the one observed before it: the measurement was not
-    /// within a single epoch.
-    record EpochMoved(Object before, Object after, String message) implements Cause {
-        static final Fn2<EpochMoved, Object, Object> FACTORY = Causes.forTwoValues("Epoch moved during the measurement: %s -> %s",
-                                                                              EpochMoved::new);
+    /// within a single epoch. The rejected run's [Outcome] travels with the cause, so its refusals (index and
+    /// cause) are still reported when the run is thrown away.
+    record EpochMoved(Object before, Object after, Outcome outcome, String message) implements Cause {
+        static final Fn3<EpochMoved, Object, Object, Outcome> FACTORY = Causes.forThreeValues("Epoch moved during the measurement: %s -> %s; %s",
+                                                                                              EpochMoved::new);
     }
 
     /// One refused append: its position in the loop and the typed cause the write path returned.
@@ -64,6 +65,11 @@ public sealed interface SteadyEpochAppends {
                    : refusals.size() + " refused of " + attempts + ": " + refusals.stream()
                                                                                   .map(Outcome::describe)
                                                                                   .collect(Collectors.joining("; "));
+        }
+
+        @Override
+        public String toString() {
+            return report();
         }
 
         private static String describe(Refusal refusal) {
@@ -89,7 +95,7 @@ public sealed interface SteadyEpochAppends {
 
         return Objects.equals(before, after)
                ? Result.success(outcome)
-               : EpochMoved.FACTORY.apply(before, after).result();
+               : EpochMoved.FACTORY.apply(before, after, outcome).result();
     }
 
     private static Outcome run(int attempts, IntFunction<Result<Long>> append) {

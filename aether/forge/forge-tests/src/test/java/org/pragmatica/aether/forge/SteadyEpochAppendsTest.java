@@ -44,7 +44,21 @@ class SteadyEpochAppendsTest {
                               .onFailure(cause -> assertThat(cause).isInstanceOf(SteadyEpochAppends.EpochMoved.class)
                                                                    .extracting(Cause::message)
                                                                    .asString()
-                                                                   .contains("7 -> 17"));
+                                                                   .contains("7 -> 17")
+                                                                   .contains("no refusals in 10 appends"));
+        }
+
+        @Test
+        void measureWhenReady_epochMovesDuringLoop_stillReportsTheRefusals() {
+            var epoch = new AtomicLong(7L);
+
+            SteadyEpochAppends.measureWhenReady(() -> true, epoch::get, 10, i -> bumpAndRefuseAt(epoch, i))
+                              .onSuccess(_ -> fail("a run whose epoch moved must be rejected"))
+                              .onFailure(cause -> assertThat(cause).isInstanceOf(SteadyEpochAppends.EpochMoved.class)
+                                                                   .extracting(Cause::message)
+                                                                   .asString()
+                                                                   .contains("append #4")
+                                                                   .contains("ring full"));
         }
     }
 
@@ -81,6 +95,12 @@ class SteadyEpochAppendsTest {
 
     private static Result<Long> bump(AtomicLong epoch) {
         return Result.success(epoch.incrementAndGet());
+    }
+
+    private static Result<Long> bumpAndRefuseAt(AtomicLong epoch, int index) {
+        epoch.incrementAndGet();
+
+        return index == 4 ? FULL.result() : Result.success((long) index);
     }
 
     private static Result<Long> refuseAt(int index) {

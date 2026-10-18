@@ -217,7 +217,7 @@ class OwnershipFenceBaselineTest {
 
         var startNanos = System.nanoTime();
         var measured = SteadyEpochAppends.measureWhenReady(() -> ownerSteady(ownerNode),
-                                                           ownerNode::currentGenerationEpoch,
+                                                           () -> partitionOwnerEpoch(ownerNode),
                                                            THROUGHPUT_APPENDS,
                                                            _ -> appendOnce(spm, THROUGHPUT_STREAM, payload));
         var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
@@ -228,6 +228,17 @@ class OwnershipFenceBaselineTest {
 
         measured.onFailure(OwnershipFenceBaselineTest::failScenario)
                 .onSuccess(OwnershipFenceBaselineTest::assertEveryAppendAccepted);
+    }
+
+    /// The committed ownership epoch of the measured partition: a change means ownership of THIS partition moved.
+    /// Not `currentGenerationEpoch()`, which is the cluster generation epoch and advances on a non-leader node as
+    /// pings arrive, with no ownership change (#1406: it false-rejected two of three Heavy runs).
+    private static Epoch partitionOwnerEpoch(AetherNode ownerNode) {
+        return ownerNode.kvStore()
+                        .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(THROUGHPUT_STREAM, PARTITION),
+                                  StreamPartitionOwnershipValue.class)
+                        .map(StreamPartitionOwnershipValue::ownerEpoch)
+                        .or(Epoch.ZERO);
     }
 
     /// The owner serves as owner AND its own replica row is CAUGHT_UP: initial ownership is established.
