@@ -14,9 +14,10 @@ permissions:
 
 on:
   push:
-    branches: [main, release-*, feature/*]
+    branches: [main, release-*, feature/*, 'overhaul/**', 'rewrite/**']
   pull_request:
-    branches: [main, release-*]
+    # Same branch filters as ci.yml (#2255), so the S3 gate never drifts from the main gate
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
   workflow_dispatch:
 
 jobs:
