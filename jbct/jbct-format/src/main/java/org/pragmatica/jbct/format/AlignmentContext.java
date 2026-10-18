@@ -114,6 +114,19 @@ public final class AlignmentContext {
         return new LambdaScope();
     }
 
+    /// Suspend lambda and chain alignment while a braced body (a `switch` block, an anonymous or local class body)
+    /// is printed inside an aligned lambda: its members are positioned by indent level from the body's own anchor,
+    /// not by the enclosing alignment column (#974). Restores both on close.
+    public SuspendedScope suspendAlignment() {
+        var savedStack = new ArrayDeque<>(lambdaAlignStack);
+        int savedChain = chainColumn;
+
+        lambdaAlignStack.clear();
+        chainColumn = -1;
+
+        return new SuspendedScope(savedStack, savedChain);
+    }
+
     /// Enter a ternary alignment context.
     /// Nested ternaries inherit the outer's alignment column via {@link #ternaryColumn()};
     /// the scope restores the previous column on close so siblings don't observe it.
@@ -219,6 +232,24 @@ public final class AlignmentContext {
             if (!lambdaAlignStack.isEmpty()) {
                 lambdaAlignStack.pop();
             }
+        }
+    }
+
+    /// Scope guard for suspended alignment - restores the lambda stack and chain column on close.
+    public final class SuspendedScope implements AutoCloseable {
+        private final Deque<Integer> savedStack;
+        private final int savedChain;
+
+        SuspendedScope(Deque<Integer> savedStack, int savedChain) {
+            this.savedStack = savedStack;
+            this.savedChain = savedChain;
+        }
+
+        @Override
+        public void close() {
+            lambdaAlignStack.clear();
+            lambdaAlignStack.addAll(savedStack);
+            chainColumn = savedChain;
         }
     }
 

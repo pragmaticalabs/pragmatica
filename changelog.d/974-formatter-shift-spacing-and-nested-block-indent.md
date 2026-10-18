@@ -8,6 +8,12 @@
   .forEach(x -> { if (c) { throw ...; } })` put the `throw` at the `if`'s own column and the closing `}` below it):
   the nested block reused the enclosing aligned column instead of its owning statement's. It now aligns to that
   statement. The output compiled either way, which is why it went unnoticed.
-- Pinned by a new golden example (`ShiftOperatorsAndNestedBlocks.java`). **Not yet applied to the repository's own
-  sources:** gated modules still contain the old output, so a `jbct:format` run produces a whitespace-only diff there;
-  that mechanical reformat lands as its own commit at the end of the rc4 wave.
+- **A `switch` block, an anonymous class or a local class declared in a chain-aligned lambda body, or a `switch`
+  expression in a broken lambda argument, printed its `case` labels and members at the enclosing method's absolute
+  indent** with the closing `}` below the opener. Such a body is now indented by level from the column its aligned
+  line starts at, and its own blocks no longer inherit the lambda's alignment.
+- Pinned by a new golden example (`ShiftOperatorsAndNestedBlocks.java`): operators after a diamond and a `<?>` array,
+  and `try`, try-with-resources, `while`, `synchronized`, `do`, `switch`, anonymous and local class bodies in an
+  aligned lambda.
+- The repository's own gated sources are reformatted under the new rules in the same change, whitespace only
+  (`git diff -w` shows only line re-wraps caused by shifted columns).

@@ -19,8 +19,10 @@ public interface ShiftOperatorsAndNestedBlocks {
     boolean BOTH = i < 10 && j > 3;
     Map<String, Map<String, Integer>> NESTED_GENERICS = null;
     Object DIAMOND = new java.util.ArrayList<>();
+    boolean AFTER_DIAMOND = x < y;
     Object TYPED = new java.util.HashMap<String, Integer>();
     Object WILDCARD_ARRAY = new Class<?>[0];
+    int AFTER_WILDCARD = a << b;
     Object EXPLICIT = java.util.Collections.<String> emptyList();
     Object CAST = (List<String>) null;
 
@@ -57,5 +59,82 @@ public interface ShiftOperatorsAndNestedBlocks {
                              wrapped.run();
                          }
                      });
+    }
+
+    private static void statementKindsInChainLambda(List<String> list) {
+        list.stream()
+            .forEach(entry -> {
+                         try {
+                             run(entry);
+                         } catch (RuntimeException ex) {
+                             log(ex);
+                         } finally {
+                             done(entry);
+                         }
+
+                         try (var scanner = new Scanner(entry)) {
+                             if (scanner.hasNext()) {
+                                 run(scanner.next());
+                             }
+                         }
+
+                         while (entry.length() > 1 << 4) {
+                             entry = entry.substring(1);
+                         }
+
+                         synchronized (list) {
+                             list.add(entry);
+                         }
+
+                         do {
+                             run(entry);
+                         } while (false);
+                     });
+    }
+
+    private static void switchAndClassBodiesInChainLambda(List<String> list) {
+        list.stream()
+            .forEach(entry -> {
+                         switch (entry) {
+                             case "a" -> run(entry);
+                             case "b" -> {
+                                 run(entry);
+                                 run(entry);
+                             }
+                             default -> run(entry);
+                         }
+
+                         Runnable runner = new Runnable() {
+                             @Override
+                             public void run() {
+                                 if (entry.length() > 1 << 2) {
+                                     log(entry);
+                                 }
+                             }
+                         };
+
+                         class Local {
+                             int size() {
+                                 return entry.length();
+                             }
+                         }
+                         var kind = switch (entry) {
+                             case "a" -> 1;
+                             default -> {
+                                 var other = 2;
+
+                                 yield other << 1;
+                             }
+                         };
+                     });
+    }
+
+    private static Promise<Boolean> switchInLambdaArgument(Option<String> first, Option<String> second) {
+        return first.fold(() -> Promise.success(false),
+                          value -> second.fold(() -> Promise.success(false),
+                                               other -> switch (other) {
+                                                   case "a", "b" -> Promise.success(true);
+                                                   default -> Promise.success(false);
+                                               }));
     }
 }

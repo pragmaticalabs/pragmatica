@@ -42,6 +42,10 @@ final class FlowPrinter {
     private StringBuilder output;
     private int currentColumn;
     private int indentLevel;
+    /// Column that `indentLevel == indentBaseLevel` stands for while a braced body is printed inside an aligned
+    /// lambda, or -1 when indent is plain `indentLevel * indentSize`. See `anchorBracedBody` (#974).
+    private int indentBaseCol = -1;
+    private int indentBaseLevel;
     private char lastChar;
     private char prevChar;
     private String lastWord = "";
@@ -187,6 +191,8 @@ final class FlowPrinter {
     private record SavedState(StringBuilder output,
                               int currentColumn,
                               int indentLevel,
+                              int indentBaseCol,
+                              int indentBaseLevel,
                               char lastChar,
                               char prevChar,
                               String lastWord,
@@ -204,6 +210,8 @@ final class FlowPrinter {
         return new SavedState(output,
                               currentColumn,
                               indentLevel,
+                              indentBaseCol,
+                              indentBaseLevel,
                               lastChar,
                               prevChar,
                               lastWord,
@@ -222,6 +230,8 @@ final class FlowPrinter {
         output = saved.output();
         currentColumn = saved.currentColumn();
         indentLevel = saved.indentLevel();
+        indentBaseCol = saved.indentBaseCol();
+        indentBaseLevel = saved.indentBaseLevel();
         lastChar = saved.lastChar();
         prevChar = saved.prevChar();
         lastWord = saved.lastWord();
@@ -699,6 +709,12 @@ final class FlowPrinter {
     }
 
     private void printBracedBody(Cursor.Branch parent, RuleKind memberKind) {
+        try (var anchor = new BracedBodyAnchor()) {
+            printBracedBodyMembers(parent, memberKind);
+        }
+    }
+
+    private void printBracedBodyMembers(Cursor.Branch parent, RuleKind memberKind) {
         var members = childrenByRule(parent, memberKind);
 
         emitToken("{");
@@ -1402,6 +1418,12 @@ final class FlowPrinter {
     }
 
     private void printSwitchBlock(Cursor.Branch switchBlock) {
+        try (var anchor = new BracedBodyAnchor()) {
+            printSwitchBlockRules(switchBlock);
+        }
+    }
+
+    private void printSwitchBlockRules(Cursor.Branch switchBlock) {
         emit(" {");
         indentLevel++;
         var rules = childrenByRule(switchBlock, RuleKind.SWITCH_RULE);
@@ -3084,7 +3106,42 @@ final class FlowPrinter {
             return;
         }
 
-        emit(" ".repeat(indentLevel * config.indentSize()));
+        int levels = indentBaseCol < 0
+                     ? indentLevel
+                     : indentLevel - indentBaseLevel;
+        int base = Math.max(indentBaseCol, 0);
+
+        emit(" ".repeat(base + levels * config.indentSize()));
+    }
+
+    /// Scope for a braced body (`switch` block, class body) printed while a lambda alignment is active. Such a body
+    /// is indented by level from the column the aligned lambda put its line at, and its own blocks and members must
+    /// not inherit the lambda's alignment: left alone, `case` labels and members printed at the enclosing
+    /// method's absolute indent and the closing brace fell below the opener (#974). Outside an aligned lambda this
+    /// is a no-op, so unaligned code is untouched.
+    private final class BracedBodyAnchor implements AutoCloseable {
+        private final int savedCol = indentBaseCol;
+        private final int savedLevel = indentBaseLevel;
+        private final AlignmentContext.SuspendedScope suspended;
+
+        BracedBodyAnchor() {
+            if (alignment.hasLambdaAlign()) {
+                indentBaseCol = alignment.lambdaColumn();
+                indentBaseLevel = indentLevel;
+                suspended = alignment.suspendAlignment();
+            } else {
+                suspended = null;
+            }
+        }
+
+        @Override
+        public void close() {
+            if (suspended != null) {
+                suspended.close();
+                indentBaseCol = savedCol;
+                indentBaseLevel = savedLevel;
+            }
+        }
     }
 
     private void printAlignedTo(int column) {
