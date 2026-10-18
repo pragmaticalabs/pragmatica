@@ -166,6 +166,23 @@ class HttpForwarderRetrySafetyTest {
         assertThat(failureOf(result)).isInstanceOf(ForwardError.OutcomeUnknown.class);
     }
 
+    /// The outer loop's memory, not just the last attempt's: the first attempt timed out (may have applied), the
+    /// second was refused before write. The answer stays "outcome unknown", never "nothing was applied".
+    @Test
+    void taskGroupForward_timeoutThenRefusal_exhaustsOutcomeUnknown() {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var network = new ScriptedClusterNetwork(Set.of(A),
+                                                 _ -> calls.incrementAndGet() == 1
+                                                      ? WriteOutcome.Sent::new
+                                                      : WriteOutcome.BackpressureRefused::new);
+        var result = taskGroupForwarder(network, timeSpan(100).millis(), 1)
+            .forwardManagement(context("GET", taskGroupGetPath()), "tg-timeout-refused")
+            .await(timeSpan(10).seconds());
+
+        assertThat(network.requests()).hasSize(2);
+        assertThat(failureOf(result)).isInstanceOf(ForwardError.OutcomeUnknown.class);
+    }
+
     // --- helpers ---
 
     private static void answer(HttpForwarder forwarder, ScriptedClusterNetwork network, HttpForwardRequest sent) {
