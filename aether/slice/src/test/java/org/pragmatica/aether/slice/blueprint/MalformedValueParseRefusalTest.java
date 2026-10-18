@@ -108,4 +108,68 @@ class MalformedValueParseRefusalTest {
             artifact = "org.example:service:1.0.0"
             """).isSuccess()).isTrue();
     }
+
+    private static void assertRefusedWithAllowed(Result<?> result, String key, String raw, String allowed) {
+        assertRefused(result, key, raw);
+        result.onFailure(cause -> assertThat(cause.message()).contains(allowed));
+    }
+
+    /// Invalid VALUES are refused like invalid types (#1455): an unknown strategy used to read as
+    /// ROLLING, an unknown override policy as STRENGTHEN_ONLY, an unknown consumer token as its default.
+    @Test
+    void blueprintParser_unknownStrategy_refusesNamingKeyValueAndAllowed() {
+        var blueprint = """
+            id = "org.example:minimal:1.0.0"
+
+            [deployment]
+            strategy = "%s"
+
+            [[slices]]
+            artifact = "org.example:service:1.0.0"
+            """;
+
+        assertRefusedWithAllowed(BlueprintParser.parse(blueprint.formatted("bluegreen")),
+                                 "deployment.strategy",
+                                 "bluegreen",
+                                 "one of: rolling, canary, blue-green");
+        assertThat(BlueprintParser.parse(blueprint.formatted("blue-green")).isSuccess()).isTrue();
+        assertThat(BlueprintParser.parse(blueprint.formatted("rolling")).isSuccess()).isTrue();
+    }
+
+    @Test
+    void blueprintParser_unknownOverridePolicy_refusesNamingKeyValueAndAllowed() {
+        var blueprint = """
+            id = "org.example:minimal:1.0.0"
+
+            [security]
+            override_policy = "%s"
+
+            [[slices]]
+            artifact = "org.example:service:1.0.0"
+            """;
+
+        assertRefusedWithAllowed(BlueprintParser.parse(blueprint.formatted("ful")),
+                                 "security.override_policy",
+                                 "ful",
+                                 "one of: strengthen_only, full, none");
+        assertThat(BlueprintParser.parse(blueprint.formatted("full")).isSuccess()).isTrue();
+    }
+
+    @Test
+    void streamConfigParser_unknownConsumerTokens_areRefusedNamingKeyValueAndAllowed() {
+        var consumer = """
+            [streams.orders.consumers.billing]
+            %s = "%s"
+            """;
+
+        assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("processing", "serial"), "orders"),
+                                 "processing", "serial", "one of: ordered, parallel");
+        assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("on-failure", "ignore"), "orders"),
+                                 "on-failure", "ignore", "one of: retry, skip, stall");
+        assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("read-preference", "closest"), "orders"),
+                                 "read-preference", "closest", "governor, nearest, any-replica, linearizable");
+        assertThat(StreamConfigParser.parseConsumers(consumer.formatted("processing", "parallel"), "orders").isSuccess()).isTrue();
+        assertThat(StreamConfigParser.parseConsumers(consumer.formatted("on-failure", "skip"), "orders").isSuccess()).isTrue();
+        assertThat(StreamConfigParser.parseConsumers(consumer.formatted("read-preference", "nearest"), "orders").isSuccess()).isTrue();
+    }
 }

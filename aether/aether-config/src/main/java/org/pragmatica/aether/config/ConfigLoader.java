@@ -257,9 +257,7 @@ public final class ConfigLoader {
     }
 
     private static TimeSpan parseTimeSpan(TomlDocument doc, String section, String key, TimeSpan defaultValue) {
-        return doc.getString(section, key)
-                  .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                  .option())
+        return doc.getParsed(section, key, "a duration such as 30s", v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v).option())
                   .map(ts -> TimeSpan.fromDuration(ts.duration()))
                   .or(defaultValue);
     }
@@ -275,8 +273,7 @@ public final class ConfigLoader {
     }
 
     private static int parseDataSize(TomlDocument doc, String section, String key, int defaultValue) {
-        return doc.getString(section, key)
-                  .flatMap(v -> DataSize.dataSize(v).option())
+        return doc.getParsed(section, key, "a size such as 64MB", v -> DataSize.dataSize(v).option())
                   .map(DataSize::bytesAsInt)
                   .or(defaultValue);
     }
@@ -284,7 +281,7 @@ public final class ConfigLoader {
     @SuppressWarnings("JBCT-RET-07")
     private static void populateClusterConfig(TomlDocument doc, AetherConfig.Builder builder) {
         doc.getInt("cluster", "nodes").onPresent(builder::nodes);
-        doc.getString("cluster", "tls").map(ConfigLoader::toBooleanValue).onPresent(builder::tls);
+        doc.getBoolean("cluster", "tls").onPresent(builder::tls);
         doc.getInt("cluster", "core_max").onPresent(builder::coreMax);
         doc.getInt("cluster", "max_nodes").onPresent(builder::maxNodes);
         builder.ports(portsFromDocument(doc));
@@ -293,8 +290,7 @@ public final class ConfigLoader {
     private static PortsConfig portsFromDocument(TomlDocument doc) {
         var mgmtPort = doc.getInt("cluster.ports", "management").or(PortsConfig.DEFAULT_MANAGEMENT_PORT);
         var clusterPort = doc.getInt("cluster.ports", "cluster").or(PortsConfig.DEFAULT_CLUSTER_PORT);
-        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol")
-                              .flatMap(HttpProtocol::httpProtocol)
+        var mgmtProtocol = doc.getParsed("cluster.ports", "management_protocol", "one of: h1, h3, both", HttpProtocol::httpProtocol)
                               .or(HttpProtocol.H1);
 
         return PortsConfig.portsConfig(mgmtPort, clusterPort, mgmtProtocol).unwrap();
@@ -315,15 +311,14 @@ public final class ConfigLoader {
     }
 
     private static boolean isTlsEnabled(TomlDocument doc, Environment environment) {
-        return doc.getString("cluster", "tls")
-                  .map(ConfigLoader::toBooleanValue)
+        return doc.getBoolean("cluster", "tls")
                   .or(environment.defaultTls());
     }
 
     /// The `[tls]` section with the host environment supplied: `cluster_secret`, else the ambient secret (`AETHER_CLUSTER_SECRET` or
     /// the file `AETHER_CLUSTER_SECRET_FILE` names, #828).
     static TlsConfig tlsFromDocument(TomlDocument doc, Fn1<String, String> env) {
-        var autoGen = doc.getString("tls", "auto_generate").map(ConfigLoader::toBooleanValue).or(true);
+        var autoGen = doc.getBoolean("tls", "auto_generate").or(true);
         var certPath = doc.getString("tls", "cert_path").or("");
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
@@ -365,7 +360,7 @@ public final class ConfigLoader {
     }
 
     private static void populateTtmConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var ttmEnabled = doc.getString("ttm", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+        var ttmEnabled = doc.getBoolean("ttm", "enabled").or(false);
 
         if (ttmEnabled) {
             builder.ttm(ttmFromDocument(doc));
@@ -403,10 +398,10 @@ public final class ConfigLoader {
 
     @SuppressWarnings("JBCT-STY-05")
     private static void populateAppHttpConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+        var enabled = doc.getBoolean("app-http", "enabled").or(false);
         var port = doc.getInt("app-http", "port").or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
         var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
-        var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
+        var explicitMode = doc.getParsed("app-http", "security_mode", "one of: none, api-key, jwt", SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
         // #290: secure by default. When `security_mode` is not configured the effective mode is
         // API_KEY (was: NONE unless api-keys present), so a default-config node's management plane and
@@ -415,13 +410,11 @@ public final class ConfigLoader {
         // none was provisioned. An explicit `security_mode` (including "none") always wins.
         var securityMode = explicitMode.or(SecurityMode.API_KEY);
         var jwtConfig = parseJwtConfig(doc);
-        var httpProtocol = doc.getString("app-http", "protocol")
-                              .flatMap(HttpProtocol::httpProtocol)
+        var httpProtocol = doc.getParsed("app-http", "protocol", "one of: h1, h3, both", HttpProtocol::httpProtocol)
                               .or(HttpProtocol.H1);
         // #198 §7: cluster-level API-version detection mode + header name (per-slice override is a
         // documented follow-up). Defaults keep path mode (byte-identical to pre-#198-C3b behavior).
-        var apiVersioningDetection = doc.getString("app-http", "api_versioning_detection")
-                                        .flatMap(ApiVersioningDetection::apiVersioningDetection)
+        var apiVersioningDetection = doc.getParsed("app-http", "api_versioning_detection", "one of: path, header", ApiVersioningDetection::apiVersioningDetection)
                                         .or(ApiVersioningDetection.PATH);
         var apiVersionHeaderName = doc.getString("app-http", "api_version_header")
                                       .or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);

@@ -146,18 +146,20 @@ record PartialConfig(PartialFormatter formatter,
                                          failOnWarning.or(LintConfig.DEFAULT.failOnWarning()));
         }
 
+        /// A severity token no rule setting accepts (`JBCT-STY-01 = "eror"`) is recorded on the document and
+        /// refused by [PartialConfig#partialConfig] naming the key, the value and the allowed tokens (#1455);
+        /// it used to leave the layer silent about that rule.
         private static Map<String, RuleSetting> ruleSettings(TomlDocument toml) {
-            return toml.getSection("lint.rules")
-                       .entrySet()
+            return toml.keys("lint.rules")
                        .stream()
-                       .flatMap(PartialLint::parsedSetting)
+                       .flatMap(rule -> parsedSetting(toml, rule))
                        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
-        private static Stream<Map.Entry<String, RuleSetting>> parsedSetting(Map.Entry<String, String> entry) {
-            return RuleSetting.ruleSetting(entry.getValue())
-                              .map(setting -> Map.entry(entry.getKey(), setting))
-                              .stream();
+        private static Stream<Map.Entry<String, RuleSetting>> parsedSetting(TomlDocument toml, String rule) {
+            return toml.getParsed("lint.rules", rule, RuleSetting.ALLOWED, RuleSetting::ruleSetting)
+                       .map(setting -> Map.entry(rule, setting))
+                       .stream();
         }
 
         private Map<String, RuleSetting> mergedRules(Map<String, RuleSetting> nearer) {
@@ -235,8 +237,10 @@ record PartialConfig(PartialFormatter formatter,
         static final PartialBlueprint EMPTY = new PartialBlueprint(none());
 
         static PartialBlueprint partialBlueprint(TomlDocument toml) {
-            return new PartialBlueprint(toml.getString("blueprint", "schema")
-                                            .map(BlueprintConfig.SchemaMode::fromString));
+            return new PartialBlueprint(toml.getParsed("blueprint",
+                                                       "schema",
+                                                       BlueprintConfig.SchemaMode.ALLOWED,
+                                                       BlueprintConfig.SchemaMode::schemaMode));
         }
 
         PartialBlueprint mergeWith(PartialBlueprint nearer) {
@@ -291,14 +295,16 @@ record PartialConfig(PartialFormatter formatter,
         INFO(some(DiagnosticSeverity.INFO)),
         OFF(none());
 
+        static final String ALLOWED = "one of: error, warning (warn), info, off (disabled)";
+
         private final Option<DiagnosticSeverity> severity;
 
         RuleSetting(Option<DiagnosticSeverity> severity) {
             this.severity = severity;
         }
 
-        /// Parse a TOML severity token. An unrecognised token yields [Option#none()] — the layer
-        /// simply says nothing about that rule, preserving the loader's long-standing leniency.
+        /// Parse a TOML severity token. An unrecognised token yields [Option#none()]; the layer parser
+        /// refuses it (see [PartialLint]) rather than treating the rule as unset.
         static Option<RuleSetting> ruleSetting(String raw) {
             return switch (raw.toLowerCase()) {
                 case "off", "disabled" -> some(OFF);

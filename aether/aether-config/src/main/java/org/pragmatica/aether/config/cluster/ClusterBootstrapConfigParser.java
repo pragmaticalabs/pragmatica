@@ -414,8 +414,7 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static LoadBalancerMode parseLoadBalancerMode(TomlDocument doc, String section, SourceType type) {
-        return doc.getString(section, "load_balancer")
-                  .flatMap(raw -> LoadBalancerMode.loadBalancerMode(raw).option())
+        return doc.getParsed(section, "load_balancer", "one of: none, external, elected", raw -> LoadBalancerMode.loadBalancerMode(raw).option())
                   .or(defaultLoadBalancerMode(type));
     }
 

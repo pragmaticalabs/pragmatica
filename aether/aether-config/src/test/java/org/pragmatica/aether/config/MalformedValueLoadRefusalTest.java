@@ -108,4 +108,128 @@ class MalformedValueLoadRefusalTest {
             count = 3
             """).isSuccess()).isTrue();
     }
+
+    private static String http(String extra) {
+        return """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [app-http]
+            enabled = true
+            """ + extra;
+    }
+
+    private static void assertRefusedWithAllowed(Result<?> result, String key, String raw, String allowed) {
+        assertRefused(result, key, raw);
+        result.onFailure(cause -> assertThat(cause.message()).contains(allowed));
+    }
+
+    /// Invalid VALUES are refused like invalid types (#1455): an enumeration token, a boolean, a
+    /// duration or a size that does not parse used to take the reader's default.
+    @Test
+    void configLoader_unknownSecurityMode_refusesNamingKeyValueAndAllowed() {
+        assertRefusedWithAllowed(ConfigLoader.loadFromString(http("security_mode = \"apikeys\"\n")),
+                                 "app-http.security_mode",
+                                 "apikeys",
+                                 "one of: none, api-key, jwt");
+        assertThat(ConfigLoader.loadFromString(http("security_mode = \"api-key\"\n")).isSuccess()).isTrue();
+    }
+
+    @Test
+    void configLoader_unknownHttpProtocol_refusesNamingKeyValueAndAllowed() {
+        assertRefusedWithAllowed(ConfigLoader.loadFromString(http("protocol = \"h2\"\n")),
+                                 "app-http.protocol",
+                                 "h2",
+                                 "one of: h1, h3, both");
+        assertThat(ConfigLoader.loadFromString(http("protocol = \"h1\"\n")).isSuccess()).isTrue();
+    }
+
+    @Test
+    void configLoader_unknownManagementProtocol_refusesNamingKeyValueAndAllowed() {
+        assertRefusedWithAllowed(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [cluster.ports]
+            management_protocol = "quic"
+            """), "cluster.ports.management_protocol", "quic", "one of: h1, h3, both");
+    }
+
+    @Test
+    void configLoader_unknownApiVersioningDetection_refusesNamingKeyValueAndAllowed() {
+        assertRefusedWithAllowed(ConfigLoader.loadFromString(http("api_versioning_detection = \"cookie\"\n")),
+                                 "app-http.api_versioning_detection",
+                                 "cookie",
+                                 "one of: path, header");
+        assertThat(ConfigLoader.loadFromString(http("api_versioning_detection = \"header\"\n")).isSuccess()).isTrue();
+    }
+
+    @Test
+    void configLoader_nonBooleanTlsAndEnabled_areRefused() {
+        assertRefused(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            tls = "yes"
+            """), "cluster.tls", "yes");
+        assertRefused(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [app-http]
+            enabled = "yes"
+            """), "app-http.enabled", "yes");
+        assertRefused(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [ttm]
+            enabled = "yes"
+            """), "ttm.enabled", "yes");
+    }
+
+    @Test
+    void configLoader_unparseableSizeAndDuration_areRefusedNamingWhatIsValid() {
+        assertRefusedWithAllowed(ConfigLoader.loadFromString(http("max_request_size = \"huge\"\n")),
+                                 "app-http.max_request_size",
+                                 "huge",
+                                 "a size such as 64MB");
+        assertRefusedWithAllowed(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [timeouts.invocation]
+            timeout = "soon"
+            """), "timeouts.invocation.timeout", "soon", "a duration such as 30s");
+        assertThat(ConfigLoader.loadFromString(http("max_request_size = \"10MB\"\n")).isSuccess()).isTrue();
+    }
+
+    @Test
+    void clusterBootstrapConfigParser_unknownLoadBalancerMode_refusesNamingKeyValueAndAllowed() {
+        var base = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "dev-local"
+            version = "1.0.0"
+
+            [source.local]
+            type = "forge"
+            load_balancer = "%s"
+
+            [source.local.core]
+            count = 3
+            """;
+
+        assertRefusedWithAllowed(ClusterBootstrapConfigParser.parse(base.formatted("roundrobin")),
+                                 "source.local.load_balancer",
+                                 "roundrobin",
+                                 "one of: none, external, elected");
+        assertThat(ClusterBootstrapConfigParser.parse(base.formatted("elected")).isSuccess()).isTrue();
+    }
 }

@@ -205,6 +205,21 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
         return typed(section, key, "array of strings", this::toStringList);
     }
 
+    /// Get a value that must be parsed from its text (an enumeration token, a duration, a size).
+    ///
+    /// Absent is empty, silently. Present and accepted by `parser` is the parsed value. Present and
+    /// rejected by `parser` is empty AND recorded as a mismatch (#1455), so the parser's
+    /// [#requireNoTypeMismatches()] gate refuses the load naming section, key, raw value and
+    /// `expected` instead of letting the caller's default stand in for what was written.
+    ///
+    /// @param section  the section name (empty string for root)
+    /// @param key      the property key
+    /// @param expected what a valid value looks like, e.g. `one of: h1, h3, both`
+    /// @param parser   text to value; empty for an unacceptable text
+    public <T> Option<T> getParsed(String section, String key, String expected, Fn1<Option<T>, String> parser) {
+        return typed(section, key, expected, raw -> parser.apply(String.valueOf(raw)));
+    }
+
     /// Get all keys in a section.
     ///
     /// @param section the section name (empty string for root)

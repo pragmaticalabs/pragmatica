@@ -447,6 +447,23 @@ class ConfigLoaderTest {
         }
 
         @Test
+        void load_refusesNamingFileKeyValueAndAllowed_whenRuleSeverityOrSchemaModeIsUnknown() throws Exception {
+            var rule = repositoryRoot("rule", "[lint.rules]\nJBCT-STY-01 = \"eror\"\n");
+            var schema = repositoryRoot("schema", "[blueprint]\nschema = \"requird\"\n");
+
+            assertRefused(ConfigLoader.load(Option.none(), Option.some(rule)),
+                          rule.resolve(ConfigLoader.PROJECT_CONFIG_NAME),
+                          "lint.rules.JBCT-STY-01",
+                          "eror",
+                          "one of: error, warning (warn), info, off (disabled)");
+            assertRefused(ConfigLoader.load(Option.none(), Option.some(schema)),
+                          schema.resolve(ConfigLoader.PROJECT_CONFIG_NAME),
+                          "blueprint.schema",
+                          "requird",
+                          "one of: required, external, optional");
+        }
+
+        @Test
         void load_namesEveryBadLayer_whenSeveralAreInvalid() throws Exception {
             writeUserConfig("[lint]\nfailOnWarning = \"yes\"\n");
             var project = repositoryRoot("project", "[format]\nindentSize = \"four\"\n");

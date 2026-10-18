@@ -189,4 +189,43 @@ class PartialConfigTest {
         return TomlParser.parse(toml)
                          .flatMap(PartialConfig::partialConfig);
     }
+
+    /// Invalid VALUES are refused like invalid types (#1455): an unknown severity token left the layer
+    /// silent about that rule, an unknown schema mode fell back to REQUIRED.
+    @Test
+    void partialConfig_refusesUnknownRuleSeverity_namingKeyValueAndAllowed() {
+        layer("""
+              [lint.rules]
+              JBCT-STY-01 = "eror"
+              JBCT-STY-02 = "warn"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.JBCT-STY-01", "eror")
+                                                                 .contains("one of: error, warning (warn), info, off (disabled)")
+                                                                 .doesNotContain("JBCT-STY-02"));
+    }
+
+    @Test
+    void partialConfig_refusesUnknownSchemaMode_namingKeyValueAndAllowed() {
+        layer("[blueprint]\nschema = \"requird\"\n")
+            .onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+            .onFailure(cause -> assertThat(cause.message()).contains("blueprint.schema", "requird")
+                                                           .contains("one of: required, external, optional"));
+        layer("[blueprint]\nschema = \"External\"\n")
+            .onFailure(PartialConfigTest::fail)
+            .onSuccess(layer -> assertThat(layer.blueprint().schema()).isEqualTo(Option.some(BlueprintConfig.SchemaMode.EXTERNAL)));
+    }
+
+    @Test
+    void partialConfig_acceptsEveryDocumentedSeverityToken() {
+        layer("""
+              [lint.rules]
+              A = "error"
+              B = "WARN"
+              C = "warning"
+              D = "info"
+              E = "off"
+              F = "Disabled"
+              """).onFailure(PartialConfigTest::fail)
+                  .onSuccess(layer -> assertThat(layer.lint().rules()).hasSize(6));
+    }
 }

@@ -99,4 +99,30 @@ class TomlDocumentTypeMismatchTest {
         assertThat(b.typeMismatches()).isEmpty();
         assertThat(a.with("server", "host", "h").typeMismatches()).isEmpty();
     }
+
+    /// #1455: a value that must be parsed from its text (a token, a duration, a size) is recorded when
+    /// the parser rejects it, with the caller's description of what is valid.
+    @Test
+    void getParsed_absentIsSilent_acceptedIsParsed_rejectedIsRecordedWithExpected() {
+        var doc = parse("""
+            [server]
+            mode = "fast"
+            wrong = "warp"
+            """);
+
+        assertThat(doc.getParsed("server", "absent", "one of: fast", TomlDocumentTypeMismatchTest::fastOnly)).isEqualTo(Option.none());
+        assertThat(doc.typeMismatches()).isEmpty();
+        assertThat(doc.getParsed("server", "mode", "one of: fast", TomlDocumentTypeMismatchTest::fastOnly)).isEqualTo(Option.some("FAST"));
+        assertThat(doc.typeMismatches()).isEmpty();
+        assertThat(doc.getParsed("server", "wrong", "one of: fast", TomlDocumentTypeMismatchTest::fastOnly)).isEqualTo(Option.none());
+        doc.requireNoTypeMismatches()
+           .onSuccess(_ -> fail("a rejected token must refuse"))
+           .onFailure(cause -> assertThat(cause.message()).contains("server.wrong: expected one of: fast, got \"warp\""));
+    }
+
+    private static Option<String> fastOnly(String raw) {
+        return raw.equals("fast")
+               ? Option.some("FAST")
+               : Option.none();
+    }
 }
