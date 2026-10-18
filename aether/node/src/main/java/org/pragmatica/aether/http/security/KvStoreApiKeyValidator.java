@@ -169,8 +169,8 @@ class KvStoreApiKeyValidator implements SecurityValidator {
 
     private static Option<String> extractCaseSensitive(Map<String, List<String>> headers) {
         return Option.option(headers.get(API_KEY_HEADER))
-                     .filter(values -> !values.isEmpty())
-                     .map(List::getFirst);
+                     .flatMap(values -> Option.from(values.stream()
+                                                          .findFirst()));
     }
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
@@ -178,8 +178,9 @@ class KvStoreApiKeyValidator implements SecurityValidator {
                            .stream()
                            .filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
-                           .filter(values -> values != null && !values.isEmpty())
-                           .map(List::getFirst)
+                           .flatMap(values -> Option.option(values)
+                                                    .stream())
+                           .flatMap(List::stream)
                            .findFirst();
 
         return Option.from(value);

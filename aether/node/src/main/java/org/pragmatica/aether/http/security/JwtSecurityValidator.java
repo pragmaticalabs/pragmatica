@@ -207,8 +207,8 @@ class JwtSecurityValidator implements SecurityValidator {
 
     private static Option<String> extractAuthHeaderCaseSensitive(Map<String, List<String>> headers) {
         return Option.option(headers.get("Authorization"))
-                     .filter(values -> !values.isEmpty())
-                     .map(List::getFirst)
+                     .flatMap(values -> Option.from(values.stream()
+                                                          .findFirst()))
                      .filter(v -> v.startsWith(BEARER_PREFIX))
                      .map(v -> v.substring(BEARER_PREFIX.length())
                                 .trim());
@@ -220,9 +220,8 @@ class JwtSecurityValidator implements SecurityValidator {
                            .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
                            .flatMap(values -> Option.option(values)
-                                                    .filter(v -> !v.isEmpty())
                                                     .stream())
-                           .map(List::getFirst)
+                           .flatMap(List::stream)
                            .filter(v -> v.regionMatches(true,
                                                         0,
                                                         BEARER_PREFIX,
