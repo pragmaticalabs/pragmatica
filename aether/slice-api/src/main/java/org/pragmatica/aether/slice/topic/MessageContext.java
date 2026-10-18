@@ -13,10 +13,9 @@ package org.pragmatica.aether.slice.topic;
 ///
 /// **`messageId` — stable identity of the event; the key a subscriber deduplicates on.** The log itself
 /// does not deduplicate: two publishes under one ID are two log entries, and collapsing them is the
-/// subscriber's work. The publisher assigns one per
-/// `publish` — a fresh KSUID from `publish(T)`, or the caller's key from `publish(T, idempotencyKey)`
-/// (#1237), so it is NOT always a KSUID — and stores it in the event's envelope, so it identifies the EVENT rather than the
-/// place a copy of it happens to sit. It is the §8 idempotency key: the key the idempotency aspect
+/// subscriber's work. The publisher assigns one per `publish` — a fresh KSUID from `publish(T)`, or the
+/// caller's key from `publish(T, idempotencyKey)` (#1237), so it is NOT always a KSUID — and stores it in
+/// the event's envelope, so it identifies the EVENT rather than the place a copy of it happens to sit. It is the §8 idempotency key: the key the idempotency aspect
 /// extracts, and the `messageId` component of a projection's `(projectionName, generation,
 /// messageId)` key. It is preserved across the dead-letter hop by construction — the same id is
 /// carried by the live envelope and by the dead-letter envelope written from it — so a dead-lettered
