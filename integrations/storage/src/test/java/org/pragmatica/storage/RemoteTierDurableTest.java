@@ -248,18 +248,24 @@ class RemoteTierDurableTest {
             }
             var gate = Promise.<Unit>promise();
             held.add(gate);
-            return gate.onResultRun(running::decrementAndGet).onSuccess(_ -> objects.put(key, content));
+            return gate.onSuccess(_ -> objects.put(key, content));
         }
 
+        /// A held PUT stops counting as running BEFORE its promise resolves, so the count never includes a
+        /// request whose completion the limiter may already have seen (continuations run on other threads).
         void releaseOne() {
-            var gate = held.removeFirst();
-            gate.succeed(unit());
+            complete(held.removeFirst());
         }
 
         void releaseAll() {
             var gates = List.copyOf(held);
             held.removeAll(gates);
-            gates.forEach(gate -> gate.succeed(unit()));
+            gates.forEach(this::complete);
+        }
+
+        private void complete(Promise<Unit> gate) {
+            running.decrementAndGet();
+            gate.succeed(unit());
         }
 
         @Override
