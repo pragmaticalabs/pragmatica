@@ -37,7 +37,7 @@ class ClusterBootstrapConfigDiffTest {
             sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
-            Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
+            Map.of(NodeRole.CORE, roleSubTable(some(coreCount), none(), none(), RUNTIME_REF)),
             List.of()
         );
     }
@@ -47,7 +47,7 @@ class ClusterBootstrapConfigDiffTest {
             sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
-            Map.of(role, roleSubTable(role, some(count), none(), none(), runtimeRef)),
+            Map.of(role, roleSubTable(some(count), none(), none(), runtimeRef)),
             List.of()
         );
     }
@@ -61,11 +61,10 @@ class ClusterBootstrapConfigDiffTest {
     }
 
     private static ClusterBootstrapConfig configWithSources(Map<String, SourceProfile> sources) {
-        return clusterBootstrapConfig(
-            "1", clusterIdentity("test-cluster", "1.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("test-cluster", "1.0").unwrap(),
             defaultCoreTopology(), sources,
-            Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-            infrastructureConfig(NetworkingType.MANUAL),
+            Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+            infrastructureConfig(),
             defaultOperationsConfig()
         , java.util.Map.of());
     }
@@ -160,8 +159,8 @@ class ClusterBootstrapConfigDiffTest {
         void diff_addRole_producesAddition() {
             var stored = forgeConfig(3);
             var desired = configWithSources(Map.of("forge", sourceWithRoles("forge", Map.of(
-                NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF),
-                NodeRole.WORKER, roleSubTable(NodeRole.WORKER, some(2), none(), none(), RUNTIME_REF)
+                NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF),
+                NodeRole.WORKER, roleSubTable(some(2), none(), none(), RUNTIME_REF)
             ))));
             var plan = diff(stored, desired);
 
@@ -176,8 +175,8 @@ class ClusterBootstrapConfigDiffTest {
         @Test
         void diff_removeRole_producesRemoval() {
             var stored = configWithSources(Map.of("forge", sourceWithRoles("forge", Map.of(
-                NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF),
-                NodeRole.WORKER, roleSubTable(NodeRole.WORKER, some(2), none(), none(), RUNTIME_REF)
+                NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF),
+                NodeRole.WORKER, roleSubTable(some(2), none(), none(), RUNTIME_REF)
             ))));
             var desired = forgeConfig(3);
             var plan = diff(stored, desired);
@@ -213,14 +212,14 @@ class ClusterBootstrapConfigDiffTest {
                 sourceNameOrDefault("forge"), SourceType.FORGE, none(), some("cred-a"), none(), none(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
-                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF)),
                 List.of()
             )));
             var desired = configWithSources(Map.of("forge", sourceProfile(
                 sourceNameOrDefault("forge"), SourceType.FORGE, none(), some("cred-b"), none(), none(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
-                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF)),
                 List.of()
             )));
             var plan = diff(stored, desired);
@@ -250,7 +249,7 @@ class ClusterBootstrapConfigDiffTest {
                 sourceNameOrDefault("forge"), SourceType.FORGE, none(), none(), none(), none(), List.of(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
-                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF)),
                 List.of(), none(), ceiling
             );
         }
@@ -258,12 +257,11 @@ class ClusterBootstrapConfigDiffTest {
         @Test
         void diff_versionChange_producesClusterLevel() {
             var stored = forgeConfig(3);
-            var desired = clusterBootstrapConfig(
-                "1", clusterIdentity("test-cluster", "2.0").unwrap(),
+            var desired = clusterBootstrapConfig(clusterIdentity("test-cluster", "2.0").unwrap(),
                 defaultCoreTopology(),
                 Map.of("forge", forgeSource("forge", 3)),
-                Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-                infrastructureConfig(NetworkingType.MANUAL),
+                Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+                infrastructureConfig(),
                 defaultOperationsConfig()
             , java.util.Map.of());
             var plan = diff(stored, desired);
@@ -283,12 +281,11 @@ class ClusterBootstrapConfigDiffTest {
         @Test
         void diff_clusterNameChange_producesImmutable() {
             var stored = forgeConfig(3);
-            var desired = clusterBootstrapConfig(
-                "1", clusterIdentity("other-cluster", "1.0").unwrap(),
+            var desired = clusterBootstrapConfig(clusterIdentity("other-cluster", "1.0").unwrap(),
                 defaultCoreTopology(),
                 Map.of("forge", forgeSource("forge", 3)),
-                Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-                infrastructureConfig(NetworkingType.MANUAL),
+                Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+                infrastructureConfig(),
                 defaultOperationsConfig()
             , java.util.Map.of());
             var plan = diff(stored, desired);

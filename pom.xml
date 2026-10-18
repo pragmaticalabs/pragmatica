@@ -51,6 +51,7 @@
         <module>jbct</module>
         <module>aether</module>
         <module>examples</module>
+        <module>terra</module>
         <!--
             Runs this repository's operator-facing shell scripts against constructed conditions and
             asserts they cannot report success without having looked (#865, #952). Depends on no
@@ -206,11 +207,6 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>tcp</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>dns</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

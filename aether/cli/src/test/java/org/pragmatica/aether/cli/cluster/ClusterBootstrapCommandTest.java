@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -58,17 +57,16 @@ class ClusterBootstrapCommandTest {
                              none(),
                              Map.of(),
                              Map.of(NodeRole.CORE,
-                                    roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
+                                    roleSubTable(some(coreCount), none(), none(), RUNTIME_REF)),
                              List.of());
     }
 
     private static ClusterBootstrapConfig configWithName(String name) {
-        return clusterBootstrapConfig("1",
-                                      clusterIdentity(name, "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity(name, "1.0.0").unwrap(),
                                       defaultCoreTopology(),
                                       Map.of("forge", forgeSource(3)),
-                                      Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-                                      infrastructureConfig(NetworkingType.MANUAL),
+                                      Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+                                      infrastructureConfig(),
                                       defaultOperationsConfig(), java.util.Map.of());
     }
 
@@ -81,7 +79,6 @@ class ClusterBootstrapCommandTest {
 
             assertEquals("cli-name", overridden.cluster().name().value());
             assertEquals(config.cluster().version(), overridden.cluster().version());
-            assertEquals(config.configVersion(), overridden.configVersion());
             assertEquals(config.coreTopology(), overridden.coreTopology());
             assertEquals(config.sources(), overridden.sources());
             assertEquals(config.runtimes(), overridden.runtimes());

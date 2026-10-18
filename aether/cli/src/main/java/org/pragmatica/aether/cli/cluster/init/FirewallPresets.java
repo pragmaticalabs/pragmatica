@@ -40,7 +40,7 @@ public sealed interface FirewallPresets {
 
     /// Public app traffic, cluster mesh reachable, control plane scoped to the operator.
     ///
-    /// Cluster and SWIM stay at `0.0.0.0/0`: with `[infrastructure.networking] type = "manual"` the
+    /// Cluster and SWIM stay at `0.0.0.0/0`: with the manual networking model the
     /// nodes address each other by PUBLIC IP, so narrowing these to a private CIDR would stop the
     /// cluster forming. They carry authenticated consensus traffic, unlike the management API.
     private static List<FirewallRule> standardRules(PortMapping ports, Option<String> adminCidr) {
