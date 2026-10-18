@@ -786,7 +786,10 @@ public interface StreamConfigParser {
                                                                                                                   streamName,
                                                                                                                   section,
                                                                                                                   groupName))
-                                       .map(checkpointIntervalMs -> consumerConfig(doc, section, groupName, checkpointIntervalMs));
+                                       .map(checkpointIntervalMs -> consumerConfig(doc,
+                                                                                   section,
+                                                                                   groupName,
+                                                                                   checkpointIntervalMs));
     }
 
     private static Result<Long> parseCheckpointInterval(TomlDocument doc,
@@ -819,7 +822,8 @@ public interface StreamConfigParser {
 
     private static Map<String, String> dashedSuggestions(List<String> dashed) {
         return dashed.stream()
-                     .collect(Collectors.toUnmodifiableMap(Function.identity(), key -> key.replace('-', '_')));
+                     .collect(Collectors.toUnmodifiableMap(Function.identity(),
+                                                           key -> key.replace('-', '_')));
     }
 
     private static ConsumerConfig consumerConfig(TomlDocument doc,
