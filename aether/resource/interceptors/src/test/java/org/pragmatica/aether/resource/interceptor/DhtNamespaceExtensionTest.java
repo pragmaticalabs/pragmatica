@@ -15,6 +15,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -56,6 +57,38 @@ class DhtNamespaceExtensionTest {
 
         assertThat(cache.storage).as("the cache entry is in the cache namespace").isNotEmpty();
         assertThat(replicated.storage).isEmpty();
+    }
+
+    /// #279 item 3: the configured TTL reaches the distributed entry as its stamped expiry -- the cache's
+    /// `ttl_seconds` for a cache, the idempotency `retention_seconds` for a dedup record.
+    @Test
+    void distributedCache_stampsTheConfiguredTtlOnTheStoredEntry() {
+        var config = CacheConfig.cacheConfig("cache-ttl", CacheStrategy.CACHE_ASIDE, CacheMode.DISTRIBUTED).unwrap();
+        var interceptor = new CacheInterceptorFactory().provision(config, context).await().unwrap();
+        Fn1<Promise<String>, String> method = request -> Promise.success("value-" + request);
+        var before = System.currentTimeMillis();
+
+        interceptor.intercept(method).apply("key-1").await().unwrap();
+
+        assertThat(expiryOf(cache)).isBetween(before + config.ttlSeconds() * 1000L,
+                                              System.currentTimeMillis() + config.ttlSeconds() * 1000L);
+    }
+
+    @Test
+    void distributedIdempotency_stampsTheRetentionOnTheStoredRecord() {
+        var config = IdempotencyConfig.idempotencyConfig("dedup-ttl", CacheMode.DISTRIBUTED).unwrap();
+        var interceptor = new IdempotencyInterceptorFactory().provision(config, context).await().unwrap();
+        Fn1<Promise<String>, String> method = request -> Promise.success("done-" + request);
+        var before = System.currentTimeMillis();
+
+        interceptor.intercept(method).apply("call-1").await().unwrap();
+
+        assertThat(expiryOf(replicated)).isBetween(before + config.retentionSeconds() * 1000L,
+                                                   System.currentTimeMillis() + config.retentionSeconds() * 1000L);
+    }
+
+    private static long expiryOf(RecordingDhtClient client) {
+        return ByteBuffer.wrap(client.storage.values().iterator().next()).getLong();
     }
 
     private static final class RecordingDhtClient implements DHTClient {

@@ -15,7 +15,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,6 +27,7 @@ class DHTCacheBackendTest {
 
     private ConcurrentHashMap<String, byte[]> storage;
     private DHTCacheBackend backend;
+    private final AtomicLong clock = new AtomicLong(1_000_000L);
 
     @BeforeEach
     void setUp() {
@@ -32,12 +35,12 @@ class DHTCacheBackendTest {
         var dhtClient = new FakeDHTClient(storage);
         var serializer = new StringSerializer();
         var deserializer = new StringDeserializer();
-        backend = DHTCacheBackend.dhtCacheBackend(dhtClient, serializer, deserializer, "test-ns");
+        backend = DHTCacheBackend.dhtCacheBackend(dhtClient, serializer, deserializer, "test-ns", 60, clock::get);
     }
 
     @Test
     void get_existingKey_returnsDeserializedValue() {
-        storage.put("test-ns:key1", "hello".getBytes(UTF_8));
+        storage.put("test-ns:key1", DHTCacheBackend.envelope(Long.MAX_VALUE, "hello".getBytes(UTF_8)));
 
         var result = backend.get("key1").await().fold(_ -> Option.none(), v -> v);
 
@@ -57,12 +60,12 @@ class DHTCacheBackendTest {
         backend.put("key1", "world").await();
 
         assertThat(storage.containsKey("test-ns:key1")).isTrue();
-        assertThat(new String(storage.get("test-ns:key1"), UTF_8)).isEqualTo("world");
+        assertThat(new String(storage.get("test-ns:key1"), 8, 5, UTF_8)).isEqualTo("world");
     }
 
     @Test
     void remove_existingKey_removesEntry() {
-        storage.put("test-ns:key1", "value".getBytes(UTF_8));
+        storage.put("test-ns:key1", DHTCacheBackend.envelope(Long.MAX_VALUE, "value".getBytes(UTF_8)));
 
         backend.remove("key1").await();
 
@@ -72,7 +75,7 @@ class DHTCacheBackendTest {
     @Test
     void get_namespacedKeys_isolatesDifferentNamespaces() {
         var otherBackend = DHTCacheBackend.dhtCacheBackend(
-            new FakeDHTClient(storage), new StringSerializer(), new StringDeserializer(), "other-ns");
+            new FakeDHTClient(storage), new StringSerializer(), new StringDeserializer(), "other-ns", 60);
 
         backend.put("key1", "ns1-value").await();
         otherBackend.put("key1", "ns2-value").await();
@@ -102,6 +105,55 @@ class DHTCacheBackendTest {
 
         assertThat(result.isPresent()).isTrue();
         assertThat(result.unwrap()).isEqualTo("value-for-null-key");
+    }
+
+    @Test
+    void put_stampsTheExpiryInstant_asNowPlusTtl() {
+        backend.put("key1", "world").await();
+
+        assertThat(ByteBuffer.wrap(storage.get("test-ns:key1")).getLong()).isEqualTo(1_000_000L + 60_000L);
+    }
+
+    @Test
+    void get_beforeTheTtlElapses_returnsTheValue() {
+        backend.put("key1", "world").await();
+        clock.addAndGet(59_999L);
+
+        var result = backend.get("key1").await().fold(_ -> Option.none(), v -> v);
+
+        assertThat(result.unwrap()).isEqualTo("world");
+    }
+
+    @Test
+    void get_afterTheTtlElapses_isAMissAndRemovesTheEntry() {
+        backend.put("key1", "world").await();
+        clock.addAndGet(60_000L);
+
+        var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
+
+        assertThat(result.isEmpty()).as("an entry past its TTL is a miss").isTrue();
+        assertThat(storage.containsKey("test-ns:key1")).as("and the expired entry is removed").isFalse();
+    }
+
+    @Test
+    void put_overAnExpiredEntry_startsAFreshTtl() {
+        backend.put("key1", "old").await();
+        clock.addAndGet(120_000L);
+        backend.put("key1", "new").await();
+
+        var result = backend.get("key1").await().fold(_ -> Option.none(), v -> v);
+
+        assertThat(result.unwrap()).isEqualTo("new");
+    }
+
+    @Test
+    void get_entryWithoutAnExpiryEnvelope_isAMissAndRemovesTheEntry() {
+        storage.put("test-ns:key1", new byte[] {1, 2, 3});
+
+        var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
+
+        assertThat(result.isEmpty()).isTrue();
+        assertThat(storage.containsKey("test-ns:key1")).isFalse();
     }
 
     @Test
