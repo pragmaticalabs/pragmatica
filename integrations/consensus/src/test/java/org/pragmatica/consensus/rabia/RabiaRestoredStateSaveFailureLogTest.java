@@ -192,6 +192,37 @@ class RabiaRestoredStateSaveFailureLogTest {
             .contains(DISK_FULL.message());
     }
 
+    /// D1, the false-positive class: a failed re-persist fences the node through `authorityFailure`, but it is not a
+    /// failure to restore the node's OWN history, so the watchdog bound (`ownRestoreFailure`) must stay empty on both
+    /// arms. This pins the scope #1468 decided; widening it to cover the permanent re-persist fence (#1516) is a
+    /// separate decision. The precondition on each arm shows the failing save was really reached.
+    @Test
+    void syncAdoptionSaveFails_leavesOwnRestoreFailureEmpty() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(3, stateMachine, emptyDisk(true));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> engine.voterReconfigurationStatus().failure().contains(DISK_FULL.message())))
+            .as("precondition: the failed re-persist was recorded as the authority failure")
+            .isTrue();
+        assertThat(engine.ownRestoreFailure()).isEqualTo(Option.none());
+    }
+
+    @Test
+    void ownRestoreSaveFails_leavesOwnRestoreFailureEmpty() {
+        var stateMachine = new RecordingStateMachine();
+        var started = started(3, stateMachine, failingSaveAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        started.engine().processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> started.engine().voterReconfigurationStatus().failure().contains(DISK_FULL.message())))
+            .as("precondition: the own restore ran and only the re-persist failed")
+            .isTrue();
+        assertThat(stateMachine.lastRestored()).isEqualTo(OWN_SNAPSHOT);
+        assertThat(started.engine().ownRestoreFailure()).isEqualTo(Option.none());
+    }
+
     /// The #1020 diagnostic on the sync-adoption arm: the failed re-persist is logged at ERROR, naming
     /// the stale-disk consequence and the cause.
     @Test

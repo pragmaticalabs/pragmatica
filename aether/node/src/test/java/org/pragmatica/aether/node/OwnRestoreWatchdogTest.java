@@ -72,7 +72,7 @@ class OwnRestoreWatchdogTest {
         assertThat(exits).hasSize(1);
     }
 
-    /// The clock measures CONTINUOUS presence: a failure that clears (a new genesis installed) and returns
+    /// The clock measures CONTINUOUS presence: a failure that clears and returns
     /// starts a new bound rather than inheriting the time already spent.
     @Test
     void tick_restartsTheClock_whenTheFailureClearsAndReturns() {

@@ -18,6 +18,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -845,10 +846,18 @@ public record Main(String[] args) {
     /// bound on that stop has to be armed BEFORE `start()` is awaited. Production only; in-JVM hosts own their nodes.
     @Contract
     private static void armOwnRestoreWatchdog(AetherNode node) {
-        OwnRestoreWatchdog.ownRestoreWatchdog(node::ownRestoreFailure,
-                                              Main::monotonicMillis,
-                                              OwnRestoreWatchdog.BOUND,
-                                              Main::exitConsensusRestoreFailed).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
+        ownRestoreWatchdog(node::ownRestoreFailure,
+                           Main::flushLogs,
+                           Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
+    }
+
+    /// The production watchdog with the flush and halt injected, so a test can read its bound and drive its exit
+    /// without killing the JVM. Package-private for that reason only.
+    static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> failure, Runnable flushLogs, IntConsumer haltFn) {
+        return OwnRestoreWatchdog.ownRestoreWatchdog(failure,
+                                                     Main::monotonicMillis,
+                                                     OwnRestoreWatchdog.BOUND,
+                                                     cause -> exitConsensusRestoreFailed(cause, flushLogs, haltFn));
     }
 
     private static long monotonicMillis() {
@@ -856,15 +865,21 @@ public record Main(String[] args) {
     }
 
     /// `halt`, not `exit`: the node is fenced and holds nothing worth a graceful stop, and `System.exit` from a
-    /// scheduler thread can park on the shutdown hooks (#838). The FATAL line names the cause and the exit code.
+    /// scheduler thread can park on the shutdown hooks (#838). `halt` flushes no appender of its own (see
+    /// [#registerShutdownHook]), so the FATAL line is flushed explicitly first, bounded by [#FLUSH_TIMEOUT]; the halt
+    /// is in `finally` so a throwing flush cannot keep the process alive. The FATAL line names the cause and the exit code.
     @Contract
-    private static void exitConsensusRestoreFailed(Cause cause) {
+    static void exitConsensusRestoreFailed(Cause cause, Runnable flushLogs, IntConsumer haltFn) {
         log.error("FATAL: this node could not restore its own persisted consensus history and stayed JOINING for {}: {}. "
                  + "It never started with partial state. Exiting with code {}; restarting unchanged reads the same snapshot.",
                   OwnRestoreWatchdog.BOUND,
                   cause.message(),
                   AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
-        Runtime.getRuntime().halt(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
+        try {
+            flushLogs.run();
+        } finally {
+            haltFn.accept(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
+        }
     }
 
     /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying

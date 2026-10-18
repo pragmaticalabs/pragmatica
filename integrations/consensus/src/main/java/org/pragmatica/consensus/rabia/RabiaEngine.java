@@ -163,9 +163,11 @@ public class RabiaEngine<C extends Command> {
 
     private volatile Option<Cause> authorityFailure = Option.none();
     /// Why this node's OWN persisted history could not be restored (#1468). Set only by
-    /// [#recordOwnRestoreFailure], cleared with `authorityFailure` when a genesis installs. Unlike
-    /// `authorityFailure` it is not set by a responder-snapshot or authority failure, so a supervisor
-    /// that bounds the stop (`OwnRestoreWatchdog`) acts only on the arm the owner ruling covers.
+    /// [#recordOwnRestoreFailure] and never cleared in-process: the own-restore arm runs only after a genesis has
+    /// resolved (adoption needs an installed electorate), and no genesis installs after that, so unlike
+    /// `authorityFailure` there is no clear in [#installGenesis]. It is not set by a responder-snapshot or a
+    /// re-persist failure, so a supervisor that bounds the stop (`OwnRestoreWatchdog`) acts only on the arm
+    /// #1468 decided.
     private volatile Option<Cause> ownRestoreFailure = Option.none();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
     private final Map<Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
@@ -529,7 +531,6 @@ public class RabiaEngine<C extends Command> {
         cancelGenesisTimer();
         genesis = Option.some(configuration);
         authorityFailure = Option.none();
-        ownRestoreFailure = Option.none();
         voterHistory.clear();
         installVoters(configuration);
         if (resolvesPending) {

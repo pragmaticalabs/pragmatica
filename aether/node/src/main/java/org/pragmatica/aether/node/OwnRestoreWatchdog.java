@@ -19,7 +19,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 
 /// Bounds the stop of a node whose OWN persisted consensus history cannot be restored (#1468).
 ///
-/// Such a node never activates (fail-closed, owner ruling of session 27): it stays `JOINING` and
+/// Such a node never activates (fail-closed, decided on #1468): it stays `JOINING` and
 /// `start()` does not resolve. This watchdog ends that wedge. When the failure has been continuously
 /// present for [#BOUND] the process exits with [AetherNode#EXIT_CONSENSUS_RESTORE_FAILED]; the cause is
 /// logged at FATAL first. It still never starts with partial state, so the exit changes only how long the
@@ -33,8 +33,9 @@ import org.pragmatica.lang.utils.SharedScheduler;
 /// before the process disappears; and it stays short enough that a supervisor honouring the distinct exit
 /// code is not left with a silent unready member for minutes. Do not read it as a recovery window.
 ///
-/// The clock restarts if the failure clears (a new genesis installs) and returns later. The exit is
-/// taken once. In-JVM hosts (Forge, Ember) do not arm it: they own their nodes' lifecycle.
+/// The clock restarts if the failure clears and returns later. The engine never clears it in-process today (the
+/// own-restore arm runs only after genesis resolved), so that is tolerance of a clearing source, not an observed
+/// path. The exit is taken once. In-JVM hosts (Forge, Ember) do not arm it: they own their nodes' lifecycle.
 public record OwnRestoreWatchdog(Supplier<Option<Cause>> failure,
                                  LongSupplier nowMillis,
                                  long boundMillis,
