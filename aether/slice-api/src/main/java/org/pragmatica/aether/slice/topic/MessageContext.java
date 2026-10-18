@@ -11,7 +11,9 @@ package org.pragmatica.aether.slice.topic;
 /// The four fields do NOT carry the same guarantee, and the difference is the whole point of the
 /// type — read it before using any of them as a key:
 ///
-/// **`messageId` — stable identity, usable as a deduplication key.** The publisher assigns one per
+/// **`messageId` — stable identity of the event; the key a subscriber deduplicates on.** The log itself
+/// does not deduplicate: two publishes under one ID are two log entries, and collapsing them is the
+/// subscriber's work. The publisher assigns one per
 /// `publish` — a fresh KSUID from `publish(T)`, or the caller's key from `publish(T, idempotencyKey)`
 /// (#1237), so it is NOT always a KSUID — and stores it in the event's envelope, so it identifies the EVENT rather than the
 /// place a copy of it happens to sit. It is the §8 idempotency key: the key the idempotency aspect
@@ -44,8 +46,8 @@ package org.pragmatica.aether.slice.topic;
 /// accepted, and there is no failure for a slice to recover from at this point. This matches [Topic],
 /// which is likewise a descriptor rather than a parsed value.
 ///
-/// Delivery status: no production dispatcher constructs a context yet, so a durable handler does not
-/// receive this `messageId` today. [unverified: messageId is not yet delivered to subscribers — #1295]
+/// Delivery status: the durable-topic dispatcher builds a context for each delivery and hands it to a
+/// subscriber that declares the two-argument shape; a one-argument subscriber receives the bare event.
 ///
 /// @param messageId publisher-assigned identity of the event (a KSUID, or the caller's idempotency key);
 ///                  the §8 idempotency key, stable
