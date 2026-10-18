@@ -45,8 +45,29 @@ class CliConfigRefusalTest {
         System.setErr(new PrintStream(err, true, UTF_8));
         Files.createDirectories(work.resolve("src"));
         Files.writeString(work.resolve("src").resolve("Pure.java"), CLEAN);
+        Files.writeString(work.resolve("src").resolve("Saga.java"),
+                          """
+                          package demo;
+
+                          class Saga {
+                              Unit compensateBooking(Context ctx) {
+                                  return releaseSeat(ctx).recover(_ -> Unit.unit());
+                              }
+                          }
+                          """);
         Files.writeString(work.resolve("jacoco.xml"),
-                          "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><report name=\"demo\"><package name=\"demo\"/></report>");
+                          """
+                          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                          <report name="demo">
+                            <package name="demo">
+                              <class name="demo/Saga" sourcefilename="Saga.java">
+                                <method name="compensateBooking" desc="(Ldemo/Context;)V" line="4">
+                                  <counter type="INSTRUCTION" missed="7" covered="0"/>
+                                </method>
+                              </class>
+                            </package>
+                          </report>
+                          """);
     }
 
     @AfterEach
