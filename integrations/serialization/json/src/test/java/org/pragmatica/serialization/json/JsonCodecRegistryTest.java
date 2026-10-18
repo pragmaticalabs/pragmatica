@@ -39,6 +39,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +48,7 @@ import java.util.ServiceLoader.Provider;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -74,7 +76,7 @@ public class JsonCodecRegistryTest {
 
         for (var type : List.of("Good", "Plain", "Thrower", "InitFails", "Unmarked", "OtherMarked", "Foreign", "NullType",
                                 "NullCodec", "CodecThrows", "WrongIface", "Missing", "NoCtor", "Endless", "SelfCause", "Under_Score",
-                                "Dol$lar")) {
+                                "Dol$lar", "CtorOverflow", "TypeOverflow")) {
             sources.put(type, "public record " + type + "() {}");
         }
 
@@ -94,6 +96,10 @@ public class JsonCodecRegistryTest {
         sources.put("NoCtorJson", provider("NoCtorJson", "p.NoCtor", "NoCtor", "CODEC", "").replace("public NoCtorJson()", "private NoCtorJson()"));
         sources.put("EndlessJson", provider("EndlessJson", "p.Endless", "Endless", "CODEC", "throw new Chained(0);"));
         sources.put("SelfCauseJson", provider("SelfCauseJson", "p.SelfCause", "SelfCause", "CODEC", "throw new SelfCaused();"));
+        sources.put("CtorOverflowJson", provider("CtorOverflowJson", "p.CtorOverflow", "CtorOverflow", "CODEC",
+                                                 "throw new StackOverflowError(\"constructor overflowed\");"));
+        sources.put("TypeOverflowJson", provider("TypeOverflowJson", "p.TypeOverflow", "TypeOverflow", "CODEC", "")
+                     .replace("return TypeOverflow.class;", "throw new StackOverflowError(\"type overflowed\");"));
         sources.put("Under_0ScoreJson", provider("Under_0ScoreJson", "p.Under_Score", "Under_Score", "CODEC", ""));
         sources.put("Outer_InJson", provider("Outer_InJson", "p.Outer.In", "Outer.In", "CODEC", ""));
         sources.put("Chained", """
@@ -139,6 +145,8 @@ public class JsonCodecRegistryTest {
                  "p.CodecThrowsJson",
                  "p.EndlessJson",
                  "p.SelfCauseJson",
+                 "p.CtorOverflowJson",
+                 "p.TypeOverflowJson",
                  "p.GoodJson   # trailing comment",
                  "p.Under_0ScoreJson",
                  "p.Outer_InJson");
@@ -251,26 +259,6 @@ public class JsonCodecRegistryTest {
         return depth;
     }
 
-    // Defensive path, unreachable through one loader's ServiceLoader: two distinct classes of the type's provider name
-    // (here the same provider defined by two loaders) are refused as a broken provider in either order, never
-    // resolved first-wins.
-    @Test
-    void lookup_fails_whenTwoProviderClassesOfTheNameReachIt_inEitherOrder() throws Exception {
-        try (var other = loader(classes)) {
-            var first = provider(loader.loadClass("p.GoodJson"));
-            var second = provider(other.loadClass("p.GoodJson"));
-
-            for (var order : List.of(List.of(first, second), List.of(second, first))) {
-                var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
-                                              failureOf(JsonCodecRegistry.lookup(type("p.Good"), "p.GoodJson", order, () -> Result.success(true))));
-
-                assertEquals("p.GoodJson", failed.provider());
-                assertTrue(failed.message().contains("more than one provider class of this name was found: p.GoodJson (class loader "),
-                           failed.message());
-            }
-        }
-    }
-
     // The JDK's iterator reports a broken entry from hasNext; whatever the entry, the scan moves on to the next one.
     @Test
     void lookup_isolatesAHasNextFailure_andConsultsItOnlyForAListedName() throws Exception {
@@ -308,14 +296,68 @@ public class JsonCodecRegistryTest {
         assertTrue(failed.message().contains("services cannot be loaded"), failed.message());
     }
 
-    // Documented exception to "never throws": a VirtualMachineError is not a failure a Cause can carry.
+    // Documented exception to "never throws": a VirtualMachineError raised by the lookup's own call into the provider
+    // instance (here type()) is not a failure a Cause can carry, so it propagates.
     @Test
-    void lookup_letsAVirtualMachineErrorPropagate() throws Exception {
-        var goodJson = loader.loadClass("p.GoodJson").asSubclass(JsonCodecProvider.class);
-        Iterable<Provider<JsonCodecProvider>> providers = () -> List.<Provider<JsonCodecProvider>>of(new Overflowing(goodJson)).iterator();
+    void codecFor_letsAVirtualMachineErrorOfTheProvidersTypeMethodPropagate() throws Exception {
+        var type = type("p.TypeOverflow");
+        var thrown = assertThrows(StackOverflowError.class, () -> JsonCodecs.codecFor(type));
 
-        assertThrows(StackOverflowError.class,
-                     () -> JsonCodecRegistry.lookup(type("p.Good"), "p.GoodJson", providers, () -> Result.success(true)));
+        assertEquals("type overflowed", thrown.getMessage());
+    }
+
+    // Not an exception to "never throws": the JDK's ServiceLoader wraps every throwable of a provider's instantiation,
+    // errors included, into a ServiceConfigurationError, so a constructor's StackOverflowError is a ProviderFailed, and
+    // it is the cached answer like any other.
+    @Test
+    void codecFor_fails_whenTheProviderConstructorThrowsAVirtualMachineError() throws Exception {
+        var failed = providerFailed("p.CtorOverflow");
+
+        assertEquals("p.CtorOverflowJson", failed.provider());
+        assertTrue(failed.message().contains(ServiceConfigurationError.class.getName()), failed.message());
+        assertTrue(chain(failed.origin()).contains("java.lang.StackOverflowError: constructor overflowed"), chain(failed.origin()));
+        assertSame(JsonCodecs.codecFor(type("p.CtorOverflow")), JsonCodecs.codecFor(type("p.CtorOverflow")));
+    }
+
+    // The scan stops at the provider of the requested name: the entries listed after it (Under_0ScoreJson,
+    // Outer_InJson) are never streamed, so never loaded. The miss is the control: it streams, and so loads, them all.
+    @Test
+    void codecFor_streamsNoProviderAfterTheOneOfTheName() throws Exception {
+        try (var hit = new RecordingLoader(classes); var miss = new RecordingLoader(classes)) {
+            assertTrue(JsonCodecs.codecFor(hit.loadClass("p.Good")).unwrap().isPresent());
+            assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(miss.loadClass("p.Plain")));
+
+            assertTrue(hit.loaded().contains("p.GoodJson"), hit.loaded().toString());
+            assertFalse(hit.loaded().contains("p.Under_0ScoreJson"), hit.loaded().toString());
+            assertFalse(hit.loaded().contains("p.Outer_InJson"), hit.loaded().toString());
+            assertTrue(miss.loaded().containsAll(List.of("p.GoodJson", "p.Under_0ScoreJson", "p.Outer_InJson")),
+                       miss.loaded().toString());
+        }
+    }
+
+    // Isolation is per entry, not per line: the JDK rejects a services file with a malformed line as a whole, so its
+    // healthy entry cannot be loaded either (listed, so a ProviderFailed). A services file of another class path entry
+    // listing the same provider is unaffected, unless the name stood above the malformed line: the JDK counted it as
+    // seen while parsing, and skips it in every later file.
+    @Test
+    void codecFor_fails_forTheHealthyEntryOfAServicesFileWithAMalformedLine() throws Exception {
+        var healthyFirst = copyClasses(dir.resolve("healthy-first"));
+        var malformedFirst = copyClasses(dir.resolve("malformed-first"));
+        var elsewhere = Files.createDirectories(dir.resolve("elsewhere"));
+
+        services(healthyFirst, "p.GoodJson", "not a name");
+        services(malformedFirst, "not a name", "p.GoodJson");
+        services(elsewhere, "p.GoodJson");
+        try (var alone = loader(healthyFirst);
+             var nameSeenFirst = loader(healthyFirst, elsewhere);
+             var nameNotSeen = loader(malformedFirst, elsewhere)) {
+            var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class, failureOf(JsonCodecs.codecFor(alone.loadClass("p.Good"))));
+
+            assertTrue(failed.message().contains("is listed in META-INF/services/"), failed.message());
+            assertTrue(chain(failed.origin()).contains("Illegal configuration-file syntax"), chain(failed.origin()));
+            assertInstanceOf(JsonCodecs.ProviderFailed.class, failureOf(JsonCodecs.codecFor(nameSeenFirst.loadClass("p.Good"))));
+            assertTrue(JsonCodecs.codecFor(nameNotSeen.loadClass("p.Good")).unwrap().isPresent());
+        }
     }
 
     // An exception that cannot describe itself is named by its class: building the failure never throws.
@@ -417,7 +459,7 @@ public class JsonCodecRegistryTest {
     record Streamed(Class<? extends JsonCodecProvider> type) implements Provider<JsonCodecProvider> {
         @Override
         public JsonCodecProvider get() {
-            throw new AssertionError("a provider found only to detect a conflict must not be instantiated");
+            throw new AssertionError("a provider not of the requested name must not be instantiated");
         }
     }
 
@@ -429,13 +471,6 @@ public class JsonCodecRegistryTest {
             } catch (ReflectiveOperationException e) {
                 throw new AssertionError(e);
             }
-        }
-    }
-
-    record Overflowing(Class<? extends JsonCodecProvider> type) implements Provider<JsonCodecProvider> {
-        @Override
-        public JsonCodecProvider get() {
-            throw new StackOverflowError("simulated");
         }
     }
 
@@ -503,8 +538,48 @@ public class JsonCodecRegistryTest {
         Files.writeString(services, String.join("\n", lines) + "\n");
     }
 
-    private static URLClassLoader loader(Path classes) throws IOException {
-        return new URLClassLoader(new URL[] {classes.toUri().toURL()}, JsonCodecRegistryTest.class.getClassLoader());
+    /// Records every class it defines itself, which for `p` is every class a lookup through it loads.
+    static final class RecordingLoader extends URLClassLoader {
+        private final List<String> loaded = Collections.synchronizedList(new ArrayList<>());
+
+        RecordingLoader(Path classes) throws IOException {
+            super(new URL[] {classes.toUri().toURL()}, JsonCodecRegistryTest.class.getClassLoader());
+        }
+
+        @Override
+        protected Class<?> findClass(String name) throws ClassNotFoundException {
+            loaded.add(name);
+
+            return super.findClass(name);
+        }
+
+        List<String> loaded() {
+            return List.copyOf(loaded);
+        }
+    }
+
+    // The compiled classes without their services file.
+    private static Path copyClasses(Path target) throws IOException {
+        try (var files = Files.walk(classes)) {
+            for (var file : files.filter(Files::isRegularFile).filter(file -> !file.toString().contains("META-INF")).toList()) {
+                var copy = target.resolve(classes.relativize(file));
+
+                Files.createDirectories(copy.getParent());
+                Files.copy(file, copy);
+            }
+        }
+
+        return target;
+    }
+
+    private static URLClassLoader loader(Path... entries) throws IOException {
+        var urls = new URL[entries.length];
+
+        for (int index = 0; index < entries.length; index++) {
+            urls[index] = entries[index].toUri().toURL();
+        }
+
+        return new URLClassLoader(urls, JsonCodecRegistryTest.class.getClassLoader());
     }
 
     private static List<Path> testClasspath() {

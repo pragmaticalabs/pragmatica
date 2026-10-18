@@ -43,31 +43,46 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// A lookup derives the provider's binary name from the class (the entry point naming of the codec processor:
 /// package, then the flat name, then `Json`), streams the providers of the class's own loader
 /// (`ServiceLoader.load(JsonCodecProvider.class, type.getClassLoader())`, the system class loader for a bootstrap
-/// class) without instantiating them, and instantiates only the provider of that name, after checking that its class
-/// carries a `GeneratedFor` marker naming the class. The instance must then serve exactly the requested class with a
-/// non-null codec. The answer, success or failure, is computed once per class and kept for the life of the class, so a
-/// lookup never rescans the class path after the first one for that class.
+/// class) without instantiating them, stops at the first provider of that name, and instantiates only that one, after
+/// checking that its class carries a `GeneratedFor` marker naming the class. The instance must then serve exactly the
+/// requested class with a non-null codec. The answer, success or failure, is computed once per class and kept for the
+/// life of the class, so a lookup never rescans the class path after the first one for that class.
+///
+/// Cost: a class's first lookup is a scan proportional to the number of `@Json` types its class loader sees. Streaming
+/// a provider loads its class (without initialising it), so a hit loads the provider classes listed before its own,
+/// and a miss (any class that is not a `@Json` type) loads every listed provider class. Every later lookup of the same
+/// class is a cache read. Warming `N` types is therefore up to `N` scans of up to `N` providers each.
 ///
 /// The same type compiled into two artifacts gives the same provider name in both, and the `ServiceLoader` loads a
 /// provider name once, so the lookup resolves to the copy the class path finds first, which is the same code. Two
 /// artifacts holding different types of one package each list their own providers, so both resolve.
 ///
-/// A lookup never throws, except a `VirtualMachineError` (an exhausted stack or heap), which deliberately propagates:
-/// no `Cause` can carry it. It fails with [ProviderFailed] when the provider of the requested name is broken: its class
-/// was found and fails the checks above or cannot be instantiated (a constructor or initialiser that throws, a
-/// `type()` or `codec()` that throws, returns `null` or names another class), or the services files list the name but
-/// the `ServiceLoader` could not load it (the class is missing, does not implement the interface, or has no public
-/// no-argument constructor). A broken entry of **another** name does not change the answer: the `ServiceLoader`
-/// reports such an entry while it is streamed, before its name is known, so the lookup records it, streams on, and
-/// consults it only when no provider of the requested name was found and the services files list that name (then the
-/// recorded failures, which include the requested entry's, are the failure's origin). Building the failure never
-/// throws: an exception's cause chain is walked to a bounded depth and stops at a throwable seen before, and an
-/// exception whose own `toString` throws is described by its class name.
+/// A lookup fails with [ProviderFailed] when the provider of the requested name is broken: its class was found and
+/// fails the checks above or cannot be instantiated (a constructor or initialiser that throws, a `type()` or `codec()`
+/// that throws, returns `null` or names another class), or the services files list the name but the `ServiceLoader`
+/// could not load it (the class is missing, does not implement the interface, or has no public no-argument
+/// constructor). A broken entry of **another** name does not change the answer: the `ServiceLoader` reports such an
+/// entry while it is streamed, before its name is known, so the lookup records it, streams on, and consults it only
+/// when no provider of the requested name was found and the services files list that name (then the recorded
+/// failures, which include the requested entry's, are the failure's origin). That isolation is per entry, not per
+/// line: the JDK parses a services file as a whole, and one malformed line (a name with a space or an illegal
+/// character) makes it reject that entire file, so every provider the file lists, healthy ones included, cannot be
+/// loaded and answers [ProviderFailed]. Services files of other class path entries are unaffected, with one JDK
+/// quirk: a name on a line above the malformed one was already counted as seen, so the same name listed in a later
+/// file is skipped too. The processor never writes such a line; a hand-edited or badly merged file can. Building the failure never throws: an exception's cause
+/// chain is walked to a bounded depth and stops at a throwable seen before, and an exception whose own `toString`
+/// throws is described by its class name.
 ///
-/// One class loader's `ServiceLoader` yields at most one provider class per name, so a lookup through `codecFor` meets
-/// at most one candidate. Should more than one distinct class of the requested name ever reach the resolution (only
-/// possible for providers gathered across class loaders, never through `codecFor`), it is refused as a
-/// [ProviderFailed] naming them rather than resolved first-wins.
+/// A lookup never throws, with one exception: a `VirtualMachineError` (an exhausted stack or heap) raised by the
+/// lookup's own calls (while the `ServiceLoader` loads a provider class, or by a provider instance's `type()` or
+/// `codec()`) propagates, as no `Cause` can carry it. One thrown by a provider's constructor or static initialiser
+/// does not: the JDK's `ServiceLoader` wraps every throwable of instantiation, errors included, into a
+/// `ServiceConfigurationError`, so it is answered as [ProviderFailed], and like every answer it is kept for the life
+/// of the class, even when the error was transient.
+///
+/// One class loader's `ServiceLoader` yields at most one provider class per name, and the scan stops at the first, so
+/// there is no second candidate to choose between. Whatever class is found under the name must still carry the marker
+/// and serve exactly the requested class, so a foreign class there is answered as [ProviderFailed], never used.
 public sealed interface JsonCodecs {
     /// The generated codec for `type`: empty when `type` is not a `@Json` type its class loader sees, a
     /// [ProviderFailed] failure when its provider is broken.

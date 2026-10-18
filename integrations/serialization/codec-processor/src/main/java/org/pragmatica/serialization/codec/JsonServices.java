@@ -23,11 +23,17 @@ import static org.pragmatica.lang.Option.option;
 /// The services file that makes every `@Json` entry point its type's `ServiceLoader` provider:
 /// `META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`, one entry point binary name per line,
 /// sorted, so the file is reproducible. It is a resource, written once, in the last round, and only by a compilation
-/// that generated at least one entry point; its originating elements are the entry points' source types.
+/// that generated at least one entry point. Its originating elements are, for each entry point this compilation
+/// generated, the `@Json` type it was generated for, and, for each entry kept from a previous compilation, that entry
+/// point's own class element: the file records only entry point names, so a kept entry's `@Json` source type is not
+/// known here.
 ///
 /// Incremental compilation: an entry a previous compilation left in the file (read from the class output) is kept
 /// while its class still resolves, so recompiling some `@Json` types into the same output keeps the others, and
-/// dropped once its class is gone, so a deleted type's entry does not linger. An entry point whose type lost `@Json`
+/// dropped once its class is gone, so a deleted type's entry does not linger. "Resolves" is
+/// `Elements.getTypeElement`, which finds a class file only on the compile class path: retention needs the class
+/// output directory on that path, as Maven puts it. Without it (plain `javac -d out` with `out` not on `-cp`) no
+/// earlier entry resolves, and the file lists only this compilation's entry points. An entry point whose type lost `@Json`
 /// still resolves while its class file remains, so its entry stays until the build tool removes the outputs of the
 /// changed source (incremental IDE builds track the originating elements) or the output is cleaned.
 final class JsonServices {

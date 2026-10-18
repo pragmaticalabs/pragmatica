@@ -118,35 +118,56 @@ Each `@Json` type's entry point is its own provider: it implements `JsonCodecPro
 entry point, sorted, in `META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`. A lookup derives
 the provider's name from the class (package, flat name, `Json`, exactly as the processor names the entry point),
 streams the providers of the class's own loader (`type.getClassLoader()`, the system class loader for a JDK class)
-through `ServiceLoader.stream()` without instantiating them, and instantiates only the provider of that name, after
-checking that its class carries `@GeneratedFor` naming the class. The provider must then serve exactly that class
-with a non-null codec. The answer is computed on the first lookup of that class and kept with the class (a
-`ClassValue`), so later lookups never rescan the class path and a discarded class loader is not kept alive by the
-cache.
+through `ServiceLoader.stream()` without instantiating them, stops at the first provider of that name, and
+instantiates only that one, after checking that its class carries `@GeneratedFor` naming the class. The provider must
+then serve exactly that class with a non-null codec. The answer is computed on the first lookup of that class and kept
+with the class (a `ClassValue`), so later lookups never rescan the class path and a discarded class loader is not kept
+alive by the cache.
+
+The first lookup of a class costs a scan proportional to the number of `@Json` types its class loader sees.
+Streaming a provider loads its class (without initialising it), so a hit loads the provider classes listed up to its
+own, and a miss (any class that is not a `@Json` type, `String` included) loads every listed provider class. Each
+class pays this once; every later lookup of it is a cache read. Warming `N` types costs up to `N` scans of up to `N`
+providers, so with thousands of `@Json` types on one class loader, prefer the generated `<Type>Json` entry point
+where the type is known statically.
 
 There is no per-package class, so artifacts compose: two artifacts with `@Json` types in one package (`src/main` and
 `src/test`, or two modules sharing a package) each list their own providers and all resolve, and the same type
 compiled into two artifacts gets the same provider name in both, which the `ServiceLoader` loads once, so it resolves
 to the copy the class path finds first, which is the same code.
 
-The lookup never throws, except a `VirtualMachineError` (an exhausted stack or heap), which deliberately propagates
-because no `Cause` can carry it. It fails with `JsonCodecs.ProviderFailed` when the provider of the class's name is
-broken. Its class was found but is not marked as generated for the class, cannot be instantiated (a constructor or
+The lookup fails with `JsonCodecs.ProviderFailed` when the provider of the class's name is broken. Its class was found but is not marked as generated for the class, cannot be instantiated (a constructor or
 initialiser that throws), or its `type()` or `codec()` throws, returns `null` or names another class; or the services
 files list the name but the `ServiceLoader` cannot load it (the class is missing, does not implement
 `JsonCodecProvider`, or has no public no-argument constructor). A broken entry of **another** name never changes the
 answer. The `ServiceLoader` reports an entry it cannot load while streaming, before its name is known, so the lookup
 records it, streams on, and consults the recorded failures only when no provider of the requested name turned up and
-the services files list that name; they are then the failure's origin. Building the failure never throws: a cause
-chain is walked to a bounded depth and stops at a throwable already seen, and an exception that cannot print itself is
-described by its class name.
+the services files list that name; they are then the failure's origin. The isolation is per entry, not per line: the
+JDK parses each services file as a whole, and one malformed line (a name containing a space or an illegal character)
+makes it reject that entire file, so every provider listed in it, healthy ones included, cannot be loaded and its
+type answers `ProviderFailed`. Services files of other class path entries are unaffected, with one JDK quirk: a
+name on a line above the malformed one was already counted as seen, so the same name listed in a later file is
+skipped too. The processor never writes such a line; a hand-edited or badly merged file can. Building the failure never throws: a cause chain is walked to a
+bounded depth and stops at a throwable already seen, and an exception that cannot print itself is described by its
+class name.
 
-One class loader's `ServiceLoader` yields at most one provider class per name, so a lookup meets at most one
-candidate for the requested name; there is no first-wins resolution to guard against.
+The lookup never throws, with one exception: a `VirtualMachineError` (an exhausted stack or heap) raised by the
+lookup's own calls (while the `ServiceLoader` loads a provider class, or by a provider's `type()` or `codec()`)
+propagates, because no `Cause` can carry it. One thrown by a provider's constructor or static initialiser does not
+propagate: the JDK's `ServiceLoader` wraps every throwable of instantiation, errors included, into a
+`ServiceConfigurationError`, so the lookup answers `ProviderFailed`, and that answer is kept for the life of the
+class like any other, even when the error was transient (a momentary `OutOfMemoryError`).
+
+One class loader's `ServiceLoader` yields at most one provider class per name, and the scan stops at the first, so
+there is no second candidate to choose between. Whatever class is found under the name must still carry the marker
+and serve exactly the requested class, so a foreign class there is answered as `ProviderFailed`, never used.
 
 Incremental builds: the services file is written in the last round of a compilation that generated an entry point.
 An entry a previous compilation left in the output is kept while its class still resolves (recompiling some `@Json`
-types keeps the others) and dropped once its class is gone. A type that lost `@Json` keeps its old entry point, and
+types keeps the others) and dropped once its class is gone. "Resolves" means the compiler can find the class, so this
+retention needs the output directory on the processor's compile class path, as Maven puts it; a plain
+`javac -d out` without `out` on `-cp` resolves none of the earlier entries and writes a file listing only the types
+it compiled, which leaves the others in `out` unlisted (their lookup answers empty) until a full build. A type that lost `@Json` keeps its old entry point, and
 so its entry, while that class file remains in the output: until the build tool removes the outputs of the changed
 source (IDE incremental builds track each entry point's originating type) or the output is cleaned (`mvn clean`).
 
@@ -243,6 +264,11 @@ both produce the same wire form.
 - A type carrying a Jackson annotation (on itself, a member, a parameter, a supertype, or through a meta-annotation)
   is refused: the generated codec would silently ignore it.
 - Generic records are refused.
+- A `@Json` type must be a top-level or member type in a named package. In the unnamed package it is a compile
+  error. A local type (declared in a method, initializer or lambda), or one nested in a local or anonymous class, is
+  never handed to annotation processors; under javac the processor reports it as a compile error after attribution.
+  That check runs once the processor is initialised, which javac does when the compilation has any annotation outside
+  method bodies.
 - At most 64 components per record.
 - Records and enums must be accessible from their own package (public, or package-private in the same package), and
   so must a value object's factory.
