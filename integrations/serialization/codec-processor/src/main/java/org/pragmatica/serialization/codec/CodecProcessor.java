@@ -45,6 +45,10 @@ public class CodecProcessor extends AbstractProcessor {
                               ? ""
                               : suffix;
         this.jsonServices = new JsonServices(processingEnv.getFiler(), processingEnv.getElementUtils());
+        // FER: outside javac there is no task to listen to; the processor works on without the local @Json check (a
+        // local @Json type is then ignored, as annotation processing itself ignores it; see LocalJsonTypes), and the
+        // note says so. The failure is the expected answer of a non-javac environment, so its detail is not printed.
+        LocalJsonTypes.install(processingEnv).onFailure(_ -> note("@Json on local types is not checked: the compiler is not javac"));
     }
 
     @Override
@@ -179,6 +183,16 @@ public class CodecProcessor extends AbstractProcessor {
 
         var type = (TypeElement) element;
         var packageName = processingEnv.getElementUtils().getPackageOf(type).getQualifiedName().toString();
+
+        if (packageName.isEmpty()) {
+            error(element,
+                  "@Json type '" + type.getQualifiedName()
+                 + "' is in the unnamed package, which JSON codec generation does not support."
+                 + " Declare it in a named package.");
+
+            return;
+        }
+
         var json = new JsonCodecGenerator(processingEnv, packageName);
         var unsupported = json.addRoot(type.asType());
 
@@ -490,5 +504,9 @@ public class CodecProcessor extends AbstractProcessor {
 
     private void note(Element element, String message) {
         processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, message, element);
+    }
+
+    private void note(String message) {
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, message);
     }
 }

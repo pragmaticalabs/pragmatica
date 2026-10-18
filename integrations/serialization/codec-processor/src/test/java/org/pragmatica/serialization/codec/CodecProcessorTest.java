@@ -1293,6 +1293,22 @@ class CodecProcessorTest {
             entryPoint.contains("java.util.Map.entry(com.example.y.Foo.class, FooJsonCodec2.CODEC)");
         }
 
+        // Root first is a rule of its own, not a side effect of qualified-name order: this root (z) sorts after the
+        // reached y.Foo, and still keeps the plain name while y.Foo is numbered.
+        @Test
+        void rootSortingAfterAReachedTypeOfItsFlatName_stillKeepsThePlainName() {
+            var compilation = compileWith(sameFlatName("y", "String a"),
+                                          JavaFileObjects.forSourceString("com.example.z.Foo",
+                                                                          "package com.example.z;\n\n@org.pragmatica.serialization.json.Json\npublic record Foo(com.example.y.Foo inner) {}\n"));
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.z.FooJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("JsonTypeCodec<com.example.z.Foo> CODEC = FooJsonCodec.CODEC;");
+            entryPoint.contains("java.util.Map.entry(com.example.y.Foo.class, FooJsonCodec2.CODEC)");
+        }
+
         private static JavaFileObject sameFlatName(String packageSegment, String component) {
             return JavaFileObjects.forSourceString("com.example." + packageSegment + ".Foo",
                                                    "package com.example." + packageSegment + ";\n\npublic record Foo(" + component + ") {}\n");
@@ -1308,6 +1324,77 @@ class CodecProcessorTest {
             }
 
             assertFalse(message.contains("\tat ") || message.contains("Exception") || message.contains("FilerException"), message);
+        }
+    }
+
+    /// `@Json` where the processor cannot serve it is one clean compile error, never a broken generated source or a
+    /// silently ignored annotation.
+    @Nested
+    class UnsupportedJsonPlacements {
+        @Test
+        void typeInTheUnnamedPackage_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("Loose",
+                                                                          "@org.pragmatica.serialization.json.Json\npublic record Loose(String a) {}\n"));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json type 'Loose' is in the unnamed package",
+                                                   "Declare it in a named package");
+        }
+
+        // Annotation processing never sees a local type; the annotation elsewhere in the class (here @Override) is what
+        // makes javac initialise the processor.
+        @Test
+        void localRecord_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    public Object make() {
+                        @Json
+                        record Point(int x) {}
+
+                        return new Point(1);
+                    }
+
+                    @Override
+                    public String toString() {
+                        return "holder";
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Point'",
+                                                   "Declare it as a top-level or member type");
+        }
+
+        // A member @Json type beside it still gets its codec; only the local one is refused.
+        @Test
+        void localEnum_isOneCleanError_besideAMemberJsonType() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    @Json
+                    public record Member(int a) {}
+
+                    public Object make() {
+                        @Json
+                        enum Colour { RED, GREEN }
+
+                        return Colour.RED;
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Colour'",
+                                                   "Declare it as a top-level or member type");
+            assertThat(compilation).hadNoteContaining("Generated JSON codec: Holder_MemberJson");
         }
     }
 
