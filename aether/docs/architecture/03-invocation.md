@@ -196,11 +196,11 @@ The proxy is what gets materialized when another slice declares `InventoryServic
 
 | Path | Format | Library |
 |------|--------|---------|
-| Inter-node invocation | Binary | Fury |
+| Inter-node invocation | Binary | Generated `@Codec` codecs |
 | HTTP request/response | JSON | Jackson |
-| KV-Store values | Binary | Fury |
+| KV-Store values | Binary | Generated `@Codec` codecs |
 
-Fury provides efficient binary serialization for inter-node communication. JSON is used only at the HTTP boundary.
+Compile-time generated `@Codec` codecs provide the binary serialization for inter-node communication, with no reflection. JSON is used only at the HTTP boundary.
 
 ## Pub/Sub
 

@@ -77,7 +77,7 @@ sequenceDiagram
 - A peer's link is dead-detected by write failure or by the receipt sweep: the QUIC idle timeout is disabled, so a link that stays open but receives no frame on any lane for 8 ping intervals is evicted. The KeepAlive on CONTROL is what keeps a quiet healthy link from being evicted.
 - Backpressure is per lane stream. The CONSENSUS lane stream has a Netty write watermark of 256 KiB low and 1 MiB high; other lanes use Netty's default. A write to a stream that is not writable is refused on every lane except CONSENSUS and DHT; a CONSENSUS frame, and a DHT frame to a peer whose channel is still active, is retried up to 200 times at 25 ms and, if the retries run out, dropped with a debug log line. A write reported as sent means the transport accepted it locally: there is no acknowledgement, and delivery is earned by the layer above (Rabia retransmit, the DHT quorum collector, caller deadlines).
 - Frames for a peer that is not connected go to a per-peer offline buffer of at most 10,000 frames, each held at most the offline-buffer cap (30 s by default, taken from the cluster timeout configuration); when the buffer is full the oldest frame is dropped.
-- Automatic certificate rotation (60% validity trigger, atomic SSL context swap)
+- Automatic certificate rotation: renewal fires at 40% of remaining validity (60% of the lifetime elapsed) and restarts the QUIC server with the new certificate
 - SWIM health detection on separate UDP port (cluster port + 100)
 
 ### Quorum Detection

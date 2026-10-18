@@ -1169,7 +1169,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Rotate TLS certificates by restarting the QUIC server with new SSL contexts.
-    /// Existing connections drain naturally; peers reconnect automatically.
+    /// Connections this node accepted close with the old server and their dialers reconnect; connections it dialed
+    /// are not drained and keep the old certificate until they end.
     @SuppressWarnings("JBCT-PAT-01")  // Lifecycle: stop old server, update contexts, start new
     public Promise<Unit> rotateCertificate(QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
         return boundPort().async(QuicTransportError.CertificateRotationFailed.FACTORY.apply("Server not running"))
