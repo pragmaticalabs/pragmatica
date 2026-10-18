@@ -42,14 +42,18 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// (`RingAgeTickTest`) pins what the tick does given a manager; what it cannot pin is that `assembleNode` arms it.
 /// So on a booted single node whose periodic tasks are left RUNNING: a stream with a one-hour max age holds one
 /// event stamped at the epoch (older than any max age) and one stamped now; after the first tick the old event
-/// has left the ring and the fresh one has stayed. The wait is the tick interval plus margin (the first tick fires
-/// one interval after `start()` arms the task), so the test costs about a minute.
+/// has left the ring and the fresh one has stayed, and no sooner than the tick interval after `start()` (the first
+/// tick fires one interval after `start()` arms the task), so the test costs about a minute.
 class RingAgeTickBootTest {
     private static final String STREAM = "aged";
     private static final int PARTITION = 0;
     private static final long MAX_AGE_MS = 3_600_000L;
     private static final long DISK_MAX_BYTES = 256L * 1024 * 1024;
-    private static final long AWAIT_MS = AetherNode.RING_AGE_TICK_INTERVAL.millis() + 30_000L;
+    /// The spec's 60 s tick plus margin. A literal on purpose: it must not follow a changed constant.
+    private static final long AWAIT_MS = 90_000L;
+    /// The tick is armed inside `start()`, so it cannot fire before one interval after `start()` returns, less this
+    /// allowance for the arming happening a little before the return. Kills a too-short cadence at its use site.
+    private static final long EARLIEST_TICK_MS = 50_000L;
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final long POLL_NANOS = 100_000_000L;
 
@@ -78,6 +82,7 @@ class RingAgeTickBootTest {
                          .unwrap();
         node.start().await(START_BOUND).onFailure(cause -> fail("start must succeed: " + cause.message()));
 
+        var startedAt = System.nanoTime();
         var manager = node.streamPartitionManager();
         // This single-node harness never forms consensus, so the owner promotion gate would refuse every append;
         // the test pins the tick, not ownership, so it admits the owner directly (as the WAL truncation boot test).
@@ -90,6 +95,10 @@ class RingAgeTickBootTest {
 
         assertThat(ring.eventCount()).as("fixture: both events are in the ring before the first tick").isEqualTo(2L);
         awaitCondition(() -> ring.tailOffset() >= 1, "the first ring age tick evicts the aged event");
+
+        var elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+
+        assertThat(elapsedMs).as("the tick fires one interval after start, not sooner").isGreaterThanOrEqualTo(EARLIEST_TICK_MS);
         assertThat(ring.tailOffset()).as("only the aged event left the ring").isEqualTo(1L);
         assertThat(ring.eventCount()).as("the fresh event stayed").isEqualTo(1L);
     }
