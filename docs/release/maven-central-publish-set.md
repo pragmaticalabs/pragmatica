@@ -181,6 +181,9 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/serialization` | `org.pragmatica-lite:serialization` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of serialization-api) |
 | `integrations/serialization/api` | `org.pragmatica-lite:serialization-api` | jar | publish | compile/runtime dependency of slice-api |
 | `integrations/serialization/codec-processor` | `org.pragmatica-lite:serialization-codec-processor` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/serialization/json` | `org.pragmatica-lite:serialization-json` | jar | publish | compile/runtime dependency of http-routing-adapter (generated route codecs) |
+| `integrations/serialization/json-codegen` | `org.pragmatica-lite:serialization-json-codegen` | jar | publish | compile/runtime dependency of slice-processor (shared JSON codec generator) |
+| `integrations/serialization/json-tests` | `org.pragmatica-lite:serialization-json-tests` | jar | skip | test-only module (JSON codec agreement and strictness tests) |
 | `integrations/statemachine` | `org.pragmatica-lite:statemachine` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/storage` | `org.pragmatica-lite:storage` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/swim` | `org.pragmatica-lite:swim` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
