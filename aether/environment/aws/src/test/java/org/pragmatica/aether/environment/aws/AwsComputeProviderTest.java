@@ -305,7 +305,7 @@ class AwsComputeProviderTest {
         void listInstances_twoTagFilterWithNodeId_postFiltersOnTranslatedKey() {
             testClient.describeResponse = Promise.success(
                 TestAwsClient.describeResponseWith(List.of(
-                    instanceWithTags("i-both", Map.of("aether-node-id", "node-7", "role", "core")),
+                    instanceWithTags("i-both", Map.of("aether-node-id", "node-7", "role", "core", "unrelated", "x")),
                     instanceWithTags("i-wrong-role", Map.of("aether-node-id", "node-7", "role", "worker")))));
 
             provider.listInstances(orderedFilter("aether.node-id", "node-7", "role", "core"))
@@ -332,7 +332,7 @@ class AwsComputeProviderTest {
             testClient.describeResponse = Promise.success(
                 TestAwsClient.describeResponseWith(List.of(
                     instanceWithTags("i-only-a", Map.of("a", "1")),
-                    instanceWithTags("i-both", Map.of("a", "1", "b", "2")),
+                    instanceWithTags("i-both", Map.of("a", "1", "b", "2", "unrelated", "x")),
                     instanceWithTags("i-only-b", Map.of("b", "2")))));
 
             provider.listInstances(filter)
