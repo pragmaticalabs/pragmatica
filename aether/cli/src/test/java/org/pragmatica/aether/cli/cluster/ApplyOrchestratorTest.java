@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -43,7 +42,7 @@ class ApplyOrchestratorTest {
             sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
-            Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
+            Map.of(NodeRole.CORE, roleSubTable(some(coreCount), none(), none(), RUNTIME_REF)),
             List.of()
         );
     }
@@ -53,17 +52,16 @@ class ApplyOrchestratorTest {
             sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
-            Map.of(role, roleSubTable(role, some(count), none(), none(), RUNTIME_REF)),
+            Map.of(role, roleSubTable(some(count), none(), none(), RUNTIME_REF)),
             List.of()
         );
     }
 
     private static ClusterBootstrapConfig configWithSources(Map<String, SourceProfile> sources) {
-        return clusterBootstrapConfig(
-            "1", clusterIdentity("test-cluster", "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("test-cluster", "1.0.0").unwrap(),
             defaultCoreTopology(), sources,
-            Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-            infrastructureConfig(NetworkingType.MANUAL),
+            Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+            infrastructureConfig(),
             defaultOperationsConfig()
         , java.util.Map.of());
     }
@@ -73,12 +71,11 @@ class ApplyOrchestratorTest {
     }
 
     private static ClusterBootstrapConfig configWithName(String name, int coreCount) {
-        return clusterBootstrapConfig(
-            "1", clusterIdentity(name, "1.0.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity(name, "1.0.0").unwrap(),
             defaultCoreTopology(),
             Map.of("forge", forgeSource("forge", coreCount)),
-            Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-            infrastructureConfig(NetworkingType.MANUAL),
+            Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+            infrastructureConfig(),
             defaultOperationsConfig()
         , java.util.Map.of());
     }
