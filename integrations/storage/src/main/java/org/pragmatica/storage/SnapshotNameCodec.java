@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
@@ -92,13 +93,17 @@ sealed interface SnapshotNameCodec {
                    : 0;
         }
 
-        return startsUnitEscape(encoded, index)
-               ? (hasHexDigits(encoded, index + 2, 4)
-                  ? 6
-                  : 0)
-               : (hasHexDigits(encoded, index + 1, 2)
-                  ? 3
-                  : 0);
+        if (startsUnitEscape(encoded, index)) {
+            return escapeWidth(hasHexDigits(encoded, index + 2, 4), 6);
+        }
+
+        return escapeWidth(hasHexDigits(encoded, index + 1, 2), 3);
+    }
+
+    private static int escapeWidth(boolean valid, int width) {
+        return valid
+               ? width
+               : 0;
     }
 
     private static boolean startsUnitEscape(String encoded, int index) {
@@ -126,22 +131,19 @@ sealed interface SnapshotNameCodec {
     /// Strict UTF-8 per run of literals and `%XX`; a `%uXXXX` ends a run and is a single UTF-16 unit.
     /// A malformed run fails instead of decoding to replacement characters.
     private static Result<String> decodeWellFormed(String encoded) {
-        return Result.lift(SnapshotError.ParseFailed::new, () -> scan(encoded));
-    }
-
-    private static String scan(String encoded) throws Exception {
         var out = new StringBuilder(encoded.length());
         var run = new ByteArrayOutputStream(encoded.length());
         var index = 0;
 
         while (index < encoded.length()) {
-            var c = encoded.charAt(index);
-
-            if (c != '%') {
-                run.write(c);
+            if (encoded.charAt(index) != '%') {
+                run.write(encoded.charAt(index));
                 index++;
             } else if (startsUnitEscape(encoded, index)) {
-                out.append(strictUtf8(run));
+                if (!appendStrictUtf8(run, out)) {
+                    return MALFORMED_TOKEN.result();
+                }
+
                 out.append((char) HexFormat.fromHexDigits(encoded, index + 2, index + 6));
                 index += 6;
             } else {
@@ -150,18 +152,28 @@ sealed interface SnapshotNameCodec {
             }
         }
 
-        return out.append(strictUtf8(run))
-                  .toString();
+        return appendStrictUtf8(run, out)
+               ? success(out.toString())
+               : MALFORMED_TOKEN.result();
     }
 
-    private static String strictUtf8(ByteArrayOutputStream run) throws Exception {
-        var decoded = StandardCharsets.UTF_8.newDecoder()
-                                            .onMalformedInput(CodingErrorAction.REPORT)
-                                            .decode(ByteBuffer.wrap(run.toByteArray()));
+    /// Decodes and clears `run` into `out`; false when it is not valid UTF-8. The `CoderResult` form of the
+    /// decoder reports malformed input as a value, so no exception is thrown or caught.
+    private static boolean appendStrictUtf8(ByteArrayOutputStream run, StringBuilder out) {
+        var bytes = run.toByteArray();
+        var decoded = CharBuffer.allocate(bytes.length);
+        var decoder = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT);
+        var result = decoder.decode(ByteBuffer.wrap(bytes), decoded, true);
 
         run.reset();
+        if (result.isError() || decoder.flush(decoded).isError()) {
+            return false;
+        }
 
-        return decoded.toString();
+        decoded.flip();
+        out.append(decoded);
+
+        return true;
     }
 
     record unused() implements SnapshotNameCodec {}

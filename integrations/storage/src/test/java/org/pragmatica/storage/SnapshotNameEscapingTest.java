@@ -325,29 +325,47 @@ class SnapshotNameEscapingTest {
                 .isEqualTo(metadataSnapshot(1L, NODE_ID, List.of(second, first), Map.of()).contentHash());
         }
 
-        /// The delimiter between lifecycle lines is part of the hash. Moving the first two digits of the next
-        /// block id onto the previous line's orphanedAt (7 -> 712, id one byte short) leaves the concatenated
-        /// text identical, so only a delimiter keeps the edit from validating.
+        /// The delimiter between lifecycle lines is part of the hash. Moving the first two digits of one block
+        /// id onto the end of the previous line (orphanedAt 7 -> 712, id one byte short) leaves the sorted,
+        /// concatenated text identical, so only a delimiter keeps the edit from validating. The pair is chosen
+        /// so the edit does not change the sort order of the two lines.
         @Test
         void restore_rejectsSnapshot_whenDigitsMoveAcrossLifecycleLines() throws IOException {
-            var ids = Stream.iterate(0, i -> i + 1)
-                            .map(i -> blockIdOf("digits-" + i))
-                            .filter(id -> id.hexString().substring(0, 2).chars().allMatch(Character::isDigit))
-                            .limit(2)
-                            .toList();
+            var candidates = Stream.iterate(0, i -> i + 1)
+                                   .map(i -> orphanedLifecycle(blockIdOf("digits-" + i)))
+                                   .filter(lc -> lc.blockId().hexString().substring(0, 2).chars().allMatch(Character::isDigit))
+                                   .limit(40)
+                                   .toList();
+            var pair = candidates.stream()
+                                 .flatMap(a -> candidates.stream().map(b -> List.of(a, b)))
+                                 .filter(IntegrityHash::survivesDigitMove)
+                                 .findFirst()
+                                 .orElseThrow();
+            var earlier = MetadataSnapshot.lifecycleLine(pair.get(0));
+            var later = MetadataSnapshot.lifecycleLine(pair.get(1));
 
-            ids.forEach(id -> store.createLifecycle(new BlockLifecycle(id, EnumSet.of(TierLevel.MEMORY), 1, 1L, 1L, 0, 7L)));
+            pair.forEach(store::createLifecycle);
             snapshotManager(store, config).snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
             var file = onlySnapshotFile();
-            var lines = Files.readString(file).split("\n", -1);
-            var first = Arrays.asList(lines).indexOf("# Lifecycles") + 1;
-            var moved = lines[first + 1].substring(0, 2);
+            var content = Files.readString(file);
 
-            lines[first] = lines[first] + moved;
-            lines[first + 1] = lines[first + 1].substring(2);
-            Files.writeString(file, String.join("\n", lines));
+            assertThat(content).contains("\n" + earlier + "\n").contains("\n" + later + "\n");
+            Files.writeString(file,
+                              content.replace("\n" + earlier + "\n", "\n" + earlier + later.substring(0, 2) + "\n")
+                                     .replace("\n" + later + "\n", "\n" + later.substring(2) + "\n"));
 
             assertRestoreRefused();
+        }
+
+        private static BlockLifecycle orphanedLifecycle(BlockId id) {
+            return new BlockLifecycle(id, EnumSet.of(TierLevel.MEMORY), 1, 1L, 1L, 0, 7L);
+        }
+
+        private static boolean survivesDigitMove(List<BlockLifecycle> pair) {
+            var earlier = MetadataSnapshot.lifecycleLine(pair.get(0));
+            var later = MetadataSnapshot.lifecycleLine(pair.get(1));
+
+            return earlier.compareTo(later) < 0 && (earlier + later.substring(0, 2)).compareTo(later.substring(2)) < 0;
         }
 
         @Test
