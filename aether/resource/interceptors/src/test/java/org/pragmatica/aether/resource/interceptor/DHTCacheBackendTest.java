@@ -10,9 +10,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
@@ -30,6 +32,8 @@ class DHTCacheBackendTest {
     /// A pre-envelope value: tag 3 (one VLQ byte), then payload; long enough to hold a header, so only the
     /// header check (not the length guard) can reject it.
     static final byte[] LEGACY_ONE_BYTE_TAG = {3, 0, 0, 0, 5, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'};
+
+    private static final Cause UNAVAILABLE = Causes.cause("dht unavailable");
 
     private ConcurrentHashMap<String, byte[]> storage;
     private FakeDHTClient dhtClient;
@@ -173,6 +177,39 @@ class DHTCacheBackendTest {
     }
 
     @Test
+    void get_expiredEntryRereadFails_isAMissAndLeavesTheEntry() {
+        backend.put("key1", "world").await();
+        clock.addAndGet(60_000L);
+        dhtClient.failGetsFromCall = 2;
+
+        var result = backend.get("key1").await();
+
+        assertThat(result.isSuccess()).as("a failed cleanup does not fail the get").isTrue();
+        assertThat(result.fold(_ -> Option.some("failed"), v -> v).isEmpty()).isTrue();
+        assertThat(storage.containsKey("test-ns:key1")).as("left for the next read to retry").isTrue();
+    }
+
+    @Test
+    void get_expiredEntryRemoveFails_isAMissAndLeavesTheEntry() {
+        backend.put("key1", "world").await();
+        clock.addAndGet(60_000L);
+        dhtClient.failRemove = true;
+
+        var result = backend.get("key1").await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.fold(_ -> Option.some("failed"), v -> v).isEmpty()).isTrue();
+        assertThat(storage.containsKey("test-ns:key1")).isTrue();
+    }
+
+    @Test
+    void get_primaryReadFails_failsTheGet() {
+        dhtClient.failGetsFromCall = 1;
+
+        assertThat(backend.get("key1").await().isFailure()).isTrue();
+    }
+
+    @Test
     void get_manyDistinctExpiredKeys_areRemovedByTheirReads() {
         for (var i = 0; i < 50; i++) {
             backend.put("key" + i, "v" + i).await();
@@ -284,6 +321,9 @@ class DHTCacheBackendTest {
         private final ConcurrentHashMap<String, byte[]> storage;
         Runnable afterGet = () -> {};
         Runnable beforeRemove = () -> {};
+        int failGetsFromCall = Integer.MAX_VALUE;
+        boolean failRemove;
+        private int gets;
 
         FakeDHTClient(ConcurrentHashMap<String, byte[]> storage) {
             this.storage = storage;
@@ -291,6 +331,10 @@ class DHTCacheBackendTest {
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
+            if (++gets >= failGetsFromCall) {
+                return UNAVAILABLE.promise();
+            }
+
             var stored = storage.get(new String(key, UTF_8));
 
             afterGet.run();
@@ -306,6 +350,11 @@ class DHTCacheBackendTest {
         @Override
         public Promise<Boolean> remove(byte[] key) {
             beforeRemove.run();
+
+            if (failRemove) {
+                return UNAVAILABLE.promise();
+            }
+
             var removed = storage.remove(new String(key, UTF_8)) != null;
             return Promise.success(removed);
         }

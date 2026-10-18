@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.dht.DHTClient;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -15,6 +16,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.pragmatica.lang.Unit.unit;
@@ -37,7 +40,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// read quorum need not include the replicas that already hold an acknowledged put, so the window lasts
 /// until that put has replicated to the replicas the re-read and remove reach (the replication lag).
 /// For the distributed idempotency store that means a completed-outcome record can be lost and a retry
-/// re-runs the method. A failure of the re-read or of the remove fails the get; it is not reported as a miss. Expiry compares clocks across
+/// re-runs the method. The entry is already expired, so a failure of the cleanup (the re-read or the remove)
+/// does not fail the get: it is logged at WARN with the key and reported as a miss, and the entry stays for
+/// the next read to retry. Only a failure of the primary read fails the get. Expiry compares clocks across
 /// nodes, so a node whose clock runs ahead of the writer's sees entries expire early by that skew, and
 /// one that runs behind sees them live late by it.
 ///
@@ -47,6 +52,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// have the high bit set. A value without the header is read as a miss and removed, with the same
 /// unconditional removal and the same window.
 final class DHTCacheBackend implements CacheBackend {
+    private static final Logger log = LoggerFactory.getLogger(DHTCacheBackend.class);
     private static final byte[] HEADER = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 1};
 
     static final int HEADER_BYTES = HEADER.length + Long.BYTES;
@@ -151,7 +157,22 @@ final class DHTCacheBackend implements CacheBackend {
 
     private Promise<Option<Object>> expired(Object key, byte[] expiredBytes) {
         return dhtClient.get(namespacedKey(key))
-                        .flatMap(current -> removeIfUnchanged(key, expiredBytes, current));
+                        .flatMap(current -> removeIfUnchanged(key, expiredBytes, current))
+                        .recover(cause -> missAfterFailedCleanup(key, cause));
+    }
+
+    /// FER: the entry is already expired, so the read's answer (a miss) is the same whether or not the
+    /// cleanup happened; failing the get over it would turn a transient DHT error into a failed request
+    /// (the idempotency interceptor does not fail open). Guarantee earned: the get never fails because of
+    /// cleanup. Mechanism: the failure is logged and the entry is left in place, so the next read that
+    /// finds it expired retries the cleanup; nothing is queued or retried here.
+    private Option<Object> missAfterFailedCleanup(Object key, Cause cause) {
+        log.warn("Cleanup of expired entry {}:{} failed, reporting a miss and leaving it for the next read: {}",
+                 namespace,
+                 key,
+                 cause.message());
+
+        return Option.none();
     }
 
     private Promise<Option<Object>> removeIfUnchanged(Object key, byte[] expiredBytes, Option<byte[]> current) {

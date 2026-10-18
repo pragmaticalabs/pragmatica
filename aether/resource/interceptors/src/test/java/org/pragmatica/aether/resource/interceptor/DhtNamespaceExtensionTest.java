@@ -145,6 +145,20 @@ class DhtNamespaceExtensionTest {
         assertThat(outcome.unwrap()).as("the retry re-ran the method").isEqualTo("rerun-1");
     }
 
+    /// The cleanup of an expired record failing must not fail the call: the record is a miss, the method runs.
+    @Test
+    void distributedIdempotency_expiredRecordCleanupFails_stillRunsTheMethod() {
+        var interceptor = idempotencyInterceptor("dedup-cleanup-fails");
+        seedExpiredRecord(interceptor);
+        replicated.failRemove = true;
+        var runs = new AtomicInteger();
+        Fn1<Promise<String>, String> method = request -> Promise.success("rerun-" + runs.incrementAndGet());
+
+        var outcome = interceptor.intercept(method).apply("call-1").await();
+
+        assertThat(outcome.unwrap()).isEqualTo("rerun-1");
+    }
+
     @Test
     void distributedIdempotency_manyDistinctExpiredRecords_doNotAccumulate() {
         var interceptor = idempotencyInterceptor("dedup-accumulate");
@@ -188,6 +202,7 @@ class DhtNamespaceExtensionTest {
         final ConcurrentHashMap<String, byte[]> storage = new ConcurrentHashMap<>();
         Runnable afterGet = () -> {};
         Runnable beforeRemove = () -> {};
+        boolean failRemove;
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
@@ -207,6 +222,10 @@ class DhtNamespaceExtensionTest {
         @Override
         public Promise<Boolean> remove(byte[] key) {
             beforeRemove.run();
+
+            if (failRemove) {
+                return METHOD_FAILED.promise();
+            }
 
             return Promise.success(storage.remove(new String(key, UTF_8)) != null);
         }
