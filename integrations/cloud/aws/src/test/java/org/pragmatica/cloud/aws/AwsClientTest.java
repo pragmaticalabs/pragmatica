@@ -136,6 +136,18 @@ class AwsClientTest {
         }
 
         @Test
+        void describeInstances_blankTokenOnLaterPage_endsTheWalkWithoutRefetching() {
+            testHttp.respondInSequence(instancesPage("t1", "i-1"), instancesPage("", "i-2"), instancesPage(null, "i-9"));
+
+            client.describeInstances()
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(response -> assertThat(instanceIds(response)).containsExactly("i-1", "i-2"));
+
+            assertThat(testHttp.sentBodies()).hasSize(2);
+        }
+
+        @Test
         void describeInstances_repeatedToken_stopsInsteadOfLooping() {
             testHttp.respondInSequence(instancesPage("same", "i-1"), instancesPage("same", "i-2"), instancesPage("same", "i-3"));
 
