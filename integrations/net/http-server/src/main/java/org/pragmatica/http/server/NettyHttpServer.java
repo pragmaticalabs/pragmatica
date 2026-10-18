@@ -408,6 +408,12 @@ final class NettyHttpServer implements HttpServer {
         private void handleHttpRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
             // WebSocket upgrades never reach here: WebSocketUpgradeRouter consumes them
             var requestId = IdGenerator.generate("req");
+
+            if (request.decoderResult().isFailure()) {
+                rejectUndecodable(ctx, requestId, request);
+
+                return;
+            }
             var requestContext = createRequestContext(requestId, request);
             var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
 
@@ -417,6 +423,28 @@ final class NettyHttpServer implements HttpServer {
                 log.error("Error handling request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
+        }
+
+        /// I2: Netty's decoder does not drop a request it could not decode. It hands on a placeholder (an empty-body
+        /// `GET /bad-request` for an unreadable request line, the real line with no body for oversized headers)
+        /// marked by a failed `decoderResult()`. It must never reach the handler as a real request: it is answered
+        /// and the connection is closed, because the decoder's position in the byte stream is no longer trustworthy.
+        private static void rejectUndecodable(ChannelHandlerContext ctx, String requestId, FullHttpRequest request) {
+            var cause = request.decoderResult().cause();
+            var status = undecodableStatus(cause, request);
+
+            log.debug("Rejecting undecodable request {} with {}: {}", requestId, status.code(), cause.getMessage());
+            new NettyResponseWriter(ctx, requestId, false).error(status, status.message());
+        }
+
+        /// An over-long line with no headers decoded is the request line (414); an over-long line after the headers
+        /// (a chunk-size line) is a malformed body (400).
+        private static HttpStatus undecodableStatus(Throwable cause, FullHttpRequest request) {
+            return switch (cause) {
+                case TooLongHttpHeaderException _ -> HttpStatus.REQUEST_HEADER_FIELDS_TOO_LARGE;
+                case TooLongHttpLineException _ when request.headers().isEmpty() -> HttpStatus.REQUEST_URI_TOO_LONG;
+                default -> HttpStatus.BAD_REQUEST;
+            };
         }
 
         private void handleWebSocketFrame(ChannelHandlerContext ctx, WebSocketFrame frame) {
