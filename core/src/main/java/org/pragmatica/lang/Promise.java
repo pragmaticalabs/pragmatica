@@ -1834,26 +1834,34 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with the provided `failureResult`.
     ///
+    /// With no inputs the created instance is resolved at once with `failureResult`.
+    ///
     /// @param failureResult Result in case if no instances were resolved with success
     /// @param promises      Input promises
     ///
     /// @return Created instance
     @SafeVarargs
     static <T> Promise<T> any(Result<T> failureResult, Promise<T>... promises) {
-        return Promise.promise(anySuccess -> threshold(promises.length, () -> anySuccess.resolve(failureResult)).apply(at -> List.of(promises).forEach(promise -> promise.withResult(result -> result.onSuccess(anySuccess::succeed)
-                                                                                                                                                                                                     .onSuccessRun(() -> cancelAll(promises))
-                                                                                                                                                                                                     .onResultRun(at::registerEvent)))));
+        return any(failureResult, List.of(promises));
     }
 
     /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with the provided `failureResult`.
     ///
+    /// With no inputs the created instance is resolved at once with `failureResult`.
+    ///
     /// @param failureResult Result in case if no instances were resolved with success
     /// @param promises      Input promises
     ///
     /// @return Created instance
     static <T> Promise<T> any(Result<T> failureResult, List<Promise<T>> promises) {
+        return promises.isEmpty()
+               ? Promise.resolved(failureResult)
+               : anyWithFailure(failureResult, promises);
+    }
+
+    private static <T> Promise<T> anyWithFailure(Result<T> failureResult, List<Promise<T>> promises) {
         return Promise.promise(anySuccess -> threshold(promises.size(), () -> anySuccess.resolve(failureResult)).apply(at -> promises.forEach(promise -> promise.withResult(result -> result.onSuccess(anySuccess::succeed)
                                                                                                                                                                                             .onSuccessRun(() -> cancelAll(promises))
                                                                                                                                                                                             .onResultRun(at::registerEvent)))));
@@ -1864,7 +1872,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// are resolved with success, then the created instance will be resolved with a [Causes.CompositeCause] holding the cause of every input,
     /// in input order (not completion order), once the last input has failed.
     ///
-    /// With no inputs the returned promise is never resolved.
+    /// With no inputs the returned promise is resolved at once with [CoreError#emptyAny()].
     ///
     /// @param promises Input promises
     ///
@@ -1879,7 +1887,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// are resolved with success, then the created instance will be resolved with a [Causes.CompositeCause] holding the cause of every input,
     /// in input order (not completion order), once the last input has failed.
     ///
-    /// With no inputs the returned promise is never resolved.
+    /// With no inputs the returned promise is resolved at once with [CoreError#emptyAny()].
     ///
     /// @param promises Input promises
     ///
@@ -1891,7 +1899,9 @@ public sealed interface Promise<T> permits PromiseImpl {
     private static <T> Promise<T> anyOrComposite(List<Promise<T>> promises) {
         var inputs = List.copyOf(promises);
 
-        return Promise.promise(anySuccess -> watchAny(anySuccess, inputs));
+        return inputs.isEmpty()
+               ? CoreError.emptyAny().promise()
+               : Promise.promise(anySuccess -> watchAny(anySuccess, inputs));
     }
 
     @Contract
@@ -2941,7 +2951,6 @@ public sealed interface Promise<T> permits PromiseImpl {
 
     Promise<Unit> UNIT = Promise.resolved(unitResult());
 
-    Result<?> OTHER_SUCCEEDED = new CoreError.Cancelled("Cancelled because other Promise instance succeeded").result();
 
     CoreError.Cancelled PROMISE_CANCELLED = new CoreError.Cancelled("Promise cancelled");
 
