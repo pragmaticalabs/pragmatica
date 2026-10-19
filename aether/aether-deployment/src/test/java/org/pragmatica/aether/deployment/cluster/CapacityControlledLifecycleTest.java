@@ -43,7 +43,6 @@ class CapacityControlledLifecycleTest {
     private final AtomicInteger listings = new AtomicInteger();
     private final java.util.Set<String> queryFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private Option<Promise<InstanceInfo>> createOutcome = Option.none();
-    private Runnable onListing = () -> {};
     private java.util.function.Function<SourceName, String> bindingOf = _ -> "binding";
     /// What the provider's listing answers while a fleet inventory is being initialized; a test holds it pending to keep the initialization in flight.
     private final java.util.concurrent.atomic.AtomicReference<Promise<List<InstanceInfo>>> listing = new java.util.concurrent.atomic.AtomicReference<>(Promise.success(List.of()));
@@ -75,7 +74,6 @@ class CapacityControlledLifecycleTest {
         }
         @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) {
             listings.incrementAndGet();
-            onListing.run();
             if (failingSources.contains(source.value())) {
                 return Causes.<List<InstanceInfo>>cause(source.value() + " credentials rejected").promise();
             }
@@ -1101,23 +1099,20 @@ class CapacityControlledLifecycleTest {
         assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
     }
 
-    /// Fail-safe: a configuration that cannot be read does not count as every source inventoried, so nothing earlier is examined.
+    /// Fail-safe: only a readable configuration whose sources were all inventoried counts as "every source inventoried". A configuration
+    /// that cannot be read (committed or changed while a pass runs) does not, so nothing earlier is examined against it.
     @Test
-    void dispatchOfAnEarlierTerm_isNotExaminedWhileTheConfigurationIsUnreadable() {
+    void allSourcesInventoried_isFalseForAnUnreadableConfiguration_andForASourceNotYetListed() {
         initialize(0);
-        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
-        losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
-        var next = successor(new java.util.concurrent.CopyOnWriteArrayList<>());
-        onListing = () -> seed(new KVCommand.LeaderTransaction<>(AetherKey.ClusterConfigKey.CURRENT, java.util.UUID.randomUUID().toString(),
-            new LeaderValue(SUCCESSOR, 2), List.of(), List.of(new KVCommand.Mutation<AetherKey, AetherValue>(AetherKey.ClusterConfigKey.CURRENT,
-                store.get(AetherKey.ClusterConfigKey.CURRENT),
+        assertThat(lifecycle.allSourcesInventoried()).as("east not listed yet").isFalse();
+        lifecycle.provisionNode(spec("first", "east")).await();
+        assertThat(lifecycle.allSourcesInventoried()).as("east listed by the admission").isTrue();
+
+        seed(new KVCommand.LeaderTransaction<>(AetherKey.ClusterConfigKey.CURRENT, java.util.UUID.randomUUID().toString(), LEADER, List.of(),
+            List.of(new KVCommand.Mutation<AetherKey, AetherValue>(AetherKey.ClusterConfigKey.CURRENT, store.get(AetherKey.ClusterConfigKey.CURRENT),
                 Option.some(new AetherValue.ClusterConfigValue(Option.some("this is [not valid toml"), "test", "1.0.0", List.of(), 3, 3, "forge", 9, 0))))));
 
-        now.addAndGet(2 * GRACE_MS);
-        next.reconcileInventory().await().unwrap();
-
-        assertThat(lookups.get()).as("no lookup against a configuration that cannot be read").isZero();
-        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        assertThat(lifecycle.allSourcesInventoried()).as("the committed configuration cannot be read").isFalse();
     }
 
     /// The release step is fenced by leadership: losing it between the no-create evidence and the release leaves the evidence in place,

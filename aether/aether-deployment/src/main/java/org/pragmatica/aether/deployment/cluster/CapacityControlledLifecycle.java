@@ -265,7 +265,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     /// Fail-safe: a configuration that cannot be read, or none committed with an incomplete ledger, is not "every source inventoried".
-    private boolean allSourcesInventoried() {
+    boolean allSourcesInventoried() {
         return unseenSources(configuration()).fold(_ -> false, List::isEmpty);
     }
 
