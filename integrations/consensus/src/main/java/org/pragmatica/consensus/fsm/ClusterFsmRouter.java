@@ -26,9 +26,9 @@ import org.pragmatica.statemachine.FsmState;
 ///
 /// Semantic transforms applied here (not inside the FSM):
 /// - `TransportObservation.PeerJoined` → `ClusterFsmEvent.NodeAdded`
+/// - `TransportObservation.PeerReconnected` → `ClusterFsmEvent.NodeAdded` (the eviction removed the peer from the view)
 /// - `TransportObservation.PeerDisconnected` → `ClusterFsmEvent.NodeGone`
 /// - `TransportObservation.PeerObservedFaulty` → `ClusterFsmEvent.NodeGone` (FAULTY treated as departure)
-/// - `TransportObservation.PeerReconnected` → no FSM event (transparent)
 /// - `TransportObservation.SelfShutdown` → `ClusterFsmEvent.QuorumDisappeared` (topology empty by contract)
 /// - `ClusterStateNotification` stale-sequence dedup via `advanceSequence` — applied here once
 ///   so individual FSMs do not repeat the check.
@@ -48,7 +48,9 @@ public final class ClusterFsmRouter {
         router.addRoute(TransportObservation.PeerObservedFaulty.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeGone(notification.nodeId(),
                                                                                   notification.topology())));
-        router.addRoute(TransportObservation.PeerReconnected.class, ClusterFsmRouter::ignoreReconnect);
+        router.addRoute(TransportObservation.PeerReconnected.class,
+                        notification -> fsm.dispatch(new ClusterFsmEvent.NodeAdded(notification.nodeId(),
+                                                                                   notification.topology())));
         router.addRoute(TransportObservation.SelfShutdown.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared()));
         router.addRoute(ClusterStateNotification.class,
@@ -56,10 +58,6 @@ public final class ClusterFsmRouter {
         router.addRoute(LeaderNotification.LeaderChange.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.LeaderChange(notification.leaderId(),
                                                                                       notification.localNodeIsLeader())));
-    }
-
-    private static void ignoreReconnect(TransportObservation.PeerReconnected reconnected) {
-    // Transparent — peer was already known to upstream consumers via prior PeerJoined.
     }
 
     private static <S extends FsmState<S, ClusterFsmEvent>> void dispatchClusterState(Fsm<S, ClusterFsmEvent> fsm,
