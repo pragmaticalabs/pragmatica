@@ -1088,7 +1088,7 @@ public sealed interface AetherValue {
 
         @Override
         public boolean fenceReleases() {
-            return !held;
+            return ! held;
         }
 
         /// This claim given up: the immediate successor, the same claimant, no longer held.

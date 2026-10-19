@@ -2,6 +2,7 @@ package org.pragmatica.cluster.state.kvstore;
 
 import org.pragmatica.lang.Option;
 
+
 /// Marker for a KEY whose writes may be made on behalf of a holder committed under ANOTHER key (#1155): the
 /// [HolderBound] writes to it are admitted only while that holder is still the one whose row is committed under
 /// [#holderKey].

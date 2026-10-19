@@ -1024,8 +1024,7 @@ public interface ScheduledTaskManager {
 
             logOutcomeTransitionOut(task, prior);
             ctx.submit(key,
-                       ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt)
-                                              .boundTo(holder));
+                       ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt).boundTo(holder));
         }
 
         private static void writeFailureState(Context ctx,
@@ -1039,8 +1038,7 @@ public interface ScheduledTaskManager {
 
             logOutcomeTransitionOut(task, prior);
             ctx.submit(key,
-                       ScheduledTaskStateValue.failureState(prior, nextFireAt, firedAt, message)
-                                              .boundTo(holder));
+                       ScheduledTaskStateValue.failureState(prior, nextFireAt, firedAt, message).boundTo(holder));
         }
 
         /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
@@ -1064,8 +1062,7 @@ public interface ScheduledTaskManager {
                          message);
             }
 
-            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt, firedAt)
-                                               .boundTo(holder);
+            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt, firedAt).boundTo(holder);
 
             ctx.submit(key, value);
 

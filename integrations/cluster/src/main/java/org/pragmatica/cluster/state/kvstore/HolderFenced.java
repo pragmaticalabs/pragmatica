@@ -23,7 +23,6 @@ package org.pragmatica.cluster.state.kvstore;
 public interface HolderFenced extends VersionFenced {
     /// The token of the acquisition this value belongs to.
     String fenceHolder();
-
     /// Whether this value gives the hold up rather than takes or keeps it.
     boolean fenceReleases();
 }

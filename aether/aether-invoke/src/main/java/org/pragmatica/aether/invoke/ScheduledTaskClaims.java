@@ -188,7 +188,8 @@ final class ScheduledTaskClaims {
     }
 
     private Ticket ticketFor(ScheduledTaskClaimKey key, ScheduledTaskClaimValue claim) {
-        return new Ticket(Option.some(claim.token()), () -> release(key, claim));
+        return new Ticket(Option.some(claim.token()),
+                          () -> release(key, claim));
     }
 
     private Promise<Boolean> release(ScheduledTaskClaimKey key, ScheduledTaskClaimValue claim) {

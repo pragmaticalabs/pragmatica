@@ -314,13 +314,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                && incoming instanceof HolderBound bound
                && guarded.holderKey()
                          .flatMap(holderKey -> bound.boundHolder()
-                                                    .map(token -> !heldBy(storage.get(holderKey), token)))
+                                                    .map(token -> !heldBy(storage.get(holderKey),
+                                                                          token)))
                          .or(false);
     }
 
     private static boolean heldBy(Object committed, String token) {
         return committed instanceof HolderFenced stored && stored.fenceHolder()
-                                                                .equals(token);
+                                                                 .equals(token);
     }
 
     /// #1278: a write that would replace the committed non-zero life of an [IncarnationFenced] value; see that type.
