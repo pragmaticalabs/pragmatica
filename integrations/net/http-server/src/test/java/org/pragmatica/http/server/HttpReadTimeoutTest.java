@@ -106,6 +106,28 @@ class HttpReadTimeoutTest {
         }
     }
 
+    /// A keep-alive connection is idle again once its response is written, so it is closed after the read timeout.
+    @Test
+    void keepAliveConnection_idleAfterItsResponse_closedAfterReadTimeout() throws IOException {
+        start((request, response) -> response.okText("handled"));
+
+        try (var socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(5_000);
+            var startedAt = System.nanoTime();
+
+            socket.getOutputStream().write("GET /a HTTP/1.1\r\nHost: x\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+            socket.getOutputStream().flush();
+
+            var received = readUntilClosed(socket.getInputStream());
+            var elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+
+            assertThat(received).startsWith("HTTP/1.1 200");
+            assertThat(elapsedMs).as("closed by the read timeout once the response was written").isLessThan(4_000);
+        } catch (SocketTimeoutException e) {
+            throw new AssertionError("the idle keep-alive connection was still open after 5 s", e);
+        }
+    }
+
     /// F6 over a real socket: a body trickling a byte every 100 ms is never idle (the idle bound here is 10 s), but it
     /// is far below the 1000 B/s minimum, so the connection is closed once the grace has passed.
     @Test

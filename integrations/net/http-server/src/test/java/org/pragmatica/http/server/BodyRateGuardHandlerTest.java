@@ -61,6 +61,47 @@ class BodyRateGuardHandlerTest {
         channel.finishAndReleaseAll();
     }
 
+    /// The rate is checked again after the grace check, over each window on its own: a body sent fast for the grace
+    /// (500 KiB in 10 s) and then trickled at 1 B/s is cut. Neither a check that runs only once nor an average over the
+    /// whole body (which the fast start would hold above the minimum for minutes) would cut it.
+    @Test
+    void fastForTheGraceThenTrickle_closesTheConnection() {
+        var channel = channel();
+
+        for (int tick = 0; tick < 100; tick++) {
+            channel.writeInbound(chunk(5 * 1024));
+            channel.advanceTimeBy(100, TimeUnit.MILLISECONDS);
+            channel.runScheduledPendingTasks();
+        }
+        assertThat(channel.isActive()).as("control: the fast start passes the grace check").isTrue();
+
+        for (int second = 0; second < 30 && channel.isActive(); second++) {
+            channel.writeInbound(chunk(1));
+            channel.advanceTimeBy(1, TimeUnit.SECONDS);
+            channel.runScheduledPendingTasks();
+        }
+
+        assertThat(channel.isActive()).as("the trickle after a fast start is far below 1 KiB/s").isFalse();
+        channel.finishAndReleaseAll();
+    }
+
+    /// The guard stops at the last chunk: a complete body is not checked again, however long its handler then takes
+    /// to answer on the same connection.
+    @Test
+    void completeBody_isNotCheckedAfterItsLastChunk() {
+        var channel = channel();
+
+        channel.writeInbound(chunk(5));
+        channel.writeInbound(new DefaultLastHttpContent());
+        for (int second = 0; second < 60; second++) {
+            channel.advanceTimeBy(1, TimeUnit.SECONDS);
+            channel.runScheduledPendingTasks();
+        }
+
+        assertThat(channel.isActive()).as("5 bytes in 60 s is below the minimum, but the body was complete").isTrue();
+        channel.finishAndReleaseAll();
+    }
+
     @Test
     void uploadOfFiveMebibytesAtFiftyKibibytesPerSecond_passesThroughWhole() {
         var channel = channel();
