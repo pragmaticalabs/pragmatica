@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -363,17 +364,27 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private void announceAbsentDispatch(NodeId node, SourceName source) {
         dispatchMisses.remove(node);
         unmatchedSince.remove(node);
-        log.warn("Capacity allocation of {} on source {} released: no instance of its uncertain create was found",
+        log.warn("Capacity allocation of {} on source {} released: no instance of its uncertain create was found ({})",
                  node.id(),
-                 source.value());
+                 source.value(),
+                 dispatchTime(node));
         OperatorWarnings.raise(log,
                                warningSink.get(),
                                OperatorWarningCode.CAPACITY_DISPATCH_RELEASED,
                                node.id(),
-                               "The uncertain create of {} on source {} was not confirmed: no provider listing or lookup showed an instance in {} consecutive passes over the create ceiling, so its allocation was released",
+                               "The uncertain create of {} on source {} ({}) was not confirmed: no provider listing or lookup showed an instance in {} consecutive passes over the create ceiling, so its allocation was released; a VM the provider created but that never joined may still exist: look for it at the provider",
                                node.id(),
                                source.value(),
+                               dispatchTime(node),
                                ABSENCE_CONFIRMATIONS);
+    }
+
+    /// When this process dispatched the create, so that an operator knows the window to look in at the provider; unknown for an
+    /// allocation an earlier leader (or a restarted process) dispatched.
+    private String dispatchTime(NodeId node) {
+        return Option.option(dispatchStamps.get(node))
+                     .map(stamp -> "dispatched at " + Instant.ofEpochMilli(stamp.at()))
+                     .or("dispatch time unknown (earlier leader)");
     }
 
     @Override

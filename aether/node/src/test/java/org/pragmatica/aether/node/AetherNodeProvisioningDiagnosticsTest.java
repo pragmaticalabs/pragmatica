@@ -48,6 +48,16 @@ class AetherNodeProvisioningDiagnosticsTest {
         assertThat(diagnostics.inventoryWaits()).isEqualTo(9L);
     }
 
+    /// The anonymous node's diagnostics come from `provisioningDiagnosticsOf`, and nowhere else is a `ProvisioningDiagnostics` built in the
+    /// assembly. Assembling an `AetherNode` is too heavy for a unit test, so this is a source-level tripwire on the call site.
+    @Test
+    void theNodesDiagnosticsAreAssembledByProvisioningDiagnosticsOf() throws java.io.IOException {
+        var source = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/java/org/pragmatica/aether/node/AetherNode.java"));
+
+        assertThat(source).contains("return provisioningDiagnosticsOf(decision, clusterTopologyManagerInstance);");
+        assertThat(source.split("new ProvisioningDiagnostics\\(", -1).length - 1).as("the only construction is inside provisioningDiagnosticsOf").isEqualTo(1);
+    }
+
     @Test
     void provisioningDiagnosticsOf_withoutAWait_carriesNone() {
         var diagnostics = AetherNode.provisioningDiagnosticsOf(DECISION, manager(Option.none(), Option.none(), 0L));

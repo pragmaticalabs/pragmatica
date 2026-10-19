@@ -952,6 +952,11 @@ class CapacityControlledLifecycleTest {
         var abandoned = losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
         var events = new java.util.concurrent.CopyOnWriteArrayList<String>();
         var next = successor(events);
+        var messages = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        next.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> {
+            events.add(warning.code().code());
+            messages.add(warning.message());
+        }));
 
         assertThat(abandoned.isFailure()).isTrue();
         assertThat(creates.get()).as("the provider was never asked to create").isZero();
@@ -969,6 +974,7 @@ class CapacityControlledLifecycleTest {
         assertThat(ledger().allocated()).isZero();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
         assertThat(events).containsExactly("capacity-dispatch-released");
+        assertThat(messages.getFirst()).contains("dispatch time unknown (earlier leader)");
     }
 
     /// An in-flight boot that shows up while the confirmation runs is matched to its allocation and never released.
@@ -1072,14 +1078,18 @@ class CapacityControlledLifecycleTest {
     }
 
     @Test
-    void ownUncertainFailure_isBoundedByTheCreateCeiling() {
+    void ownUncertainFailure_isBoundedByTheCreateCeiling_andTheEventSaysWhenItWasDispatched() {
         initialize(0);
         var own = clocked(CORE, () -> true, commands -> Promise.success(store.process(store.createBatch(commands))));
+        var messages = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        own.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> messages.add(warning.message())));
         own.provisionNode(spec("first", "east")).await();
 
         passesBeyondTheCeiling(own, CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS);
 
         assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !messages.isEmpty());
+        assertThat(messages.getFirst()).contains("dispatched at " + java.time.Instant.ofEpochMilli(1_000_000L)).doesNotContain("unknown");
     }
 
     /// The documented limit of the generation: another leader committed and then this node again, with no call in between, reads as
