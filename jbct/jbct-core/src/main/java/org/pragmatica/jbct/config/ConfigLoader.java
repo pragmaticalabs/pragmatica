@@ -103,14 +103,8 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// person running the tool sees one line per bad layer, not the wrapper.
     private static Cause flattened(Cause cause) {
         return cause instanceof Causes.CompositeCause composite
-               ? flattenedLayers(composite.stream().toList())
+               ? ConfigError.LayersInvalid.layersInvalid(composite.stream().toList())
                : cause;
-    }
-
-    private static Cause flattenedLayers(List<Cause> layers) {
-        return layers.size() == 1
-               ? layers.getFirst()
-               : ConfigError.LayersInvalid.layersInvalid(layers);
     }
 
     private static JbctConfig materialized(List<Option<PartialConfig>> layers) {
