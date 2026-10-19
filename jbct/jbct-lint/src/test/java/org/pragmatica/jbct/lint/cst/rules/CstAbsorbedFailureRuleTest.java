@@ -137,6 +137,47 @@ class CstAbsorbedFailureRuleTest {
             assertThat(diagnostics.getFirst().line()).as("the uncommented publishFact").isEqualTo(8);
         }
 
+        /// D2 of the verifier round: the lines above the method are collected bottom-up, so a multi-line block comment was
+        /// reassembled reversed (`*/` before `/**`) and no comment matched. Each case has two absorbing methods and a reason
+        /// above only the first, so a missed reason shows as 2 findings instead of 1.
+        @Test
+        void multiLineJavadocAboveTheMethod_countsAsItsReason() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   /**
+                                    * FER: a notification failure must not fail the buy.
+                                    */
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
+        @Test
+        void multiLinePlainBlockCommentAboveTheMethod_countsAsItsReason() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   /*
+                                    * FER: a notification failure must not fail the buy.
+                                    */
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
         @Test
         void javadocAndAnnotationAboveTheMethod_countAsItsReason() {
             assertThat(countOf("""

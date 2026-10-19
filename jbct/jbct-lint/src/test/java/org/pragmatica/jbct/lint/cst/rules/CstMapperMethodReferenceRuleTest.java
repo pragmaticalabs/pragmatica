@@ -273,6 +273,146 @@ class CstMapperMethodReferenceRuleTest {
     }
 
     @Test
+    void analyze_dottedJdkReceiver_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(java.util.List::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_dottedIteratorReceiver_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(java.util.Iterator::next);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_nestedQualifiedReceiver_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(java.util.concurrent.ConcurrentLinkedDeque::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_genericReceiver_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(List<String>::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_nextOnOtherReceiver_isClean() {
+        assertEquals(0L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(Cursor::next);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_unknownImportedReceiverGetFirst_isClean() {
+        assertEquals(0L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(Pair::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_twoIdenticalReferencesOnOneLine_reportTwice() {
+        assertEquals(2L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.map(List::getFirst).map(List::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_sameReferenceOnTwoLines_reportsTwice() {
+        assertEquals(2L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        var a = r.map(List::getFirst);
+                        return a.map(List::getFirst);
+                    }
+                }
+                """));
+    }
+
+    /// D4: a same-file type's own `getFirst` is resolved by its body, not guessed from the name.
+    @Test
+    void analyze_sameFileTypeWithTotalGetFirst_isClean() {
+        assertEquals(0L, count("""
+                package org.example;
+                class Handler {
+                    record Pair(String a, String b) {
+                        String getFirst() {
+                            return a;
+                        }
+                    }
+                    Object run(Result<Pair> r) {
+                        return r.map(Pair::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_sameFileTypeWithPartialGetFirst_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                class Handler {
+                    record Wire(java.util.List<String> items) {
+                        String getFirst() {
+                            return items.getFirst();
+                        }
+                    }
+                    Object run(Result<Wire> r) {
+                        return r.map(Wire::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
     void analyze_totalImportedAccessorReference_isClean() {
         assertFalse(hasRule("""
                 package org.example;
@@ -296,6 +436,13 @@ class CstMapperMethodReferenceRuleTest {
                     }
                 }
                 """));
+    }
+
+    private long count(String source) {
+        return lint(source).stream()
+                           .filter(diagnostic -> diagnostic.ruleId()
+                                                           .equals(RULE_ID))
+                           .count();
     }
 
     private boolean hasRule(String source) {

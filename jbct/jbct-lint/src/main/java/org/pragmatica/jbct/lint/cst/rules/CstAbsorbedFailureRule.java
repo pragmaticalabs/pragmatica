@@ -105,7 +105,8 @@ public class CstAbsorbedFailureRule implements CstLintRule {
                 break;
             }
 
-            block.append(line).append('\n');
+            // the scan walks upward, so prepend: a multi-line /* */ or Javadoc must be reassembled in source order
+            block.insert(0, line + "\n");
         }
 
         return MapperSafety.commentsOnly(block.toString());

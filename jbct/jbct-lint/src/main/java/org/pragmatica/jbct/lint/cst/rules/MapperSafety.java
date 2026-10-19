@@ -76,6 +76,27 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// reason given on [#PARTIAL_OP].
     Set<String> PARTIAL_ACCESSOR_NAMES = Set.of("getFirst", "getLast");
 
+    /// JDK receivers whose `getFirst` / `getLast` throw `NoSuchElementException` on an empty container (the `SequencedCollection`
+    /// family and the `Deque`s). A receiver outside this set is not guessed at: a user type's `getFirst` is often a total
+    /// accessor.
+    Set<String> PARTIAL_ACCESSOR_RECEIVERS = Set.of("List",
+                                                    "ArrayList",
+                                                    "LinkedList",
+                                                    "CopyOnWriteArrayList",
+                                                    "Deque",
+                                                    "ArrayDeque",
+                                                    "LinkedBlockingDeque",
+                                                    "ConcurrentLinkedDeque",
+                                                    "SequencedCollection",
+                                                    "SequencedSet",
+                                                    "LinkedHashSet",
+                                                    "SortedSet",
+                                                    "NavigableSet",
+                                                    "TreeSet");
+
+    /// Receivers whose `next` throws on exhaustion.
+    Set<String> ITERATOR_RECEIVERS = Set.of("Iterator", "ListIterator");
+
     /// Java single-line and text-block string literals — masked before op-scanning so a partial-op
     /// pattern never matches inside a literal, and so a string argument (`get("key")`) is never
     /// seen as empty / integer parens.

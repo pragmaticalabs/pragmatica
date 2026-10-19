@@ -5,7 +5,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -41,9 +40,10 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstMapperMethodReferenceRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-TOT-02";
 
-    /// `.<mapper>( Receiver::method )` — group 1 mapper, group 2 receiver, group 3 referenced method.
+    /// `.<mapper>( Receiver::method )` — group 1 mapper, group 2 receiver (possibly dotted: `java.util.List`, `Outer.Inner`; a
+    /// type-argument list after it, as in `List<String>::getFirst`, is matched and dropped), group 3 referenced method.
     private static final Pattern METHOD_REF_IN_MAPPER =
-        Pattern.compile("\\.(map|flatMap|filter|replaceResult|fold)\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*::\\s*([A-Za-z_$][\\w$]*)\\s*\\)");
+        Pattern.compile("\\.(map|flatMap|filter|replaceResult|fold)\\s*\\(\\s*((?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*[A-Za-z_$][\\w$]*)\\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\\s*::\\s*([A-Za-z_$][\\w$]*)\\s*\\)");
 
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
@@ -64,18 +64,13 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         var typeIdxByName = typeIdxByName(root);
         var partialSingletons = partialSingletonsByType(root);
 
+        // A method nested in another (an anonymous-class or local-class method) is scanned once on its own and again as part of
+        // the enclosing method's text, so the same reference is found twice (#1568). Each reference is identified by its
+        // absolute offset in the file, so two identical references on one line stay two findings.
+        var seen = new HashSet<Integer>();
+
         return findAllMethods(root).stream()
-                             .flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, ctx))
-                             .filter(distinctReference());
-    }
-
-    /// A method nested in another (an anonymous-class or local-class method) is scanned once on its own and again as part of
-    /// the enclosing method's text, so the same reference is found twice (#1568). One finding per reference: the key is the
-    /// line plus the message, which names `Receiver::method`. Stateful per `analyze` call; the stream is sequential.
-    private static Predicate<Diagnostic> distinctReference() {
-        var seen = new HashSet<String>();
-
-        return diagnostic -> seen.add(diagnostic.line() + ":" + diagnostic.message());
+                             .flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, seen, ctx));
     }
 
     /// Declared name → CST index for every type in the file (used to resolve an `X::m` receiver).
@@ -158,6 +153,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                            Cursor method,
                                            Map<String, Integer> typeIdxByName,
                                            Map<Integer, Set<String>> partialSingletons,
+                                           Set<Integer> seen,
                                            LintContext ctx) {
         var enclosingType = enclosingTypeIdx(root, method);
         var methodText = MapperSafety.blankNonCode(memberDeclText(method));
@@ -165,10 +161,11 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         var diagnostics = new ArrayList<Diagnostic>();
 
         while (matcher.find()) {
-            var receiver = matcher.group(2);
+            var receiver = simpleName(matcher.group(2));
             var refName = matcher.group(3);
+            var offset = anchorOf(method).spanStart() + matcher.start();
 
-            if (isPartialReference(receiver, refName, enclosingType, typeIdxByName, partialSingletons)) {
+            if (isPartialReference(receiver, refName, enclosingType, typeIdxByName, partialSingletons) && seen.add(offset)) {
                 var line = startLine(anchorOf(method)) + MapperSafety.newlinesBefore(methodText, matcher.start());
 
                 diagnostics.add(createDiagnostic(method, receiver, refName, line, ctx));
@@ -176,6 +173,11 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         }
 
         return diagnostics.stream();
+    }
+
+    /// The last segment of a possibly dotted receiver: `java.util.List` -> `List`, `Outer.Inner` -> `Inner`, `this.field` -> `field`.
+    private static String simpleName(String receiver) {
+        return receiver.substring(receiver.lastIndexOf('.') + 1).trim();
     }
 
     /// A reference is partial when its name marks a throwing accessor, or when the type its receiver
@@ -186,7 +188,11 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                        Option<Integer> enclosingType,
                                        Map<String, Integer> typeIdxByName,
                                        Map<Integer, Set<String>> partialSingletons) {
-        if (isThrowingName(refName) || isPartialAccessorReference(receiver, refName)) {
+        if (isThrowingName(refName)) {
+            return true;
+        }
+
+        if (!typeIdxByName.containsKey(receiver) && isPartialAccessorReference(receiver, refName)) {
             return true;
         }
 
@@ -202,9 +208,13 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
     }
 
     /// `List::getFirst` / `List::getLast` resolve to no type in the file (an imported JDK type), so the body scan cannot see
-    /// them; their names are the evidence (#1568). `next` is only partial on an `Iterator`, so it needs the receiver too.
+    /// them; the receiver naming a JDK container whose accessor is partial, plus the accessor name, is the evidence (#1568).
+    /// A receiver declared in this file is resolved by the body scan instead (its own `getFirst` may be total), and an
+    /// unknown receiver is not guessed at (`Pair::getFirst` from another package stays clean). `next` is only partial on an
+    /// iterator.
     private boolean isPartialAccessorReference(String receiver, String refName) {
-        return MapperSafety.PARTIAL_ACCESSOR_NAMES.contains(refName) || "Iterator".equals(receiver) && "next".equals(refName);
+        return MapperSafety.PARTIAL_ACCESSOR_NAMES.contains(refName) && MapperSafety.PARTIAL_ACCESSOR_RECEIVERS.contains(receiver)
+               || MapperSafety.ITERATOR_RECEIVERS.contains(receiver) && "next".equals(refName);
     }
 
     /// `*OrThrow` (container convention) or the JDK `orElseThrow`, matched case-insensitively so
