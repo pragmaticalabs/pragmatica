@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -31,6 +29,7 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotAppli
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
@@ -73,7 +72,7 @@ class AppHttpServerForwardNotAppliedTest {
 
     @BeforeEach
     void setUp() {
-        port = freeTcpPort();
+        port = ClusterTestPorts.freeTcpAndUdpPort();
         var registry = HttpRouteRegistry.httpRouteRegistry();
 
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
@@ -123,14 +122,6 @@ class AppHttpServerForwardNotAppliedTest {
         var value = NodeRoutesValue.nodeRoutesValue(List.of(RouteEntry.activeRoute(method, path, "create")));
 
         registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-    }
-
-    private static int freeTcpPort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new AssertionError(e);
-        }
     }
 
     /// The target refuses every forward before dispatch, as a node with no local route for it would.
