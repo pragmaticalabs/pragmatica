@@ -149,7 +149,7 @@ final class ClusterEventRedelivery {
         }
 
         private static long backoff(int attempts) {
-            return Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS<< Math.min(attempts - 1, 3));
+            return Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS << Math.min(attempts - 1, 3));
         }
     }
 

@@ -134,8 +134,11 @@ class DockerNetworkBootstrapTest {
     private final List<String> requestedScopes = new ArrayList<>();
 
     private void useProvider(ScriptedDocker runner) {
-        provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap().withClusterName(CLUSTER)).unwrap();
+        provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap().withClusterName(CLUSTER), _ -> null).unwrap();
         requestedScopes.clear();
+        // #2149: the bootstrap re-wraps the provider with the AMBIENT environment; an exported AETHER_API_KEY would make it
+        // deliver credentials the scripted docker cannot take on stdin.
+        ProviderResolver.ambientEnvOverride = _ -> null;
         ProviderResolver.dockerFactoryOverride = new EnvironmentIntegrationFactory() {
             @Override
             public String providerName() {
@@ -150,7 +153,7 @@ class DockerNetworkBootstrapTest {
 
                 var scoped = DockerConfig.dockerConfig().unwrap();
 
-                return DockerComputeProvider.dockerComputeProvider(runner, scope == null ? scoped : scoped.withClusterName(scope))
+                return DockerComputeProvider.dockerComputeProvider(runner, scope == null ? scoped : scoped.withClusterName(scope), _ -> null)
                                             .map(EnvironmentIntegration::withCompute);
             }
         };
@@ -167,6 +170,7 @@ class DockerNetworkBootstrapTest {
     void remove() {
         DockerHostPorts.override = null;
         ProviderResolver.dockerFactoryOverride = null;
+        ProviderResolver.ambientEnvOverride = null;
     }
 
     private static ClusterBootstrapConfig config(String toml) {

@@ -183,8 +183,8 @@ public final class SchemaBuilder {
                                 var col = table.column(columnName);
 
                                 if (col.isEmpty()) {
-                                return SchemaErrors.columnNotFound(tableName, columnName, span).result();
-                            }
+                                    return SchemaErrors.columnNotFound(tableName, columnName, span).result();
+                                }
 
                                 return Result.success(table.withColumnReplaced(columnName,
                                                                                fn.apply(col.unwrap())));

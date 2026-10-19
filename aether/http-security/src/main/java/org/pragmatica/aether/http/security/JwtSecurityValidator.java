@@ -216,8 +216,7 @@ class JwtSecurityValidator implements HttpAuthenticator {
 
     private static Option<String> extractAuthHeaderCaseSensitive(Map<String, List<String>> headers) {
         return Option.option(headers.get("Authorization"))
-                     .filter(values -> !values.isEmpty())
-                     .map(List::getFirst)
+                     .flatMap(values -> Option.from(values.stream().findFirst()))
                      .filter(v -> v.startsWith(BEARER_PREFIX))
                      .map(v -> v.substring(BEARER_PREFIX.length())
                                 .trim());
@@ -229,9 +228,8 @@ class JwtSecurityValidator implements HttpAuthenticator {
                            .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
                            .flatMap(values -> Option.option(values)
-                                                    .filter(v -> !v.isEmpty())
+                                                    .flatMap(JwtSecurityValidator::firstValue)
                                                     .stream())
-                           .map(List::getFirst)
                            .filter(v -> v.regionMatches(true,
                                                         0,
                                                         BEARER_PREFIX,
@@ -242,6 +240,11 @@ class JwtSecurityValidator implements HttpAuthenticator {
                            .findFirst();
 
         return Option.from(value);
+    }
+
+    /// Only the FIRST value of a header counts: a later value must never be promoted to the credential.
+    private static Option<String> firstValue(List<String> values) {
+        return Option.from(values.stream().findFirst());
     }
 
     private static long tolong(Object value) {

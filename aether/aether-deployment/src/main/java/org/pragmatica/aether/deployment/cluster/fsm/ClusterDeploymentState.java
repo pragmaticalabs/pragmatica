@@ -1234,18 +1234,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
                               if (community.filter(value -> value.state() == CommunityState.DISSOLVING || value.state() == CommunityState.DISSOLVED)
                                            .isPresent()) {
-                              return;
-                          }
+                                  return;
+                              }
 
                               var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
                               if (community.isEmpty()) {
-                              mutations.add(new KVCommand.Mutation<>(communityKey,
-                                                                     Option.none(),
-                                                                     Option.some(CommunityValue.communityValue(source,
-                                                                                                               ActivationDirectiveValue.WORKER,
-                                                                                                               targetSize))));
-                          }
+                                  mutations.add(new KVCommand.Mutation<>(communityKey,
+                                                                         Option.none(),
+                                                                         Option.some(CommunityValue.communityValue(source,
+                                                                                                                   ActivationDirectiveValue.WORKER,
+                                                                                                                   targetSize))));
+                              }
 
                               mutations.add(new KVCommand.Mutation<>(directiveKey,
                                                                      Option.none(),

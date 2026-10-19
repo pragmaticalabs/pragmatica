@@ -10,7 +10,9 @@ public sealed interface SnapshotError extends Cause {
 
     /// A [SnapshotManager] that cannot report what it wrote (#1604).
     enum General implements SnapshotError {
-        SNAPSHOT_NOW_UNSUPPORTED("This snapshot manager cannot report the snapshot it writes");
+        SNAPSHOT_NOW_UNSUPPORTED("This snapshot manager cannot report the snapshot it writes"),
+        /// #2257: the encoded snapshot parsed and validated, but is not the snapshot that was captured.
+        ROUND_TRIP_MISMATCH("Snapshot read back differently than it was captured");
         private final String message;
         General(String message) {
             this.message = message;
@@ -46,6 +48,23 @@ public sealed interface SnapshotError extends Cause {
         @Override
         public String message() {
             return "Failed to parse snapshot: " + Causes.fromThrowable(cause).message();
+        }
+    }
+
+    /// #2257: the encoded snapshot cannot be read back as captured, so it is NOT written. Detected at
+    /// write time so the failure is loud there, not a refused boot after the retained good snapshots
+    /// have been replaced by files that restore nothing.
+    record RoundTripFailed(Cause origin) implements SnapshotError {
+        @Override
+        public String message() {
+            return "Snapshot would not read back as written and was NOT written: " + origin.message();
+        }
+    }
+
+    record UnsupportedFormat(String version) implements SnapshotError {
+        @Override
+        public String message() {
+            return "Unsupported snapshot format version: " + version;
         }
     }
 

@@ -46,12 +46,12 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// Before #1549 the stream resource factories left binding to the generic record binder, which reads the
 /// snake_case names of `StreamConfig`'s components and resolves anything it does not find from
 /// `StreamConfig.DEFAULT`. Every documented key but `partitions` and `replicas` is spelled differently or
-/// shaped differently (`retention` is a type plus a value, `max-event-size` a size string), so a section
-/// declaring `min-sync-replicas = 2, max-event-size = "64KB"` was provisioned with `0` and `1 MiB`. What
-/// each key bound to before the fix, for the record: `min-sync-replicas` → 0, `max-event-size` → 1 MiB,
-/// `retention`/`retention-value`/`retention-mode`/`max-age`/`max-count`/`max-bytes` → the default
-/// `RetentionPolicy`, `auto-offset-reset` → "earliest", `consistency` → EVENTUAL, `compression` → NONE,
-/// `encryption-key-id` → none; `partitions` and `replicas` bound correctly because their spellings agree.
+/// shaped differently (`retention` is a type plus a value, `max_event_size` a size string), so a section
+/// declaring `min-sync-replicas = 2, max_event_size = "64KB"` was provisioned with `0` and `1 MiB`. What
+/// each key bound to before the fix, for the record: `min-sync-replicas` → 0, `max_event_size` → 1 MiB,
+/// `retention`/`retention_value`/`retention_mode`/`max_age`/`max_count`/`max_bytes` → the default
+/// `RetentionPolicy`, `auto_offset_reset` → "earliest", `consistency` → EVENTUAL, `compression` → NONE,
+/// `encryption_key_id` → none; `partitions` and `replicas` bound correctly because their spellings agree.
 ///
 /// Every key here is declared with a NON-default value, so a single key falling back to its default is
 /// visible in the assertion that covers it.
@@ -70,17 +70,17 @@ class StreamSectionBindingTest {
             role = "producer"
             partitions = 3
             retention = "compound"
-            retention-mode = "all"
-            max-age = "2h"
-            max-count = "5000"
-            max-bytes = "8MB"
-            auto-offset-reset = "latest"
-            max-event-size = "64KB"
+            retention_mode = "all"
+            max_age = "2h"
+            max_count = "5000"
+            max_bytes = "8MB"
+            auto_offset_reset = "latest"
+            max_event_size = "64KB"
             consistency = "strong"
             replication_factor = 3
             confirmation_factor = 2
             compression = "lz4"
-            encryption-key-id = "orders-key"
+            encryption_key_id = "orders-key"
             """;
 
     private static ConfigurationProvider providerOf(String toml) {
@@ -106,7 +106,7 @@ class StreamSectionBindingTest {
             var config = bindWith(new StreamPublisherFactory(), """
                     [streams.orders]
                     retention = "count"
-                    retention-value = "4321"
+                    retention_value = "4321"
                     """);
 
             assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(4321, Long.MAX_VALUE, Long.MAX_VALUE, RetentionMode.ANY));
@@ -117,7 +117,7 @@ class StreamSectionBindingTest {
             var config = bindWith(new StreamPublisherFactory(), """
                     [streams.orders]
                     retention = "time"
-                    retention-value = "5m"
+                    retention_value = "5m"
                     """);
 
             assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 300_000L, RetentionMode.ANY));
@@ -128,7 +128,7 @@ class StreamSectionBindingTest {
             var config = bindWith(new StreamPublisherFactory(), """
                     [streams.orders]
                     retention = "size"
-                    retention-value = "2MB"
+                    retention_value = "2MB"
                     """);
 
             assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 2L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY));
@@ -159,8 +159,8 @@ class StreamSectionBindingTest {
                     [streams.orders]
                     partitions = 4
                     retention = "time"
-                    retention-value = "5m"
-                    max-event-size = "64KB"
+                    retention_value = "5m"
+                    max_event_size = "64KB"
                     """);
         }
 
@@ -169,7 +169,7 @@ class StreamSectionBindingTest {
             assertCreates("""
                     [streams.orders]
                     retention = "size"
-                    retention-value = "64MB"
+                    retention_value = "64MB"
                     """);
         }
 
@@ -178,7 +178,7 @@ class StreamSectionBindingTest {
             assertCreates("""
                     [streams.orders]
                     retention = "compound"
-                    max-age = "1h"
+                    max_age = "1h"
                     """);
         }
 
@@ -208,7 +208,7 @@ class StreamSectionBindingTest {
                 var config = bindWith(new StreamPublisherFactory(), """
                         [streams.orders]
                         retention = "compound"
-                        max-count = "9223372036854775807"
+                        max_count = "9223372036854775807"
                         """);
 
                 manager.createStream(config)
@@ -242,19 +242,19 @@ class StreamSectionBindingTest {
     class RetentionBounds {
         @Test
         void compoundDeclaringOnlyCount_defaultsBytesAndAge() {
-            assertThat(retentionOf("retention = \"compound\"\nmax-count = \"500\""))
+            assertThat(retentionOf("retention = \"compound\"\nmax_count = \"500\""))
                 .isEqualTo(RetentionPolicy.retentionPolicy(500, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs(), RetentionMode.ANY));
         }
 
         @Test
         void compoundDeclaringOnlyBytes_defaultsCountAndAge() {
-            assertThat(retentionOf("retention = \"compound\"\nmax-bytes = \"8MB\""))
+            assertThat(retentionOf("retention = \"compound\"\nmax_bytes = \"8MB\""))
                 .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 8L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY));
         }
 
         @Test
         void compoundDeclaringOnlyAge_defaultsCountAndBytes() {
-            assertThat(retentionOf("retention = \"compound\"\nmax-age = \"2h\""))
+            assertThat(retentionOf("retention = \"compound\"\nmax_age = \"2h\""))
                 .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 7_200_000L, RetentionMode.ANY));
         }
 
@@ -263,42 +263,42 @@ class StreamSectionBindingTest {
         @Test
         void engineBackstop_zeroCount_isRefusedTyped() {
             assertEngineRefuses(RetentionPolicy.retentionPolicy(0, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs()),
-                                new StreamError.RetentionBoundInvalid(ALIAS, "max-count", 0));
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max_count", 0));
         }
 
         @Test
         void engineBackstop_negativeCount_isRefusedTyped() {
             assertEngineRefuses(RetentionPolicy.retentionPolicy(-5, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs()),
-                                new StreamError.RetentionBoundInvalid(ALIAS, "max-count", -5));
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max_count", -5));
         }
 
         @Test
         void engineBackstop_zeroBytes_isRefusedTyped() {
             assertEngineRefuses(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 0, DEFAULTS.maxAgeMs()),
-                                new StreamError.RetentionBoundInvalid(ALIAS, "max-bytes", 0));
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max_bytes", 0));
         }
 
         @Test
         void engineBackstop_negativeAge_isRefusedTyped() {
             assertEngineRefuses(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), -1),
-                                new StreamError.RetentionBoundInvalid(ALIAS, "max-age", -1));
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max_age", -1));
         }
 
         @Test
         void bindTimeRefusal_isTheParsersTypedCause() {
             new StreamPublisherFactory().sectionBinder()
                                         .onEmpty(() -> fail("stream factories must bind their own section"))
-                                        .onPresent(binder -> binder.bind(providerOf(compound("max-count = \"0\"")), SECTION, BINDING_CONTEXT)
+                                        .onPresent(binder -> binder.bind(providerOf(compound("max_count = \"0\"")), SECTION, BINDING_CONTEXT)
                                                                    .onSuccess(config -> fail("count 0 must be refused, bound " + config))
                                                                    .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ValueOutOfRange(ALIAS,
-                                                                                                                                                              "max-count",
+                                                                                                                                                              "max_count",
                                                                                                                                                               "0",
                                                                                                                                                               1))));
         }
 
         @Test
         void countOnePastTheIndexableCapacity_isRefusedTyped() {
-            assertRefused("max-count = \"" + (OffHeapRingBuffer.MAX_CAPACITY + 1) + "\"",
+            assertRefused("max_count = \"" + (OffHeapRingBuffer.MAX_CAPACITY + 1) + "\"",
                           new StreamError.RetentionCountUnindexable(ALIAS, OffHeapRingBuffer.MAX_CAPACITY + 1, OffHeapRingBuffer.MAX_CAPACITY));
         }
 
@@ -306,7 +306,7 @@ class StreamSectionBindingTest {
         /// budget's typed one, not a throw.
         @Test
         void countAtTheIndexableCapacity_isRefusedByTheBudget_typed() {
-            assertRefused("max-count = \"" + OffHeapRingBuffer.MAX_CAPACITY + "\"", StreamError.General.STREAM_MEMORY_EXCEEDED);
+            assertRefused("max_count = \"" + OffHeapRingBuffer.MAX_CAPACITY + "\"", StreamError.General.STREAM_MEMORY_EXCEEDED);
         }
 
         @Test
@@ -314,7 +314,7 @@ class StreamSectionBindingTest {
             var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
             try {
                 manager.createStream(bindWith(new StreamPublisherFactory(),
-                                              compound("max-bytes = \"9223372036854775807\"\nmax-age = \"9223372036854775807\"")))
+                                              compound("max_bytes = \"9223372036854775807\"\nmax_age = \"9223372036854775807\"")))
                        .onFailure(cause -> fail("declared unbounded bytes/age must create: " + cause.message()));
             } finally {
                 manager.close();
@@ -462,8 +462,25 @@ class StreamSectionBindingTest {
     /// never saw it (a config-only change) — rather than resolved to a default.
     @Nested
     class UnreadKeysFailLoudly {
+        /// Ruling 596bdfd072 (Q1): stream keys are snake_case; the dashed spelling is refused, naming the snake_case key.
         @Test
-        void snakeCaseKey_isRefused_namingTheDashedSpelling() {
+        void dashedKey_isRefused_namingTheSnakeCaseSpelling() {
+            var toml = """
+                    [streams.orders]
+                    max-event-size = "64KB"
+                    """;
+
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION, BINDING_CONTEXT)
+                                                                   .onSuccess(config -> fail("dashed key must be refused, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
+                                                                   .onFailure(cause -> assertThat(cause.message()).contains("'max-event-size'")
+                                                                                                                  .contains("did you mean 'max_event_size'")));
+        }
+
+        @Test
+        void snakeCaseKey_isAccepted_andReachesTheRuntimeConfig() {
             var toml = """
                     [streams.orders]
                     max_event_size = "64KB"
@@ -472,10 +489,8 @@ class StreamSectionBindingTest {
             new StreamPublisherFactory().sectionBinder()
                                         .onEmpty(() -> fail("stream factories must bind their own section"))
                                         .onPresent(binder -> binder.bind(providerOf(toml), SECTION, BINDING_CONTEXT)
-                                                                   .onSuccess(config -> fail("unread key must be refused, bound " + config))
-                                                                   .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
-                                                                   .onFailure(cause -> assertThat(cause.message()).contains("'max_event_size'")
-                                                                                                                  .contains("did you mean 'max-event-size'")));
+                                                                   .onFailure(cause -> fail(cause.message()))
+                                                                   .onSuccess(config -> assertThat(config.maxEventSizeBytes()).isEqualTo(64L * 1024)));
         }
 
         /// #1564: the removed replication keys are refused at activation too, naming their replacement.
@@ -511,7 +526,7 @@ class StreamSectionBindingTest {
                     partitions = 2
 
                     [streams.orders.consumers.billing]
-                    batch-size = 50
+                    batch_size = 50
                     """);
 
             assertThat(config.partitions()).isEqualTo(2);
@@ -633,8 +648,8 @@ class StreamSectionBindingTest {
                                                      [streams.orders]
                                                      partitions = 2
                                                      retention = "count"
-                                                     retention-value = "1000"
-                                                     max-event-size = "64KB"
+                                                     retention_value = "1000"
+                                                     max_event_size = "64KB"
                                                      replication_factor = 3
                                                      confirmation_factor = 2
                                                      """));

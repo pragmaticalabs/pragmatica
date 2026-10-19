@@ -423,43 +423,44 @@ public class CodecClassGenerator {
         writer.println("    static " + typeRef + " readBody(SliceCodec codec, ByteBuf buf) {");
         for (var field : fields) {
             var name = field.component().getSimpleName().toString();
+            var subject = typeRef + "." + name;
 
             switch (field.kind()) {
                 case BYTE -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_BYTE, \"" + subject + "\");");
                     writer.println("        var " + name + " = buf.readByte();");
                 }
                 case SHORT -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_SHORT, \"" + subject + "\");");
                     writer.println("        var " + name + " = buf.readShort();");
                 }
                 case CHAR -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_CHAR, \"" + subject + "\");");
                     writer.println("        var " + name + " = buf.readChar();");
                 }
                 case INT -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_INT, \"" + subject + "\");");
                     writer.println("        var " + name + " = buf.readInt();");
                 }
                 case LONG -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_LONG, \"" + subject + "\");");
                     writer.println("        var " + name + " = buf.readLong();");
                 }
                 case FLOAT -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_FLOAT, \"" + subject + "\");");
                     writer.println("        var " + name + " = buf.readFloat();");
                 }
                 case DOUBLE -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_DOUBLE, \"" + subject + "\");");
                     writer.println("        var " + name + " = buf.readDouble();");
                 }
                 case BOOLEAN -> writer.println("        var " + name + " = buf.readByte() == SliceCodec.TAG_TRUE;");
                 case STRING -> {
-                    writer.println("        buf.readByte();");
+                    writer.println("        SliceCodec.expectTag(buf, SliceCodec.TAG_STRING, \"" + subject + "\");");
                     writer.println("        var " + name + " = SliceCodec.readString(buf);");
                 }
                 case CODEC_TYPE -> {
-                    writer.println("        SliceCodec.readCompact(buf);");
+                    writer.println("        SliceCodec.expectCompactTag(buf, " + field.codecRef() + ".TAG, \"" + subject + "\");");
                     writer.println("        var " + name + " = " + field.codecRef() + ".readBody(codec, buf);");
                 }
                 case DISPATCHED -> {

@@ -30,7 +30,10 @@ import org.pragmatica.consensus.NodeId;
 ///                             accept more bytes right now. Caller can retry later or
 ///                             route to another replica.
 ///   - [ConnectionDead]   — the peer's QUIC link is gone (stream missing, channel
-///                          inactive). Permanent for this attempt; a new connection
+///                          inactive). For an ordinary frame the dead-write path has by
+///                          then re-dispatched it into the peer's offline buffer, so it
+///                          may still be delivered after a reattach until it expires;
+///                          a [NoOfflineBuffering] frame is dropped. A new connection
 ///                          would need to be re-established.
 ///   - [NoPeerState]      — no `PeerState` exists for this peer id (peer was never
 ///                          registered or has been authoritatively removed).
