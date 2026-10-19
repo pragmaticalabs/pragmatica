@@ -368,6 +368,13 @@ class ConfigLoaderSharedTierTest {
                            .message()).contains("[storage.encryption.kyes]");
         }
 
+        /// R04: `keys` is accepted only under the keyring; under an instance it is an unknown sub-section. Mutation that
+        /// reddens it: drop the `encryption` check from `isKeyringKeys`.
+        @Test
+        void keysUnderAnInstance_isRefused_namingIt() {
+            assertThat(refusal("[storage.content.keys]\nk1 = \"x\"\n").message()).contains("[storage.content.keys]");
+        }
+
         @Test
         void tableNestedUnderTheKeyringKeys_isRefused() {
             assertThat(refusal("[storage.encryption.keys]\nk1 = \"${secrets:k1}\"\n[storage.encryption.keys.more]\nk2 = \"x\"\n")

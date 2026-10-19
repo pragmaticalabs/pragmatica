@@ -50,6 +50,36 @@ class MainDerivedStorageTest {
         assertThat(wal.isAbsolute()).as("stream WAL at %s", wal).isTrue();
     }
 
+    /// R10: the derived WAL is `wal` under the stream segment directory, spelled out here rather than taken from the
+    /// node, so a change to the node's subdirectory shows. Mutation that reddens it: another subdirectory name in
+    /// `AetherNode#streamWalBaseDir(Map, NodeId)`.
+    @Test
+    void sharedOnlyArtifacts_walIsTheWalSubdirectoryOfTheDefaultStreamSegments() {
+        var expected = Path.of(StorageConfig.storageConfig().diskPath())
+                           .resolveSibling("stream-segments")
+                           .resolve(SELF.id())
+                           .resolve("wal");
+
+        assertThat(AetherNode.streamWalBaseDir(storageOf("[storage.artifacts.shared]\nkind = \"dht\"\n"), SELF)).isEqualTo(expected);
+    }
+
+    /// R07/R14: with `[storage.encryption]`, a shared-only `artifacts` or `content` is encrypted, as its synthesized
+    /// default would be; without it, it is not. The flag is the one `Main` computes and hands the one derivation
+    /// site. Mutations that redden it: `Main#resolveStorage` passes `false`; `StorageFactory#derivedStorage` ignores
+    /// its `encrypted`.
+    @Test
+    void sharedOnlyArtifactsAndContent_areEncrypted_exactlyWhenTheKeyringSectionIsPresent() {
+        var shared = "[storage.artifacts.shared]\nkind = \"dht\"\n[storage.content.shared]\nkind = \"dht\"\n";
+        var withKeyring = storageOf("[storage.encryption]\nactive_key_id = \"k1\"\n[storage.encryption.keys]\nk1 = \"${secrets:k1}\"\n"
+                                    + shared);
+        var withoutKeyring = storageOf(shared);
+
+        assertThat(withKeyring.get("artifacts").encrypted()).isTrue();
+        assertThat(withKeyring.get("content").encrypted()).isTrue();
+        assertThat(withoutKeyring.get("artifacts").encrypted()).isFalse();
+        assertThat(withoutKeyring.get("content").encrypted()).isFalse();
+    }
+
     /// B07: a shared-only `content` is placed beside the DERIVED `artifacts`, never beside its blank raw path. Mutation
     /// that also reddens it: `StorageFactory#derivedPaths` places `content` beside the raw map's `artifacts`.
     @Test
