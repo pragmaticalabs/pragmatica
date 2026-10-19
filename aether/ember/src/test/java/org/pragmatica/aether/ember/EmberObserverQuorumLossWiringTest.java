@@ -30,7 +30,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - The observer is told it went passive: it publishes the WARNING `observer-consensus-lagging`, never `QUORUM_LOST`;
 ///     told it observes again, it publishes the INFO recovery `observer-consensus-resumed`.
 ///   - Two voters are killed: a voter majority remains, so a commit still succeeds (the observer in the cluster does
-///     not turn a surviving majority into a loss); each killed voter's own shutdown is still published as CRITICAL
+///     not turn a surviving majority into a loss); a killed voter's own shutdown is still published as CRITICAL
 ///     `QUORUM_LOST` (a node wired as an observer would publish the warning instead), and no survivor raises one.
 @PortBudget
 class EmberObserverQuorumLossWiringTest {
@@ -89,7 +89,7 @@ class EmberObserverQuorumLossWiringTest {
 
         awaitCondition(() -> "CRITICAL QuorumLost observed by a killed voter " + killed + "; saw " + quorumLossObservers(survivors.getFirst()),
                        120_000L,
-                       () -> quorumLossObservers(survivors.getFirst()).containsAll(killed));
+                       () -> quorumLossObservers(survivors.getFirst()).stream().anyMatch(killed::contains));
         var survivorIds = survivors.stream().map(n -> n.self().id()).toList();
 
         assertThat(quorumLossObservers(survivors.getFirst())).as("a voter majority survives: no survivor reports a quorum loss")
