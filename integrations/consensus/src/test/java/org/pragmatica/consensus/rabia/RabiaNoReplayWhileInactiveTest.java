@@ -19,6 +19,7 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
@@ -121,10 +122,14 @@ class RabiaNoReplayWhileInactiveTest {
 
         engine.onStateRestored(() -> machine.order.add("hook"));
         engine.onStateRestored(() -> activeAtHook.addAndGet(engine.isActive() ? 1 : 0));
+        var lastHookRan = new AtomicBoolean();
+
+        engine.onStateRestored(() -> lastHookRan.set(true));
         engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
 
         assertThat(awaitCondition(engine::isActive)).isTrue();
-        assertThat(awaitCondition(() -> hooks.get() == 1)).as("the hook runs once").isTrue();
+        assertThat(awaitCondition(lastHookRan::get)).as("the hooks run in registration order on the apply thread; the last one marks completion").isTrue();
+        assertThat(hooks.get()).as("the hook runs once").isEqualTo(1);
         assertThat(machine.replays.get()).as("the replay runs once").isEqualTo(1);
         assertThat(activeAtHook.get()).as("the hook saw an ACTIVE engine").isEqualTo(1);
         assertThat(machine.order).as("the replay precedes the hooks").containsExactly("replay", "hook");
@@ -290,6 +295,29 @@ class RabiaNoReplayWhileInactiveTest {
             initialized = false;
             invalidations.incrementAndGet();
         }
+    }
+
+    /// The missed transition: a refused OBSERVER applies a Decision while Paused, and `advancePhaseAsObserver` writes
+    /// `Observing` from any state. That write is a transition into a serving state too, and must announce.
+    @Test
+    void refusedObserver_pausedThenDecisionApplied_announcesOnceOnReachingObserving() {
+        var marker = new GateMarker();
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks, true, refusingConfig(marker));
+
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.savedState(PEER_SNAPSHOT, PEER_PHASE, List.of()), ResponderState.COLD));
+        assertThat(awaitCondition(() -> machine.restores.get() >= 1)).as("precondition: the observer restored").isTrue();
+        assertThat(effectsWithin(machine, hooks)).as("refused: nothing announced").isFalse();
+
+        engine.clusterState(ClusterStateNotification.passive());
+        assertThat(awaitCondition(engine::isPaused)).isTrue();
+        engine.processDecision(new Decision<>(NODE_2, PEER_PHASE, StateValue.V0, StateMachine.Batch.<TestCommand>emptyBatch()));
+
+        assertThat(awaitCondition(engine::isObserving)).as("precondition: applying the decision moved the observer to Observing").isTrue();
+        assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("reaching Observing announced the restore").isTrue();
+        assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("once").isFalse();
     }
 
     private static ProtocolConfig refusingConfig(GateMarker marker) {
