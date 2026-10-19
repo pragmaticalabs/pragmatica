@@ -533,7 +533,7 @@ public final class ConfigLoader {
                                                  java.util.function.Consumer<String> overrideNotice,
                                                  java.util.function.Consumer<String> sourceNotice) {
         var sources = new java.util.LinkedHashMap<String, String>();
-        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(ConfigLoader::requireBackupEnabled)
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(raw -> backupEnabled(raw).getOrThrow(IllegalArgumentException::new, "invalid [backup] enabled"))
                                .or(false);
 
         if (!enabled) {
@@ -1270,11 +1270,11 @@ public final class ConfigLoader {
 
     /// #1455: `[backup] enabled = "yes"` (or the environment variable set to it) read as a DISABLED backup and the node ran
     /// without one; a value that is not `true` or `false` refuses the load like the neighbouring `restore` mode does.
-    private static boolean requireBackupEnabled(String raw) {
+    private static Result<Boolean> backupEnabled(String raw) {
         return switch (raw.toLowerCase()) {
-            case "true" -> true;
-            case "false" -> false;
-            default -> throw new IllegalArgumentException("invalid [backup] enabled '" + raw + "': use true or false");
+            case "true" -> success(true);
+            case "false" -> success(false);
+            default -> ConfigError.invalidConfig("'" + raw + "' is not true or false").result();
         };
     }
 
