@@ -40,6 +40,11 @@ public interface NodeLifecycleManager {
         return Map.of();
     }
 
+    /// Where the lifecycle's operator events go (default: nowhere, the log line stands).
+    default Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        return Unit.unit();
+    }
+
     /// Source inventory reconciliation: adopts what the providers list and confirms the absence of observed allocations.
     default Promise<Unit> reconcileInventory() {
         return Promise.unitPromise();

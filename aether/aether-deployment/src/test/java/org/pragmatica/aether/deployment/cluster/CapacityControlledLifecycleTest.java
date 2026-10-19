@@ -901,6 +901,156 @@ class CapacityControlledLifecycleTest {
         assertThat(ledger().allocated()).isEqualTo(1);
     }
 
+    private static final NodeId SUCCESSOR = new NodeId("successor");
+
+    /// A lifecycle whose leadership drops right after each of the next `flips` reservation commits.
+    private CapacityControlledLifecycle losingLeadership(java.util.concurrent.atomic.AtomicBoolean leading, AtomicInteger flips) {
+        return CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, commands -> {
+            var results = store.process(store.createBatch(commands));
+            if (commands.stream().anyMatch(this::reservesCapacity) && flips.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+                leading.set(false);
+            }
+            return Promise.success(results);
+        }, leading::get, () -> 1);
+    }
+
+    /// Another node leads from term 2 on, with a lifecycle of its own over the same store.
+    private CapacityControlledLifecycle successor(java.util.List<String> events) {
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SUCCESSOR, 2)));
+        var next = CapacityControlledLifecycle.capacityControlledLifecycle(provider, SUCCESSOR, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 1);
+        next.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+        return next;
+    }
+
+    private AetherValue.CapacityReservationPhase phaseOf(String node) {
+        return store.getTyped(new AetherKey.CapacityReservationKey(new NodeId(node)), AetherValue.CapacityReservationValue.class)
+                    .unwrap().phase();
+    }
+
+    /// An allocation dispatched under an earlier term is not released by the first pass that fails to see its instance: the new leader
+    /// needs consecutive misses. The third releases it, with the no-create evidence and an operator event.
+    @Test
+    void dispatchOfAnEarlierTerm_isReleasedByAnotherLeaderOnlyAfterConsecutiveMisses() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var abandoned = losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
+        var events = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var next = successor(events);
+
+        assertThat(abandoned.isFailure()).isTrue();
+        assertThat(creates.get()).as("the provider was never asked to create").isZero();
+        for (int pass = 1; pass < CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            next.reconcileInventory().await().unwrap();
+            assertThat(phaseOf("first")).as("pass %d: still uncertain", pass).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+            assertThat(ledger().allocated()).isEqualTo(1);
+        }
+        next.reconcileInventory().await().unwrap();
+
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+        assertThat(ledger().allocated()).isZero();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
+        assertThat(events).containsExactly("capacity-dispatch-released");
+    }
+
+    /// An in-flight boot that shows up while the confirmation runs is matched to its allocation and never released.
+    @Test
+    void dispatchOfAnEarlierTerm_whoseInstanceAppearsDuringTheConfirmation_isAdoptedNotReleased() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
+        var events = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var next = successor(events);
+
+        next.reconcileInventory().await().unwrap();
+        next.reconcileInventory().await().unwrap();
+        inventory.set(List.of(observedCore("first")));
+        for (int pass = 0; pass < 2 * CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            next.reconcileInventory().await().unwrap();
+        }
+
+        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.OBSERVED);
+        assertThat(ledger().allocated()).isEqualTo(1);
+        assertThat(events).isEmpty();
+    }
+
+    /// The misses do not accumulate across an appearance: an instance seen once resets the count, so a later disappearance starts over.
+    /// Here the instance appears after two misses and the allocation, now OBSERVED, is not touched by the dispatch rule at all.
+    @Test
+    void dispatchOfTheCurrentTerm_isNeverConfirmedAbsent() {
+        initialize(0);
+        lifecycle.provisionNode(spec("first", "east")).await();
+
+        for (int pass = 0; pass < 2 * CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            lifecycle.reconcileInventory().await().unwrap();
+        }
+
+        assertThat(phaseOf("first")).as("dispatched by this leader in this term: in flight, not abandoned").isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        assertThat(ledger().allocated()).isEqualTo(1);
+        assertThat(lookups.get()).isZero();
+    }
+
+    /// An earlier term's allocation is examined only after the new leader has inventoried every committed source: a source it could not
+    /// list yet may be holding the instance.
+    @Test
+    void dispatchOfAnEarlierTerm_isNotExaminedWhileACommittedSourceIsUninventoried() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
+        replaceEastConfig(EAST_TOML + WEST_BLOCK);
+        failingSources.add("west");
+        var next = successor(new java.util.concurrent.CopyOnWriteArrayList<>());
+
+        for (int pass = 0; pass < 2 * CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            next.reconcileInventory().await().unwrap();
+        }
+
+        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        assertThat(lookups.get()).as("no lookup while west is uninventoried").isZero();
+    }
+
+    /// The release step is fenced by leadership: losing it between the no-create evidence and the release leaves the evidence in place,
+    /// and the ledger counted, until the instance leads again.
+    @Test
+    void releaseOfAnAbandonedDispatch_isFencedByLeadership() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var flips = new AtomicInteger(1);
+        var losing = losingLeadership(leading, flips);
+        losing.provisionNode(spec("first", "east")).await();
+        leading.set(true);
+        flips.set(1);
+
+        losing.reconcileRefusals().await().unwrap();
+
+        assertThat(phaseOf("first")).as("evidence recorded, release fenced").isEqualTo(AetherValue.CapacityReservationPhase.RELEASED);
+        assertThat(ledger().allocated()).isEqualTo(1);
+        leading.set(true);
+        losing.reconcileRefusals().await().unwrap();
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+        assertThat(ledger().allocated()).isZero();
+    }
+
+    /// Termination on a ledger that was never inventoried inventories first: the branch rc5 keeps for a restored, incomplete ledger.
+    @Test
+    void terminate_onALedgerNeverInventoried_inventoriesFirst() {
+        commitSourceConfig();
+        lifecycle.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        var current = ledger();
+        seed(new KVCommand.LeaderTransaction<>(AetherKey.CapacityLedgerKey.INSTANCE, java.util.UUID.randomUUID().toString(), LEADER, List.of(),
+            List.of(new KVCommand.Mutation<AetherKey, AetherValue>(AetherKey.CapacityLedgerKey.INSTANCE, Option.some(current),
+                Option.some(new AetherValue.CapacityLedgerValue(current.allocated(), current.version() + 1, false))))));
+        var fresh = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 1);
+        var before = listings.get();
+
+        var terminated = fresh.terminateNode(new NodeId("seeded"), SourceName.DEFAULT).await();
+
+        assertThat(terminated.isSuccess()).as("terminate: %s", terminated).isTrue();
+        assertThat(listings.get()).as("the source was listed before the termination").isGreaterThan(before);
+        assertThat(ledger().inventoryComplete()).isTrue();
+    }
+
     private static InstanceInfo observedCore(String node) {
         return new InstanceInfo(new org.pragmatica.aether.environment.InstanceId("instance-" + node),
             org.pragmatica.aether.environment.InstanceStatus.RUNNING, List.of(), InstanceType.ON_DEMAND,

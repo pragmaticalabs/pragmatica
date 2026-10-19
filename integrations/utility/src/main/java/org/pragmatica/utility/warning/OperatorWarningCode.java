@@ -198,6 +198,9 @@ public enum OperatorWarningCode {
                                 "deployment",
                                 WarningLevel.INFO,
                                 PROVISION_ADMISSION_DEFERRED),
+    /// An allocation dispatched under an earlier leader term, whose instance no provider listing or lookup showed in several
+    /// consecutive passes, was released (#1404). The subject is the node. A one-off resolution: nothing stays open, so no recovery.
+    CAPACITY_DISPATCH_RELEASED("capacity-dispatch-released", "deployment", WarningLevel.WARNING),
     /// A core deficit has been held open for longer than the join grace by committed allocations that never joined (#1404): an uncertain
     /// create (DISPATCHED) counts as capacity for ever, so no replacement is created until the allocation resolves. The subject is `core`.
     /// Closed by [#CORE_CAPACITY_DURABLE_RESOLVED].

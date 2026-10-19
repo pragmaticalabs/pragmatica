@@ -15,6 +15,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
@@ -36,12 +37,16 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +66,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           Set<String> activeSources,
                                           ConcurrentHashMap<String, AtomicInteger> inventoryCursors,
                                           ConcurrentHashMap<NodeId, SourceName> undispatched,
+                                          ConcurrentHashMap<NodeId, Long> dispatchTerms,
+                                          ConcurrentHashMap<NodeId, AtomicInteger> dispatchMisses,
+                                          AtomicReference<OperatorWarningSink> warningSink,
                                           TimeSpan ceiling) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(CapacityControlledLifecycle.class);
 
@@ -100,6 +108,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                new HashSet<>(),
                                                new ConcurrentHashMap<>(),
                                                new ConcurrentHashMap<>(),
+                                               new ConcurrentHashMap<>(),
+                                               new ConcurrentHashMap<>(),
+                                               new AtomicReference<>(OperatorWarningSink.logOnly()),
                                                ceiling);
     }
 
@@ -134,8 +145,24 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// a caller that retries at once could still find the pass in progress.
     private Promise<Unit> releaseInventoryPass(Result<Unit> result) {
         inventoryReconciling.set(false);
+        forgetResolvedDispatches();
 
         return result.async();
+    }
+
+    /// The per-node dispatch memory outlives nothing: a node whose reservation is no longer DISPATCHED has nothing left to examine.
+    @Contract
+    private void forgetResolvedDispatches() {
+        var current = reservations();
+
+        dispatchTerms.keySet().removeIf(node -> !isDispatched(current, node));
+        dispatchMisses.keySet().removeIf(node -> !isDispatched(current, node));
+    }
+
+    private static boolean isDispatched(Map<NodeId, CapacityReservationValue> reservations, NodeId node) {
+        return Option.option(reservations.get(node))
+                     .filter(value -> value.phase() == CapacityReservationPhase.DISPATCHED)
+                     .isPresent();
     }
 
     private Promise<Unit> configuredInventory() {
@@ -155,19 +182,17 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                          cause.message()));
     }
 
+    /// The continuing pass lists the source under this instance's leadership and counts it inventoried (the same mark an admission's
+    /// inventory sets): a new leader that has admitted nothing yet must still be able to tell which sources it has seen, or the
+    /// allocations an earlier term left behind could never be examined.
     private Promise<Unit> reconcileSource(InventorySource inventory) {
         return SourceName.sourceName(inventory.source())
                          .async()
                          .flatMap(source -> delegate.sourceBinding(source)
                                                     .async()
-                                                    .flatMap(binding -> listInstances(Map.of("aether-cluster",
-                                                                                             inventory.cluster(),
-                                                                                             "aether-source",
-                                                                                             inventory.source()),
-                                                                                      source,
-                                                                                      binding).flatMap(instances -> confirmMissing(source,
-                                                                                                                                   binding,
-                                                                                                                                   instances))));
+                                                    .flatMap(binding -> listAndMark(inventory, source, binding).flatMap(instances -> confirmMissing(source,
+                                                                                                                                                  binding,
+                                                                                                                                                  instances))));
     }
 
     private Promise<Unit> confirmMissing(SourceName source, String binding, List<InstanceInfo> instances) {
@@ -195,7 +220,104 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                              node -> instancesForNode(node, source, binding).mapToUnit(),
                                              (node, cause) -> log.warn("Capacity absence confirmation for {} deferred: {}",
                                                                        node,
+                                                                       cause.message()))
+                               .flatMap(_ -> confirmDispatches(source, binding, observed));
+    }
+
+    /// Consecutive provider answers that must show no instance before an earlier term's DISPATCHED allocation is released.
+    static final int ABSENCE_CONFIRMATIONS = 3;
+
+    /// A DISPATCHED allocation is an uncertain create, and one this leader dispatched itself in its own term is in flight: neither is touched.
+    /// One written under an EARLIER term (a leader that lost its term between the reservation and an acknowledgement, or died) is examined once
+    /// this instance has inventoried every committed source: its instance is adopted when a listing or lookup shows it, and it is released only
+    /// after [#ABSENCE_CONFIRMATIONS] consecutive pass-level misses, the same bounded lanes the OBSERVED absence confirmation uses.
+    private Promise<Unit> confirmDispatches(SourceName source, String binding, Set<NodeId> observed) {
+        return leader().filter(_ -> allSourcesInventoried())
+                       .fold(Promise::unitPromise,
+                             current -> confirmEarlierTermDispatches(source,
+                                                                     binding,
+                                                                     staleDispatches(source,
+                                                                                     binding,
+                                                                                     observed,
+                                                                                     current.viewSequence())));
+    }
+
+    private boolean allSourcesInventoried() {
+        return unseenSources(configuration()).fold(_ -> false, List::isEmpty);
+    }
+
+    private List<NodeId> staleDispatches(SourceName source, String binding, Set<NodeId> observed, long term) {
+        return reservations().entrySet()
+                           .stream()
+                           .filter(entry -> entry.getValue()
+                                                 .sourceName()
+                                                 .equals(source.value()))
+                           .filter(entry -> entry.getValue()
+                                                 .sourceBinding()
+                                                 .equals(binding))
+                           .filter(entry -> entry.getValue()
+                                                 .phase() == CapacityReservationPhase.DISPATCHED)
+                           .filter(entry -> !observed.contains(entry.getKey()))
+                           .filter(entry -> dispatchTerms.getOrDefault(entry.getKey(), Long.MIN_VALUE) < term)
+                           .map(Map.Entry::getKey)
+                           .sorted(Comparator.comparing(NodeId::id))
+                           .toList();
+    }
+
+    private Promise<Unit> confirmEarlierTermDispatches(SourceName source, String binding, List<NodeId> stale) {
+        return ReconciliationBatch.reconcile(nextMissing(binding + "#dispatched", stale),
+                                             4,
+                                             TimeSpan.timeSpan(10).seconds(),
+                                             node -> confirmEarlierTermDispatch(node, source, binding),
+                                             (node, cause) -> log.warn("Absence confirmation of earlier-term dispatch {} deferred: {}",
+                                                                       node,
                                                                        cause.message()));
+    }
+
+    private Promise<Unit> confirmEarlierTermDispatch(NodeId node, SourceName source, String binding) {
+        return instancesForNode(node, source, binding).flatMap(instances -> afterDispatchLookup(node,
+                                                                                               source,
+                                                                                               binding,
+                                                                                               instances));
+    }
+
+    private Promise<Unit> afterDispatchLookup(NodeId node, SourceName source, String binding, List<InstanceInfo> instances) {
+        return instances.isEmpty()
+               ? absentDispatch(node, source, binding)
+               : Promise.<Unit> unitPromise().onSuccess(_ -> dispatchMisses.remove(node));
+    }
+
+    private Promise<Unit> absentDispatch(NodeId node, SourceName source, String binding) {
+        return dispatchMisses.computeIfAbsent(node, _ -> new AtomicInteger())
+                             .incrementAndGet() >= ABSENCE_CONFIRMATIONS
+               ? releaseAbsentDispatch(node, source, binding)
+               : Promise.unitPromise();
+    }
+
+    /// Same release as a definitive provider refusal: the no-create evidence first, then the slot.
+    private Promise<Unit> releaseAbsentDispatch(NodeId node, SourceName source, String binding) {
+        return recordRefusal(node, source, binding).flatMap(_ -> releaseRefusal(node, source, binding))
+                                                   .onSuccess(_ -> announceAbsentDispatch(node, source));
+    }
+
+    @Contract
+    private void announceAbsentDispatch(NodeId node, SourceName source) {
+        dispatchMisses.remove(node);
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.CAPACITY_DISPATCH_RELEASED,
+                               node.id(),
+                               "The create of {} on source {} was dispatched under an earlier leader term and no provider listing or lookup showed an instance in {} consecutive passes: its allocation was released",
+                               node.id(),
+                               source.value(),
+                               ABSENCE_CONFIRMATIONS);
+    }
+
+    @Override
+    public Unit setOperatorWarningSink(OperatorWarningSink sink) {
+        warningSink.set(sink);
+
+        return Unit.unit();
     }
 
     private List<NodeId> nextMissing(String binding, List<NodeId> missing) {
@@ -284,10 +406,16 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<InstanceInfo> dispatch(NodeId node, ProvisionSpec spec) {
-        if (leader().isEmpty()) {
-            return abandonDispatch(node,
-                                   spec.context().sourceName());
-        }
+        return leader().fold(() -> abandonDispatch(node,
+                                                   spec.context().sourceName()),
+                             current -> dispatchUnder(node, spec, current));
+    }
+
+    /// The term is remembered per node so that a later leader (or this instance in a later term) can tell an allocation it dispatched
+    /// itself, in flight, from one an earlier term left behind. Process-local on purpose: an instance that does not know a DISPATCHED
+    /// allocation treats it as earlier-term, which is what a restarted or newly elected leader is.
+    private Promise<InstanceInfo> dispatchUnder(NodeId node, ProvisionSpec spec, LeaderValue current) {
+        dispatchTerms.put(node, current.viewSequence());
 
         return store.getTyped(new AetherKey.CapacityReservationKey(node),
                               CapacityReservationValue.class)
@@ -608,15 +736,19 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Promise<Unit> inventoryBound(InventorySource source, SourceName name) {
         return delegate.sourceBinding(name)
                        .async()
-                       .flatMap(binding -> delegate.listInstances(Map.of("aether-source",
-                                                                         source.source(),
-                                                                         "aether-cluster",
-                                                                         source.cluster()),
-                                                                  name,
-                                                                  binding)
-                                                   .flatMap(instances -> observeAsLeader(instances, name, binding)))
-                       .map(_ -> inventoried.add(source))
+                       .flatMap(binding -> listAndMark(source, name, binding))
                        .mapToUnit();
+    }
+
+    private Promise<List<InstanceInfo>> listAndMark(InventorySource source, SourceName name, String binding) {
+        return delegate.listInstances(Map.of("aether-source",
+                                             source.source(),
+                                             "aether-cluster",
+                                             source.cluster()),
+                                      name,
+                                      binding)
+                       .flatMap(instances -> observeAsLeader(instances, name, binding))
+                       .onSuccess(_ -> inventoried.add(source));
     }
 
     private Promise<List<InstanceInfo>> observeAsLeader(List<InstanceInfo> instances,

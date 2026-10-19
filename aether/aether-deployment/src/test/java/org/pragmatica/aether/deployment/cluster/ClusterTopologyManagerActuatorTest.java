@@ -503,6 +503,40 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(events).containsExactly("provision-admission-deferred", "provision-admission-resumed");
     }
 
+    /// A complete inventory that is not available yet is a transient wait: visible (counted, recorded as the last failure) but never
+    /// counted toward the provider-failure circuit, however many passes it takes.
+    @Test
+    void inventoryUnavailable_isVisibleButNeverTripsTheProviderFailureCircuit() {
+        ctm.activate();
+        lifecycleManager.deferProvision = true;
+        lifecycleManager.deferCause = CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await().unwrap();
+            assertThat(disposition).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION));
+        }
+
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
+        assertThat(ctm.circuitBreakerState().tripped()).isFalse();
+        assertThat(ctm.inventoryWaits()).isEqualTo(5);
+        assertThat(ctm.lastProvisionFailure().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
+                .isEqualTo(CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE.message());
+        assertThat(lifecycleManager.provisionCount.get()).as("every pass still reached admission").isEqualTo(5);
+    }
+
+    /// Control: another caller's inventory initialization in progress never counted, and still does not.
+    @Test
+    void fleetInventoryInitializing_neverTripsTheProviderFailureCircuit() {
+        ctm.activate();
+        lifecycleManager.deferProvision = true;
+        lifecycleManager.deferCause = new FleetInventoryInitializing();
+        for (int attempt = 0; attempt < 5; attempt++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        }
+
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
+        assertThat(ctm.circuitBreakerState().tripped()).isFalse();
+    }
+
     private static AetherValue.CommunityPlacementOperationValue placementOperation() {
         return new AetherValue.CommunityPlacementOperationValue("operation", "community", NodeId.randomNodeId(), "default", Option.none(),
                                                                 "binding", Option.none(), "", AetherValue.PlacementOperationPhase.CREATE_REQUESTED,
@@ -2666,6 +2700,7 @@ class ClusterTopologyManagerActuatorTest {
         private final AtomicReference<ProvisionSpec> lastSpec = new AtomicReference<>();
         private final java.util.concurrent.atomic.AtomicBoolean failProvision = new java.util.concurrent.atomic.AtomicBoolean(false);
         private boolean deferProvision;
+        private org.pragmatica.lang.Cause deferCause = CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE;
         /// #1050 R4 — the labelled provider inventory the activation replay lists. `terminateNode` removes from it.
         private final ConcurrentHashMap<NodeId, InstanceInfo> inventory = new ConcurrentHashMap<>();
         final AtomicInteger listCalls = new AtomicInteger();
@@ -2779,7 +2814,7 @@ class ClusterTopologyManagerActuatorTest {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             var count = provisionCount.incrementAndGet();
             lastSpec.set(spec);
-            if (deferProvision) return CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE.promise();
+            if (deferProvision) return deferCause.promise();
             if (failProvision.get()) {
                 return provisionFailure.promise();
             }

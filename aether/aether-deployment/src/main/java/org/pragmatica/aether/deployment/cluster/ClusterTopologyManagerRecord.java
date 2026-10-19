@@ -127,6 +127,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
                                     AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink,
                                     AtomicBoolean admissionDeferred,
+                                    AtomicLong inventoryWaitCount,
                                     Set<NodeId> unconfirmedReaps,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
@@ -280,6 +281,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
                                                 new AtomicBoolean(false),
+                                                new AtomicLong(0L),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
@@ -317,6 +319,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
         warningSink.set(sink);
+        lifecycleManager.setOperatorWarningSink(sink);
 
         return unit();
     }
@@ -954,6 +957,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// recovery clears it): a permanent refusal keeps the event open instead of retrying invisibly.
     @Contract
     private void recordAdmissionDeferral(Cause cause) {
+        if (cause == CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE) {
+            recordInventoryWait(cause);
+
+            return;
+        }
+
         recordProvisioningFailure(cause);
         if (admissionDeferred.compareAndSet(false, true)) {
             org.pragmatica.utility.warning.OperatorWarnings.raise(log,
@@ -963,6 +972,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                   "Core replacement is deferred by capacity admission ({}); it is retried on the next pass and counts toward the provisioning circuit",
                                                                   cause.message());
         }
+    }
+
+    /// Every how-many-th inventory wait is logged: the first, then one in ten.
+    private static final int INVENTORY_WAIT_LOG_EVERY = 10;
+
+    /// A complete inventory that is not available yet (a provider that is not ready at boot, a configuration not committed yet) is a
+    /// transient wait, not a provider failure: it is counted ([#inventoryWaits]), recorded as the last provisioning failure and logged at a
+    /// bounded rate, but it never counts toward the provisioning circuit, which would suspend provisioning for waiting.
+    @Contract
+    private void recordInventoryWait(Cause cause) {
+        var waits = inventoryWaitCount.incrementAndGet();
+
+        lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
+        if (waits % INVENTORY_WAIT_LOG_EVERY == 1) {
+            log.warn("CTM: provisioning waits for a complete inventory ({} waits so far): {}", waits, cause.message());
+        }
+    }
+
+    @Override
+    public long inventoryWaits() {
+        return inventoryWaitCount.get();
     }
 
     private static final String ADMISSION_SUBJECT = "core-provisioning";
