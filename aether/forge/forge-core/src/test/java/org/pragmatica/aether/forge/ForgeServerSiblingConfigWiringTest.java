@@ -88,18 +88,43 @@ class ForgeServerSiblingConfigWiringTest {
         assertThat(ember.appHttpConfigFor(8070).managementSecurityEnabled()).isTrue();
     }
 
-    /// The management mode is independent of the key gate: no keys leave the app plane NONE (unchanged), yet an explicit
-    /// `[management] security_mode = "api-key"` still arms the management plane.
+    private static final String NO_KEYS_MGMT_API_KEY = "[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[management]\nsecurity_mode = \"api-key\"\n";
+
+    /// An explicit `api-key` management mode with no key declared would leave Forge's own control calls refused (401): Forge
+    /// REFUSES to start (exit 1) instead, and arms nothing.
     @Test
-    void applyAppHttpSecurity_honoursManagementApiKey_evenWithoutKeys(@TempDir Path dir) throws Exception {
+    void applyAppHttpSecurity_refusesManagementApiKey_whenNoKeyIsDeclared(@TempDir Path dir) throws Exception {
         var ember = EmberCluster.emberCluster();
+        var exits = new ArrayList<Integer>();
 
-        serverWithSibling(dir, "[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[management]\nsecurity_mode = \"api-key\"\n").applyAppHttpSecurity(ember, code -> {});
+        serverWithSibling(dir, NO_KEYS_MGMT_API_KEY).applyAppHttpSecurity(ember, exits::add);
 
-        var appHttp = ember.appHttpConfigFor(8070);
+        assertThat(exits).as("a refusal to start").containsExactly(1);
+        assertThat(ember.appHttpConfigFor(8070).managementSecurityEnabled()).as("nothing was armed").isFalse();
+    }
 
-        assertThat(appHttp.securityEnabled()).as("no keys: the app plane stays NONE, as before").isFalse();
-        assertThat(appHttp.managementSecurityEnabled()).isTrue();
+    @Test
+    void keylessManagementRefusal_namesTheFileTheSettingAndBothFixes() {
+        assertThat(ForgeAppConfig.keylessManagementRefusal("/etc/forge/aether.toml")).contains("/etc/forge/aether.toml")
+                                                                                     .contains("[management] security_mode = \"api-key\"")
+                                                                                     .contains("declares no API key")
+                                                                                     .contains("Declare a key")
+                                                                                     .contains("choose another mode");
+    }
+
+    /// Controls: the refusal is only for api-key WITHOUT a key. `none` without keys, and `api-key` with a key, both start.
+    @Test
+    void applyAppHttpSecurity_doesNotRefuse_managementNoneWithoutKeys_orManagementApiKeyWithAKey(@TempDir Path dir) throws Exception {
+        var noneEmber = EmberCluster.emberCluster();
+        var keyedEmber = EmberCluster.emberCluster();
+        var exits = new ArrayList<Integer>();
+
+        serverWithSibling(dir, NO_KEYS_MGMT_API_KEY.replace("api-key", "none")).applyAppHttpSecurity(noneEmber, exits::add);
+        serverWithSibling(dir, KEYED + "\n[management]\nsecurity_mode = \"api-key\"\n").applyAppHttpSecurity(keyedEmber, exits::add);
+
+        assertThat(exits).isEmpty();
+        assertThat(noneEmber.appHttpConfigFor(8070).managementSecurityEnabled()).isFalse();
+        assertThat(keyedEmber.appHttpConfigFor(8070).managementSecurityEnabled()).isTrue();
     }
 
     /// Control: a Forge cluster with no sibling setting stays as it was, management open under the NONE app plane.
