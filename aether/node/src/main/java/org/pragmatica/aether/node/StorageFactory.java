@@ -473,10 +473,10 @@ public final class StorageFactory {
         return withDerivedPaths(configs, StorageConfig.storageConfig(), encrypted);
     }
 
-    /// #249: an instance configured only through `[storage.<name>.shared]` ([StorageConfig#derivesPaths]) is
-    /// placed as if `[storage.<name>]` were absent -- `artifacts` and `content` exactly as their synthesized
-    /// defaults (paths and keyring-tracking `encrypted`), any other name on the bare defaults, as an empty
-    /// `[storage.<name>]` section would be -- and keeps its shared tier. `defaults` is a parameter so tests root
+    /// #249: an instance that gives no paths of its own ([StorageConfig#derivesPaths]) is placed by derivation. A
+    /// shared-only `artifacts` or `content` is placed as if `[storage.<name>]` were absent, exactly as its synthesized
+    /// default (paths and keyring-tracking `encrypted`); any other name gets its own directories ([#ownDirectories]),
+    /// whether it is shared-only or a section without `disk_path`/`snapshot_path` (N3). Each keeps its shared tier. `defaults` is a parameter so tests root
     /// it in their own directory, as [#createAll]'s does (#1276).
     static Map<String, StorageConfig> withDerivedPaths(Map<String, StorageConfig> configs,
                                                        StorageConfig defaults,
@@ -502,8 +502,29 @@ public final class StorageFactory {
             case CONTENT_NAME -> defaultContentConfig(resolvedArtifacts(configs, defaults, encrypted),
                                                       defaults,
                                                       encrypted).withShared(config.shared());
-            default -> defaults.withShared(config.shared());
+            default -> ownDirectories(name, config, resolvedArtifacts(configs, defaults, encrypted), defaults);
         };
+    }
+
+    /// #249 N3: an instance of another name that gives no paths gets its own directories, placed exactly as the
+    /// synthesized `content` is ([#siblingDataDir]): `<name>/blocks` and `<name>/snapshots` beside wherever `artifacts`
+    /// resolves, so it follows a moved `artifacts`. Not under `artifacts`' directory, whose disk tier walks its whole
+    /// base ([StoragePathsOverlap]). Every other setting of the configuration is kept.
+    private static StorageConfig ownDirectories(String name,
+                                                StorageConfig config,
+                                                Map<String, StorageConfig> artifacts,
+                                                StorageConfig defaults) {
+        var dataDir = siblingDataDir(artifacts, defaults, name);
+
+        return config.withPaths(dataDir.resolve("blocks").toString(),
+                                dataDir.resolve("snapshots").toString());
+    }
+
+    /// The data directory of a derived instance `name`: a sibling of the `artifacts` disk path -- the configured one
+    /// in `configs` when present, else the default -- shared by the synthesized `content` and by every path-less
+    /// instance of another name (#783, #249 N3).
+    private static Path siblingDataDir(Map<String, StorageConfig> configs, StorageConfig defaults, String name) {
+        return Path.of(option(configs.get(ARTIFACTS_NAME)).or(defaults).diskPath()).resolveSibling(name);
     }
 
     private static Map<String, StorageConfig> resolvedArtifacts(Map<String, StorageConfig> configs,
@@ -631,8 +652,9 @@ public final class StorageFactory {
                  + "' (" + secondPath
                  + ") share a directory -- refusing to boot: each would count the other's bytes against its own "
                  + "disk_max_bytes and they would share metadata snapshots. Give every [storage.<name>] section its "
-                 + "own disk_path and snapshot_path (an instance that omits them resolves the shared "
-                 + "/data/aether/... default)";
+                 + "own disk_path and snapshot_path (a path a section leaves out resolves to the shared "
+                 + "/data/aether/... default, unless the section sets neither and names an instance other than "
+                 + "artifacts or content)";
         }
     }
 
@@ -751,8 +773,7 @@ public final class StorageFactory {
     private static StorageConfig defaultContentConfig(Map<String, StorageConfig> configs,
                                                       StorageConfig defaults,
                                                       boolean encrypted) {
-        var artifactsConfig = option(configs.get(ARTIFACTS_NAME)).or(defaults);
-        var contentDataDir = Path.of(artifactsConfig.diskPath()).resolveSibling(CONTENT_NAME);
+        var contentDataDir = siblingDataDir(configs, defaults, CONTENT_NAME);
 
         return new StorageConfig(defaults.memoryMaxBytes(),
                                  defaults.diskMaxBytes(),

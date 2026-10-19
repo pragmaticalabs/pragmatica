@@ -467,7 +467,7 @@ public record Main(String[] args) {
     /// the synthesized `content` placement, the stream segment and WAL directories -- reads this map, so none of
     /// them can see a shared-only instance's blank paths. A keyring exists exactly when `[storage.encryption]` is
     /// present (the node refuses to boot when it cannot resolve one), which is the `encrypted` the derivation needs.
-    static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
+    public static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
         return StorageFactory.derivedStorage(aetherConfig.map(AetherConfig::storage).or(Map.of()),
                                              resolveStorageEncryption(aetherConfig).isPresent());
     }

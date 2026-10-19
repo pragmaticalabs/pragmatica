@@ -34,6 +34,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 public final class ConfigLoader {
     private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
+    /// The instances a node always has, placed on the default paths whether or not their section names any.
+    private static final Set<String> SYNTHESIZED_INSTANCES = Set.of("artifacts", "content");
     /// The only key a `[storage.streams]` section carries (#634-3); the `streams` instance is built from the
     /// node's stream settings, not from this section.
     private static final Set<String> STREAMS_SECTION_KEYS = Set.of("wal_path");
@@ -642,7 +644,8 @@ public final class ConfigLoader {
                 // #249: a dotted name is a sub-section of an instance (`[storage.<name>.shared]`), not an instance.
                 if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.contains(".")) {
                     warnIgnoredStreamsKeys(doc, instanceName, sectionName);
-                    instances.put(instanceName, storageFromSection(doc, sectionName));
+                    instances.put(instanceName,
+                                  markedIfPathless(doc, instanceName, sectionName, storageFromSection(doc, sectionName)));
                 }
             }
         }
@@ -878,6 +881,23 @@ public final class ConfigLoader {
         if (!ignored.isEmpty()) {
             log.warn("[storage.streams] carries only wal_path; these keys have no effect and are ignored: {}", ignored);
         }
+    }
+
+    /// #249 N3: a section of a name other than `artifacts`/`content` that sets neither `disk_path` nor `snapshot_path`
+    /// gives no paths of its own, so the node derives the instance's own directories (`StorageFactory.derivedStorage`).
+    /// `artifacts` and `content` keep the default paths their section resolves to, as before.
+    private static StorageConfig markedIfPathless(TomlDocument doc,
+                                                  String instanceName,
+                                                  String sectionName,
+                                                  StorageConfig config) {
+        return placesItself(doc, instanceName, sectionName)
+               ? config
+               : config.derivingPaths();
+    }
+
+    private static boolean placesItself(TomlDocument doc, String instanceName, String sectionName) {
+        return SYNTHESIZED_INSTANCES.contains(instanceName) || doc.hasKey(sectionName, "disk_path") || doc.hasKey(sectionName,
+                                                                                                                  "snapshot_path");
     }
 
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {

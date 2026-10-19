@@ -277,11 +277,15 @@ in `EncryptingStorageTier`.
   explicit `[storage.artifacts] snapshot_path`. If `artifacts` sits on a mounted volume, content's
   tier may land outside it. Configure `[storage.content]` explicitly to control placement.
 
-**Storage paths are per instance (#856, #912).** A `[storage.<name>]` section that omits `disk_path` /
-`snapshot_path` resolves them under the default root, `/data/aether` (`<root>/storage`,
-`<root>/metadata-snapshots`); the JVM system property `aether.storage.defaultRoot` names another root.
-Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are
-refused at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
+**Storage paths are per instance (#856, #912, #249).** Paths resolve under the default root, `/data/aether`; the JVM
+system property `aether.storage.defaultRoot` names another root. `[storage.artifacts]` that omits `disk_path` /
+`snapshot_path` takes `<root>/storage` and `<root>/metadata-snapshots` (and `content` its sibling, below). A section of
+any other name that sets **neither** key gets its own directories beside `artifacts`, placed as `content` is:
+`<name>/blocks` and `<name>/snapshots` next to `artifacts`' disk path (`<root>/<name>/...` by default, and they move
+with it when `[storage.artifacts] disk_path` is set). Not `<root>/storage/<name>`: that would lie inside `artifacts`'
+directory, whose disk tier counts everything under it. A section that sets only one of the two keys resolves the other to the `artifacts`
+default. Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are refused
+at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
 
 **Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
@@ -422,8 +426,10 @@ explicit blank `disk_path`/`snapshot_path` is refused (omit the key to use the d
 
 **Without `[storage.<instance>]`.** A `[storage.content.shared]` section alone is enough: the instance is
 placed as if its own section were absent (for `artifacts` and `content`, the synthesized defaults described
-above, including keyring-tracking encryption). A section for any other name creates that instance on the
-default paths, as an empty `[storage.<instance>]` section would. The paths are derived once, when the node starts,
+above, including keyring-tracking encryption). A section for any other name creates that instance in its own
+directories beside `artifacts` (`<root>/<name>/blocks` and `<root>/<name>/snapshots` by default), as an empty
+`[storage.<instance>]` section does.
+The paths are derived once, when the node starts,
 and everything that hangs off them reads the derived ones: with `[storage.artifacts.shared]` alone, the stream
 segments and the stream WAL stay under the default root, exactly as with no storage section at all.
 

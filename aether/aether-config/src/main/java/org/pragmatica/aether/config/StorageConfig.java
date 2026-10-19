@@ -19,10 +19,11 @@ import org.pragmatica.lang.Verify;
 /// `shared` (#249) is the instance's cluster-shared last tier, from `[storage.<instance>.shared]`: the in-memory
 /// DHT by default, or an S3-compatible bucket ([SharedTierConfig]).
 ///
-/// `derivesPaths` (#249) is true only for a [#sharedOnly] configuration: no `[storage.<instance>]` section was
-/// written, so the node derives this instance's paths (and, for the synthesized instances, its `encrypted` default)
-/// as if the section were absent. Every other shape carries false and is placed exactly as written -- a blank
-/// `diskPath` included, which no longer reads as "derive".
+/// `derivesPaths` (#249) is true when the configuration gives no paths of its own, so the node derives them: a
+/// [#sharedOnly] configuration (no `[storage.<instance>]` section was written; the synthesized instances also derive
+/// their `encrypted` default), or, through [#derivingPaths], a section of another name that sets neither `disk_path`
+/// nor `snapshot_path` (N3). Every other shape carries false and is placed exactly as written -- a blank `diskPath`
+/// included, which never reads as "derive".
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -161,7 +162,7 @@ public record StorageConfig(long memoryMaxBytes,
     /// #249: an instance configured ONLY through `[storage.<name>.shared]`, with no `[storage.<name>]`
     /// section of its own. Paths are left empty to mean "as if the section were absent": the node resolves
     /// them as it would for a missing section -- the synthesized `artifacts`/`content` placement for those
-    /// two, the bare defaults for any other name. It is the only factory that sets [#derivesPaths].
+    /// two, their own subdirectories for any other name ([#derivesPaths]).
     public static StorageConfig sharedOnly(SharedTierConfig shared) {
         var defaults = storageConfig();
 
@@ -176,6 +177,37 @@ public record StorageConfig(long memoryMaxBytes,
                                  defaults.encrypted(),
                                  shared,
                                  true);
+    }
+
+    /// #249 N3: this configuration, marked as giving no paths of its own ([#derivesPaths]); the node derives them.
+    public StorageConfig derivingPaths() {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 shared,
+                                 true);
+    }
+
+    /// #249 N3: this configuration placed on `diskPath` and `snapshotPath`, which are its own from now on
+    /// ([#derivesPaths] false). Every other setting is kept.
+    public StorageConfig withPaths(String diskPath, String snapshotPath) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 shared,
+                                 false);
     }
 
     /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.

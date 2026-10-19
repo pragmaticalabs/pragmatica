@@ -47,10 +47,11 @@ class StorageFactoryDerivedPathsTest {
         assertThat(placed.get("artifacts")).isEqualTo(artifacts);
     }
 
-    /// Mutations that redden it: drop the flag `StorageConfig#sharedOnly` sets; B08, place a non-synthesized name on the
-    /// bare defaults without its shared tier. The tier is S3, which the defaults do not carry, so losing it shows.
+    /// N3: a shared-only instance of another name is placed in its own directories beside the default disk path, not
+    /// on the defaults `artifacts` uses. Mutations that redden it: drop the flag `StorageConfig#sharedOnly` sets; B08,
+    /// lose its shared tier (S3, which the defaults do not carry, so losing it shows); place it on the default paths.
     @Test
-    void sharedOnlyInstance_isPlacedOnTheDefaults_keepingItsSharedTier() {
+    void sharedOnlyInstance_isPlacedInItsOwnDirectories_keepingItsSharedTier() {
         var shared = new SharedTierConfig.S3("http://127.0.0.1:9000",
                                              "us-east-1",
                                              "vault-bucket",
@@ -63,8 +64,10 @@ class StorageFactoryDerivedPathsTest {
         var placed = StorageFactory.withDerivedPaths(Map.of("vault", StorageConfig.sharedOnly(shared)), defaults(), false)
                                    .get("vault");
 
-        assertThat(placed.diskPath()).isEqualTo(defaults().diskPath());
-        assertThat(placed.snapshotPath()).isEqualTo(defaults().snapshotPath());
+        var own = Path.of(defaults().diskPath()).resolveSibling("vault");
+
+        assertThat(placed.diskPath()).isEqualTo(own.resolve("blocks").toString());
+        assertThat(placed.snapshotPath()).isEqualTo(own.resolve("snapshots").toString());
         assertThat(placed.shared()).isEqualTo(shared);
         assertThat(placed.derivesPaths()).isFalse();
     }

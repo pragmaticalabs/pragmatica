@@ -130,6 +130,31 @@ class ConfigLoaderSharedTierTest {
             assertThat(storage.get("content").derivesPaths()).isTrue();
         }
 
+        /// N3: a section of another name that sets neither path leaves them to the node; `artifacts` and `content`,
+        /// and a section that sets a path, keep what they resolve to. Mutations that redden it: never mark; mark
+        /// `artifacts` too; mark a section that sets `disk_path` or `snapshot_path`.
+        @Test
+        void pathlessSection_ofAnotherName_derivesItsPaths() {
+            var storage = load("""
+                [storage.vault]
+                memory_max_bytes = 1234
+
+                [storage.archive]
+                disk_path = "/srv/archive/blocks"
+
+                [storage.journal]
+                snapshot_path = "/srv/journal/snapshots"
+
+                [storage.artifacts]
+                encrypted = false
+                """).storage();
+
+            assertThat(storage.get("vault").derivesPaths()).isTrue();
+            assertThat(storage.get("archive").derivesPaths()).isFalse();
+            assertThat(storage.get("journal").derivesPaths()).isFalse();
+            assertThat(storage.get("artifacts").derivesPaths()).isFalse();
+        }
+
         @Test
         void sharedSection_keepsTheParentSectionsSettings() {
             var content = load("""
