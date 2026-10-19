@@ -2,6 +2,7 @@ package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
@@ -29,7 +30,12 @@ class OutboundMessageLimitTest {
         result.onFailure(cause -> assertThat(cause).isEqualTo(OutboundMessageLimit.TooLarge.FACTORY.apply(oneOver)));
     }
 
-    private record Probe(NodeId sender) implements ProtocolMessage {}
+    private record Probe(NodeId sender) implements ProtocolMessage {
+        @Override
+        public StreamType streamType() {
+            return StreamType.CONSENSUS;
+        }
+    }
 
     private record SizedSerializer(int size) implements Serializer {
         @Override public <T> void write(ByteBuf byteBuf, T object) {}
