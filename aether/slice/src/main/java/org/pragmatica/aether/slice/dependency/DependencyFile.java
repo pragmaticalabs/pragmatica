@@ -77,17 +77,17 @@ public record DependencyFile(List<ArtifactDependency> shared,
 
             parseResult.onSuccess(dependency -> {
                                       switch (sectionRef) {
-                case SHARED -> shared.add(dependency);
-                case INFRA -> infra.add(dependency);
-                case SLICES, NONE -> slices.add(dependency);
-            }
+                                          case SHARED -> shared.add(dependency);
+                                          case INFRA -> infra.add(dependency);
+                                          case SLICES, NONE -> slices.add(dependency);
+                                      }
                                   })
                        .onFailure(cause -> {
                                       if (cause == ArtifactDependency.EMPTY_LINE || cause == ArtifactDependency.COMMENT_LINE || cause == ArtifactDependency.SECTION_HEADER) {
-                                      skipFlag.set(true);
-                                  } else {
-                                      errorHolder.set(cause);
-                                  }
+                                          skipFlag.set(true);
+                                      } else {
+                                          errorHolder.set(cause);
+                                      }
                                   });
             if (skipFlag.get()) {
                 continue;

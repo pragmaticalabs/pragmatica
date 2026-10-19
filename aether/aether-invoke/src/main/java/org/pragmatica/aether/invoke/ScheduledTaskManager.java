@@ -646,8 +646,8 @@ public interface ScheduledTaskManager {
                                                                                  task.methodName());
 
                                      if (!ctx.activeTimers.containsKey(key)) {
-                                     startTimer(ctx, key, task);
-                                 }
+                                         startTimer(ctx, key, task);
+                                     }
                                  });
         }
 

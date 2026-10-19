@@ -329,8 +329,8 @@ record PlacementReconciler(NodeId self,
         return currentLeader().fold(Promise::unitPromise,
                                     leader -> alignCommunity(policy, leader, snapshot).flatMap(accepted -> {
                                         if (!accepted) {
-                                        return Promise.unitPromise();
-                                    }
+                                            return Promise.unitPromise();
+                                        }
 
                                         return operation(policy.id()).filter(CommunityPlacementOperationValue::active)
                                                         .fold(() -> reserve(config, policy, leader, snapshot),
@@ -691,8 +691,8 @@ record PlacementReconciler(NodeId self,
         return transition(operation, deferred).onSuccess(accepted -> {
                                                              if (accepted && !operation.detail()
                                                                                        .equals(detail)) {
-                                                             escalation.accept(deferred);
-                                                         }
+                                                                 escalation.accept(deferred);
+                                                             }
                                                          })
                          .mapToUnit();
     }
@@ -747,8 +747,8 @@ record PlacementReconciler(NodeId self,
                        .flatMap(exists -> {
                                     if (currentLeader().filter(leader::equals)
                                                      .isEmpty()) {
-                                    return Promise.unitPromise();
-                                }
+                                        return Promise.unitPromise();
+                                    }
 
                                     return exists
                                            ? terminateIfSafe(operation, leader)
@@ -780,8 +780,8 @@ record PlacementReconciler(NodeId self,
 
         return transition(operation, uncertain).onSuccess(accepted -> {
                              if (accepted) {
-                             escalation.accept(uncertain);
-                         }
+                                 escalation.accept(uncertain);
+                             }
                          })
                          .mapToUnit();
     }
@@ -818,14 +818,14 @@ record PlacementReconciler(NodeId self,
         return currentLeader().fold(() -> Promise.success(false),
                                     leader -> matchingDrain(sender, operationId).fold(() -> Promise.success(false),
                                                                                       operation -> switch (operation.phase()) {
-            case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
-            case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
-                                                                operation.withPhase(PlacementOperationPhase.DRAINED,
-                                                                                    leader,
-                                                                                    "",
-                                                                                    clock.getAsLong()));
-            default -> Promise.success(false);
-        }));
+                                                                                          case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
+                                                                                          case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
+                                                                                                                                              operation.withPhase(PlacementOperationPhase.DRAINED,
+                                                                                                                                                                  leader,
+                                                                                                                                                                  "",
+                                                                                                                                                                  clock.getAsLong()));
+                                                                                          default -> Promise.success(false);
+                                                                                      }));
     }
 
     private Option<CommunityPlacementOperationValue> matchingDrain(NodeId sender, String operationId) {
