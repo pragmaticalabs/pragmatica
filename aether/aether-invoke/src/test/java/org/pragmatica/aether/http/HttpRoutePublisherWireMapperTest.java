@@ -26,7 +26,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Owner ruling: value objects travel unwrapped on every slice route JSON path. The mapper a published slice's
 /// router receives (the generated codecs' Jackson fallback, and the whole JSON seam of a slice without generated
-/// codecs) is therefore the value-object mapper, never the shared default.
+/// codecs) is therefore the value-object mapper, never the shared default. Only a nested value object tells the two
+/// apart: as the whole document both write the record shape (`{"value":"x"}`, owner ruling 2026-10-18).
 class HttpRoutePublisherWireMapperTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final Artifact WIRE = Artifact.artifact("org.example:wire-slice:1.0.0").unwrap();
@@ -46,7 +47,7 @@ class HttpRoutePublisherWireMapperTest {
                           .onFailure(cause -> Assertions.fail("publish failed: " + cause.message()));
 
         assertThat(WireMapperSliceRoutes.RECEIVED.get()).as("the publisher must have built the router").isNotNull();
-        assertThat(WireMapperSliceRoutes.RECEIVED.get().writeAsString(new Code("x")).unwrap()).isEqualTo("\"x\"");
+        assertThat(WireMapperSliceRoutes.RECEIVED.get().writeAsString(List.of(new Code("x"))).unwrap()).isEqualTo("[\"x\"]");
     }
 
     private static SliceInvokerFacade stubInvokerFacade() {
