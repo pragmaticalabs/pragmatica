@@ -28,6 +28,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.OwnRestoreWatchdog;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
 
@@ -182,7 +183,7 @@ class MainOwnRestoreWatchdogTest {
         var watchdog = Main.ownRestoreWatchdog(Option::none, () -> Option.some(DISK_FULL), () -> {}, _ -> {});
 
         assertThat(watchdog.failure().get().map(org.pragmatica.lang.Cause::message)).isEqualTo(Option.some(DISK_FULL.message()));
-        assertThat(watchdog.failure().get().fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
+        assertThat(unwrap(watchdog.failure().get())).isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
     }
 
     /// W9: the production clock converts nanoseconds to milliseconds. A wrong divisor moves the bound by orders of
@@ -279,5 +280,9 @@ class MainOwnRestoreWatchdogTest {
         List<String> capturedErrors() {
             return List.copyOf(messages);
         }
+    }
+
+    private static Object unwrap(Option<Cause> failure) {
+        return failure.fold(() -> null, cause -> cause);
     }
 }

@@ -108,7 +108,7 @@ class OwnRestoreWatchdogTest {
     void fence_ownRestoreFailure_isTaggedAsTheOwnRestoreFence() {
         var fenced = OwnRestoreWatchdog.fence(() -> Option.some(UNREADABLE), Option::none).get();
 
-        assertThat(fenced.fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
+        assertThat(unwrap(fenced)).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
         assertThat(fenced.map(Cause::message)).isEqualTo(Option.some(UNREADABLE.message()));
     }
 
@@ -117,7 +117,7 @@ class OwnRestoreWatchdogTest {
         var disk = Causes.cause("no space left on device");
         var fenced = OwnRestoreWatchdog.fence(Option::none, () -> Option.some(disk)).get();
 
-        assertThat(fenced.fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
+        assertThat(unwrap(fenced)).isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
         assertThat(fenced.map(Cause::message)).isEqualTo(Option.some(disk.message()));
     }
 
@@ -125,7 +125,7 @@ class OwnRestoreWatchdogTest {
     void fence_ownRestoreWinsOverRepersist_whenBothArePresent() {
         var fenced = OwnRestoreWatchdog.fence(() -> Option.some(UNREADABLE), () -> Option.some(Causes.cause("no space left on device"))).get();
 
-        assertThat(fenced.fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
+        assertThat(unwrap(fenced)).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
     }
 
     @Test
@@ -145,5 +145,9 @@ class OwnRestoreWatchdogTest {
         guarded.tick();
 
         assertThat(repersistExits).singleElement().isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
+    }
+
+    private static Object unwrap(Option<Cause> failure) {
+        return failure.fold(() -> null, cause -> cause);
     }
 }
