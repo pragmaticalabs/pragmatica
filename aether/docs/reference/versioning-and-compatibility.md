@@ -146,15 +146,28 @@ are next written. The way back is not:
   ref names percent-escaped, under a `refNames=escaped` header.
 - An older binary does not know that encoding. It reads an escaped name verbatim (`%7Cname`, never `|name`), and it
   skips every ref line that contains `=`. The content hash it then recomputes over the ref names does not match the
-  stored one, so it rejects every snapshot that holds a name written since the upgrade, and falls back to an older
-  retained snapshot, or to none.
-- Names written since the upgrade are gone. The blocks they named become unreferenced and may be collected. A name
+  stored one, so it rejects every snapshot that holds a name written since the upgrade. It falls back to the newest
+  older retained snapshot that validates. If none does, the `LATEST` pointer still exists, so the snapshot manager
+  reports nothing restorable and the node refuses to boot (`Storage 'content' has a metadata snapshot that does not
+  restore`). That is the likely outcome once the retained snapshots were all written after the upgrade.
+- If it boots on an older snapshot, names written since the upgrade are gone. The blocks they named become unreferenced and may be collected. A name
   rewritten since the upgrade reverts to its pre-upgrade value only if a pre-upgrade snapshot is still retained, and
   that value's chunks may already have been released.
 
+**Which path triggers it.** The hazard needs an older binary to boot over a content snapshot directory that a newer
+binary has written:
+- **A node restarted in place on the older binary** (same storage paths) is affected.
+- **A replacement node** started by `aether cluster upgrade --version <older>` ([`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md))
+  is affected only if its storage resolves to the same directory. The content snapshot path is
+  `<artifacts path>/../content/snapshots` and carries no node-id segment, so nodes that share one host mount share it.
+  [mechanism: `StorageFactory`, the `content` path derivation]
+- A replacement node on fresh storage reads no such snapshot and is not affected by this note. Whether replacement
+  nodes reuse the retiring node's storage in a given deployment is a property of that deployment.
+  [unverified: not traced per deployment target]
+
 Pre-GA, this is a decision, not an oversight: a downgrade across this change is not supported.
-[mechanism: `DefaultSnapshotManager.parseRefLine` and `readAndValidateSnapshot` at the pre-change revision;
-`MetadataSnapshot.isValid` hashes the ref names]
+[mechanism: `DefaultSnapshotManager.parseRefLine`, `readAndValidateSnapshot` and `nothingRestored` at the pre-change
+revision; `MetadataSnapshot.isValid` hashes the ref names; `StorageFactory.restoreAndSignalReady` refuses the boot]
 
 ## Reference material
 
