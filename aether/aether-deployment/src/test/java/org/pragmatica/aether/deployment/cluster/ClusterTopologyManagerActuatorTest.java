@@ -2348,7 +2348,7 @@ class ClusterTopologyManagerActuatorTest {
             manager.setAutoHealEnabled(false, "operator hold").await().unwrap();
             voters.set(Set.of());
             await().atMost(Duration.ofSeconds(5))
-                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("held")));
+                   .until(() -> appender.messages().stream().anyMatch(msg -> msg.contains("held")));
             manager.setAutoHealEnabled(true, "operator resume").await().unwrap();
             manager.onSwimFaulty(DEAD);
 
