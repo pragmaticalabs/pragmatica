@@ -31,7 +31,6 @@ public interface OutboundMessageLimit {
     private static Result<Unit> withinFrame(byte[] encoded) {
         return encoded.length <= MAX_TRANSFER_BYTES
                ? Result.unitResult()
-               : TooLarge.FACTORY.apply(encoded.length)
-                                 .result();
+               : TooLarge.FACTORY.apply(encoded.length).result();
     }
 }

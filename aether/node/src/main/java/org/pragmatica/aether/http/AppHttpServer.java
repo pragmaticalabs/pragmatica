@@ -1539,7 +1539,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// Every app listener, HTTP/1.1 and HTTP/3, at start and at certificate rotation, is configured here, so the
     /// request bounds `[app-http]` declares (`max_request_size`, `read_timeout`, `min_body_rate`) reach all of them (F6).
     static HttpServerConfig serverConfig(String name, AppHttpConfig config) {
-        return HttpServerConfig.httpServerConfig(name, config.port())
+        return HttpServerConfig.httpServerConfig(name,
+                                                 config.port())
                                .withMaxContentLength(config.maxRequestSize())
                                .withReadTimeout(config.readTimeout())
                                .withBodyRateLimit(bodyRateLimit(config));

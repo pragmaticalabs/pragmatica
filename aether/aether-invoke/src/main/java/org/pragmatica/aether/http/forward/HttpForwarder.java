@@ -1315,7 +1315,9 @@ public interface HttpForwarder {
                 var bounded = clusterNetwork.validateOutboundMessage(forwardRequest);
 
                 if (bounded.isFailure()) {
-                    bounded.onFailure(cause -> log.warn("Request [{}] not forwarded: {}", requestId, cause.message()))
+                    bounded.onFailure(cause -> log.warn("Request [{}] not forwarded: {}",
+                                                        requestId,
+                                                        cause.message()))
                            .onFailure(cause -> resultPromise.fail(unforwardable(cause)));
 
                     return;
