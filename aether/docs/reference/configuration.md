@@ -413,14 +413,19 @@ a malformed `request_timeout` or a non-boolean `path_style` refuse the config, n
 the key. A sub-table or a dotted key under the section (`[storage.<instance>.shared.<x>]`,
 `aws.secret_access_key = ...`) is refused too. `[storage.streams.shared]` accepts only `kind = "dht"`: stream
 storage is being redesigned separately, and until then the streams instance keeps the DHT as its shared tier.
-`[storage.encryption.shared]` is refused: `encryption` names the keyring section, not an instance. Any other
-`[storage.<instance>.<sub>]` section has no effect and is named in a WARN at load, and an explicit blank
-`disk_path`/`snapshot_path` is refused (omit the key to use the default).
+`[storage.encryption.shared]` is refused: `encryption` names the keyring section, not an instance. Every other
+`[storage.<instance>.<sub>]` section, and every `[storage.encryption.<sub>]` other than `[storage.encryption.keys]`,
+is **refused at load**, naming each offending section, so a typo such as `[storage.content.shard]` or
+`[storage.encryption.kyes]` stops the boot instead of silently dropping the tier or the keys. A dotted key inside an
+instance section (`[storage.content]` with `foo.bar = 1`) is such a section too (`[storage.content.foo]`). An
+explicit blank `disk_path`/`snapshot_path` is refused (omit the key to use the default).
 
 **Without `[storage.<instance>]`.** A `[storage.content.shared]` section alone is enough: the instance is
 placed as if its own section were absent (for `artifacts` and `content`, the synthesized defaults described
 above, including keyring-tracking encryption). A section for any other name creates that instance on the
-default paths, as an empty `[storage.<instance>]` section would.
+default paths, as an empty `[storage.<instance>]` section would. The paths are derived once, when the node starts,
+and everything that hangs off them reads the derived ones: with `[storage.artifacts.shared]` alone, the stream
+segments and the stream WAL stay under the default root, exactly as with no storage section at all.
 
 **Credentials.** Secrets never live in the TOML. A key that can only hold a secret (`secret_access_key`,
 `access_key_id`, `session_token`, `password`, ...) is refused with `InlineSecretRejected`, in any case and
@@ -472,7 +477,12 @@ guards follow the local disk, during storage construction (an object store needs
   use a fresh prefix;
 - over an empty prefix, the marker (the active key id) is written only after every storage instance of the
   boot has passed its guards (#852): a boot refused by any instance stamps no bucket, so backing the keyring
-  out afterwards boots.
+  out afterwards boots. Other nodes' boot-probe objects (`<prefix>.aether-probe/...`) do not count as existing
+  objects.
+- **Several nodes enabling encryption over one empty prefix at the same moment can refuse one of them.** A node
+  that read "no marker" can then list the first ciphertext block another node has just written and refuse with
+  `EnablingOverExistingPlaintext`. Nothing is lost and nothing is stamped by the refused node; restarting it
+  boots cleanly, because the marker is then present. To avoid the refusal, enable encryption on one node first.
 
 **Garbage collection.** Node-local GC never deletes from the S3 tier, as from the DHT: one node's refcount
 cannot say another node no longer references a block. Explicit deletes (content deletion, stream retention)
