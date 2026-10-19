@@ -30,6 +30,8 @@ import org.pragmatica.cluster.state.kvstore.CommunityFenced;
 import org.pragmatica.cluster.state.kvstore.IncarnationFenced;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
+import org.pragmatica.cluster.state.kvstore.HolderBound;
+import org.pragmatica.cluster.state.kvstore.HolderFenced;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
@@ -739,6 +741,9 @@ public sealed interface AetherValue {
     /// `fireSeq` numbers the fires recorded in this row, newest highest, and never goes backwards; `newestFireAt` is when
     /// that newest fire started. A late resolution resolves ITS OWN fire (counts) but changes `lastOutcome` only if its
     /// fire is still the newest.
+    ///
+    /// `boundHolder` is the claim token of the SINGLE-mode fire this row was written for, none for a row written under no
+    /// claim. It is not state: it is what the applier checks the write against ([HolderBound], [AetherKey.ScheduledTaskStateKey]).
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,
@@ -750,12 +755,41 @@ public sealed interface AetherValue {
                                    int fireSeq,
                                    long newestFireAt,
                                    int completionTimeouts,
-                                   int lateResolutions) implements AetherValue {
+                                   int lateResolutions,
+                                   Option<String> boundHolder) implements AetherValue, HolderBound {
         public static final String OUTCOME_SUCCESS = "SUCCESS";
         public static final String OUTCOME_FAILURE = "FAILURE";
         public static final String OUTCOME_UNKNOWN = "UNKNOWN";
         /// The row of a per-node (ALL-mode) task whose node left the cluster for good while its newest fire was unknown.
         public static final String OUTCOME_NODE_DEPARTED = "NODE_DEPARTED";
+
+        /// A row written under no claim: the 12 components that predate `boundHolder`.
+        public ScheduledTaskStateValue(long lastExecutionAt,
+                                       long nextFireAt,
+                                       int consecutiveFailures,
+                                       int totalExecutions,
+                                       String lastFailureMessage,
+                                       long updatedAt,
+                                       int skippedOverlaps,
+                                       String lastOutcome,
+                                       int fireSeq,
+                                       long newestFireAt,
+                                       int completionTimeouts,
+                                       int lateResolutions) {
+            this(lastExecutionAt,
+                 nextFireAt,
+                 consecutiveFailures,
+                 totalExecutions,
+                 lastFailureMessage,
+                 updatedAt,
+                 skippedOverlaps,
+                 lastOutcome,
+                 fireSeq,
+                 newestFireAt,
+                 completionTimeouts,
+                 lateResolutions,
+                 Option.none());
+        }
 
         /// A row with no recorded outcome (the shape every row had before outcomes were recorded).
         public ScheduledTaskStateValue(long lastExecutionAt,
@@ -777,6 +811,26 @@ public sealed interface AetherValue {
                  0,
                  0,
                  0);
+        }
+
+        /// This row as written on behalf of the SINGLE-mode fire that took the claim named by `holder` (see
+        /// [ScheduledTaskClaimValue]): the applier refuses it once a newer acquisition is committed under the task's claim key,
+        /// so a superseded fire's late write cannot overwrite the row of the fire that replaced it. A fire that holds no
+        /// claim (ALL-mode, a manual inject) leaves the row unbound.
+        public ScheduledTaskStateValue boundTo(Option<String> holder) {
+            return new ScheduledTaskStateValue(lastExecutionAt,
+                                               nextFireAt,
+                                               consecutiveFailures,
+                                               totalExecutions,
+                                               lastFailureMessage,
+                                               updatedAt,
+                                               skippedOverlaps,
+                                               lastOutcome,
+                                               fireSeq,
+                                               newestFireAt,
+                                               completionTimeouts,
+                                               lateResolutions,
+                                               holder);
         }
 
         /// Whether the newest fire's outcome is unknown: the condition operators are told about.
@@ -994,16 +1048,19 @@ public sealed interface AetherValue {
     /// `term` is the leader epoch the claimant held and `claimedAt` its wall clock; both are for the operator and for the
     /// stale test, neither is compared for ownership.
     ///
-    /// **Fence.** The row is [VersionFenced]: every write is the immediate successor of the committed one, so of two writers
-    /// that read the same row, one commits and the other is refused by the applier. That is what bounds the duplicate: a
-    /// leader that overrides a stale claim writes the successor, and the old holder's release, built on the version it
-    /// claimed, is no longer the successor and is refused. A refused write mutates nothing and emits no notification, so
-    /// each writer confirms by re-reading the committed row ([VersionFenced]'s own protocol).
+    /// **Fence.** The row is [HolderFenced]. Every write is the immediate successor of the committed one, so of two writers
+    /// that read the same row, one commits and the other is refused by the applier. A release is also the holder's own:
+    /// the applier applies it only over a row carrying the releaser's `token`. The version alone would not do, because a
+    /// chain restarts at 1 when the row is removed with its task and written again: an old fire's release can then be the
+    /// immediate successor of a new holder's row. A leader that overrides a stale claim writes the successor, and the old
+    /// holder's release is refused either way. The only write not gated on the token is the takeover itself (it displaces
+    /// the holder, by design, and staleness reads a wall clock the applier must not). A refused write mutates nothing and
+    /// emits no notification, so each writer confirms by re-reading the committed row ([VersionFenced]'s own protocol).
     ///
     /// **Stale test.** A held claim is stale once `now - claimedAt` reaches the caller's bound ([#isStale]); the bound is the
     /// caller's, because the claim cannot know the task's interval. The comparison mixes the claimant's clock with the
     /// evaluator's: clock skew between nodes moves the moment a claim reads as stale by the skew, nothing more.
-    record ScheduledTaskClaimValue(NodeId holder, long term, String token, long claimedAt, boolean held, long version) implements AetherValue, VersionFenced {
+    record ScheduledTaskClaimValue(NodeId holder, long term, String token, long claimedAt, boolean held, long version) implements AetherValue, HolderFenced {
         /// A new claim over `prior` (a released claim, a stale one, or none): the immediate successor of `prior`.
         public static ScheduledTaskClaimValue claimed(Option<ScheduledTaskClaimValue> prior,
                                                       NodeId holder,
@@ -1022,6 +1079,16 @@ public sealed interface AetherValue {
         @Override
         public long fenceVersion() {
             return version;
+        }
+
+        @Override
+        public String fenceHolder() {
+            return token;
+        }
+
+        @Override
+        public boolean fenceReleases() {
+            return !held;
         }
 
         /// This claim given up: the immediate successor, the same claimant, no longer held.

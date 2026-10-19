@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.AssignmentGuarded;
+import org.pragmatica.cluster.state.kvstore.HolderGuarded;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -752,7 +753,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     /// pre-upgrade global row (`node` absent) can never parse into the node-scoped shape, so the
     /// new per-node aggregation scan — which filters on `node().isPresent()` — can never misread
     /// it as a node's row.
-    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName, Option<NodeId> node) implements RuntimeKey {
+    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName, Option<NodeId> node) implements RuntimeKey, HolderGuarded {
         private static final String PREFIX = "scheduled-task-state/";
         private static final String NODE_PREFIX = PREFIX + "node/";
 
@@ -767,6 +768,15 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         @Override
         public String toString() {
             return asString();
+        }
+
+        /// The unscoped (SINGLE-mode) row is written by the fire that holds the task's claim, so a write bound to a claim
+        /// is admitted only while that claim is the committed one (#1155). A per-node (ALL-mode) row has no claim.
+        @Override
+        public Option<Object> holderKey() {
+            return node.isPresent()
+                   ? Option.none()
+                   : Option.some(ScheduledTaskClaimKey.scheduledTaskClaimKey(configSection, artifact, methodName));
         }
 
         public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,

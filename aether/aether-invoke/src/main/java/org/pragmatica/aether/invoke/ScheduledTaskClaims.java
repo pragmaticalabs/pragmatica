@@ -8,6 +8,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.ExecutionMode;
@@ -34,13 +35,16 @@ import org.slf4j.LoggerFactory;
 /// claimed in cluster state before it runs ([#acquire]) and the claim is given up when it settles ([Ticket#release]); a leader
 /// that finds a held claim does not fire.
 ///
-/// **The fence.** [ScheduledTaskClaimValue] is `VersionFenced`: the applier takes a claim write only as the immediate
-/// successor of the committed row. Two leaders that read the same row race to write the same successor, one commits and the
-/// other is refused; a claim overridden as stale is followed by the new holder's successor, so the old holder's release,
-/// built on the version it claimed, is refused too. The release is what gates the fire's state write: an outcome is recorded
-/// only if the release landed, so a fenced-out run records nothing and exactly one run per claim is recorded. The refused
-/// write is silent (nothing is emitted, the applier's result is not attributable under batching), so every write is
-/// confirmed by reading the row back.
+/// **The fence.** [ScheduledTaskClaimValue] is `HolderFenced`: the applier takes a claim write only as the immediate
+/// successor of the committed row, and a RELEASE only over a row carrying the releaser's own token. Two leaders that read
+/// the same row race to write the same successor, one commits and the other is refused; a claim overridden as stale is
+/// followed by the new holder's successor, so the old holder's release is refused too. The token matters where the version
+/// cannot: a task removed and registered again starts its chain at version 1, and an old fire's release can then be the
+/// immediate successor of the new holder's row; it carries the old token, and is refused. The state row a fire writes is
+/// bound to the same token (`ScheduledTaskStateValue#boundTo`), so a superseded fire's late write is refused as well. A
+/// fire's outcome is recorded only if its release landed, so a fenced-out run records nothing and exactly one run per claim
+/// is recorded. A refused write is silent (nothing is emitted, the applier's result is not attributable under batching), so
+/// every claim write is confirmed by reading the row back.
 ///
 /// **What this does not do.** It does not stop the old run: the invocation is not cancellable, so a run fenced out at its
 /// release has already executed, and its side effect is a duplicate of the new holder's. It bounds the RECORDED runs, and
@@ -59,13 +63,17 @@ final class ScheduledTaskClaims {
     private static final Logger log = LoggerFactory.getLogger(ScheduledTaskClaims.class);
     private static final long MIN_MARGIN_MILLIS = 1_000L;
 
-    /// One fire's hold on its task's claim.
-    interface Ticket {
+    /// One fire's hold on its task's claim. `holder` is the token of the claim it took, none for a fire that holds no durable
+    /// claim: the state row the fire writes is bound to it, so the applier refuses the write once the claim is superseded.
+    record Ticket(Option<String> holder, Supplier<Promise<Boolean>> releaser) {
         /// A fire that holds no durable claim (ALL-mode): nothing to give up, nothing that can have been overridden.
-        Ticket NONE = () -> Promise.success(true);
+        static final Ticket NONE = new Ticket(Option.none(), () -> Promise.success(true));
+
         /// Gives the claim up. Resolves `true` when the release landed, so this fire is still the one the cluster recorded
         /// as running; `false` when it was refused (the claim was overridden meanwhile) or could not be written.
-        Promise<Boolean> release();
+        Promise<Boolean> release() {
+            return releaser.get();
+        }
     }
 
     private final ScheduledClaimStore store;
@@ -180,7 +188,7 @@ final class ScheduledTaskClaims {
     }
 
     private Ticket ticketFor(ScheduledTaskClaimKey key, ScheduledTaskClaimValue claim) {
-        return () -> release(key, claim);
+        return new Ticket(Option.some(claim.token()), () -> release(key, claim));
     }
 
     private Promise<Boolean> release(ScheduledTaskClaimKey key, ScheduledTaskClaimValue claim) {

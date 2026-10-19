@@ -927,6 +927,7 @@ public interface ScheduledTaskManager {
                                                                                       task,
                                                                                       result,
                                                                                       landed,
+                                                                                      ticket.holder(),
                                                                                       nextFireAtSupplier,
                                                                                       firedAt))
                                                 .onResultRun(() -> settled.resolve(result)));
@@ -938,16 +939,19 @@ public interface ScheduledTaskManager {
                                              ScheduledTask task,
                                              Result<Unit> result,
                                              boolean landed,
+                                             Option<String> holder,
                                              LongSupplier nextFireAtSupplier,
                                              long firedAt) {
             if (landed) {
                 result.onSuccess(_ -> writeSuccessState(ctx,
                                                         task,
+                                                        holder,
                                                         nextFireAtSupplier.getAsLong(),
                                                         firedAt))
                       .onFailure(cause -> recordFailedFire(ctx,
                                                            task,
                                                            cause,
+                                                           holder,
                                                            nextFireAtSupplier.getAsLong(),
                                                            firedAt));
             }
@@ -959,10 +963,11 @@ public interface ScheduledTaskManager {
         private static void recordFailedFire(Context ctx,
                                              ScheduledTask task,
                                              Cause cause,
+                                             Option<String> holder,
                                              long nextFireAt,
                                              long firedAt) {
             if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
-                var written = writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt, firedAt);
+                var written = writeUnknownOutcomeState(ctx, task, holder, cause.message(), nextFireAt, firedAt);
                 var fireSeq = written.fireSeq();
 
                 unknown.lateOutcome()
@@ -975,7 +980,7 @@ public interface ScheduledTaskManager {
                                                       written,
                                                       base -> lateFailure(task, base, fireSeq, late)));
             } else {
-                handleTaskFailure(ctx, task, cause.message(), nextFireAt, firedAt);
+                handleTaskFailure(ctx, task, holder, cause.message(), nextFireAt, firedAt);
             }
         }
 
@@ -993,6 +998,7 @@ public interface ScheduledTaskManager {
 
         private static void handleTaskFailure(Context ctx,
                                               ScheduledTask task,
+                                              Option<String> holder,
                                               String message,
                                               long nextFireAt,
                                               long firedAt) {
@@ -1000,19 +1006,31 @@ public interface ScheduledTaskManager {
                      task.configSection(),
                      task.methodName().name(),
                      message);
-            writeFailureState(ctx, task, message, nextFireAt, firedAt);
+            writeFailureState(ctx, task, holder, message, nextFireAt, firedAt);
         }
 
-        private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt, long firedAt) {
+        /// The state writes of a fire's own outcome (success, failure, unknown) are bound to the claim the fire took (`holder`):
+        /// the applier refuses one made after a newer acquisition is committed, so a superseded fire cannot overwrite the
+        /// row of the fire that replaced it (#1155). The late resolution of an UNKNOWN outcome ([#resolveLate]) is not bound,
+        /// on purpose: it normally arrives after the claim has moved on, and it resolves its own fire's counters without
+        /// touching the newest fire's outcome.
+        private static void writeSuccessState(Context ctx,
+                                              ScheduledTask task,
+                                              Option<String> holder,
+                                              long nextFireAt,
+                                              long firedAt) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.currentRow(key);
 
             logOutcomeTransitionOut(task, prior);
-            ctx.submit(key, ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt));
+            ctx.submit(key,
+                       ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt)
+                                              .boundTo(holder));
         }
 
         private static void writeFailureState(Context ctx,
                                               ScheduledTask task,
+                                              Option<String> holder,
                                               String message,
                                               long nextFireAt,
                                               long firedAt) {
@@ -1020,7 +1038,9 @@ public interface ScheduledTaskManager {
             var prior = ctx.currentRow(key);
 
             logOutcomeTransitionOut(task, prior);
-            ctx.submit(key, ScheduledTaskStateValue.failureState(prior, nextFireAt, firedAt, message));
+            ctx.submit(key,
+                       ScheduledTaskStateValue.failureState(prior, nextFireAt, firedAt, message)
+                                              .boundTo(holder));
         }
 
         /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
@@ -1028,6 +1048,7 @@ public interface ScheduledTaskManager {
         /// [#logOutcomeTransitionOut].
         private static ScheduledTaskStateValue writeUnknownOutcomeState(Context ctx,
                                                                         ScheduledTask task,
+                                                                        Option<String> holder,
                                                                         String message,
                                                                         long nextFireAt,
                                                                         long firedAt) {
@@ -1043,7 +1064,8 @@ public interface ScheduledTaskManager {
                          message);
             }
 
-            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt, firedAt);
+            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt, firedAt)
+                                               .boundTo(holder);
 
             ctx.submit(key, value);
 
