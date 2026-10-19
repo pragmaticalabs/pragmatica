@@ -485,7 +485,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         }
     }
 
-    private SliceConfig loadSliceConfig(SliceManifest manifest) throws MojoExecutionException {
+    SliceConfig loadSliceConfig(SliceManifest manifest) throws MojoExecutionException {
         var configFile = manifest.configFile();
 
         if (configFile == null || configFile.isEmpty()) {

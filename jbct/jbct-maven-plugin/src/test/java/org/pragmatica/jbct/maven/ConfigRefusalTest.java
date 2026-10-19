@@ -117,6 +117,32 @@ class ConfigRefusalTest {
         assertThat(GenerateBlueprintMojo.refusingSliceConfig("Hello", good)).isNotNull();
     }
 
+    /// The goal's own wiring (not just the helper): the slice named by the manifest has its config read from the classes
+    /// directory and a refused one fails the goal.
+    @Test
+    void loadSliceConfig_failsTheGoal_whenTheSliceConfigIsRefused_andUsesDefaultsWhenAbsent() throws Exception {
+        var classes = Files.createDirectories(tempDir.resolve("classes"));
+        var mojo = new GenerateBlueprintMojo();
+        var field = GenerateBlueprintMojo.class.getDeclaredField("classesDirectory");
+
+        field.setAccessible(true);
+        field.set(mojo, classes.toFile());
+        Files.writeString(classes.resolve("bad.toml"), "[blueprint]\ninstances = \"3x\"\n");
+        Files.writeString(classes.resolve("good.toml"), "[blueprint]\ninstances = 5\n");
+
+        assertThatThrownBy(() -> mojo.loadSliceConfig(manifest("Hello", "bad.toml"))).isInstanceOf(MojoExecutionException.class)
+                                                                                    .hasMessageContaining("Hello")
+                                                                                    .hasMessageContaining("blueprint.instances")
+                                                                                    .hasMessageContaining("3x");
+        assertThat(mojo.loadSliceConfig(manifest("Hello", "good.toml"))).isNotNull();
+        assertThat(mojo.loadSliceConfig(manifest("Hello", "absent.toml"))).isEqualTo(org.pragmatica.jbct.slice.SliceConfig.defaultConfig());
+    }
+
+    private static org.pragmatica.jbct.slice.SliceManifest manifest(String sliceName, String configFile) {
+        return new org.pragmatica.jbct.slice.SliceManifest(sliceName, "", "demo", java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                                                           java.util.List.of(), "demo:base", "base", java.util.List.of(), configFile, java.util.List.of());
+    }
+
     @Test
     void loadBlueprintConfig_loads_whenLayerIsWellTyped() throws Exception {
         var dir = project("[format]\nmaxLineLength = 100\n");

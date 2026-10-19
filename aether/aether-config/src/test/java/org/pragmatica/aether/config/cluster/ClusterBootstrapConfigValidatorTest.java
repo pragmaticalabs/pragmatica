@@ -643,6 +643,18 @@ class ClusterBootstrapConfigValidatorTest {
             }
         }
 
+        /// PF-35 runs the node's full load path, not only its parse: values the node refuses at its VALIDATION step are refused too.
+        @Test
+        void validate_nodeConfigTheNodeRefusesAtValidation_returnsPf35() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
+                                                                                         "tls", Map.<String, Object>of("auto_generate", false))))
+                .onSuccess(v -> Assertions.fail("Expected PF-35 for auto_generate = false without certificates"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-35").contains("cert"));
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("slice", Map.<String, Object>of("artifact_archive_retention", "forever"))))
+                .onSuccess(v -> Assertions.fail("Expected PF-35 for an unparseable archive retention"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-35").contains("retention"));
+        }
+
         @Test
         void validate_nodeConfigTheNodeAccepts_isNotPf35() {
             validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),

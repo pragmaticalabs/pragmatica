@@ -329,6 +329,10 @@ class MalformedValueLoadRefusalTest {
         assertRefusedWithAllowed(ClusterBootstrapConfigParser.parse(base.formatted("quorum_formation", "10d")),
                                  "operations.timeouts.quorum_formation", "10d", "an s, m or h suffix");
 
+        for (var empty : java.util.List.of("s", "m", "h", "5", "5d", "-5s", "5 s")) {
+            assertThat(ClusterBootstrapConfigParser.parse(base.formatted("health_check", empty)).isFailure()).describedAs("'%s' has no usable number or unit", empty).isTrue();
+        }
+
         for (var ok : java.util.List.of("300s", "5m", "1h")) {
             assertThat(ClusterBootstrapConfigParser.parse(base.formatted("health_check", ok)).isSuccess()).describedAs(ok).isTrue();
         }
