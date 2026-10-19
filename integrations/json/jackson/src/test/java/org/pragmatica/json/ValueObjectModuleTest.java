@@ -90,7 +90,7 @@ class ValueObjectModuleTest {
     @Test
     void valueObjectDocument_refusesANullComponent_evenWhereTheFactoryWouldAcceptIt() {
         assertThat(read("{\"value\":3}", new TypeToken<Count>() {})).isEqualTo(new Count(3));
-        assertRefused("{\"value\":null}", new TypeToken<Count>() {}, "Null member 'value' of value object Count");
+        assertRefused("{\"value\":null}", new TypeToken<Count>() {}, "expected Count");
     }
 
     // Nested is decided by the value's own position, so a value object stays bare as a map value or an element of a
