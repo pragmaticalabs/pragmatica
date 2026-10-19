@@ -533,7 +533,8 @@ public final class ConfigLoader {
                                                  java.util.function.Consumer<String> overrideNotice,
                                                  java.util.function.Consumer<String> sourceNotice) {
         var sources = new java.util.LinkedHashMap<String, String>();
-        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(raw -> backupEnabled(raw).getOrThrow(IllegalArgumentException::new, "invalid [backup] enabled"))
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(raw -> backupEnabled(raw).getOrThrow(IllegalArgumentException::new,
+                                                                                                                                                          "invalid [backup] enabled"))
                                .or(false);
 
         if (!enabled) {
