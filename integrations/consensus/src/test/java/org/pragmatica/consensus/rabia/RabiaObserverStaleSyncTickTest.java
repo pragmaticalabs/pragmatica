@@ -6,6 +6,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.*;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
@@ -26,6 +27,7 @@ class RabiaObserverStaleSyncTickTest {
     private final TestClusterNetwork network = new TestClusterNetwork();
     private final TestStateMachine machine = new TestStateMachine();
     private final List<ClusterStateNotification> routed = new CopyOnWriteArrayList<>();
+    private final List<ObserverResumedNotification> resumed = new CopyOnWriteArrayList<>();
     private RabiaEngine<TestCommand> engine;
 
     @AfterEach void stop() { if (engine != null) { engine.stop().await(); } }
@@ -91,6 +93,32 @@ class RabiaObserverStaleSyncTickTest {
         assertThat(engine.currentPhaseForTesting()).as("a settled observer does not re-adopt from responses a tick finds").isEqualTo(settledPhase);
     }
 
+    @Test void observerPausedForQuorumLoss_thenResumed_signalsObservingAgainOnce() {
+        engine = observerEngine();
+        adoptFromPeers();
+        resumed.clear();
+        engine.clusterState(ClusterStateNotification.passive());
+        settle();
+        assertThat(routed).as("control: the pause published PASSIVE").extracting(ClusterStateNotification::state)
+                          .containsExactly(ClusterStateNotification.State.PASSIVE);
+        assertThat(resumed).as("control: nothing is signalled while the observer is out of Observing").isEmpty();
+
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+
+        assertThat(engine.isObserving()).as("the observer resumed to Observing").isTrue();
+        assertThat(resumed).as("the recovery edge of its PASSIVE").hasSize(1);
+    }
+
+    @Test void observerAdoptedWithoutAnyPriorPassive_signalsObservingOnce_andPublishesNoClusterState() {
+        engine = observerEngine();
+
+        adoptFromPeers();
+
+        assertThat(resumed).as("the engine signals Observing; the aggregator drops it because no warning is open").hasSize(1);
+        assertThat(routed).as("an observer's adoption publishes no ACTIVE/PASSIVE").isEmpty();
+    }
+
     private void seedSyncResponses() throws Exception {
         seedSyncResponses(RabiaPersistence.SavedState.empty());
     }
@@ -136,6 +164,7 @@ class RabiaObserverStaleSyncTickTest {
         var router = MessageRouter.mutable();
 
         router.addRoute(ClusterStateNotification.class, routed::add);
+        router.addRoute(ObserverResumedNotification.class, resumed::add);
         var created = new RabiaEngine<>(new TestTopologyManager(A, 5), network, machine,
             ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
             ConsensusMetrics.noop(), false, RabiaPersistence.inMemory(), RabiaEngine.DEFAULT_PHASE_STALL_CHECK,

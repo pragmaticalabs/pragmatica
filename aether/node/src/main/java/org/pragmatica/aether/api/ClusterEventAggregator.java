@@ -74,6 +74,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.hlc.HlcClock;
@@ -1206,6 +1207,17 @@ public final class ClusterEventAggregator {
                                                    Map.of("observedBy",
                                                           selfNode.id())));
                       });
+    }
+
+    /// #2306: the recovery edge of the lag warning. The engine publishes it on every `Passive -> Observing`; the recovery is
+    /// published only after a published `observer-consensus-lagging` for this node (#752), so a cold-start observer's first
+    /// adoption, which never lagged, publishes nothing.
+    @Contract
+    public void onObserverResumed(ObserverResumedNotification event) {
+        LOG.info("Observer {} applies consensus decisions again", selfNode.id());
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                                                          selfNode.id(),
+                                                          "Observer " + selfNode.id() + " applies consensus decisions again"));
     }
 
     /// #2306: a non-voter's PASSIVE is never a quorum loss. An observer leaves `Observing` for reasons that have nothing to do

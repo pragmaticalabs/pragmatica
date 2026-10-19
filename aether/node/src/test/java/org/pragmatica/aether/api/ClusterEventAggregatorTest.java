@@ -27,6 +27,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
@@ -758,6 +759,55 @@ class ClusterEventAggregatorTest {
         var events = h.events();
         assertThat(events.stream().filter(e -> e instanceof ClusterEvent.QuorumLost).count()).isEqualTo(1);
         assertThat(events.stream().filter(e -> e instanceof ClusterEvent.OperatorWarning).count()).isEqualTo(1);
+    }
+
+    /// #2306 — a voter removed by reconfiguration is already out of the roster when its demoted PASSIVE arrives (the roster
+    /// is installed before the engine publishes the demotion). That is planned work and publishes nothing: gating the
+    /// `demoted()` branch on voter status would let it fall through to the lag warning.
+    @Test
+    void demotedPassive_onANodeAlreadyOutOfTheRoster_publishesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.demotion());
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// #2306 — same for the commanded-drain branch: a drained node that has already left the roster publishes no lag warning.
+    @Test
+    void commandedDrainPassive_onANodeAlreadyOutOfTheRoster_publishesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().bindSelfCommandedDrain(() -> true);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// #2306 — the recovery of the lag warning: an observer that lagged and is observing again publishes an INFO
+    /// `observer-consensus-resumed`. Without it the operator sees the warning enter and never leave.
+    @Test
+    void observerResumed_afterALagWarning_publishesTheInfoRecovery() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onObserverResumed(ObserverResumedNotification.observerResumed(SELF));
+
+        var events = h.events();
+        assertThat(events).hasSize(2);
+        assertThat(events.getLast()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getLast().severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.getLast().details()).containsEntry("code", "observer-consensus-resumed");
+    }
+
+    /// #2306 — a cold-start observer adopts state without ever lagging: the engine still signals `Observing`, and the
+    /// recovery layer drops it because no warning is open.
+    @Test
+    void observerResumed_withoutALagWarning_publishesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onObserverResumed(ObserverResumedNotification.observerResumed(SELF));
+
+        assertThat(h.events()).isEmpty();
     }
 
     /// #926 — the recovery half. Quorum forms BEFORE a leader is elected, so the old gate dropped this
