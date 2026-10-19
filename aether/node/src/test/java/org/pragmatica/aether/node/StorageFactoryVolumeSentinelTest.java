@@ -227,6 +227,26 @@ class StorageFactoryVolumeSentinelTest {
     }
 
     @Test
+    void defaultStreamStorage_refusesToBoot_whenTheStreamsDiskTierDegradedAfterTheVolumeWasWritten() throws IOException {
+        var streamDir = tempDir.resolve("stream-volume");
+
+        StorageFactory.defaultStreamStorage(Option.none(), streamDir, "node-1473", Option.none())
+                      .unwrap()
+                      .snapshotManager()
+                      .forceSnapshot();
+        var segments = streamDir.resolve("segments");
+
+        deleteChildren(segments);
+        Files.delete(segments);
+        Files.writeString(segments, "a regular file where the segments directory was: the disk tier cannot open");
+
+        StorageFactory.defaultStreamStorage(Option.none(), streamDir, "node-1473", Option.none())
+                      .onSuccess(_ -> fail("a sentinel with no streams disk tier is an unmounted volume, not a first boot"))
+                      .onFailure(cause -> assertThat(cause.message()).contains(streamDir.resolve("snapshots").toString())
+                                                                     .contains(sentinelPathOrFail().toString()));
+    }
+
+    @Test
     void createAll_refusesToBoot_whenTheWholeVolumeIsGoneAndTheSentinelRemains() throws IOException {
         boot(armedConfig()).unwrap().get(INSTANCE).snapshotManager().forceSnapshot();
         deleteChildren(snapshotDir());
