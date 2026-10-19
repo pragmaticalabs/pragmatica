@@ -190,6 +190,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey (nodeId:org.pr
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ObservabilityConfigKey (artifactBase:java.lang.String,methodName:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$PreviousVersionKey (artifactBase:org.pragmatica.aether.artifact.ArtifactBase)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ProvisioningSlotKey (slotId:java.lang.String)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskClaimKey (configSection:java.lang.String,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskKey (configSection:java.lang.String,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskPauseKey (configSection:java.lang.String,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskStateKey (configSection:java.lang.String,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,node:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
@@ -260,8 +261,9 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ObservabilityConfigValue (
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReason (kind:org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReasonKind,storageId:org.pragmatica.lang.Option<java.lang.String>,evidence:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PreviousVersionValue (artifactBase:org.pragmatica.aether.artifact.ArtifactBase,previousVersion:org.pragmatica.aether.artifact.Version,currentVersion:org.pragmatica.aether.artifact.Version,updatedAt:long,rollbackCount:int,lastRollbackAt:long,failedVersions:java.util.List<org.pragmatica.aether.artifact.Version>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSlotValue (spawnedAtMs:long,assignedNodeId:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>,occupantEpoch:long,supersededNodeId:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskClaimValue (holder:org.pragmatica.consensus.NodeId,term:long,token:java.lang.String,claimedAt:long,held:boolean,version:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskPauseValue (pausedAt:long)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue (lastExecutionAt:long,nextFireAt:long,consecutiveFailures:int,totalExecutions:int,lastFailureMessage:java.lang.String,updatedAt:long,skippedOverlaps:int,lastOutcome:java.lang.String,fireSeq:int,newestFireAt:long,completionTimeouts:int,lateResolutions:int)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue (lastExecutionAt:long,nextFireAt:long,consecutiveFailures:int,totalExecutions:int,lastFailureMessage:java.lang.String,updatedAt:long,skippedOverlaps:int,lastOutcome:java.lang.String,fireSeq:int,newestFireAt:long,completionTimeouts:int,lateResolutions:int,boundHolder:org.pragmatica.lang.Option<java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskValue (registeredBy:org.pragmatica.consensus.NodeId,interval:java.lang.String,cron:java.lang.String,executionMode:org.pragmatica.aether.slice.ExecutionMode)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SchemaMigrationLockValue (datasourceName:java.lang.String,heldBy:org.pragmatica.consensus.NodeId,acquiredAt:long,expiresAt:long,lockVersion:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SchemaVersionValue (datasourceName:java.lang.String,currentVersion:int,lastMigration:java.lang.String,status:org.pragmatica.aether.slice.kvstore.AetherValue$SchemaStatus,artifactCoords:java.lang.String,owningBlueprint:org.pragmatica.aether.slice.blueprint.BlueprintId,attemptCount:int,updatedAt:long)
@@ -282,6 +284,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$UnconfirmedTerminationValu
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunValue (targetVersion:java.lang.String,order:java.util.List<org.pragmatica.consensus.NodeId>,index:int,inFlight:java.lang.String,state:org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunState,stop:org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeStop,reason:java.lang.String,startedAtMs:long,updatedAtMs:long,epoch:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$VersionRoutingValue (oldVersion:org.pragmatica.aether.artifact.Version,newVersion:org.pragmatica.aether.artifact.Version,newWeight:int,oldWeight:int,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$WorkerSliceDirectiveValue (artifact:org.pragmatica.aether.artifact.Artifact,targetInstances:int,placement:java.lang.String,targetCommunity:org.pragmatica.lang.Option<java.lang.String>,updatedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue (lastExecutionAt:long,nextFireAt:long,consecutiveFailures:int,totalExecutions:int,lastFailureMessage:java.lang.String,updatedAt:long,skippedOverlaps:int,lastOutcome:java.lang.String,fireSeq:int,newestFireAt:long,completionTimeouts:int,lateResolutions:int)
 SHAPE org.pragmatica.aether.slice.stream.StreamRegistryEntry (address:org.pragmatica.aether.slice.resource.ResourceAddress,retention:org.pragmatica.aether.slice.RetentionPolicy,registeredAtEpochMillis:long,registeredBy:org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind,refCount:int)
 SHAPE org.pragmatica.aether.stream.consensus.StreamConsensusCommand (streamName:java.lang.String,partition:int,payload:byte[],timestamp:long)
 SHAPE org.pragmatica.aether.stream.forward.RawEventDto (offset:long,timestamp:long,data:byte[])
@@ -571,6 +574,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey 1114
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ObservabilityConfigKey 1115
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$PreviousVersionKey 1116
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ProvisioningSlotKey 1117
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskClaimKey 2166
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskKey 1118
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskPauseKey 1707
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ScheduledTaskStateKey 1119
@@ -651,8 +655,9 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$PlacementOperationPhase 168
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$PreviousVersionValue 1631
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSlotValue 1632
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSource 1633
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskClaimValue 2167
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskPauseValue 1708
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue 1634
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue 2168
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskValue 1635
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaMigrationLockValue 1636
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaStatus 1637
@@ -678,6 +683,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeStop 2135
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$VersionRoutingValue 1657
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$WorkerSliceDirectiveValue 1658
 TAG  org.pragmatica.aether.slice.kvstore.CommunityState 1659
+TAG  org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue 1634
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry 1071062
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind 1762131
 TAG  org.pragmatica.aether.stream.consensus.StreamConsensusCommand 91

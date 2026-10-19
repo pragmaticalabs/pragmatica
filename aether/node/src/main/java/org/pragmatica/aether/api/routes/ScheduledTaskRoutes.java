@@ -326,6 +326,23 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     private Promise<ScheduledTaskInjectResponse> invokeAndAdvanceState(ScheduledTask task,
                                                                        ScheduledTaskInjectRequest req) {
+        return manager.claimForManualRun(task)
+                      .flatMap(claim -> claim.map(held -> invokeHoldingClaim(task, req, held))
+                                             .or(() -> new InjectError.RunInFlight(req.section(),
+                                                                                   req.artifact(),
+                                                                                   req.method()).promise()));
+    }
+
+    /// `/inject` takes the claim a scheduled fire takes (#1155), for the whole invocation: an unclaimed inject could overlap a
+    /// running SINGLE-mode fire, on this node or on the leader, which is the double run the claim exists to prevent. The
+    /// injected outcome is written by this route itself, so it is not gated on the claim release as a scheduled fire's is.
+    private Promise<ScheduledTaskInjectResponse> invokeHoldingClaim(ScheduledTask task,
+                                                                    ScheduledTaskInjectRequest req,
+                                                                    ScheduledTaskManager.ManualClaim held) {
+        return injectUnderClaim(task, req).onResultRun(held::release);
+    }
+
+    private Promise<ScheduledTaskInjectResponse> injectUnderClaim(ScheduledTask task, ScheduledTaskInjectRequest req) {
         var stateKey = injectStateKeyFor(task);
         var priorState = stateRegistry.stateFor(stateKey);
         var previousExecutionMs = priorState.map(ScheduledTaskStateValue::lastExecutionAt).or(0L);
@@ -343,9 +360,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
     /// scoped by this node, same as an automatic fire, so the write is visible on the per-node
     /// aggregation (#841) instead of landing on the unscoped key every ALL-mode read surface
     /// now filters out. SINGLE-mode keeps the pre-#841 unscoped key unchanged — it still races
-    /// the leader's automatic fire on that same key (no `tryClaim`/`release` guard here; `/trigger`
-    /// writes no state entry at all, so it is not a racer on this key), a documented TOCTOU caveat,
-    /// not fixed by this change.
+    /// the leader's automatic fire on that same key only for the state write; the RUN itself is claimed
+    /// like a fire (#1155), so it cannot overlap one.
     private ScheduledTaskStateKey injectStateKeyFor(ScheduledTask task) {
         return task.executionMode() == ExecutionMode.ALL
                ? ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
@@ -501,12 +517,20 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                            String configSection,
                                                            String artifactStr,
                                                            String methodStr) {
-        var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+        return manager.claimForManualRun(task)
+                      .flatMap(claim -> claim.map(held -> invokeHolding(task,
+                                                                        held,
+                                                                        configSection,
+                                                                        artifactStr,
+                                                                        methodStr))
+                                             .or(() -> new TriggerConflict(configSection, artifactStr, methodStr).promise()));
+    }
 
-        if (!manager.tryClaim(key)) {
-            return new TriggerConflict(configSection, artifactStr, methodStr).promise();
-        }
-
+    private Promise<TaskActionResult> invokeHolding(ScheduledTask task,
+                                                    ScheduledTaskManager.ManualClaim held,
+                                                    String configSection,
+                                                    String artifactStr,
+                                                    String methodStr) {
         var triggered = new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered");
         var completion = invoker.invokeAwaitingCompletion(task.artifact(),
                                                           task.methodName(),
@@ -514,8 +538,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                           manager.completionBound());
         // The claim is the scheduler's in-flight guard: it is held until the callee COMPLETES (success, failure, a departed
         // node, or the manager's explicit completion bound), not until the request was enqueued, so a scheduled fire cannot
-        // overlap a manual run of a remote callee (#1930).
-        completion.onResultRun(() -> manager.release(key));
+        // overlap a manual run of a remote callee (#1930). For a SINGLE-mode task it is also the cluster claim (#1155).
+        completion.onResultRun(held::release);
         // A callee hosted here is awaited to its end, as before. A remote one answers "triggered" once dispatched (the claim
         // is still held), unless dispatch itself already failed.
         return invoker.hasLocalSlice(task.artifact()) || completion.isResolved()
@@ -793,7 +817,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
                      .equals(task.methodName());
     }
 
-    private sealed interface InjectError extends Cause permits InjectError.General, InjectError.SliceNotLocal {
+    private sealed interface InjectError extends Cause permits InjectError.General, InjectError.SliceNotLocal, InjectError.RunInFlight {
         InjectError DEV_MODE_DISABLED = General.DEV_MODE_DISABLED;
         InjectError MISSING_BODY = General.MISSING_BODY;
         InjectError MISSING_SECTION = General.MISSING_SECTION;
@@ -821,6 +845,23 @@ public final class ScheduledTaskRoutes implements RouteSource {
         /// against the management endpoint of the node returned in `hostingNodeId`. This
         /// replaces the historic NPE that produced an opaque `500 {"error":"Internal Server
         /// Error"}` from `SliceInvokerImpl.findSenderBridge.unwrap()`.
+        /// 409 — a scheduled fire or another manual run holds the task's claim (#1155): injecting now would overlap it.
+        record RunInFlight(String configSection, String artifact, String method) implements InjectError, HttpStatusAware {
+            @Override
+            public String message() {
+                return "Scheduled task " + configSection
+                     + "/" + artifact
+                     + "." + method
+                     + " has a run already in flight — refusing the inject to avoid a concurrent double execution;"
+                     + " retry once the in-progress run completes";
+            }
+
+            @Override
+            public HttpStatus httpStatus() {
+                return HttpStatus.CONFLICT;
+            }
+        }
+
         record SliceNotLocal(String hostingNodeId, String artifact) implements InjectError {
             @Override
             public String message() {
