@@ -643,9 +643,10 @@ class NodeFsmInterpreterTest {
             }
         }
 
-        /// A SUSPEND of an instance that was never serving does not exist: only the serving ones are suspended, so only they are waited for.
+        /// A SUSPEND of an instance that was never serving does not exist: only the serving ones are suspended. This instance's chain had finished
+        /// (LOADED) before the quorum loss, so nothing was queued and nothing is waited for.
         @Test
-        void drain_doesNotWaitForAChainStillRunning_onlyForWhatTheQuorumLossQueued() {
+        void drain_ofAFinishedNonServingChain_isResolvedWithNothingToWaitFor() {
             var gate = Promise.<LocalOutcome>promise();
 
             try (var rig = new NodeRig(NodeFsmTimings.nodeFsmTimings(), true, executorHolding(gate))) {
@@ -654,6 +655,30 @@ class NodeFsmInterpreterTest {
                 rig.interpreter.deliver(new NodeFsmInput.QuorumDisappeared());
                 var drained = rig.interpreter.drain();
 
+                await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
+            }
+        }
+
+        /// Design 7, 2a: the drain "resolves once the marker is consumed and every per-artifact queue is empty". A chain op still running is in a
+        /// queue, so the drain waits for it, and ends when it does (guess (c): the whole executor, not only the `SUSPEND` lanes).
+        @Test
+        void drain_waitsForAChainStillRunning_andEndsWhenItEnds() {
+            var gate = Promise.<LocalOutcome>promise();
+            var executor = LocalOpExecutor.localOpExecutor(op -> op.step() == LocalStep.LOAD
+                                                                 ? gate
+                                                                 : Promise.success(LocalOutcome.done()),
+                                                           new ManualTimerService(),
+                                                           NodeFsmTimings.nodeFsmTimings(),
+                                                           LocalOpExecutor.Counter.NONE);
+
+            try (var rig = new NodeRig(NodeFsmTimings.nodeFsmTimings(), true, executor)) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).enter();
+                rig.settle();
+                rig.interpreter.deliver(new NodeFsmInput.QuorumDisappeared());
+                var drained = rig.interpreter.drain();
+
+                await().pollDelay(Duration.ofMillis(400)).atMost(Duration.ofSeconds(5)).until(() -> !drained.isResolved());
+                gate.succeed(LocalOutcome.done());
                 await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
             }
         }

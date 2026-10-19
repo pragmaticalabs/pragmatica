@@ -368,6 +368,40 @@ class LocalOpExecutorTest {
         assertThat(executor.idle().isResolved()).isTrue();
     }
 
+    /// A lane that never ends keeps `idle()` open while the other lanes still run, and `close()` lets go, so a stop cannot wedge on it.
+    @Test
+    void idle_ofAHungLane_staysPending_otherLanesRun_andCloseReleasesIt() {
+        run(op(ORDERS, LocalStep.LOAD, 1, 0));
+        awaitStarted(1);
+        run(op(BILLING, LocalStep.SUSPEND, 1, 0));
+        awaitStarted(2);
+        complete(1);
+        var idle = executor.idle();
+
+        await().pollDelay(Duration.ofMillis(300)).atMost(Duration.ofSeconds(5)).until(() -> !idle.isResolved());
+        executor.close();
+        await().atMost(Duration.ofSeconds(5)).until(idle::isResolved);
+    }
+
+    /// The executor does not keep a waiter it has released: a list that only grows would leak one promise per stop-time drain.
+    @Test
+    void idle_aReleasedWaiter_isNotRetainedByTheExecutor() throws Exception {
+        run(op(ORDERS, LocalStep.LOAD, 1, 0));
+        awaitStarted(1);
+        var released = new java.lang.ref.WeakReference<>(executor.idle());
+
+        complete(0);
+        await().atMost(Duration.ofSeconds(5)).until(() -> executor.idle().isResolved());
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (released.get() != null && System.nanoTime() < deadline) {
+            System.gc();
+            Thread.sleep(50);
+        }
+
+        assertThat(released.get()).as("the executor still holds a resolved idle waiter").isNull();
+    }
+
     @Test
     void idle_waiters_areAllReleased_whenTheLastOpEnds() {
         run(op(ORDERS, LocalStep.SUSPEND, 1, 0));

@@ -32,6 +32,7 @@ class CloseAndOverrunProbeTest {
         final CountDownLatch release = new CountDownLatch(1);
         final CountDownLatch blocking = new CountDownLatch(1);
         volatile boolean closingRan;
+        volatile Thread consumerThread;
         final java.util.concurrent.atomic.AtomicInteger closings = new java.util.concurrent.atomic.AtomicInteger();
 
         /// Resolved by a test to let a drain proceed past the consumer's marker (`drained()`); resolved from the start unless a test sets it.
@@ -60,6 +61,7 @@ class CloseAndOverrunProbeTest {
                     Thread.currentThread().interrupt();
                 }
             }
+            consumerThread = Thread.currentThread();
             if (input.equals("close-self")) {
                 close();
             }
@@ -416,6 +418,27 @@ class CloseAndOverrunProbeTest {
             probe.release.countDown();
             await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
         }
+    }
+
+    /// `close()` returns only after the consumer has exited: `shutdown()` releases the waiter before the loop ends, so without the join a caller
+    /// gets back while the consumer thread still runs. Over 3,000 start/close cycles none may be alive when `close()` returns.
+    @Test
+    void close_returnsOnlyAfterTheConsumerThreadHasExited() {
+        var alive = 0;
+
+        for (var i = 0; i < 3_000; i++) {
+            var probe = new Probe(new ManualTimerService());
+
+            probe.start();
+            probe.deliver("seen");
+            await().atMost(Duration.ofSeconds(5)).until(() -> probe.consumerThread != null);
+            probe.close();
+            if (probe.consumerThread.isAlive()) {
+                alive++;
+            }
+        }
+
+        assertThat(alive).as("cycles in which close() came back with the consumer thread still alive").isZero();
     }
 
     /// A stop whose waiting thread is interrupted goes on at once: the consumer is stuck in an input, so joining it would only double the wait.
