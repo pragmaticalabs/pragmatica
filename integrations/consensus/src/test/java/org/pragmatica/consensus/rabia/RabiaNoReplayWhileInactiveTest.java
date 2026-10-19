@@ -1,13 +1,13 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.consensus.rabia;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
@@ -36,8 +36,9 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1516 — a notification implies ACTIVE. While the engine cannot activate, a sync restore installs the state
-/// silently: the synthetic notification replay and the `onStateRestored` hooks must not run, however many sync rounds
-/// retry. The fixture is the one that fences a node permanently: the re-persist after the restore fails, so
+/// silently and marks it unannounced: the synthetic notification replay and the `onStateRestored` hooks must not run,
+/// however many sync rounds retry, and they run exactly once, on the latest state, at the first transition into a
+/// serving state however that happens (here: a resume from `Paused`). The fixture is the one that fences a node permanently: the re-persist after the restore fails, so
 /// `activate()` is refused on every round (the replay used to run on each of them: 4 rounds, 4 restores, 4 replays).
 /// The control runs the identical restore with a succeeding save and sees exactly one replay and one hook call, so
 /// the guard is not a mute.
@@ -50,6 +51,7 @@ class RabiaNoReplayWhileInactiveTest {
     private static final byte[] PEER_SNAPSHOT = "peer".getBytes(StandardCharsets.UTF_8);
     private static final byte[] OWN_SNAPSHOT = "own".getBytes(StandardCharsets.UTF_8);
     private static final Cause DISK_FULL = Causes.cause("no space left on device");
+    private static final Cause MARKER_REFUSED = Causes.cause("participation record not writable");
     private static final long TIMEOUT_MILLIS = 5_000;
     private static final int ROUNDS = 4;
     private static final long SETTLE_MILLIS = 300;
@@ -154,6 +156,75 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(activeCalls[0].get() + activeCalls[1].get() + activeCalls[2].get()).isEqualTo(3);
     }
 
+    /// The lost-notification case: activation is refused (the participation record cannot be written), the restore is
+    /// installed silently, quorum is lost and returns, and the node resumes straight to serving with NO second restore.
+    /// The deferred announce must run on that resume, once, with the hooks.
+    @Test
+    void restoreWhileRefused_thenPauseAndResume_announcesOnceOnTheResume() {
+        var marker = new GateMarker();
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks, false, refusingConfig(marker));
+
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> machine.restores.get() >= 1)).as("precondition: the snapshot was restored").isTrue();
+        assertThat(effectsWithin(machine, hooks)).as("refused activation: nothing is announced").isFalse();
+        assertThat(engine.isActive()).isFalse();
+
+        engine.clusterState(ClusterStateNotification.passive());
+        assertThat(awaitCondition(engine::isPaused)).as("quorum loss from Syncing pauses the engine").isTrue();
+        marker.allow.set(true);
+        engine.clusterState(ClusterStateNotification.active());
+
+        assertThat(awaitCondition(engine::isActive)).as("the resume leaves Paused for a serving state").isTrue();
+        assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("the deferred announce ran on the resume").isTrue();
+        assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("and only once").isFalse();
+        assertThat(machine.restores.get()).as("the resume did not restore again").isEqualTo(1);
+    }
+
+    @Test
+    void twoRestoresWhileRefused_giveOneAnnounceAfterwards() {
+        var marker = new GateMarker();
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks, false, refusingConfig(marker));
+
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> machine.restores.get() >= 1)).isTrue();
+        engine.processSyncResponse(cold(Phase.phase(11), PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> machine.restores.get() >= 2)).as("precondition: a second restore while refused").isTrue();
+        assertThat(effectsWithin(machine, hooks)).isFalse();
+
+        engine.clusterState(ClusterStateNotification.passive());
+        assertThat(awaitCondition(engine::isPaused)).isTrue();
+        marker.allow.set(true);
+        engine.clusterState(ClusterStateNotification.active());
+
+        assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).isTrue();
+        assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("one announce for two restores").isFalse();
+    }
+
+    private static ProtocolConfig refusingConfig(GateMarker marker) {
+        return ProtocolConfig.testConfig(Option.some(marker));
+    }
+
+    /// A participation marker whose record is refused until `allow` is set: `activate()` fails closed meanwhile.
+    private static final class GateMarker implements ParticipationMarker {
+        final AtomicBoolean allow = new AtomicBoolean();
+
+        @Override
+        public Participation resolve() {
+            return Participation.UNKNOWN;
+        }
+
+        @Override
+        public Result<Unit> recordParticipation() {
+            return allow.get()
+                   ? Result.success(Unit.unit())
+                   : MARKER_REFUSED.result();
+        }
+    }
+
     /// An observer is not ACTIVE in the voting sense but does serve the restored state, so its restore must still
     /// replay and run the hooks: the guard is "left Syncing", not "is a voter".
     @Test
@@ -180,11 +251,23 @@ class RabiaNoReplayWhileInactiveTest {
                                                  RabiaPersistence<TestCommand> persistence,
                                                  AtomicInteger hooks,
                                                  boolean gatedObserver) {
+        return coldStarted(machine,
+                           persistence,
+                           hooks,
+                           gatedObserver,
+                           ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()));
+    }
+
+    private RabiaEngine<TestCommand> coldStarted(StateMachine<TestCommand> machine,
+                                                 RabiaPersistence<TestCommand> persistence,
+                                                 AtomicInteger hooks,
+                                                 boolean gatedObserver,
+                                                 ProtocolConfig config) {
         var network = new TestClusterNetwork();
         var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, 3),
                                        network,
                                        machine,
-                                       ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
+                                       config,
                                        ConsensusMetrics.noop(),
                                        gatedObserver,
                                        persistence,
