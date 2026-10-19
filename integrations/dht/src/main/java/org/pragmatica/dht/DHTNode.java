@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
@@ -130,6 +131,11 @@ public final class DHTNode {
 
     /// Wall-clock time in milliseconds, comparable with the HLC physical time a tombstone is stamped with.
     private final AtomicReference<LongSupplier> wallClock = new AtomicReference<>(System::currentTimeMillis);
+
+    /// Monotonic time in milliseconds, for intervals measured on this node only (A6 freshness and current evidence): a
+    /// wall-clock step, backward or forward, never moves it.
+    private final AtomicReference<LongSupplier> monotonicClock = new AtomicReference<>(DHTNode::systemMonotonicMillis);
+
     /// When this node stopped replicating each partition it still holds copies of (#1777 track 3): a stray copy
     /// is dropped once it is older than the stray horizon, before any tombstone that could supersede it may go.
     private final ConcurrentHashMap<Integer, Long> lostAt = new ConcurrentHashMap<>();
@@ -878,7 +884,7 @@ public final class DHTNode {
         return readiness(partition).authoritative() && repair.fresh(partition.value(),
                                                                     coReplicasOf(partition),
                                                                     syncsRequired(),
-                                                                    nowMillis());
+                                                                    monotonicMillis());
     }
 
     private List<NodeId> coReplicasOf(Partition partition) {
@@ -1129,7 +1135,7 @@ public final class DHTNode {
     public void handleDigestRequest(DHTMessage.DigestRequest request,
                                     Consumer<DHTMessage.DigestResponse> responseHandler) {
         noteHeardFrom(request.sender());
-        repair.noteLegacyQuestion(request.sender(), nowMillis());
+        repair.noteLegacyQuestion(request.sender(), monotonicMillis());
         repair.noteLegacyExchange();
         var partition = Partition.at(request.partitionStart());
         var readiness = readiness(partition);
@@ -1152,7 +1158,7 @@ public final class DHTNode {
     public void handleStampDigestRequest(DHTMessage.StampDigestRequest request,
                                          Consumer<DHTMessage.DigestResponse> responseHandler) {
         noteHeardFrom(request.sender());
-        repair.noteCurrentEvidence(request.sender(), nowMillis());
+        repair.noteCurrentEvidence(request.sender(), monotonicMillis());
         var partition = Partition.at(request.partition());
         var readiness = readiness(partition);
 
@@ -1192,7 +1198,7 @@ public final class DHTNode {
     @Contract
     public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
                                            Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
-        repair.noteLegacyQuestion(request.sender(), nowMillis());
+        repair.noteLegacyQuestion(request.sender(), monotonicMillis());
         repair.noteLegacyExchange();
         var partition = Partition.at(request.partitionStart());
 
@@ -1229,11 +1235,13 @@ public final class DHTNode {
     /// of the partition — the same holder-side ownership test as [#handleMigrationDataRequest] (issue #420). The
     /// page is planned on the partition's [KeyStamp]s; only the values of the entries in the page are read. A
     /// holder that could not read its store refuses explicitly, so the requester never takes a failed read for the
-    /// end of the partition (FER: the pull is delayed to the next round, never completed on a read that failed).
+    /// end of the partition (FER: the pull is delayed to the next round, never completed on a read that failed). The
+    /// page carries this node's [Readiness] for the partition, as a digest answer does, so the requester counts the pull
+    /// as a sync only when this node was authoritative for it (D4).
     @Contract
     public void handleMigrationPageRequest(DHTMessage.MigrationPageRequest request,
                                            Consumer<DHTMessage.MigrationPageResponse> responseHandler) {
-        repair.noteCurrentEvidence(request.sender(), nowMillis());
+        repair.noteCurrentEvidence(request.sender(), monotonicMillis());
         var partition = Partition.at(request.partition());
 
         if (!isReplicaOf(request.sender(), partition)) {
@@ -1245,10 +1253,13 @@ public final class DHTNode {
             return;
         }
 
+        var readiness = readiness(partition);
+
         migrationPage(partition,
                       request.after(),
                       pageBudgetFor(request.pageBytes())).onSuccess(page -> respondWithPage(request.requestId(),
                                                                                             page,
+                                                                                            readiness,
                                                                                             responseHandler))
                      .onFailure(_ -> responseHandler.accept(refusedPage(request.requestId())));
     }
@@ -1257,19 +1268,21 @@ public final class DHTNode {
     record MigrationPage(List<DHTMessage.KeyValue> entries, Option<byte[]> next) {}
 
     private DHTMessage.MigrationPageResponse refusedPage(String requestId) {
-        return new DHTMessage.MigrationPageResponse(requestId, nodeId, List.of(), true, none());
+        return new DHTMessage.MigrationPageResponse(requestId, nodeId, List.of(), true, none(), Readiness.UNKNOWN);
     }
 
     @Contract
     private void respondWithPage(String requestId,
                                  MigrationPage page,
+                                 Readiness readiness,
                                  Consumer<DHTMessage.MigrationPageResponse> responseHandler) {
         repair.notePageSent(PageBudget.transferBytes(page.entries()));
         responseHandler.accept(new DHTMessage.MigrationPageResponse(requestId,
                                                                     nodeId,
                                                                     page.entries(),
                                                                     false,
-                                                                    page.next()));
+                                                                    page.next(),
+                                                                    readiness));
     }
 
     /// The smaller of the requester's budget and this node's: the page respects both ends' bounds. A requested
@@ -1437,6 +1450,22 @@ public final class DHTNode {
     @Contract
     void useWallClock(LongSupplier clock) {
         wallClock.set(clock);
+    }
+
+    /// Monotonic milliseconds: comparable only with other readings on this node, never with a wall-clock time.
+    long monotonicMillis() {
+        return monotonicClock.get()
+                             .getAsLong();
+    }
+
+    /// Test seam: the monotonic clock freshness and current evidence are measured with.
+    @Contract
+    void useMonotonicClock(LongSupplier clock) {
+        monotonicClock.set(clock);
+    }
+
+    private static long systemMonotonicMillis() {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
     }
 
     /// Partitions this node stopped replicating at or before `cutoffMillis` and still holds copies of.

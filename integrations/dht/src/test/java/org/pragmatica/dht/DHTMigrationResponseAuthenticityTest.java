@@ -246,7 +246,8 @@ class DHTMigrationResponseAuthenticityTest {
     }
 
     private static DHTMessage.MigrationPageResponse lastPage(String requestId, NodeId sender, List<DHTMessage.KeyValue> entries) {
-        return new DHTMessage.MigrationPageResponse(requestId, sender, entries, false, Option.none());
+        return new DHTMessage.MigrationPageResponse(requestId, sender, entries, false, Option.none(),
+                                                    DHTMessage.Readiness.SERVING);
     }
 
     // --- harness: five nodes, every message to the receiver's peers is captured, never delivered ---

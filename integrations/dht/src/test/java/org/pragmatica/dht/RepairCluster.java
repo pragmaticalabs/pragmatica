@@ -62,8 +62,12 @@ final class RepairCluster {
     final Set<NodeId> unreachable = ConcurrentHashMap.newKeySet();
     /// Directed links that drop every message, as `from>to` (an asymmetric partition).
     final Set<String> cutLinks = ConcurrentHashMap.newKeySet();
-    /// The wall clock every node reads (tombstone ages, freshness): starts at real time, moved by [#advance].
+    /// The wall clock every node reads (tombstone ages): starts at real time, moved by [#advance] and [#stepWallClock].
     final AtomicLong clock = new AtomicLong(System.currentTimeMillis());
+    /// The monotonic clock every node measures freshness with: moved by [#advance] only, never by a wall-clock step.
+    final AtomicLong monotonic = new AtomicLong();
+    /// Message types every link drops: replicas that never answer one kind of question.
+    final Set<Class<?>> droppedTypes = ConcurrentHashMap.newKeySet();
     final AtomicInteger droppedUnknownTypes = new AtomicInteger();
     /// Page requests delivered before exactly ONE is lost (every later one is delivered); negative: none is lost.
     final AtomicInteger pageRequestsDelivered = new AtomicInteger(-1);
@@ -90,6 +94,7 @@ final class RepairCluster {
         var node = DHTNode.dhtNode(id, engine, ring, config);
 
         node.useWallClock(clock::get);
+        node.useMonotonicClock(monotonic::get);
         var antiEntropy = DHTAntiEntropy.dhtAntiEntropy(node, network, config, departing::contains);
         var rebalancer = DHTRebalancer.dhtRebalancer(node, network, config);
         var client = DistributedDHTClient.distributedDHTClient(node, network, config);
@@ -110,8 +115,14 @@ final class RepairCluster {
         return members.get(new NodeId(id));
     }
 
-    /// Move every node's wall clock forward by `millis`.
+    /// Let `millis` pass on every node: both its wall clock and its monotonic clock move forward.
     void advance(long millis) {
+        clock.addAndGet(millis);
+        monotonic.addAndGet(millis);
+    }
+
+    /// Step every node's wall clock by `millis` (negative: backward), as an NTP correction would; no time passes.
+    void stepWallClock(long millis) {
         clock.addAndGet(millis);
     }
 
@@ -123,7 +134,8 @@ final class RepairCluster {
         sent.add(Map.entry(target, message));
         measure(message);
 
-        if (unreachable.contains(target) || pageRequestLost(message) || cutLinks.contains(from.id() + ">" + target.id())) {
+        if (unreachable.contains(target) || pageRequestLost(message) || cutLinks.contains(from.id() + ">" + target.id())
+            || droppedTypes.contains(message.getClass())) {
             return;
         }
 

@@ -53,12 +53,19 @@ import org.pragmatica.lang.io.TimeSpan;
 /// ## Freshness: the bound on how long a removed block stays readable (D4)
 /// A replica serves a verified single-replica read ([DistributedDHTClient#getContentAddressed]) only while it is
 /// FRESH for the key's partition: within the last freshness window (K anti-entropy intervals, default 2) its own
-/// rounds SYNCED it with at least max(1, RF − W) co-replicas, a sync being a digest match or a completed pull from
-/// that peer. A remove that was acknowledged reached at least W replicas, so at most RF − W − 1 co-replicas other
-/// than a stale one lack the tombstone; a sync with RF − W distinct co-replicas therefore includes one that holds
-/// it, and that sync delivers it. A replica that missed a remove thus serves the removed block for at most one
-/// freshness window after its last sync before the remove, whatever stops it syncing since (a partition, ring
-/// disagreement, a failing store). Repair is pull-only, so only the replica's own rounds count.
+/// rounds SYNCED it with at least max(1, RF − W) co-replicas, a sync being a digest match with, or a completed paged
+/// pull from, a peer AUTHORITATIVE for the partition. A remove that was acknowledged reached at least W replicas, so at
+/// most RF − W − 1 co-replicas other than a stale one lack the tombstone; a sync with RF − W distinct co-replicas
+/// therefore includes one that holds it, and that sync delivers it. Repair is pull-only, so only the replica's own
+/// rounds count. Each sync is stamped with the time from which it vouches for the peer's state:
+///  - a digest match, when the answer arrives: the peer's state is at most one exchange older;
+///  - a paged pull, when its FIRST page was asked, carried across the rounds a resumed pull spans: the keys below a
+///    resume cursor were read then, not at completion;
+///  - a legacy whole-partition pull is no sync: its answer carries no readiness.
+/// A replica that missed a remove thus serves the removed block for at most one freshness window after its last sync
+/// stamped before the remove (plus one exchange for a digest match), whatever stops it syncing since: a partition,
+/// ring disagreement, a failing store, or a pull stalled across rounds. Every time here is the node's MONOTONIC clock
+/// ([DHTNode#monotonicMillis]): freshness is an interval on one node, so a wall-clock step cannot stretch it.
 public final class RepairPlane {
     /// The anti-entropy intervals a replica may go without a sync and still serve verified reads (default K = 2).
     public static final int DEFAULT_FRESHNESS_INTERVALS = 2;
@@ -83,10 +90,10 @@ public final class RepairPlane {
     private final AtomicReference<TimeSpan> freshnessWindow = new AtomicReference<>(DEFAULT_FRESHNESS_WINDOW);
     private final AtomicReference<TimeSpan> hedgeDelay = new AtomicReference<>(DEFAULT_HEDGE_DELAY);
 
-    /// When each co-replica last synced this node for each partition (wall clock), by partition index.
+    /// When each co-replica last synced this node for each partition (monotonic clock), by partition index.
     private final ConcurrentHashMap<Integer, ConcurrentHashMap<NodeId, Long>> syncedAt = new ConcurrentHashMap<>();
 
-    /// When each peer last showed it speaks the current protocol (wall clock).
+    /// When each peer last showed it speaks the current protocol (monotonic clock).
     private final ConcurrentHashMap<NodeId, Long> currentEvidenceAt = new ConcurrentHashMap<>();
 
     private RepairPlane() {}

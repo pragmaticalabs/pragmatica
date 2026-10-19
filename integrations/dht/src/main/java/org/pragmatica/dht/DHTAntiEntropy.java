@@ -78,10 +78,27 @@ public final class DHTAntiEntropy {
 
     /// A pull in flight, remembered so its answer is attributed to its partition — and, for a catch-up
     /// pull, completes that round's wait on `peer` once its entries are stored.
-    private record PendingPull(NodeId peer, int partitionIndex, Option<CatchUpRound> round, long createdAtNanos) {}
+    private record PendingPull(NodeId peer,
+                               int partitionIndex,
+                               Option<CatchUpRound> round,
+                               PullProgress progress,
+                               long createdAtNanos) {}
 
     /// A periodic paged pull, by peer and partition: where its next page starts (A6).
     private record PullKey(NodeId peer, int partitionIndex) {}
+
+    /// How far a paged pull has come (A6, D4): when its FIRST page was requested, on the node's monotonic clock, and
+    /// whether every page so far came from a holder authoritative for the partition. A completed pull certifies the
+    /// partition only as of `startedAtMillis`: a resumed pull does not read again the keys below its cursor, so the
+    /// pages read before an interruption can predate a remove the completion would otherwise vouch for.
+    private record PullProgress(long startedAtMillis, boolean authoritative) {
+        PullProgress after(DHTMessage.Readiness readiness) {
+            return new PullProgress(startedAtMillis, authoritative && readiness.authoritative());
+        }
+    }
+
+    /// Where an interrupted periodic paged pull resumes, with the progress it carries across rounds (A6).
+    private record Resume(byte[] cursor, PullProgress progress) {}
 
     /// This node's digests of one partition for one exchange (A6): the stamp digest every current peer is asked to
     /// match, and the legacy value digest, computed only when a peer recorded as legacy takes part.
@@ -122,8 +139,8 @@ public final class DHTAntiEntropy {
     /// Migration batches dropped as unauthentic — counted, never silent.
     private final AtomicLong rejectedResponses = new AtomicLong();
     /// Where an interrupted periodic paged pull resumes (A6): the last key applied from that peer for that
-    /// partition. Cleared when the pull reaches the partition's last page.
-    private final ConcurrentHashMap<PullKey, byte[]> resumeAt = new ConcurrentHashMap<>();
+    /// partition, and the pull's progress. Cleared when the pull reaches the partition's last page.
+    private final ConcurrentHashMap<PullKey, Resume> resumeAt = new ConcurrentHashMap<>();
     /// Stamp digest probes sent to peers held as legacy, by correlation id: an answer is current evidence ([RepairPlane]).
     private final ConcurrentHashMap<String, PendingProbe> stampProbes = new ConcurrentHashMap<>();
 
@@ -644,27 +661,46 @@ public final class DHTAntiEntropy {
 
     /// A pull from a peer recorded as legacy is the whole-partition [DHTMessage.MigrationDataRequest] it understands;
     /// any other pull is paged (A6). A periodic paged pull resumes where an interrupted one stopped; a catch-up pull
-    /// always starts at the first key, since its completion is proven page by page within one round.
+    /// always starts at the first key, since its completion is proven page by page within one round. A resumed pull
+    /// keeps the progress of the pull it resumes, so its completion is stamped with the time ITS first page was asked.
     private void sendPull(NodeId peer, int partitionIndex, Option<CatchUpRound> round, String what) {
         if (node.repair().isLegacyPeer(peer)) {
             sendLegacyPull(peer, partitionIndex, round, what);
         } else {
-            sendPageRequest(peer, partitionIndex, round, startCursor(peer, partitionIndex, round), what);
+            sendResumedPageRequest(peer, partitionIndex, round, resumeFrom(peer, partitionIndex, round), what);
         }
+    }
+
+    private void sendResumedPageRequest(NodeId peer,
+                                        int partitionIndex,
+                                        Option<CatchUpRound> round,
+                                        Option<Resume> resume,
+                                        String what) {
+        sendPageRequest(peer,
+                        partitionIndex,
+                        round,
+                        resume.map(Resume::cursor),
+                        resume.map(Resume::progress).or(this::pullStartingNow),
+                        what);
+    }
+
+    private PullProgress pullStartingNow() {
+        return new PullProgress(node.monotonicMillis(), true);
     }
 
     private void sendLegacyPull(NodeId peer, int partitionIndex, Option<CatchUpRound> round, String what) {
         var correlationId = IdGenerator.generate();
 
         node.repair().noteLegacyExchange();
-        pendingPulls.put(correlationId, new PendingPull(peer, partitionIndex, round, System.nanoTime()));
+        pendingPulls.put(correlationId,
+                         new PendingPull(peer, partitionIndex, round, pullStartingNow(), System.nanoTime()));
         sendLoudly(peer,
                    new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
                    what,
                    () -> pendingPulls.remove(correlationId));
     }
 
-    private Option<byte[]> startCursor(NodeId peer, int partitionIndex, Option<CatchUpRound> round) {
+    private Option<Resume> resumeFrom(NodeId peer, int partitionIndex, Option<CatchUpRound> round) {
         return round.isPresent()
                ? none()
                : option(resumeAt.get(new PullKey(peer, partitionIndex)));
@@ -674,10 +710,11 @@ public final class DHTAntiEntropy {
                                  int partitionIndex,
                                  Option<CatchUpRound> round,
                                  Option<byte[]> after,
+                                 PullProgress progress,
                                  String what) {
         var correlationId = IdGenerator.generate();
 
-        pendingPulls.put(correlationId, new PendingPull(peer, partitionIndex, round, System.nanoTime()));
+        pendingPulls.put(correlationId, new PendingPull(peer, partitionIndex, round, progress, System.nanoTime()));
         sendLoudly(peer,
                    new DHTMessage.MigrationPageRequest(correlationId,
                                                        node.nodeId(),
@@ -915,7 +952,7 @@ public final class DHTAntiEntropy {
         node.noteHeardFrom(response.sender());
         Option.option(stampProbes.remove(response.requestId())).onPresent(probe -> node.repair()
                                                                                        .noteCurrentEvidence(probe.peer(),
-                                                                                                            node.nowMillis()));
+                                                                                                            node.monotonicMillis()));
         Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> voteAndCompare(pending, response));
         Option.option(catchUpDigests.remove(response.requestId())).onPresent(pending -> onCatchUpDigest(pending,
                                                                                                         response));
@@ -1038,26 +1075,26 @@ public final class DHTAntiEntropy {
         applyMigrationEntries(response).onSuccess(applied -> notePulled(pull, applied));
     }
 
+    /// A completed LEGACY pull repairs the divergence but is not a sync (D4): its answer, a [DHTMessage.MigrationDataResponse]
+    /// whose shape an older node fixes, carries no readiness, so it cannot show the holder was authoritative, which a
+    /// sync requires of a paged pull and a digest match alike. A legacy peer still syncs this node by a digest match:
+    /// its digest answer carries readiness.
     @Contract
     private void notePulled(PendingPull pull, boolean applied) {
         if (applied) {
             node.repair().noteRepaired(pull.partitionIndex(), pull.peer());
-            noteSynced(pull.partitionIndex(), pull.peer());
         }
     }
 
     /// A digest match with a SERVING peer syncs this node with it (D4): this node held what the peer held when it
-    /// answered. A peer still catching up is no evidence of what the partition holds.
+    /// answered. A peer still catching up is no evidence of what the partition holds. The sync is stamped when the
+    /// answer arrives, so it vouches for the peer's state at most one exchange earlier than its stamp; an unanswered
+    /// digest is expired after one interval.
     @Contract
     private void noteSyncedIfAuthoritative(PendingDigest pending, DHTMessage.DigestResponse response) {
         if (response.readiness().authoritative()) {
-            noteSynced(pending.partitionIndex(), pending.peer());
+            node.repair().noteSynced(pending.partitionIndex(), pending.peer(), node.monotonicMillis());
         }
-    }
-
-    @Contract
-    private void noteSynced(int partitionIndex, NodeId peer) {
-        node.repair().noteSynced(partitionIndex, peer, node.nowMillis());
     }
 
     /// Handle one page of a paged pull (A6). Only the answer to a page request this node sent is applied — its
@@ -1081,7 +1118,7 @@ public final class DHTAntiEntropy {
         }
 
         pendingPulls.remove(response.requestId());
-        node.repair().noteCurrentEvidence(response.sender(), node.nowMillis());
+        node.repair().noteCurrentEvidence(response.sender(), node.monotonicMillis());
         if (response.refused()) {
             onRefusedPull(pull);
 
@@ -1141,6 +1178,7 @@ public final class DHTAntiEntropy {
     @Contract
     private void continueRepairPull(PendingPull pull, DHTMessage.MigrationPageResponse response, boolean applied) {
         var key = new PullKey(pull.peer(), pull.partitionIndex());
+        var progress = pull.progress().after(response.readiness());
 
         if (!applied) {
             log.warn("Repair pull of partition {} from {}: a page could not be stored; the next round retries",
@@ -1151,20 +1189,26 @@ public final class DHTAntiEntropy {
         }
 
         response.next()
-                .onPresent(cursor -> resumeAt.put(key, cursor))
+                .onPresent(cursor -> resumeAt.put(key,
+                                                  new Resume(cursor, progress)))
                 .onPresent(cursor -> sendPageRequest(pull.peer(),
                                                      pull.partitionIndex(),
                                                      none(),
                                                      some(cursor),
+                                                     progress,
                                                      "migration page request"))
-                .onEmpty(() -> finishRepairPull(key));
+                .onEmpty(() -> finishRepairPull(key, progress));
     }
 
+    /// A completed pull repairs the divergence from its holder, and syncs this node with it (D4) only if every page came
+    /// from the holder while it was authoritative, as of the time the pull's first page was asked.
     @Contract
-    private void finishRepairPull(PullKey key) {
+    private void finishRepairPull(PullKey key, PullProgress progress) {
         resumeAt.remove(key);
         node.repair().noteRepaired(key.partitionIndex(), key.peer());
-        noteSynced(key.partitionIndex(), key.peer());
+        if (progress.authoritative()) {
+            node.repair().noteSynced(key.partitionIndex(), key.peer(), progress.startedAtMillis());
+        }
     }
 
     private void onCatchUpPage(PendingPull pull, CatchUpRound round, DHTMessage.MigrationPageResponse response) {
@@ -1198,6 +1242,7 @@ public final class DHTAntiEntropy {
                                                      pull.partitionIndex(),
                                                      some(round),
                                                      some(cursor),
+                                                     pull.progress(),
                                                      "catch-up page request"))
                 .onEmpty(() -> completeIfLastPage(pull, round, response));
     }
@@ -1382,5 +1427,10 @@ public final class DHTAntiEntropy {
     /// Get the count of pending digest comparisons (for testing).
     int pendingDigestCount() {
         return pendingDigests.size();
+    }
+
+    /// Get the count of unanswered stamp protocol probes (for testing).
+    int pendingProbeCount() {
+        return stampProbes.size();
     }
 }

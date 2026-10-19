@@ -582,7 +582,8 @@ class DHTRepairPlaneTest {
             var next = RepairCluster.roundTrip(new DHTMessage.MigrationPageRequest("p", new NodeId("n"), 17, Option.some(bytes("k")), 4096L));
             var page = RepairCluster.roundTrip(new DHTMessage.MigrationPageResponse("p", new NodeId("n"),
                                                                                    List.of(entry(bytes("k"), bytes("v"), 3L)),
-                                                                                   false, Option.some(bytes("k"))));
+                                                                                   false, Option.some(bytes("k")),
+                                                                                   DHTMessage.Readiness.CATCHING_UP));
 
             assertThat(digest.partition()).isEqualTo(17);
             assertThat(first.after().isEmpty()).isTrue();
@@ -590,6 +591,22 @@ class DHTRepairPlaneTest {
             assertThat(next.pageBytes()).isEqualTo(4096L);
             assertThat(page.entries().getFirst().value()).isEqualTo(bytes("v"));
             assertThat(page.next().unwrap()).isEqualTo(bytes("k"));
+            assertThat(page.readiness()).isEqualTo(DHTMessage.Readiness.CATCHING_UP);
+        }
+
+        /// The verified read keeps its own copies of the key and digest: a caller reusing its arrays cannot change a
+        /// request in flight. Red when the defensive copies are dropped.
+        @Test
+        void verifiedReadRequest_copiesItsArrays() {
+            var key = bytes("k");
+            var sha = new byte[32];
+            var request = new DHTMessage.VerifiedReadRequest("v", new NodeId("n"), key, sha, false);
+
+            key[0] ^= 1;
+            sha[0] = 7;
+
+            assertThat(request.key()).isEqualTo(bytes("k"));
+            assertThat(request.sha256()).isEqualTo(new byte[32]);
         }
     }
 

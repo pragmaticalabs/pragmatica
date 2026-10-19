@@ -332,12 +332,15 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// One page of a partition's entries (A6). `next` is the cursor of the following page — the last key in this
     /// one — and is empty on the final page. `refused` marks a pull the holder declined, exactly as for a
     /// [MigrationDataResponse]: the requester is not a replica in the holder's ring, or the holder could not read
-    /// its store.
+    /// its store. `readiness` is the holder's [Readiness] for the partition when it read the page ([Readiness#UNKNOWN]
+    /// on a refusal): a pull counts as a sync of the requester only if every page of it came from an authoritative
+    /// holder, exactly as a digest match counts only with an authoritative peer ([RepairPlane]).
     record MigrationPageResponse(String requestId,
                                  NodeId sender,
                                  List<KeyValue> entries,
                                  boolean refused,
-                                 Option<byte[]> next) implements DHTMessage {}
+                                 Option<byte[]> next,
+                                 Readiness readiness) implements DHTMessage {}
 
     /// A verified single-replica read of a CONTENT-ADDRESSED key (A6): `sha256` is the digest the value hashes to. The
     /// replica answers only while it is fresh for the key's partition and authoritative for it ([RepairPlane]); otherwise
