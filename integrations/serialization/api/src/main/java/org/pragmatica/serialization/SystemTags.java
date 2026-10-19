@@ -452,7 +452,10 @@ public interface SystemTags {
         pin(table, 1631, "org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue");
         pin(table, 1632, "org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue");
         pin(table, 1633, "org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource");
-        pin(table, 1634, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue");
+        // #1155: tag 1634 was ScheduledTaskStateValue's, before it gained `boundHolder`. It stays the tag of that old shape (decode-only, see
+        // LegacyScheduledTaskStateValue): a snapshot or persisted state written by an older build decodes as one unit, so one old-shape row
+        // under a tag that now meant the new shape would fail the whole restore. The current shape took 2168.
+        pin(table, 1634, "org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue");
         pin(table, 1635, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue");
         pin(table, 1636, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue");
         pin(table, 1637, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus");
@@ -642,6 +645,8 @@ public interface SystemTags {
         // #2265 (scanned across all refs on 2026-10-18), so this takes the next free slots.
         pin(table, 2166, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskClaimKey");
         pin(table, 2167, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue");
+        // #1155: ScheduledTaskStateValue with `boundHolder`; 2168 is free on every origin branch and open PR head (scanned 2026-10-19).
+        pin(table, 2168, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue");
         // ---- 2143..16383 RESERVED ----
         rejectDuplicateTags(table);
 

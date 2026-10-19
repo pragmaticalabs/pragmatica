@@ -744,6 +744,8 @@ public sealed interface AetherValue {
     ///
     /// `boundHolder` is the claim token of the SINGLE-mode fire this row was written for, none for a row written under no
     /// claim. It is not state: it is what the applier checks the write against ([HolderBound], [AetherKey.ScheduledTaskStateKey]).
+    /// It was added under a NEW wire tag (2168): tag 1634 still decodes the previous shape ([LegacyScheduledTaskStateValue]) as a row with no
+    /// bound holder.
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,

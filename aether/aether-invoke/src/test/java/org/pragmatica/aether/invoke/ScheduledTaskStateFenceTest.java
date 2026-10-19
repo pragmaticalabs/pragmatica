@@ -9,6 +9,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -145,30 +146,45 @@ class ScheduledTaskStateFenceTest {
     }
 
     /// The same, through the scheduler itself: the old leader's release lands, its outcome write is still on its way when the
-    /// new leader claims the task; the late write is refused, so the row holds the new leader's fire and only that.
+    /// new leader claims the task; the late write is refused, so the row holds nothing of the old fire. One test per kind of
+    /// outcome the fire records (success, failure, unknown), because each write is bound separately.
     @Test
     @Timeout(60)
-    void scheduler_supersededFiresOutcomeWrite_isRefusedByTheApplier() {
+    void scheduler_supersededFiresSuccessWrite_isRefusedByTheApplier() {
+        assertSupersededOutcomeIsRefused(ScheduledTaskStateValue.OUTCOME_SUCCESS, Node::answerFirst);
+    }
+
+    @Test
+    @Timeout(60)
+    void scheduler_supersededFiresFailureWrite_isRefusedByTheApplier() {
+        assertSupersededOutcomeIsRefused(ScheduledTaskStateValue.OUTCOME_FAILURE, node -> node.invoker.onNodeDeparture(HOST));
+    }
+
+    /// No response ever comes: the outcome is UNKNOWN once the scheduler's completion bound (1.5 s) passes.
+    @Test
+    @Timeout(60)
+    void scheduler_supersededFiresUnknownWrite_isRefusedByTheApplier() {
+        assertSupersededOutcomeIsRefused(ScheduledTaskStateValue.OUTCOME_UNKNOWN, _ -> {});
+    }
+
+    private void assertSupersededOutcomeIsRefused(String outcome, Consumer<Node> endOldFire) {
         var oldLeader = new Node(A, true);
         var newLeader = new Node(B, false);
 
         try {
             oldLeader.becomeLeader();
             await(() -> !oldLeader.sent.isEmpty(), 5_000);
-            oldLeader.answerFirst();
-            await(() -> !oldLeader.deferred.isEmpty(), 5_000);
+            endOldFire.accept(oldLeader);
+            await(() -> oldLeader.hasDeferredOutcome(outcome), 8_000);
             oldLeader.stopLeading(newLeader.self);
 
             newLeader.becomeLeader();
             await(() -> !newLeader.sent.isEmpty(), 8_000);
 
             oldLeader.flushDeferred();
-            assertThat(stateRow().isPresent()).as("the old fire's outcome write was made under a claim that is no longer the committed one").isFalse();
-
-            newLeader.answerFirst();
-            await(() -> stateRow().isPresent() && stateRow().unwrap().totalExecutions() == 1, 5_000);
-
-            assertThat(stateRow().unwrap().fireSeq()).as("the row is the new leader's fire, the first and only one recorded").isEqualTo(1);
+            assertThat(stateRow().map(ScheduledTaskStateValue::lastOutcome).or(""))
+                .as("the old fire's %s write was made under a claim that is no longer the committed one", outcome)
+                .isEmpty();
         } finally {
             oldLeader.stop();
             newLeader.stop();
@@ -223,6 +239,14 @@ class ScheduledTaskStateFenceTest {
             } else {
                 store.write(command);
             }
+        }
+
+        /// Whether a state write recording `outcome` is being held back.
+        boolean hasDeferredOutcome(String outcome) {
+            return deferred.stream()
+                           .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                && put.value() instanceof ScheduledTaskStateValue value
+                                                && outcome.equals(value.lastOutcome()));
         }
 
         void flushDeferred() {
