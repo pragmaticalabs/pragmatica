@@ -1191,6 +1191,12 @@ public interface AetherNode extends ManageableNode {
     /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
     /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
     TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+
+    /// PR-0c: cadence of the ring age tick ({@link StreamPartitionManager#evictRingsByAge}), which evicts from each
+    /// non-entity ring the events older than its stream's declared max age and hands them to the sealer. Age
+    /// eviction only has to be much finer than the smallest sensible max-age; the tick is O(rings) and a ring
+    /// with nothing past the cutoff does a few timestamp reads under its append lock.
+    TimeSpan RING_AGE_TICK_INTERVAL = TimeSpan.timeSpan(60).seconds();
     /// #1730: how often an owner re-evaluates its partitions' in-sync replica sets. Lag itself is bounded by
     /// `[streaming] isr_lag_max`; this cadence only adds up to one interval to it.
     TimeSpan ISR_MONITOR_INTERVAL = TimeSpan.timeSpan(1).seconds();
@@ -6189,6 +6195,10 @@ public interface AetherNode extends ManageableNode {
         // tick is a cheap sweep of materialized partitions over empty queues.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
                                                                       STREAM_RESHUFFLE_RECONCILE_INTERVAL));
+        // PR-0c ring age tick: events older than the stream's declared max age leave the ring for the sealer
+        // (entity rings and streams with no declared age are skipped inside the tick).
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::evictRingsByAge,
+                                                                      RING_AGE_TICK_INTERVAL));
         // #345 item 1e-a: the committed-owner source, the linearizable no-op-round barrier, and the
         // shared owner-side serve pipeline. The barrier orders one no-op consensus round through the
         // cluster apply path and awaits this node's local apply of it (spec §8.1 `no-op-round`); the
