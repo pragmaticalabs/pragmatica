@@ -31,13 +31,13 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.addres
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
-/// NT-A12 (cluster T, PR-A3): the per-peer reconcile backoff follows the raw-SWIM liveness gate. While the gate
+/// The per-peer reconcile backoff follows the raw-SWIM liveness gate. While the gate
 /// reports the peer HEALTHY or SUSPECTED the backoff is evaluated with its cap equal to its initial value (5 s), so
 /// the delay stays at the initial value and every 5 s tick may dial; while it does not, the delay doubles to the
 /// 60 s cap as before. An unwired gate reads as not alive. The gate clocks are injected (`overrideWallClockForTests`
 /// and the `nowMs` argument of [PeerState#reconcileBackoffAllowsWhileAlive]); nothing waits on a timed window for
 /// a negative assertion. The tick-offset tests run the scheduler entry for real, because the offset is a
-/// scheduling delay. Mutation MT-A9: leave the backoff uncapped when the gate reports alive.
+/// scheduling delay.
 @Timeout(60)
 class ReconcileBackoffSwimGateTest {
     private static final long TICK_MS = 5_000;

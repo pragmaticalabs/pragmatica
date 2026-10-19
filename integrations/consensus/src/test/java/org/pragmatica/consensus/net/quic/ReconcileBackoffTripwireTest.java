@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.addressOf;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
-/// C-12 (cluster T assessment, rc4 `7c786db0d3`): re-link after a partition is gated by the per-peer reconcile
+/// Re-link after a partition is gated by the per-peer reconcile
 /// backoff, 5 s doubling to a 60 s cap with +-20% jitter, reset only by a successful attach. After about 75 s of
 /// failed attempts both ends sit at the cap, so a heal is noticed only at the next allowed attempt: up to 72 s
 /// later (60 s x 1.2) plus one 5 s tick on the grid. Reconvergence now caps the backoff at its initial value while
