@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.ObserverResumedNotification;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.AfterEach;
@@ -113,6 +114,62 @@ class EmberObserverQuorumLossWiringTest {
                                  .await(TimeSpan.timeSpan(30).seconds());
 
         assertThat(committed.isSuccess()).as("3 of 5 voters alive plus the observer: consensus still commits; " + committed).isTrue();
+    }
+
+    /// The mirror case (#2306): an observer must never count toward the voter quorum. Five voters plus an observer that the
+    /// survivors' membership view already counts (six); the leader and two more voters are killed at once, leaving two
+    /// voters of five plus the observer. The two survivors must detect the loss (their topology quorum bit drops, which
+    /// pauses the engine) and must NOT commit. The observer is retired by the leader a few seconds after it joins, so the
+    /// leader goes first and the kills follow the moment the observer is counted; if the observer is already gone the test
+    /// reports that precondition instead of passing vacuously.
+    @Test
+    @Timeout(600)
+    void twoVotersPlusAnObserver_detectTheLossAndPause_andDoNotCommit() {
+        cluster = EmberTestPorts.startedCluster(PORTS,
+                                                basePort -> emberCluster(CLUSTER_SIZE,
+                                                                         basePort,
+                                                                         basePort + MGMT_OFFSET,
+                                                                         basePort + APP_HTTP_OFFSET,
+                                                                         "mir"),
+                                                START_BOUND);
+        awaitCondition("leader", 90_000L, () -> cluster.getLeaderManagementPort().isPresent());
+        var voterIds = cluster.allNodes().stream().map(n -> n.self().id()).toList();
+        var leaderId = cluster.currentLeader().unwrap();
+        var leader = cluster.getNode(leaderId).unwrap();
+        var observerId = cluster.addNode().await(START_BOUND).unwrap().id();
+
+        awaitCondition(() -> "the observer " + observerId + " is counted by the leader's membership view; count=" + reportedCount(leader),
+                       60_000L,
+                       () -> reportedCount(leader) == CLUSTER_SIZE + 1);
+        var killed = new java.util.ArrayList<String>();
+
+        killed.add(leaderId);
+        voterIds.stream().filter(id -> !id.equals(leaderId)).limit(2).forEach(killed::add);
+        killed.forEach(id -> cluster.killNode(id, false).await(STOP_BOUND));
+        var survivors = List.copyOf(cluster.allNodes());
+        var survivingVoters = survivors.stream().filter(n -> voterIds.contains(n.self().id())).toList();
+
+        assertThat(survivors.stream().map(n -> n.self().id()).toList())
+            .as("precondition: the observer is still alive beside the two surviving voters")
+            .contains(observerId);
+        assertThat(survivingVoters).as("two voters survive").hasSize(2);
+        awaitCondition(() -> "both surviving voters report no quorum; states=" + survivingVoters.stream().map(n -> n.self().id() + "=" + inQuorum(n)).toList(),
+                       90_000L,
+                       () -> survivingVoters.stream().noneMatch(EmberObserverQuorumLossWiringTest::inQuorum));
+        var key = AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey("mir", 0);
+        var committed = survivingVoters.getFirst().<Object>apply(List.of(new KVCommand.Noop<AetherKey>(key))).await(TimeSpan.timeSpan(20).seconds());
+
+        assertThat(committed.isSuccess()).as("2 voters of 5 plus an observer must not commit; " + committed).isFalse();
+    }
+
+    private static int reportedCount(AetherNode node) {
+        return node.topologyManager() instanceof TopologyObserver observer
+               ? observer.reportedActiveNodeCount()
+               : -1;
+    }
+
+    private static boolean inQuorum(AetherNode node) {
+        return node.topologyManager() instanceof TopologyObserver observer && observer.inQuorum().getAsBoolean();
     }
 
     private static boolean hasWarning(AetherNode node, String code, String subject) {

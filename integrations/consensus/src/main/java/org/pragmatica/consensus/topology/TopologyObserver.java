@@ -849,7 +849,7 @@ public interface TopologyObserver extends TopologyManager {
 
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
-                    var healthyOnDuty = view.unwrap().healthyOnDutyCount();
+                    var healthyOnDuty = healthyVoterCount(view.unwrap());
                     var quorum = quorumSize();
 
                     log.debug("Quorum evaluation (membership view): healthyOnDuty={} threshold={}",
@@ -865,6 +865,24 @@ public interface TopologyObserver extends TopologyManager {
                 log.debug("Quorum evaluation (legacy fallback): healthyActivePeers+1={} threshold={}", peers + 1, quorum);
 
                 return (peers + 1) >= quorum;
+            }
+
+            /// #2306: once a voter configuration is installed, the quorum numerator counts INSTALLED VOTERS only. The view lists
+            /// every admitted core member, an observer outside the roster included (an auto-heal replacement still joining),
+            /// and that member cannot vote: counting it would show two surviving voters of five as a quorum, so the engine
+            /// could not commit while the node neither paused nor reported the loss. Before voters are installed the view
+            /// count stands. The smaller of the view's healthy count and its on-duty voters is used, so neither can inflate.
+            private int healthyVoterCount(MembershipView view) {
+                return installedVoters.get()
+                                      .map(voters -> Math.min(view.healthyOnDutyCount(), onDutyVoterCount(view, voters)))
+                                      .or(view.healthyOnDutyCount());
+            }
+
+            private static int onDutyVoterCount(MembershipView view, org.pragmatica.consensus.rabia.VoterConfiguration voters) {
+                return (int) view.onDutyMemberIds()
+                                 .stream()
+                                 .filter(voters::contains)
+                                 .count();
             }
 
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
