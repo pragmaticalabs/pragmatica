@@ -40,13 +40,21 @@ interface ForgeAppConfig {
                    .or(Option.none());
     }
 
-    /// #962 — the refusal for an explicit `api-key` management mode with no key declared: Forge's own control calls to the
-    /// fail-closed management plane would be refused with 401. Names the file, the setting and both ways out.
-    static String keylessManagementRefusal(String file) {
+    /// #962 — the refusal for a management mode that needs a credential (any mode but `none`) with no API key declared: Forge's
+    /// own control calls to the fail-closed management plane carry only X-API-Key and would be refused with 401. Names the file,
+    /// the mode as written, and both ways out; a `jwt` value also gets the reason it does not help.
+    static String keylessManagementRefusal(String file, String mode) {
         return "refusing to start: " + file
-             + " sets [management] security_mode = \"api-key\" but declares no API key, so Forge's own control calls to the"
-             + " management plane would be refused with 401. Declare a key ([app-http.api-keys.<key>] or AETHER_API_KEYS),"
-             + " or choose another mode: set [management] security_mode = \"none\" or remove the setting.";
+               + " sets [management] security_mode = \"" + mode + "\" but declares no API key, so Forge's own control calls to the"
+               + " management plane would be refused with 401." + jwtNote(mode)
+               + " Declare a key ([app-http.api-keys.<key>] or AETHER_API_KEYS),"
+               + " or choose another mode: set [management] security_mode = \"none\" or remove the setting.";
+    }
+
+    private static String jwtNote(String mode) {
+        return "jwt".equalsIgnoreCase(mode)
+               ? " The management plane has no JWT mode (it reads \"jwt\" as api-key), and Forge authenticates with an API key only."
+               : "";
     }
 
     @Contract

@@ -47,6 +47,7 @@ import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -408,7 +409,7 @@ public final class ForgeServer {
                                      SecurityMode mode,
                                      IntConsumer exit) {
         if (mode != SecurityMode.NONE && config.apiKeys().isEmpty()) {
-            ForgeAppConfig.refuse(ForgeAppConfig.keylessManagementRefusal(siblingConfigName()), exit);
+            ForgeAppConfig.refuse(keylessManagementRefusal(), exit);
 
             return;
         }
@@ -416,11 +417,20 @@ public final class ForgeServer {
         clusterInstance.withManagementSecurityMode(Option.some(mode));
     }
 
-    private String siblingConfigName() {
-        return startupConfig.forgeConfig()
-                            .map(path -> path.resolveSibling("aether.toml")
-                                             .toString())
-                            .or("aether.toml");
+    /// The refusal text for the sibling as it stands: the file, and the mode as the operator WROTE it (the loader reads any
+    /// non-`none` value as api-key, so the raw value is the only way to tell a `jwt` user what they configured).
+    String keylessManagementRefusal() {
+        var file = startupConfig.forgeConfig()
+                                .map(path -> path.resolveSibling("aether.toml"));
+        var written = file.flatMap(path -> TomlParser.parseFile(path)
+                                                     .option()
+                                                     .flatMap(doc -> doc.getString("management", "security_mode")))
+                          .map(String::trim)
+                          .or("api-key");
+
+        return ForgeAppConfig.keylessManagementRefusal(file.map(Path::toString)
+                                                           .or("aether.toml"),
+                                                       written);
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the

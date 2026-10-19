@@ -104,12 +104,31 @@ class ForgeServerSiblingConfigWiringTest {
     }
 
     @Test
-    void keylessManagementRefusal_namesTheFileTheSettingAndBothFixes() {
-        assertThat(ForgeAppConfig.keylessManagementRefusal("/etc/forge/aether.toml")).contains("/etc/forge/aether.toml")
-                                                                                     .contains("[management] security_mode = \"api-key\"")
-                                                                                     .contains("declares no API key")
-                                                                                     .contains("Declare a key")
-                                                                                     .contains("choose another mode");
+    void keylessManagementRefusal_namesTheFileTheModeAsWrittenAndBothFixes(@TempDir Path dir) throws Exception {
+        var message = serverWithSibling(dir, NO_KEYS_MGMT_API_KEY).keylessManagementRefusal();
+
+        assertThat(message).contains(dir.resolve("aether.toml").toString())
+                           .contains("[management] security_mode = \"api-key\"")
+                           .contains("declares no API key")
+                           .contains("Declare a key")
+                           .contains("choose another mode")
+                           .doesNotContain("no JWT mode");
+    }
+
+    /// A `jwt` management value is refused too (Forge's control calls send only X-API-Key), and the message names `jwt`, not
+    /// `api-key`, and says why a JWT mode does not help.
+    @Test
+    void applyAppHttpSecurity_refusesManagementJwt_namingJwtAndWhyForgeCannotUseIt(@TempDir Path dir) throws Exception {
+        var exits = new ArrayList<Integer>();
+        var server = serverWithSibling(dir, NO_KEYS_MGMT_API_KEY.replace("api-key", "jwt"));
+
+        server.applyAppHttpSecurity(EmberCluster.emberCluster(), exits::add);
+
+        assertThat(exits).containsExactly(1);
+        assertThat(server.keylessManagementRefusal()).contains("[management] security_mode = \"jwt\"")
+                                                    .doesNotContain("\"api-key\" but")
+                                                    .contains("no JWT mode")
+                                                    .contains("authenticates with an API key only");
     }
 
     /// Controls: the refusal is only for api-key WITHOUT a key. `none` without keys, and `api-key` with a key, both start.
