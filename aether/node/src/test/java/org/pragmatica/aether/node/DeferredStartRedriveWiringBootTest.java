@@ -8,19 +8,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +39,7 @@ import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testlogging.LogCapture;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -87,20 +77,11 @@ class DeferredStartRedriveWiringBootTest {
     private static final String REDRIVEN = "re-evaluating deferred LOAD of " + V1.asString();
 
     private AetherNode node;
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("DeferredStartRedriveWiringCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.INFO, null);
-        loggerConfig.setLevel(Level.INFO);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.INFO, false);
     }
 
     @AfterEach
@@ -111,11 +92,7 @@ class DeferredStartRedriveWiringBootTest {
                 .onFailure(cause -> {});
         }
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
         ConfigService.clear();
         ResourceProvider.clear();
     }
@@ -129,7 +106,7 @@ class DeferredStartRedriveWiringBootTest {
                                   SliceTargetValue.sliceTargetValue(V1.version(), 1)));
 
         await().atMost(LINE_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("the SliceTargetKey put must reach NodeDeploymentManager.onSliceTargetPut through the node's router")
                    .anyMatch(line -> line.contains(REDRIVEN)));
     }
@@ -143,7 +120,7 @@ class DeferredStartRedriveWiringBootTest {
         apply(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(V1.base()),
                                   SliceTargetValue.sliceTargetValue(V2, 1)));
         await().atMost(LINE_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("control: a target for another version re-evaluates and re-defers — the target wiring is live")
                    .filteredOn(line -> line.contains(DEFERRED))
                    .hasSizeGreaterThanOrEqualTo(2));
@@ -167,7 +144,7 @@ class DeferredStartRedriveWiringBootTest {
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
 
         await().atMost(ACTIVE_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("control: the node deployment manager is Active and the capture on %s sees its lines", LOGGER_NAME)
                    .anyMatch(line -> line.contains(MANAGER_ACTIVATED)));
 
@@ -177,7 +154,7 @@ class DeferredStartRedriveWiringBootTest {
                                   NodeArtifactValue.nodeArtifactValue(SliceState.LOAD)));
 
         await().atMost(LINE_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("control: the LOAD is deferred for want of a target")
                    .anyMatch(line -> line.contains(DEFERRED)));
     }
@@ -189,7 +166,7 @@ class DeferredStartRedriveWiringBootTest {
     }
 
     private long count(String fragment) {
-        return appender.messages().stream().filter(line -> line.contains(fragment)).count();
+        return capture.messages().stream().filter(line -> line.contains(fragment)).count();
     }
 
     /// The #858 single-node boot fixture: `self` in `coreNodes`, mutual self-signed QUIC TLS, management
@@ -214,41 +191,5 @@ class DeferredStartRedriveWiringBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.INFO, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing every message the bound logger emits.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> messages() {
-            return List.copyOf(messages);
-        }
     }
 }

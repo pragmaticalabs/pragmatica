@@ -5,15 +5,6 @@
 package org.pragmatica.aether.deployment.membership.ntt;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -71,6 +62,7 @@ import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.ULID;
 
 import java.net.InetSocketAddress;
@@ -1187,63 +1179,10 @@ class LeaderReconcilerTest {
     /// Run `action` with an in-memory appender on the [`LeaderReconciler`] logger and return the WARN
     /// lines it emitted — the operator-facing surface of a deferred surplus drain.
     private static List<String> capturingReconcilerWarns(Runnable action) {
-        var appender = WarnCapture.create();
-        var context = (LoggerContext) LogManager.getContext(false);
-        var loggerConfig = reconcilerLoggerConfig(context.getConfiguration());
-        var originalLevel = loggerConfig.getLevel();
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        context.updateLoggers();
-        try {
+        try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
             action.run();
-        } finally {
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            context.updateLoggers();
-            appender.stop();
-        }
 
-        return appender.warns();
-    }
-
-    private static LoggerConfig reconcilerLoggerConfig(Configuration configuration) {
-        var name = LeaderReconciler.class.getName();
-        var existing = configuration.getLoggerConfig(name);
-
-        if (name.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(name, Level.WARN, false);
-
-        configuration.addLogger(name, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender keeping the formatted text of WARN-and-above events.
-    private static final class WarnCapture extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private WarnCapture() {
-            super("LeaderReconcilerWarnCapture", (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        static WarnCapture create() {
-            return new WarnCapture();
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> warns() {
-            return List.copyOf(messages);
+            return capture.messages();
         }
     }
 
@@ -4008,27 +3947,11 @@ class LeaderReconcilerTest {
         private final AtomicBoolean createMakesInstance = new AtomicBoolean(true);
         private final AtomicInteger terminates = new AtomicInteger();
         private final AtomicInteger listings = new AtomicInteger();
-        private WarnCapture appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture appender;
 
         @BeforeEach
         void wire() {
-            appender = WarnCapture.create();
-            appender.start();
-            var logContext = (LoggerContext) LogManager.getContext(false);
-            var existing = logContext.getConfiguration().getLoggerConfig(LOGGER_NAME);
-
-            loggerConfig = LOGGER_NAME.equals(existing.getName())
-                           ? existing
-                           : new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-            if (!LOGGER_NAME.equals(existing.getName())) {
-                logContext.getConfiguration().addLogger(LOGGER_NAME, loggerConfig);
-            }
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.WARN, null);
-            loggerConfig.setLevel(Level.WARN);
-            logContext.updateLoggers();
+            appender = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
             ctm.real = realTopologyManager(true);
             ctm.real.activate();
         }
@@ -4036,12 +3959,7 @@ class LeaderReconcilerTest {
         @org.junit.jupiter.api.AfterEach
         void unwire() {
             ctm.real.deactivate();
-            var logContext = (LoggerContext) LogManager.getContext(false);
-
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            logContext.updateLoggers();
-            appender.stop();
+            appender.close();
         }
 
         private ClusterTopologyManager realTopologyManager(boolean namesASource) {
@@ -4112,7 +4030,7 @@ class LeaderReconcilerTest {
         }
 
         private boolean warned(String... fragments) {
-            return appender.warns().stream().anyMatch(message -> List.of(fragments).stream().allMatch(message::contains));
+            return appender.messages().stream().anyMatch(message -> List.of(fragments).stream().allMatch(message::contains));
         }
 
         private void assertInstanceOfTheFailedCreateIsTerminated(Cause outcome) {
@@ -4120,7 +4038,7 @@ class LeaderReconcilerTest {
 
             await().atMost(java.time.Duration.ofSeconds(10)).until(() -> terminates.get() == 1);
             assertThat(inventory).as("the instance the create made is gone").isEmpty();
-            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.warns()).isTrue();
+            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.messages()).isTrue();
             assertThat(warned("instance-termination-unconfirmed")).isFalse();
         }
 
@@ -4149,7 +4067,7 @@ class LeaderReconcilerTest {
             var minted = dispatchWithCreate(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("503 after accept")), true);
 
             await().atMost(java.time.Duration.ofSeconds(10)).until(() -> terminates.get() == 1);
-            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.warns()).isTrue();
+            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.messages()).isTrue();
         }
 
         @Test
@@ -4158,7 +4076,7 @@ class LeaderReconcilerTest {
             var before = listings.get();
 
             await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5)).until(() -> true);
-            assertThat(ctm.droppedReaps()).as("a capacity refusal proves no instance was made: no reap for " + minted + " warns=" + appender.warns()).isEmpty();
+            assertThat(ctm.droppedReaps()).as("a capacity refusal proves no instance was made: no reap for " + minted + " warns=" + appender.messages()).isEmpty();
             assertThat(terminates.get()).isZero();
             assertThat(listings.get()).as("nothing looked the instance up").isEqualTo(before);
             assertThat(warned("instance-termination-unconfirmed")).isFalse();

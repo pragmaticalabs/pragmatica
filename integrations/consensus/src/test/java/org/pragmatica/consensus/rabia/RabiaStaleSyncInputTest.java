@@ -100,6 +100,44 @@ class RabiaStaleSyncInputTest {
         assertThat(engine.isObserving()).as("the quorum ACTIVE resumes it as an observer").isTrue();
     }
 
+    @Test void answersCollectedBeforeAPause_doNotCountInTheNextRound() throws Exception {
+        engine = newEngine(true);
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        respond(B);
+        settle();
+        assertThat(engine.isObserving()).as("control: one answer is below the adoption threshold").isFalse();
+        engine.clusterState(ClusterStateNotification.passive());
+        settle();
+        assertThat(engine.isPaused()).as("control: paused while syncing, with the earlier answer collected").isTrue();
+
+        var nextEpisode = RabiaEngine.class.getDeclaredMethod("doClusterConnected");
+
+        nextEpisode.setAccessible(true);
+        nextEpisode.invoke(engine);
+        respond(C);
+        settle();
+
+        assertThat(engine.isObserving()).as("B's answer belongs to the request sent before the pause: one fresh answer is not enough").isFalse();
+        respond(B);
+        settle();
+        assertThat(engine.isObserving()).as("control: two fresh answers adopt").isTrue();
+    }
+
+    @Test void lateSyncResponse_afterAVoterActivated_doesNotAdoptAgain() {
+        engine = newEngine(false);
+        adoptFromPeers();
+        assertThat(engine.isActive()).as("control: the voter activated").isTrue();
+        var settledPhase = engine.currentPhaseForTesting();
+        var ahead = RabiaPersistence.SavedState.<TestCommand>savedState(new byte[]{1}, Phase.phase(7), List.of());
+
+        engine.processSyncResponse(new SyncResponse<>(B, ahead, ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(C, ahead, ResponderState.COLD));
+        settle();
+
+        assertThat(engine.currentPhaseForTesting()).as("neither the active state nor the closed round lets a late answer reinstall state").isEqualTo(settledPhase);
+    }
+
     @Test void aSyncRequestGoingOut_opensTheRound_forTheEpisodeStart() throws Exception {
         engine = newEngine(false);
         setSyncRoundOpen(false);

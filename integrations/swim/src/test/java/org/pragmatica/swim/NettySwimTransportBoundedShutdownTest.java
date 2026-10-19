@@ -7,16 +7,6 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.util.concurrent.DefaultPromise;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +15,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -72,9 +63,7 @@ class NettySwimTransportBoundedShutdownTest {
     private static final long WEDGE_ARMED_BOUND_MS = 5_000L;
     private static final long GROUP_CLEANUP_TIMEOUT_MS = 10_000L;
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
     /// Every group this test creates, shut down in [`#tearDown`] whatever the outcome. A Netty
     /// `NioEventLoopGroup` runs NON-daemon threads: a group left alive by a failing assertion keeps
     /// the surefire fork from exiting, which is how a first cut of this class turned a 6 s run into
@@ -83,25 +72,12 @@ class NettySwimTransportBoundedShutdownTest {
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("NettySwimTransportBoundedShutdownCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.ALL);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.ALL, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
         groups.forEach(group -> group.shutdownGracefully(0L, GROUP_CLEANUP_TIMEOUT_MS, TimeUnit.MILLISECONDS));
         groups.clear();
     }
@@ -124,11 +100,11 @@ class NettySwimTransportBoundedShutdownTest {
                                       .isTrue();
         assertThat(cause(result)).as("and the failure must name the bound that elapsed")
                                  .isInstanceOf(SwimError.ShutdownTimeout.class);
-        assertThat(appender.eventsMentioning(SUCCESS_LINE))
+        assertThat(eventsMentioning(SUCCESS_LINE))
                 .as("the success line must NOT be logged on a shutdown that did not complete — that "
                     + "unconditional line is what hid this defect across #727/#749/#750")
                 .isEmpty();
-        assertThat(appender.eventsMentioning(FAILURE_LINE))
+        assertThat(eventsMentioning(FAILURE_LINE))
                 .as("the failure must be logged instead")
                 .hasSize(1);
     }
@@ -146,11 +122,11 @@ class NettySwimTransportBoundedShutdownTest {
         var result = transport.stop().await();
 
         assertThat(result.isSuccess()).as("an unobstructed shutdown must succeed").isTrue();
-        assertThat(appender.eventsMentioning(SUCCESS_LINE))
+        assertThat(eventsMentioning(SUCCESS_LINE))
                 .as("control: the appender CAN see this logger's success line, so its absence above "
                     + "is a real absence rather than a blind instrument")
                 .hasSize(1);
-        assertThat(appender.eventsMentioning(FAILURE_LINE))
+        assertThat(eventsMentioning(FAILURE_LINE))
                 .as("and a healthy shutdown must not report failure")
                 .isEmpty();
     }
@@ -254,39 +230,7 @@ class NettySwimTransportBoundedShutdownTest {
                : null;
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.ALL, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing every event on the transport's own logger.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> eventsMentioning(String fragment) {
-            return messages.stream().filter(message -> message.contains(fragment)).toList();
-        }
+    private List<String> eventsMentioning(String fragment) {
+        return capture.messages().stream().filter(message -> message.contains(fragment)).toList();
     }
 }

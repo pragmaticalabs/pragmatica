@@ -27,14 +27,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -48,6 +40,7 @@ import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -549,23 +542,14 @@ class SwimDeathPathCoConfirmationTest {
 
         @Test
         void suspicionJournal_logsEnforcedWindow_atStartAndOnRetraction() {
-            var context = (LoggerContext) LogManager.getContext(false);
-            var configuration = context.getConfiguration();
-            var loggerConfig = new LoggerConfig(SWIM_LOGGER, Level.INFO, true);
-            var appender = new CapturingAppender("Swim1061WindowCapture");
-
-            appender.start();
-            loggerConfig.addAppender(appender, Level.INFO, null);
-            configuration.addLogger(SWIM_LOGGER, loggerConfig);
-            context.updateLoggers();
-            try {
+            try (var capture = LogCapture.capture(SWIM_LOGGER, Level.INFO, true)) {
                 seenHealthy(protocol, NODE_A, ADDR_A);
                 // A second ALIVE member widens the enforced window past the base timeout (cluster-size
                 // term), so a retraction line printing the base timeout cannot pass by coincidence.
                 seenHealthy(protocol, NODE_B, ADDR_B);
                 protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
 
-                assertThat(appender.messages)
+                assertThat(capture.messages())
                     .as("The suspicion-start line prints the window the expiry check enforces (3s floor), not the dogpile window")
                     .anyMatch(line -> line.contains("suspect node-a accused by node-self; effective window " + FLOOR_MS + "ms"));
 
@@ -576,7 +560,7 @@ class SwimDeathPathCoConfirmationTest {
                 assertThat(enforced)
                     .as("Fixture check: the enforced window differs from the base timeout")
                     .isGreaterThan(SUSPECT_TIMEOUT_MS);
-                assertThat(appender.messages)
+                assertThat(capture.messages())
                     .as("The retraction line prints the window now enforced")
                     .anyMatch(line -> line.contains("LINK_LOST death hint retracted")
                                       && line.contains("effective suspect window now " + enforced + "ms"));
@@ -584,19 +568,15 @@ class SwimDeathPathCoConfirmationTest {
                 // PEER_UNRESPONSIVE only: a PeerReachable has no LINK_LOST hint to retract and logs nothing.
                 protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
                 protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
-                assertThat(appender.messages.stream().filter(line -> line.contains("LINK_LOST death hint retracted")))
+                assertThat(capture.messages().stream().filter(line -> line.contains("LINK_LOST death hint retracted")))
                     .as("No LINK_LOST retraction is journaled when no LINK_LOST hint was recorded")
                     .hasSize(1);
 
                 protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A));
-                assertThat(appender.messages)
+                assertThat(capture.messages())
                     .as("The pong retraction line prints the window now enforced")
                     .anyMatch(line -> line.contains("PEER_UNRESPONSIVE death hint retracted")
                                       && line.contains("effective suspect window now " + enforced + "ms"));
-            } finally {
-                configuration.removeLogger(SWIM_LOGGER);
-                context.updateLoggers();
-                appender.stop();
             }
         }
 
@@ -816,19 +796,6 @@ class SwimDeathPathCoConfirmationTest {
     record SentMessage(InetSocketAddress target, SwimMessage message) {}
 
     record FaultyCall(NodeId nodeId, boolean firstHand) {}
-
-    /// In-memory log4j2 appender capturing formatted messages for journal-line assertions.
-    static final class CapturingAppender extends AbstractAppender {
-        final CopyOnWriteArrayList<String> messages = new CopyOnWriteArrayList<>();
-
-        CapturingAppender(String name) {
-            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        @Override public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-    }
 
     static class RecordingTransport implements SwimTransport {
         final CopyOnWriteArrayList<SentMessage> sentMessages = new CopyOnWriteArrayList<>();

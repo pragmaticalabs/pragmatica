@@ -3,6 +3,9 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.config;
 
+import org.pragmatica.lang.Option;
+
+
 /// Blueprint build-time validation configuration.
 ///
 /// Controls whether `GenerateBlueprintMojo` validates the presence of schema migration
@@ -19,6 +22,18 @@ public record BlueprintConfig(SchemaMode schema) {
         REQUIRED,
         EXTERNAL,
         OPTIONAL;
+        public static final String ALLOWED = "one of: required, external, optional";
+        /// The mode a config file names, or empty for a token that names none; the config parser refuses
+        /// it (#1455) instead of falling back to [#REQUIRED].
+        public static Option<SchemaMode> schemaMode(String value) {
+            return switch (value.toLowerCase()
+                                .trim()) {
+                case "required" -> Option.some(REQUIRED);
+                case "external" -> Option.some(EXTERNAL);
+                case "optional" -> Option.some(OPTIONAL);
+                default -> Option.none();
+            };
+        }
         public static SchemaMode fromString(String value) {
             return switch (value.toLowerCase()
                                 .trim()) {

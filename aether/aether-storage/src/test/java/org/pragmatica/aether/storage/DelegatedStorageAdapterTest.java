@@ -3,21 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.storage;
 
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.stream.Collectors;
-
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +12,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.StorageGarbageCollector;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.storage.DelegatedStorageAdapter.delegatedStorageAdapter;
@@ -38,32 +25,16 @@ import static org.pragmatica.lang.Unit.unit;
 /// Log-capture strategy follows `ClusterTopologyManagerCasLossLoggingTest`: attach a log4j2
 /// programmatic appender to the adapter's own logger and assert on captured WARN messages.
 class DelegatedStorageAdapterTest {
-    private static final String LOGGER_NAME = DelegatedStorageAdapter.class.getName();
-
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("DelegatedStorageAdapterCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        loggerConfig = getOrCreateLoggerConfig(configuration);
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(DelegatedStorageAdapter.class, Level.WARN, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     @Test
@@ -72,7 +43,7 @@ class DelegatedStorageAdapterTest {
 
         adapter.activate().await();
 
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
             .as("a failing demotion-manager activate() must be logged, not discarded")
             .anyMatch(msg -> msg.contains("demotion boom"));
     }
@@ -93,10 +64,9 @@ class DelegatedStorageAdapterTest {
         var adapter = delegatedStorageAdapter(succeedingDemotionManager(), failingGarbageCollector("gc boom"));
 
         adapter.activate().await();
-        appender.clear();
         adapter.deactivate().await();
 
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
             .as("a failing garbage-collector deactivate() must be logged, not discarded")
             .anyMatch(msg -> msg.contains("gc boom"));
     }
@@ -296,44 +266,5 @@ class DelegatedStorageAdapterTest {
                 return false;
             }
         };
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-        configuration.addLogger(LOGGER_NAME, fresh);
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            var layout = PatternLayout.createDefaultLayout();
-            return new CapturingAppender(name, layout);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedWarns() {
-            return messages.stream().collect(Collectors.toUnmodifiableList());
-        }
-
-        void clear() {
-            messages.clear();
-        }
     }
 }

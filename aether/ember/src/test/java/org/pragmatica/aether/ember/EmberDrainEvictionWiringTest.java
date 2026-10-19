@@ -19,16 +19,6 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -39,6 +29,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -128,8 +119,8 @@ class EmberDrainEvictionWiringTest {
         var leader = awaitLeader();
         var drainee = NodeId.nodeId("drainee-evict-" + UUID.randomUUID()).unwrap();
         var drainingAtEvictionEntry = new java.util.concurrent.atomic.AtomicBoolean();
-        var capture = EvictionLogCapture.attach(message -> {
-            if (message.contains("Starting drain eviction for node " + drainee)) {
+        var capture = LogCapture.capture(ACTIVE_LOGGER, Level.INFO, true, event -> {
+            if (event.getMessage().getFormattedMessage().contains("Starting drain eviction for node " + drainee)) {
                 drainingAtEvictionEntry.set(leader.metricsCollector().reportedStates().get(drainee) == NodeReportedState.DRAINING);
             }
         });
@@ -148,20 +139,20 @@ class EmberDrainEvictionWiringTest {
             awaitCondition("the DRAINING pong must start the leader-side drain eviction — the registration in "
                            + "assembleNode is the only production path to it",
                            System.currentTimeMillis() + EVICTION_BOUND_MS,
-                           () -> capture.contains(started),
+                           () -> contains(capture, started),
                            capture::messages);
             awaitCondition("the loop must RUN, not merely log its entry: with no slice on the drainee its "
                            + "terminal step is completeDrain",
                            System.currentTimeMillis() + EVICTION_BOUND_MS,
-                           () -> capture.contains(completed),
+                           () -> contains(capture, completed),
                            capture::messages);
 
-            assertThat(capture.messagesBefore(started))
+            assertThat(messagesBefore(capture.messages(), started))
                 .describedAs("the eviction must be attributed to the pong, not to a reconcile tick that "
                              + "happened to land inside the bound")
                 .noneMatch(message -> message.contains(RESUME_MARKER));
         } finally {
-            capture.detach();
+            capture.close();
         }
     }
 
@@ -207,91 +198,19 @@ class EmberDrainEvictionWiringTest {
                                    1L, 0L, 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
     }
 
-    /// Log4j2 programmatic appender over the eviction loop's own logger, capturing INFO in arrival
-    /// order — the order is what carries the producer attribution above.
-    private static final class EvictionLogCapture extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-        private final LoggerConfig loggerConfig;
-        private final Level originalLevel;
-        private final java.util.function.Consumer<String> observation;
-
-        private EvictionLogCapture(Layout<?> layout, LoggerConfig loggerConfig, Level originalLevel,
-                                   java.util.function.Consumer<String> observation) {
-            super(ACTIVE_LOGGER + "-eviction-capture", (Filter) null, layout, true, Property.EMPTY_ARRAY);
-            this.loggerConfig = loggerConfig;
-            this.originalLevel = originalLevel;
-            this.observation = observation;
-        }
-
-        static EvictionLogCapture attach(java.util.function.Consumer<String> observation) {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-            var capture = new EvictionLogCapture(PatternLayout.createDefaultLayout(),
-                                                 loggerConfig,
-                                                 loggerConfig.getLevel(), observation);
-
-            capture.start();
-            loggerConfig.addAppender(capture, Level.INFO, null);
-            loggerConfig.setLevel(Level.INFO);
-            ctx.updateLoggers();
-
-            return capture;
-        }
-
-        void detach() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            loggerConfig.removeAppender(getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            stop();
-        }
-
-        List<String> messages() {
-            return List.copyOf(messages);
-        }
-
-        boolean contains(String text) {
-            return messages().stream()
-                             .anyMatch(message -> message.contains(text));
-        }
-
-        /// Every message logged before the first occurrence of `text`; empty if it has not arrived.
-        List<String> messagesBefore(String text) {
-            var snapshot = messages();
-
-            for (var index = 0; index < snapshot.size(); index++) {
-                if (snapshot.get(index)
-                            .contains(text)) {
-                    return snapshot.subList(0, index);
-                }
-            }
-
-            return List.of();
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.INFO)) {
-                var message = event.getMessage().getFormattedMessage();
-                observation.accept(message);
-                messages.add(message);
-            }
-        }
-
-        private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER);
-
-            if (ACTIVE_LOGGER.equals(existing.getName())) {
-                return existing;
-            }
-
-            var fresh = new LoggerConfig(ACTIVE_LOGGER, Level.INFO, true);
-
-            configuration.addLogger(ACTIVE_LOGGER, fresh);
-
-            return fresh;
-        }
+    private static boolean contains(LogCapture capture, String text) {
+        return capture.messages().stream().anyMatch(message -> message.contains(text));
     }
 
+    /// Every message logged before the first occurrence of `text`; empty if it has not arrived. Arrival order is what
+    /// carries the producer attribution.
+    private static List<String> messagesBefore(List<String> snapshot, String text) {
+        for (var index = 0; index < snapshot.size(); index++) {
+            if (snapshot.get(index).contains(text)) {
+                return snapshot.subList(0, index);
+            }
+        }
+
+        return List.of();
+    }
 }

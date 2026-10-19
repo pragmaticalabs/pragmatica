@@ -62,6 +62,20 @@ class CommunityPlacementParserTest {
         assertThat(ClusterBootstrapConfigParser.parse(BASE + POLICY.replace("minimum = 3", "minimum = 11")).isFailure()).isTrue();
     }
 
+    /// #1455: a mistyped `minimum` / `weight` took its default (0 / 1) and the placement parsed.
+    @Test
+    void parse_mistypedMinimumOrWeight_isRefusedNamingKeyAndValue() {
+        assertRefused(POLICY.replace("minimum = 3", "minimum = \"three\""), "minimum", "three");
+        assertRefused(POLICY.replace("weight = 2", "weight = \"heavy\""), "weight", "heavy");
+    }
+
+    private static void assertRefused(String policy, String key, String raw) {
+        ClusterBootstrapConfigParser.parse(BASE + policy)
+                                    .onSuccess(config -> org.junit.jupiter.api.Assertions.fail(key + " = \"" + raw + "\" must refuse, parsed " + config))
+                                    .onFailure(cause -> assertThat(cause.message()).contains(key)
+                                                                                   .contains(raw));
+    }
+
     @Test
     void diff_policyChangeIsVisibleToApply() {
         var before = ClusterBootstrapConfigParser.parse(BASE + POLICY).unwrap();
