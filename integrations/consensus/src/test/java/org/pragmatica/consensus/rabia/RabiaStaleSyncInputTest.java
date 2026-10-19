@@ -100,6 +100,44 @@ class RabiaStaleSyncInputTest {
         assertThat(engine.isObserving()).as("the quorum ACTIVE resumes it as an observer").isTrue();
     }
 
+    @Test void aSyncRequestGoingOut_opensTheRound_forTheEpisodeStart() throws Exception {
+        engine = newEngine(false);
+        setSyncRoundOpen(false);
+
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        respond(B);
+        respond(C);
+        settle();
+
+        assertThat(engine.isActive()).as("the episode start sent a request: its answers are accepted").isTrue();
+    }
+
+    @Test void aSyncRequestGoingOut_opensTheRound_forTheRetryTick() throws Exception {
+        engine = newEngine(false);
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        setSyncRoundOpen(false);
+
+        var tick = RabiaEngine.class.getDeclaredMethod("synchronize");
+
+        tick.setAccessible(true);
+        tick.invoke(engine);
+        settle();
+        respond(B);
+        respond(C);
+        settle();
+
+        assertThat(engine.isActive()).as("the retry tick sent a request: its answers are accepted").isTrue();
+    }
+
+    private void setSyncRoundOpen(boolean open) throws Exception {
+        var field = RabiaEngine.class.getDeclaredField("syncRoundOpen");
+
+        field.setAccessible(true);
+        field.setBoolean(engine, open);
+    }
+
     private void respond(NodeId peer) {
         engine.processSyncResponse(new SyncResponse<>(peer, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
     }
