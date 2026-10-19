@@ -17,6 +17,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.Result.success;
@@ -356,7 +357,7 @@ public final class ConfigValidator {
     private static Option<String> invalidPath(String fileType, String key, String raw) {
         return raw.isBlank()
                ? Option.none()
-               : Result.lift(cause -> cause, () -> Path.of(raw))
+               : Result.lift(Causes::fromThrowable, () -> Path.of(raw))
                        .fold(_ -> Option.some(fileType + " path is invalid (" + key + "): '" + printable(raw) + "'"),
                              _ -> Option.<String> none());
     }
