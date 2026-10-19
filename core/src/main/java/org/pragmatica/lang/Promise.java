@@ -2951,7 +2951,6 @@ public sealed interface Promise<T> permits PromiseImpl {
 
     Promise<Unit> UNIT = Promise.resolved(unitResult());
 
-
     CoreError.Cancelled PROMISE_CANCELLED = new CoreError.Cancelled("Promise cancelled");
 
     /// Helper interface for convenient tuple transformation.
