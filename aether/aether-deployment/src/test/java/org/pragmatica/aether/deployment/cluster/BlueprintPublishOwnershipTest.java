@@ -849,14 +849,14 @@ class BlueprintPublishOwnershipTest {
                 [streams.order-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
 
                 [streams.consumer-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
                 """;
 
         /// `consistency_mode` is the record-binder spelling that reached the runtime before #1549. The stream
@@ -866,8 +866,8 @@ class BlueprintPublishOwnershipTest {
                 [streams.order-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
                 consistency_mode = "strong"
                 """;
 

@@ -323,7 +323,7 @@ class StreamResourceValidatorTest {
     }
 
     /// #576: `[streams.X]`/`[streams.X.consumers.Y]` keys that parse cleanly but never reach the
-    /// runtime (encryption-key-id, compression, a non-"earliest" auto-offset-reset, and every
+    /// runtime (encryption_key_id, compression, a non-"earliest" auto_offset_reset, and every
     /// per-consumer tuning key) are rejected here instead of silently accepted — see
     /// [StreamResourceValidator#guardInertConfig]. Only non-default values trip the guard; a key
     /// equal to the hardcoded default asserts nothing false.
@@ -334,7 +334,7 @@ class StreamResourceValidatorTest {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
-                    encryption-key-id = "kms-key-7"
+                    encryption_key_id = "kms-key-7"
                     """;
 
             var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
@@ -437,7 +437,7 @@ class StreamResourceValidatorTest {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
-                    auto-offset-reset = "latest"
+                    auto_offset_reset = "latest"
                     """;
 
             var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
@@ -455,7 +455,7 @@ class StreamResourceValidatorTest {
                     version = "1.0.0"
 
                     [streams.orders.consumers.billing]
-                    batch-size = 50
+                    batch_size = 50
                     """;
 
             var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
@@ -473,13 +473,13 @@ class StreamResourceValidatorTest {
                     version = "1.0.0"
 
                     [streams.orders.consumers.billing]
-                    batch-size = 50
+                    batch_size = 50
                     processing = "parallel"
-                    on-failure = "skip"
-                    checkpoint-interval = "5s"
-                    max-retries = 10
-                    dead-letter = "orders-dlq"
-                    read-preference = "nearest"
+                    on_failure = "skip"
+                    checkpoint_interval = "5s"
+                    max_retries = 10
+                    dead_letter = "orders-dlq"
+                    read_preference = "nearest"
                     """;
 
             var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
@@ -499,16 +499,16 @@ class StreamResourceValidatorTest {
                     [streams.orders]
                     version = "1.0.0"
                     compression = "none"
-                    auto-offset-reset = "earliest"
+                    auto_offset_reset = "earliest"
 
                     [streams.orders.consumers.billing]
-                    batch-size = 1
+                    batch_size = 1
                     processing = "ordered"
-                    on-failure = "retry"
-                    checkpoint-interval = "1s"
-                    max-retries = 3
-                    dead-letter = ""
-                    read-preference = "governor"
+                    on_failure = "retry"
+                    checkpoint_interval = "1s"
+                    max_retries = 3
+                    dead_letter = ""
+                    read_preference = "governor"
                     """;
 
             var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
@@ -537,16 +537,16 @@ class StreamResourceValidatorTest {
     class DescopedRefusalWording {
         /// Every key `guardInertConfig` refuses, enumerated from the validator's own branches:
         /// 3 stream-level (`guardStreamConfig`) + 7 per-consumer (`guardConsumerConfig`).
-        private static final List<String> ALL_INERT_KEYS = List.of("encryption-key-id",
+        private static final List<String> ALL_INERT_KEYS = List.of("encryption_key_id",
                                                                    "compression",
-                                                                   "auto-offset-reset",
-                                                                   "batch-size",
+                                                                   "auto_offset_reset",
+                                                                   "batch_size",
                                                                    "processing",
-                                                                   "on-failure",
-                                                                   "checkpoint-interval",
-                                                                   "max-retries",
-                                                                   "dead-letter",
-                                                                   "read-preference");
+                                                                   "on_failure",
+                                                                   "checkpoint_interval",
+                                                                   "max_retries",
+                                                                   "dead_letter",
+                                                                   "read_preference");
 
         /// Wording that would tell an operator the feature is merely unimplemented-for-now. The
         /// first two entries are verbatim fragments of what the consumer refusal said before #677,
@@ -563,18 +563,18 @@ class StreamResourceValidatorTest {
         private static final String EVERY_INERT_KEY = """
                 [streams.orders]
                 version = "1.0.0"
-                encryption-key-id = "kms-key-7"
+                encryption_key_id = "kms-key-7"
                 compression = "lz4"
-                auto-offset-reset = "latest"
+                auto_offset_reset = "latest"
 
                 [streams.orders.consumers.billing]
-                batch-size = 50
+                batch_size = 50
                 processing = "parallel"
-                on-failure = "skip"
-                checkpoint-interval = "5s"
-                max-retries = 10
-                dead-letter = "orders-dlq"
-                read-preference = "nearest"
+                on_failure = "skip"
+                checkpoint_interval = "5s"
+                max_retries = 10
+                dead_letter = "orders-dlq"
+                read_preference = "nearest"
                 """;
 
         @Test
@@ -593,21 +593,21 @@ class StreamResourceValidatorTest {
 
         @Test
         void descopedConsumerRefusalStatesNotSupportedInOneZero() {
-            assertThat(refusalNaming("batch-size")).contains("not supported in 1.0");
+            assertThat(refusalNaming("batch_size")).contains("not supported in 1.0");
         }
 
-        /// The #478 `auto-offset-reset` refusal is permanent, not descoped, so it must not claim a
+        /// The #478 `auto_offset_reset` refusal is permanent, not descoped, so it must not claim a
         /// 1.0 descope — the control that keeps the two assertions above from being satisfied by a
         /// blanket sentence appended to every refusal.
         @Test
         void permanentAutoOffsetResetRefusalClaimsNoDescope() {
-            assertThat(refusalNaming("auto-offset-reset")).doesNotContain("not supported in 1.0")
+            assertThat(refusalNaming("auto_offset_reset")).doesNotContain("not supported in 1.0")
                                                           .contains("#478");
         }
 
         @Test
         void descopedRefusalsPromiseNoPendingWiring() {
-            List.of(refusalNaming("compression"), refusalNaming("batch-size"))
+            List.of(refusalNaming("compression"), refusalNaming("batch_size"))
                 .forEach(message -> PENDING_WIRING_PROMISES.forEach(promise -> assertThat(message).as("pending-wiring promise '%s'", promise)
                                                                                                   .doesNotContain(promise)));
         }
