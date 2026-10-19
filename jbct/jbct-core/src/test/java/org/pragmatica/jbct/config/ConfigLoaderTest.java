@@ -463,6 +463,41 @@ class ConfigLoaderTest {
                           "one of: required, external, optional");
         }
 
+        /// An explicit config path names exactly the file the operator wants: a missing file is a refusal, not
+        /// "no layer" (a discovered `jbct.toml` that does not exist still is none).
+        @Test
+        void load_refusesNamingThePath_whenExplicitConfigDoesNotExist() throws Exception {
+            var root = repositoryRoot("repo", "[format]\nmaxLineLength = 100\n");
+            var missing = tempDir.resolve("does-not-exist.toml");
+
+            assertRefused(ConfigLoader.load(Option.some(missing), Option.some(root)), missing, "does not exist");
+            assertRefused(ConfigLoader.load(Option.some(tempDir), Option.some(root)), tempDir, "regular file");
+            assertThat(ConfigLoader.load(Option.none(), Option.some(tempDir.resolve("nowhere"))).isSuccess()).isTrue();
+        }
+
+        /// `Result.allOf` wraps failures in a composite whose message starts `Composite:`; the user-facing message
+        /// is one line per bad layer.
+        @Test
+        void load_messageIsOneLinePerLayer_withoutTheCompositeWrapper() throws Exception {
+            writeUserConfig("[lint]\nfailOnWarning = \"yes\"\n");
+            var project = repositoryRoot("project", "[format]\nindentSize = \"four\"\n");
+            var userFile = tempDir.resolve("home").resolve(ConfigLoader.USER_CONFIG_DIR).resolve(ConfigLoader.USER_CONFIG_NAME);
+            var one = repositoryRoot("one", "[format]\nindentSize = \"four\"\n");
+
+            ConfigLoader.load(Option.none(), Option.some(project))
+                        .onSuccess(config -> org.junit.jupiter.api.Assertions.fail("must refuse"))
+                        .onFailure(cause -> assertThat(cause.message()).doesNotContain("Composite")
+                                                                       .contains(userFile.toString())
+                                                                       .contains(project.resolve(ConfigLoader.PROJECT_CONFIG_NAME).toString())
+                                                                       .hasLineCount(2));
+            Files.delete(userFile);
+            ConfigLoader.load(Option.none(), Option.some(one))
+                        .onSuccess(config -> org.junit.jupiter.api.Assertions.fail("must refuse"))
+                        .onFailure(cause -> assertThat(cause.message()).doesNotContain("Composite")
+                                                                       .startsWith("Invalid JBCT configuration")
+                                                                       .hasLineCount(1));
+        }
+
         @Test
         void load_namesEveryBadLayer_whenSeveralAreInvalid() throws Exception {
             writeUserConfig("[lint]\nfailOnWarning = \"yes\"\n");

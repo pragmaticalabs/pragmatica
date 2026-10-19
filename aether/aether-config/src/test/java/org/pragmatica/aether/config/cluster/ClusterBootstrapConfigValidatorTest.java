@@ -103,9 +103,13 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigWithOverlay(Map<String, Object> appHttp) {
+        return cloudConfigWithOverlaySections(Map.of("app-http", appHttp));
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithOverlaySections(Map<String, Map<String, Object>> sections) {
         var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
-        var overlay = new TomlDocument(Map.of("app-http", appHttp));
+        var overlay = new TomlDocument(sections);
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
@@ -615,6 +619,34 @@ class ClusterBootstrapConfigValidatorTest {
             assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isFailure())
                 .as("the node refuses the padded-enabled file").isTrue();
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "false")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-35"));
+        }
+
+        /// PF-35 is general (#1455): the node's own loader judges the composed node_config, so every key the node refuses is refused
+        /// before provisioning, not only `[app-http] enabled`.
+        @Test
+        void validate_anyNodeConfigTheNodeRefuses_returnsPf35NamingTheKey() {
+            var refused = List.of(
+                Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", "yes")),
+                Map.<String, Map<String, Object>>of("ttm", Map.<String, Object>of("enabled", "on")),
+                Map.<String, Map<String, Object>>of("app-http", Map.<String, Object>of("protocol", "h2")),
+                Map.<String, Map<String, Object>>of("timeouts.invocation", Map.<String, Object>of("timeout", "fast")),
+                Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("nodes", "many")));
+            var keys = List.of("cluster.tls", "ttm.enabled", "app-http.protocol", "timeouts.invocation.timeout", "cluster.nodes");
+
+            for (var i = 0; i < refused.size(); i++) {
+                var key = keys.get(i);
+
+                validate(cloudConfigWithOverlaySections(refused.get(i)))
+                    .onSuccess(v -> Assertions.fail("Expected PF-35 for " + key))
+                    .onFailure(cause -> assertThat(cause.message()).as(key).contains("PF-35").contains(key));
+            }
+        }
+
+        @Test
+        void validate_nodeConfigTheNodeAccepts_isNotPf35() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
+                                                                                         "app-http", Map.<String, Object>of("protocol", "h1", "enabled", "TRUE"))))
                 .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-35"));
         }
 

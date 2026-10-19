@@ -485,7 +485,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         }
     }
 
-    private SliceConfig loadSliceConfig(SliceManifest manifest) {
+    private SliceConfig loadSliceConfig(SliceManifest manifest) throws MojoExecutionException {
         var configFile = manifest.configFile();
 
         if (configFile == null || configFile.isEmpty()) {
@@ -504,12 +504,25 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             return SliceConfig.defaultConfig();
         }
 
-        return SliceConfig.load(configPath)
-                          .onFailure(cause -> getLog().warn("Failed to load config for slice " + manifest.sliceName()
-                                                           + ": " + cause.message()
-                                                           + " - using defaults"))
-                          .onSuccess(_ -> getLog().debug("Loaded config for slice: " + manifest.sliceName()))
-                          .or(SliceConfig.defaultConfig());
+        var loaded = refusingSliceConfig(manifest.sliceName(), configPath);
+
+        getLog().debug("Loaded config for slice: " + manifest.sliceName());
+
+        return loaded;
+    }
+
+    /// #1455: a slice config that cannot be used (syntax error, wrong-typed `instances`) fails the goal naming the
+    /// file; it used to warn and build the blueprint with the default instance count.
+    static SliceConfig refusingSliceConfig(String sliceName, Path configPath) throws MojoExecutionException {
+        var loaded = SliceConfig.load(configPath);
+        var refusal = loaded.fold(cause -> Option.some("Invalid config for slice " + sliceName + " (" + configPath + "): " + cause.message()),
+                                  _ -> Option.<String>none());
+
+        if (refusal.isPresent()) {
+            throw new MojoExecutionException(refusal.unwrap());
+        }
+
+        return loaded.unwrap();
     }
 
     private Option<SliceManifest> loadManifestFromDependency(String groupArtifact, String version) {

@@ -530,7 +530,7 @@ public final class ConfigLoader {
                                                  java.util.function.Consumer<String> overrideNotice,
                                                  java.util.function.Consumer<String> sourceNotice) {
         var sources = new java.util.LinkedHashMap<String, String>();
-        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(raw -> backupEnabled(raw).getOrThrow(IllegalArgumentException::new,
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(raw -> strictBoolean(raw).getOrThrow(IllegalArgumentException::new,
                                                                                                                                                           "invalid [backup] enabled"))
                                .or(false);
 
@@ -1254,7 +1254,7 @@ public final class ConfigLoader {
     @SuppressWarnings("JBCT-RET-07")
     private static void mergeCliOverrides(Map<String, String> overrides, AetherConfig.Builder builder) {
         if (overrides.containsKey("nodes")) {
-            Number.parseInt(overrides.get("nodes")).onSuccess(builder::nodes);
+            builder.nodes(Number.parseInt(overrides.get("nodes")).getOrThrow(IllegalArgumentException::new, "invalid --nodes"));
         }
 
         if (overrides.containsKey("heap")) {
@@ -1262,13 +1262,14 @@ public final class ConfigLoader {
         }
 
         if (overrides.containsKey("tls")) {
-            builder.tls(Boolean.parseBoolean(overrides.get("tls")));
+            builder.tls(strictBoolean(overrides.get("tls")).getOrThrow(IllegalArgumentException::new, "invalid --tls"));
         }
     }
 
     /// #1455: `[backup] enabled = "yes"` (or the environment variable set to it) read as a DISABLED backup and the node ran
-    /// without one; a value that is not `true` or `false` refuses the load like the neighbouring `restore` mode does.
-    private static Result<Boolean> backupEnabled(String raw) {
+    /// without one, and `--tls=yes` turned TLS off; a value that is not `true` or `false` refuses the load like the
+    /// neighbouring `restore` mode does. The CLI overrides use the same parse as the TOML booleans.
+    private static Result<Boolean> strictBoolean(String raw) {
         return switch (raw.toLowerCase()) {
             case "true" -> success(true);
             case "false" -> success(false);
@@ -1278,6 +1279,13 @@ public final class ConfigLoader {
 
     /// The one parse of a boolean setting (`"true"`, any case, exact: no trimming), shared with cluster bootstrap's PF-34 so the bootstrap check
     /// and the node agree on whether `[app-http] enabled` is on.
+    /// Whether a node would load this composed node document, judged by the node's own loader and so by every
+    /// refusal it applies (wrong types, invalid values, removed keys); cluster bootstrap runs it per source so a
+    /// fleet that cannot boot is refused before it is provisioned (PF-35).
+    public static Result<Unit> checkNodeDocument(TomlDocument doc) {
+        return fromDocument(doc).mapToUnit();
+    }
+
     public static boolean toBooleanValue(String s) {
         return "true".equalsIgnoreCase(s);
     }

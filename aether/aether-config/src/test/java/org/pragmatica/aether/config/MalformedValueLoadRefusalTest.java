@@ -291,4 +291,58 @@ class MalformedValueLoadRefusalTest {
             max_read_response_bytes = "8MB"
             """).isSuccess()).isTrue();
     }
+
+    @Test
+    void loadWithOverrides_nonBooleanTlsAndNonNumericNodes_areRefused(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file = dir.resolve("aether.toml");
+
+        java.nio.file.Files.writeString(file, "[cluster]\nenvironment = \"docker\"\nnodes = 3\n");
+
+        assertRefused(ConfigLoader.loadWithOverrides(file, java.util.Map.of("tls", "yes")), "--tls", "yes");
+        assertRefused(ConfigLoader.loadWithOverrides(file, java.util.Map.of("nodes", "abc")), "--nodes", "abc");
+        assertThat(ConfigLoader.loadWithOverrides(file, java.util.Map.of("tls", "false")).unwrap().cluster().tls()).isFalse();
+        assertThat(ConfigLoader.loadWithOverrides(file, java.util.Map.of("tls", "TRUE")).isSuccess()).isTrue();
+        assertThat(ConfigLoader.loadWithOverrides(file, java.util.Map.of("nodes", "5")).unwrap().cluster().nodes()).isEqualTo(5);
+    }
+
+    @Test
+    void operationsTimeouts_unparseable_areRefusedNamingKeyAndWhatIsValid() {
+        var base = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "dev-local"
+            version = "1.0.0"
+
+            [source.local]
+            type = "forge"
+
+            [source.local.core]
+            count = 3
+
+            [operations.timeouts]
+            %s = "%s"
+            """;
+
+        assertRefusedWithAllowed(ClusterBootstrapConfigParser.parse(base.formatted("health_check", "soon")),
+                                 "operations.timeouts.health_check", "soon", "an s, m or h suffix");
+        assertRefusedWithAllowed(ClusterBootstrapConfigParser.parse(base.formatted("quorum_formation", "10d")),
+                                 "operations.timeouts.quorum_formation", "10d", "an s, m or h suffix");
+
+        for (var ok : java.util.List.of("300s", "5m", "1h")) {
+            assertThat(ClusterBootstrapConfigParser.parse(base.formatted("health_check", ok)).isSuccess()).describedAs(ok).isTrue();
+        }
+    }
+
+    /// The accept side: a boolean read through the TOML string accepts any case of true/false.
+    @Test
+    void booleans_acceptAnyCaseOfTrueAndFalse() {
+        assertThat(ConfigLoader.loadFromString(http("").replace("enabled = true", "enabled = \"True\"")).isSuccess()).isTrue();
+        assertThat(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            tls = "FALSE"
+            """).isSuccess()).isTrue();
+    }
 }

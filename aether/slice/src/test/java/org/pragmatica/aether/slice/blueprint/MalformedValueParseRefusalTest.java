@@ -134,6 +134,7 @@ class MalformedValueParseRefusalTest {
                                  "bluegreen",
                                  "one of: rolling, canary, blue-green");
         assertThat(BlueprintParser.parse(blueprint.formatted("blue-green")).isSuccess()).isTrue();
+        assertThat(BlueprintParser.parse(blueprint.formatted("blue_green")).isSuccess()).describedAs("blue_green alias").isTrue();
         assertThat(BlueprintParser.parse(blueprint.formatted("rolling")).isSuccess()).isTrue();
     }
 
@@ -154,6 +155,8 @@ class MalformedValueParseRefusalTest {
                                  "ful",
                                  "one of: strengthen_only, full, none");
         assertThat(BlueprintParser.parse(blueprint.formatted("full")).isSuccess()).isTrue();
+        assertThat(BlueprintParser.parse(blueprint.formatted("none")).isSuccess()).describedAs("none policy").isTrue();
+        assertThat(BlueprintParser.parse(blueprint.formatted("STRENGTHEN_ONLY")).isSuccess()).isTrue();
     }
 
     @Test
@@ -172,7 +175,10 @@ class MalformedValueParseRefusalTest {
         for (var control : List.of(List.of("processing", "ordered"), List.of("processing", "parallel"),
                                    List.of("on-failure", "retry"), List.of("on-failure", "skip"), List.of("on-failure", "stall"),
                                    List.of("read-preference", "governor"), List.of("read-preference", "nearest"),
-                                   List.of("read-preference", "any-replica"), List.of("read-preference", "linearizable"))) {
+                                   List.of("read-preference", "any-replica"), List.of("read-preference", "linearizable"),
+                                   List.of("read-preference", "any"), List.of("read-preference", "replica"),
+                                   List.of("read-preference", "follower"), List.of("read-preference", "follower-only"),
+                                   List.of("read-preference", "linearizable-read"), List.of("read-preference", "strong-read"))) {
             assertThat(StreamConfigParser.parseConsumers(consumer.formatted(control.get(0), control.get(1)), "orders").isSuccess())
                 .describedAs("%s = %s is a documented token", control.get(0), control.get(1))
                 .isTrue();

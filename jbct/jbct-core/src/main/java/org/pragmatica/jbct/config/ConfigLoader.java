@@ -5,9 +5,11 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
@@ -45,9 +47,11 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// A layer that cannot be used fails the load as [ConfigError.LayerInvalid], naming its file: a
     /// syntax error (with its line), an unreadable file, or a key of the wrong TOML type (with its
     /// value). Silently skipping such a layer would let a lower layer or the built-in default win over
-    /// what the operator wrote (#1455). An absent file is not a failure.
+    /// what the operator wrote (#1455). An absent DISCOVERED file is not a failure (most projects have no
+    /// `jbct.toml`); an explicit config path that does not name a regular file is, because the operator
+    /// asked for exactly that file.
     static Result<JbctConfig> load(Option<Path> explicitConfigPath, Option<Path> workingDirectory) {
-        return foldLayers(layerPaths(explicitConfigPath, startDirectory(workingDirectory)));
+        return foldLayers(discoveredLayers(startDirectory(workingDirectory)), explicitConfigPath);
     }
 
     /// Load user-level config from ~/.jbct/config.toml.
@@ -87,8 +91,26 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
         return getUserConfigDir().resolve(USER_CONFIG_NAME);
     }
 
-    private static Result<JbctConfig> foldLayers(List<Path> paths) {
-        return Result.allOf(paths.stream().map(ConfigLoader::parseLayer).toList()).map(ConfigLoader::materialized);
+    private static Result<JbctConfig> foldLayers(List<Path> discovered, Option<Path> explicit) {
+        return Result.allOf(Stream.concat(discovered.stream().map(ConfigLoader::parseLayer),
+                                          explicit.stream().map(ConfigLoader::parseExplicitLayer))
+                                  .toList())
+                     .mapError(ConfigLoader::flattened)
+                     .map(ConfigLoader::materialized);
+    }
+
+    /// `Result.allOf` answers a composite even for one failure, and its message starts with `Composite:`; the
+    /// person running the tool sees one line per bad layer, not the wrapper.
+    private static Cause flattened(Cause cause) {
+        return cause instanceof Causes.CompositeCause composite
+               ? flattenedLayers(composite.stream().toList())
+               : cause;
+    }
+
+    private static Cause flattenedLayers(List<Cause> layers) {
+        return layers.size() == 1
+               ? layers.getFirst()
+               : ConfigError.LayersInvalid.layersInvalid(layers);
     }
 
     private static JbctConfig materialized(List<Option<PartialConfig>> layers) {
@@ -98,11 +120,9 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
                      .materialize();
     }
 
-    private static List<Path> layerPaths(Option<Path> explicitConfigPath, Path startDir) {
-        var inheritedLayers = Stream.concat(userConfigCandidate().stream(),
-                                            findProjectConfigChain(startDir).stream());
-
-        return Stream.concat(inheritedLayers, explicitConfigPath.stream())
+    private static List<Path> discoveredLayers(Path startDir) {
+        return Stream.concat(userConfigCandidate().stream(),
+                             findProjectConfigChain(startDir).stream())
                      .toList();
     }
 
@@ -119,6 +139,12 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
         return FileOps.isRegularFile(path)
                ? readLayer(path).map(Option::some)
                : success(none());
+    }
+
+    private static Result<Option<PartialConfig>> parseExplicitLayer(Path path) {
+        return FileOps.isRegularFile(path)
+               ? readLayer(path).map(Option::some)
+               : ConfigError.LayerInvalid.layerInvalid(path, Causes.cause("the file named by --config does not exist or is not a regular file")).result();
     }
 
     private static Result<PartialConfig> readLayer(Path path) {

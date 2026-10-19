@@ -96,6 +96,28 @@ class ConfigRefusalTest {
     }
 
     @Test
+    void loadConfig_messageHasNoCompositeWrapper() throws Exception {
+        var dir = project("[format]\nmaxLineLength = \"wide\"\n");
+
+        assertThatThrownBy(() -> probeFor(dir).loadConfig()).hasMessageNotContaining("Composite");
+    }
+
+    /// A slice config the loader refuses fails the goal naming the file and the key, instead of warning and building the
+    /// blueprint with the default instance count.
+    @Test
+    void refusingSliceConfig_failsNamingSliceFileAndKey_andLoadsAWellTypedOne() throws Exception {
+        var bad = Files.writeString(tempDir.resolve("bad.toml"), "[blueprint]\ninstances = \"3x\"\n");
+        var good = Files.writeString(tempDir.resolve("good.toml"), "[blueprint]\ninstances = 5\n");
+
+        assertThatThrownBy(() -> GenerateBlueprintMojo.refusingSliceConfig("Hello", bad)).isInstanceOf(MojoExecutionException.class)
+                                                                                         .hasMessageContaining("Hello")
+                                                                                         .hasMessageContaining(bad.toString())
+                                                                                         .hasMessageContaining("blueprint.instances")
+                                                                                         .hasMessageContaining("3x");
+        assertThat(GenerateBlueprintMojo.refusingSliceConfig("Hello", good)).isNotNull();
+    }
+
+    @Test
     void loadBlueprintConfig_loads_whenLayerIsWellTyped() throws Exception {
         var dir = project("[format]\nmaxLineLength = 100\n");
 

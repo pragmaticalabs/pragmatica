@@ -133,6 +133,17 @@ class CliConfigRefusalTest {
                                        .contains(config.toString());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"format", "lint", "check", "score", "shape-census", "obligations"})
+    void command_stopsNamingThePath_whenExplicitConfigDoesNotExist(String command) {
+        var missing = work.resolve("nope.toml");
+
+        assertThat(run(command, missing)).isEqualTo(2);
+        assertThat(err.toString(UTF_8)).contains(missing.toString())
+                                       .contains("does not exist")
+                                       .doesNotContain("Composite");
+    }
+
     /// Positive control: the same invocation with a usable config does not print the refusal, so the
     /// assertions above cannot pass because the harness always fails.
     @ParameterizedTest

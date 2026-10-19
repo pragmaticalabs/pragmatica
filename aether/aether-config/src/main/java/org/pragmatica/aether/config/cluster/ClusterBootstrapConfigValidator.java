@@ -424,7 +424,7 @@ public final class ClusterBootstrapConfigValidator {
         checkIngressProviderSupport(name, source, errors);
         checkPublicManagementWithoutAuth(name, source, managementPort, errors);
         checkJwtWithoutJwks(name, source, errors);
-        checkAppHttpEnabledIsBoolean(name, source, errors);
+        checkNodeConfigLoads(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
     }
 
@@ -492,22 +492,20 @@ public final class ClusterBootstrapConfigValidator {
                                                        + " security_mode."));
     }
 
-    /// PF-35 (#1455) — a node refuses to boot when `[app-http] enabled` is present but is not `true` or `false` (it used to
-    /// read `" true "` or `"yes"` as a disabled server and boot without one). Judged on the same composed document PF-34 reads,
-    /// so the bootstrap check and the node give the same verdict.
-    private static void checkAppHttpEnabledIsBoolean(String name, SourceProfile source, List<String> errors) {
-        composedAppHttp(source).flatMap(ClusterBootstrapConfigValidator::unusableEnabled)
-                       .onPresent(raw -> errors.add("PF-35: Source '" + name
-                                                   + "' sets [app-http] enabled = \"" + raw
-                                                   + "\", which is not true or false. Every node would refuse to start; use a TOML boolean."));
+    /// PF-35 (#1455) — a node refuses to boot on a node config it cannot load: a wrong-typed value, an invalid enumeration
+    /// token, boolean, duration or size, a removed key. Judged by the node's OWN loader on the same composed document PF-34
+    /// reads (global default + source-type default + the source's `node_config`), so the bootstrap check and the node give
+    /// the same verdict for every key, not for one.
+    private static void checkNodeConfigLoads(String name, SourceProfile source, List<String> errors) {
+        composedAppHttp(source).flatMap(ClusterBootstrapConfigValidator::nodeLoadFailure)
+                               .onPresent(problem -> errors.add("PF-35: Source '" + name
+                                                               + "' node_config cannot be loaded by a node: " + problem
+                                                               + ". Every node would refuse to start."));
     }
 
-    private static Option<String> unusableEnabled(TomlDocument doc) {
-        return doc.getBoolean("app-http", "enabled")
-                  .isPresent()
-               ? Option.empty()
-               : doc.rawValue("app-http", "enabled")
-                    .map(String::valueOf);
+    private static Option<String> nodeLoadFailure(TomlDocument composed) {
+        return ConfigLoader.checkNodeDocument(composed)
+                           .fold(cause -> Option.some(cause.message()), _ -> Option.<String> none());
     }
 
     private static Option<TomlDocument> composedAppHttp(SourceProfile source) {
