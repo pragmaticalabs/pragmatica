@@ -874,11 +874,13 @@ public interface TopologyObserver extends TopologyManager {
             /// count stands. The smaller of the view's healthy count and its on-duty voters is used, so neither can inflate.
             private int healthyVoterCount(MembershipView view) {
                 return installedVoters.get()
-                                      .map(voters -> Math.min(view.healthyOnDutyCount(), onDutyVoterCount(view, voters)))
+                                      .map(voters -> Math.min(view.healthyOnDutyCount(),
+                                                              onDutyVoterCount(view, voters)))
                                       .or(view.healthyOnDutyCount());
             }
 
-            private static int onDutyVoterCount(MembershipView view, org.pragmatica.consensus.rabia.VoterConfiguration voters) {
+            private static int onDutyVoterCount(MembershipView view,
+                                                org.pragmatica.consensus.rabia.VoterConfiguration voters) {
                 return (int) view.onDutyMemberIds()
                                  .stream()
                                  .filter(voters::contains)
