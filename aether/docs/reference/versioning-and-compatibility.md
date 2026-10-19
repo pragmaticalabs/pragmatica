@@ -136,6 +136,26 @@ in one rolling upgrade), treat that as unverified and validate it yourself; the 
 canary-wait step is the best available safety net today. See also
 [`known-limitations.md`](known-limitations.md#node-binary-version-skew--no-join-time-version-check-yet).
 
+### Upgrade note: no rollback past the content-store trusted-ref change (#2263)
+
+**Rolling a node back to a binary from before #2263 is unsupported, and loses every content-store name written
+since the upgrade.** Upgrading is safe: names written before it stay readable, and move to the new layout when they
+are next written. The way back is not:
+
+- After the upgrade, the content store writes every name under a trusted ref (`|` + name). Metadata snapshots write
+  ref names percent-escaped, under a `refNames=escaped` header.
+- An older binary does not know that encoding. It reads an escaped name verbatim (`%7Cname`, never `|name`), and it
+  skips every ref line that contains `=`. The content hash it then recomputes over the ref names does not match the
+  stored one, so it rejects every snapshot that holds a name written since the upgrade, and falls back to an older
+  retained snapshot, or to none.
+- Names written since the upgrade are gone. The blocks they named become unreferenced and may be collected. A name
+  rewritten since the upgrade reverts to its pre-upgrade value only if a pre-upgrade snapshot is still retained, and
+  that value's chunks may already have been released.
+
+Pre-GA, this is a decision, not an oversight: a downgrade across this change is not supported.
+[mechanism: `DefaultSnapshotManager.parseRefLine` and `readAndValidateSnapshot` at the pre-change revision;
+`MetadataSnapshot.isValid` hashes the ref names]
+
 ## Reference material
 
 - [`../contributors/envelope-versioning.md`](../contributors/envelope-versioning.md) — envelope
