@@ -12,11 +12,13 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue_ScheduledTaskStateValueCodec;
 import org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -83,7 +85,11 @@ class ScheduledTaskStateValueWireCompatibilityTest {
         var writer = SliceCodec.sliceCodec(CODEC, List.of(LegacyScheduledTaskStateValue.CODEC));
         var older = new KVStore<AetherKey, Object>(MessageRouter.mutable(), writer, writer);
 
-        older.process(older.createBatch(List.of(new Put<>(key("old"), OLD_SHAPE),
+        // A bound row is admitted only under the claim it names, as in a node.
+        var claim = ScheduledTaskClaimValue.claimed(Option.none(), new NodeId("a"), 1, "claim-token", 1);
+
+        older.process(older.createBatch(List.of(new Put<>(AetherKey.ScheduledTaskClaimKey.scheduledTaskClaimKey("bound", ARTIFACT, METHOD), claim),
+                                                new Put<>(key("old"), OLD_SHAPE),
                                                 new Put<>(key("unbound"), UNBOUND),
                                                 new Put<>(key("bound"), UNBOUND.boundTo(Option.some("claim-token"))))));
         var snapshot = older.makeSnapshot().unwrap();
