@@ -107,7 +107,9 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
         var marker = new Marker();
         var network = new Net();
         var engine = new RabiaEngine<KVCommand<AetherKey>>(new Topo(NODE_1, 3), network, core,
-                                                          ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(50).millis(), Option.some(marker)),
+                                                          ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds(), Option.some(marker)),
+                                                          // A 60 s sync retry: a retry tick queued before the first activation would otherwise run on the
+                                                          // Observing engine and send it back to Syncing, which the scenario does not mean to test.
                                                           ConsensusMetrics.noop(), true, RabiaPersistence.inMemory(), timeSpan(50).millis());
         try {
             var announces = new AtomicInteger();
@@ -124,7 +126,7 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
             // after a refusal, so the first poll waits for the restore's announce (the counting hook runs after the
             // server's own) instead of racing it.
             assertThat(await(() -> announces.get() >= 1)).as("phase A: the first restore was announced").isTrue();
-            assertThat(await(() -> pollOnce(engine, server, client, requests, responses, worker))).as("phase A: the worker read the initial projection").isTrue();
+            assertThat(await(() -> pollOnce(engine, server, client, requests, responses, worker))).as("phase A: the worker read the initial projection; errors=%s pending=%s revision=%s observing=%s active=%s paused=%s requests=%s responses=%s", errors, core.hasPendingNotifications(), core.committedRevision(), engine.isObserving(), engine.isActive(), engine.isPaused(), requests.size(), responses.size()).isTrue();
             assertThat(worker.getTyped(configKey, AetherValue.ConfigValue.class).unwrap().value()).isEqualTo("initial");
 
             // phase B: resync while the participation record is unwritable
