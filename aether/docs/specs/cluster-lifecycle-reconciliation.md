@@ -126,6 +126,12 @@ A create whose reservation committed but whose dispatch was abandoned before the
 no-create evidence and released the next time the instance that abandoned it leads. If a different
 instance leads instead, it cannot know the create did not happen and keeps counting it.
 
+Both stalls are operator-attention events with recoveries. A core deficit held open by durable allocations
+for longer than the join grace raises `core-capacity-awaiting-durable` (once per run, by the leader) and
+`core-capacity-durable-resolved` when the allocations stop covering it; an unresolved uncertain create has no
+force-clear, so the event is the only signal. A core replacement refused by admission raises
+`provision-admission-deferred` on the first refusal of a run and `provision-admission-resumed` when a replacement is dispatched.
+
 READINESS_DELAYED distinguishes missed readiness deadlines from changed identity/policy
 preconditions. It does not depend on how a community came to be, so it applies to explicit policies. It preserves identity and allocation, emits the existing operation escalation, and
 resumes when the same target becomes ready and evacuation is safe. The previous worker remains

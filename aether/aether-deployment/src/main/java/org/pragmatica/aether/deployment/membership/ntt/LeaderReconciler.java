@@ -294,7 +294,9 @@ public final class LeaderReconciler {
     /// transient reconnect dip resets it; a genuine departure lets it age past the debounce
     /// window so auto-heal fires.
     private volatile long deficitSinceNanos = UNSET_NANOS;
+
     private static final String DURABLE_STALL_SUBJECT = "core";
+
     private volatile long awaitingDurableSinceNanos = UNSET_NANOS;
     private volatile boolean durableStallRaised;
     /// #336 observability — the provisioning-decision snapshot captured at the END of the most
@@ -1215,7 +1217,8 @@ public final class LeaderReconciler {
                                    int effective,
                                    int configuredCoreCount,
                                    boolean provisioningPermitted) {
-        var awaiting = !provisioningPermitted && effective >= configuredCoreCount && durableCoversDeficit(currentMembers, configuredCoreCount);
+        var awaiting = !provisioningPermitted && effective >= configuredCoreCount && durableCoversDeficit(currentMembers,
+                                                                                                          configuredCoreCount);
 
         if (!awaiting) {
             closeDurableStall();

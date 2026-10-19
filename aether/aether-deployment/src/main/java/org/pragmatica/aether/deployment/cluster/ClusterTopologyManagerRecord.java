@@ -925,8 +925,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Promise<ProvisionDisposition> provisionAccepted(ProvisionDisposition disposition) {
-        return Promise.success(disposition)
-                      .onSuccess(this::resumeAdmission);
+        return Promise.success(disposition).onSuccess(this::resumeAdmission);
     }
 
     /// The recovery of [#recordAdmissionDeferral]: a replacement passed admission and was dispatched.
