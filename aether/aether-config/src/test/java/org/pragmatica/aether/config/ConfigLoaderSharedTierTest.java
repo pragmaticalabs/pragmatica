@@ -300,7 +300,21 @@ class ConfigLoaderSharedTierTest {
         void typoForShared_isRefused_namingIt() {
             assertThat(refusal(S3_SECTION.replace("[storage.content.shared]", "[storage.foo.shard]")).message())
                 .contains("[storage.foo.shard]")
-                .contains("only [storage.<name>.shared] and [storage.encryption] sub-sections are accepted");
+                .contains("only [storage.<name>.shared] and [storage.encryption.keys] sub-sections are accepted");
+        }
+
+        /// O1: the keyring accepts only the `keys` table the loader reads; a typo there would boot with no keys.
+        /// Mutation that reddens it: accept every `[storage.encryption.*]` section again.
+        @Test
+        void typoUnderTheKeyring_isRefused_namingIt() {
+            assertThat(refusal("[storage.encryption]\nactive_key_id = \"k1\"\n[storage.encryption.kyes]\nk1 = \"${secrets:k1}\"\n")
+                           .message()).contains("[storage.encryption.kyes]");
+        }
+
+        @Test
+        void tableNestedUnderTheKeyringKeys_isRefused() {
+            assertThat(refusal("[storage.encryption.keys]\nk1 = \"${secrets:k1}\"\n[storage.encryption.keys.more]\nk2 = \"x\"\n")
+                           .message()).contains("[storage.encryption.keys.more]");
         }
 
         @Test

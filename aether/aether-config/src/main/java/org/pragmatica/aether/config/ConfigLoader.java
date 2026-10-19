@@ -684,10 +684,12 @@ public final class ConfigLoader {
                && "shared".equals(parts[2]);
     }
 
-    /// #249: a `[storage.<name>.<sub>]` section that is neither the keyring (`[storage.encryption...]`) nor a
-    /// shared tier (`[storage.<name>.shared...]`) is refused, naming every such section. Before #249 it was read
+    /// #249: a `[storage.<name>.<sub>]` section that is neither the keyring's key table (`[storage.encryption.keys]`)
+    /// nor a shared tier (`[storage.<name>.shared...]`) is refused, naming every such section. Before #249 it was read
     /// as an instance literally named `<name>.<sub>`; ignoring it instead would let a typo such as
-    /// `[storage.content.shard]` boot without the tier the operator meant to configure.
+    /// `[storage.content.shard]` boot without the tier the operator meant to configure, or `[storage.encryption.kyes]`
+    /// boot with no keys. A section nested under `.shared` is left to the shared tier's own refusals
+    /// ([SharedTierConfig]), which name the offending key.
     private static Result<Unit> refuseUnknownStorageSubSections(TomlDocument doc) {
         var unknown = doc.sectionNames()
                          .stream()
@@ -701,13 +703,20 @@ public final class ConfigLoader {
         return unknown.isEmpty()
                ? Result.unitResult()
                : ConfigError.invalidConfig("Unknown storage sub-sections " + String.join(", ", unknown)
-                                          + ": only [storage.<name>.shared] and [storage.encryption] sub-sections are accepted").result();
+                                          + ": only [storage.<name>.shared] and [storage.encryption.keys] sub-sections are accepted").result();
     }
 
     private static boolean isUnknownSubSection(String[] parts) {
         return parts.length >= 3
-               && !"encryption".equals(parts[1])
-               && !"shared".equals(parts[2]);
+               && !"shared".equals(parts[2])
+               && !isKeyringKeys(parts);
+    }
+
+    /// `[storage.encryption.keys]`, the one keyring sub-section [#populateStorageEncryptionConfig] reads.
+    private static boolean isKeyringKeys(String[] parts) {
+        return parts.length == 3
+               && "encryption".equals(parts[1])
+               && "keys".equals(parts[2]);
     }
 
     /// #249: an explicit blank `disk_path` or `snapshot_path` is refused. It names no directory, and the node places a
