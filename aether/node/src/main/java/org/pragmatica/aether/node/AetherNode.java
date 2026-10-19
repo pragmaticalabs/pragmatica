@@ -9729,16 +9729,7 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onDhtWriterStaleResolved));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
-        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
-                                              request -> demuxHttpForwardRequest(request,
-                                                                                 appHttpServer,
-                                                                                 managementServerRef.get())));
-        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardResponse.class,
-                                              response -> demuxHttpForwardResponse(response,
-                                                                                   appHttpServer,
-                                                                                   managementServerRef.get())));
-        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardNotApplied.class,
-                                              notApplied -> demuxHttpForwardNotApplied(notApplied, appHttpServer)));
+        entries.addAll(httpForwardRouteEntries(appHttpServer, managementServerRef));
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
@@ -9770,6 +9761,23 @@ public interface AetherNode extends ManageableNode {
                                                                            request.requestId(),
                                                                            request.sender());
         }
+    }
+
+    /// The HTTP forward messages, each demuxed by its pipeline (#964). Public only so a test can pin this wiring
+    /// without booting a node: a missing entry, or a demux that drops the app pipeline, fails no other test, it only
+    /// makes forwards wait out their hop timeout (#2244 F1).
+    static List<MessageRouter.Entry<?>> httpForwardRouteEntries(AppHttpServer appHttpServer,
+                                                                AtomicReference<Option<ManagementServer>> managementServerRef) {
+        return List.of(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
+                                                 request -> demuxHttpForwardRequest(request,
+                                                                                    appHttpServer,
+                                                                                    managementServerRef.get())),
+                       MessageRouter.Entry.route(HttpForwardMessage.HttpForwardResponse.class,
+                                                 response -> demuxHttpForwardResponse(response,
+                                                                                      appHttpServer,
+                                                                                      managementServerRef.get())),
+                       MessageRouter.Entry.route(HttpForwardMessage.HttpForwardNotApplied.class,
+                                                 notApplied -> demuxHttpForwardNotApplied(notApplied, appHttpServer)));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
