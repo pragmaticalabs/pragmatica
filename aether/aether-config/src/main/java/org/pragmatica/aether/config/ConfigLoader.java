@@ -1254,7 +1254,8 @@ public final class ConfigLoader {
     @SuppressWarnings("JBCT-RET-07")
     private static void mergeCliOverrides(Map<String, String> overrides, AetherConfig.Builder builder) {
         if (overrides.containsKey("nodes")) {
-            builder.nodes(Number.parseInt(overrides.get("nodes")).getOrThrow(IllegalArgumentException::new, "invalid --nodes"));
+            builder.nodes(Number.parseInt(overrides.get("nodes")).getOrThrow(IllegalArgumentException::new,
+                                                                             "invalid --nodes"));
         }
 
         if (overrides.containsKey("heap")) {

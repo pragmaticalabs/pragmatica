@@ -515,8 +515,10 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     /// file; it used to warn and build the blueprint with the default instance count.
     static SliceConfig refusingSliceConfig(String sliceName, Path configPath) throws MojoExecutionException {
         var loaded = SliceConfig.load(configPath);
-        var refusal = loaded.fold(cause -> Option.some("Invalid config for slice " + sliceName + " (" + configPath + "): " + cause.message()),
-                                  _ -> Option.<String>none());
+        var refusal = loaded.fold(cause -> Option.some("Invalid config for slice " + sliceName
+                                                      + " (" + configPath
+                                                      + "): " + cause.message()),
+                                  _ -> Option.<String> none());
 
         if (refusal.isPresent()) {
             throw new MojoExecutionException(refusal.unwrap());

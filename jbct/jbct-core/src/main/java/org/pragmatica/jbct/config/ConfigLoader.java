@@ -138,7 +138,9 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     private static Result<Option<PartialConfig>> parseExplicitLayer(Path path) {
         return FileOps.isRegularFile(path)
                ? readLayer(path).map(Option::some)
-               : ConfigError.LayerInvalid.layerInvalid(path, Causes.cause("the file named by --config does not exist or is not a regular file")).result();
+               : ConfigError.LayerInvalid.layerInvalid(path,
+                                                       Causes.cause("the file named by --config does not exist or is not a regular file"))
+                                         .result();
     }
 
     private static Result<PartialConfig> readLayer(Path path) {

@@ -498,14 +498,14 @@ public final class ClusterBootstrapConfigValidator {
     /// the same verdict for every key, not for one.
     private static void checkNodeConfigLoads(String name, SourceProfile source, List<String> errors) {
         composedAppHttp(source).flatMap(ClusterBootstrapConfigValidator::nodeLoadFailure)
-                               .onPresent(problem -> errors.add("PF-35: Source '" + name
-                                                               + "' node_config cannot be loaded by a node: " + problem
-                                                               + ". Every node would refuse to start."));
+                       .onPresent(problem -> errors.add("PF-35: Source '" + name
+                                                       + "' node_config cannot be loaded by a node: " + problem
+                                                       + ". Every node would refuse to start."));
     }
 
     private static Option<String> nodeLoadFailure(TomlDocument composed) {
-        return ConfigLoader.checkNodeDocument(composed)
-                           .fold(cause -> Option.some(cause.message()), _ -> Option.<String> none());
+        return ConfigLoader.checkNodeDocument(composed).fold(cause -> Option.some(cause.message()),
+                                                             _ -> Option.<String> none());
     }
 
     private static Option<TomlDocument> composedAppHttp(SourceProfile source) {

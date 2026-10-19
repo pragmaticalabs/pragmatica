@@ -24,9 +24,7 @@ public sealed interface ConfigError extends Cause {
     record LayersInvalid(List<Cause> layers, String message) implements ConfigError {
         public static LayersInvalid layersInvalid(List<Cause> layers) {
             return new LayersInvalid(List.copyOf(layers),
-                                     layers.stream()
-                                           .map(Cause::message)
-                                           .collect(Collectors.joining("\n")));
+                                     layers.stream().map(Cause::message).collect(Collectors.joining("\n")));
         }
     }
 }
