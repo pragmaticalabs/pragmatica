@@ -1,0 +1,5 @@
+### Fixed (2026-10-18 — #1325: prefetch manager bookkeeping is bounded)
+- **`DefaultPrefetchManager` no longer retains observation counters and cooldowns without limit.** A counter is reclaimed after `observationWindowMs` idle (default 5 min), at most `maxTrackedBlocks` blocks are observed at once (default 10,000; a soft cap, concurrent first sightings can overshoot by the number of racing threads), and a cooldown entry is reclaimed once `cooldownMs` has elapsed, without a deactivation. Both knobs are new `PrefetchConfig` fields; the 3-argument factory keeps the defaults.
+- **Trade-off, stated.** Past the cap new blocks are not observed until idle counters are reclaimed, so a newly hot block can go unseen while the table is full of fresh once-read ones. Reclaiming scans the table, so a full table rescans at most once per second.
+- **Ranking reads an immutable snapshot** of the counts, with ties broken by block id, instead of sorting live counters that other threads are incrementing.
+- **Not wired in production.** Nothing outside tests constructs a `PrefetchManager` today, so this bounds a manager that no running node uses yet.

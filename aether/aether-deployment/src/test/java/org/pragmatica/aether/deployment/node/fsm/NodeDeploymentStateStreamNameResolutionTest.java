@@ -99,8 +99,8 @@ class NodeDeploymentStateStreamNameResolutionTest {
             [streams.test-events]
             partitions = 4
             retention = "time"
-            retention-value = "5m"
-            max-event-size = "64KB"
+            retention_value = "5m"
+            max_event_size = "64KB"
             """;
 
     /// #822 round 2 — `resolveStreamName` binds `StreamConfig` through the generic binder. `hasSection` used to

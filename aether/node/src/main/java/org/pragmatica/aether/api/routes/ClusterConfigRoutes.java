@@ -558,8 +558,8 @@ public final class ClusterConfigRoutes implements RouteSource {
                       (_, value) -> {
                           if (value.communityId()
                                    .equals(community)) {
-                          assigned.set(true);
-                      }
+                              assigned.set(true);
+                          }
                       });
 
         return ! assigned.get();

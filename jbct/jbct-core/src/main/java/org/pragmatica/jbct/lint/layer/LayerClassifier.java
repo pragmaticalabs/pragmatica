@@ -22,7 +22,8 @@ import org.pragmatica.lang.Option;
 ///      order (domain, application, adapter, bootstrap).
 ///   2. **Book-layout conventions** — a package is classified by the layer keyword among its dotted
 ///      segments: `domain` -> domain; `application` / `usecase` -> application; `adapter` /
-///      `integration` / `infra` -> adapter; `bootstrap` / `main` -> bootstrap. The deepest
+///      `integration` / `infra` -> adapter; `bootstrap` / `main` -> bootstrap, and a TOP-LEVEL `config` (the book's `config/` wiring package) -> bootstrap. A `config`
+///      nested below another layer segment (`adapter.config`, `domain.config`) stays in that layer. The deepest
 ///      (rightmost) matching segment wins, so a slice's `...registeruser.domain` sub-package reads as
 ///      domain even though it lives under a `usecase` ancestor.
 ///
@@ -47,7 +48,11 @@ public final class LayerClassifier {
                                                                            Map.entry("integration", Layer.ADAPTER),
                                                                            Map.entry("infra", Layer.ADAPTER),
                                                                            Map.entry("bootstrap", Layer.BOOTSTRAP),
-                                                                           Map.entry("main", Layer.BOOTSTRAP));
+                                                                           Map.entry("main", Layer.BOOTSTRAP),
+                                                                           Map.entry("config", Layer.BOOTSTRAP));
+
+    /// The book's wiring package; classifies as bootstrap only when no layer segment precedes it.
+    private static final String CONFIG_SEGMENT = "config";
 
     /// Convention slice-root marker: the immediate child of a `usecase` segment is a slice root.
     private static final String SLICE_CONVENTION_SEGMENT = "usecase";
@@ -160,10 +165,17 @@ public final class LayerClassifier {
         Layer match = null;
 
         for (var segment : packageName.split("\\.")) {
-            match = SEGMENT_LAYERS.getOrDefault(segment, match);
+            if (!isNestedConfig(segment, match)) {
+                match = SEGMENT_LAYERS.getOrDefault(segment, match);
+            }
         }
 
         return Option.option(match);
+    }
+
+    /// `config` is a layer of its own only at the top level; below another layer segment it is that layer's own settings package.
+    private static boolean isNestedConfig(String segment, Layer matchSoFar) {
+        return CONFIG_SEGMENT.equals(segment) && matchSoFar != null;
     }
 
     private Option<String> explicitSliceRoot(String packageName) {

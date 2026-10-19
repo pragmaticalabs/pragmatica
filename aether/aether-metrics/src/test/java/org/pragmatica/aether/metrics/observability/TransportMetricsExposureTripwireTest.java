@@ -65,7 +65,7 @@ class TransportMetricsExposureTripwireTest {
 
     @Test
     void registerTransportMetrics_exposesOnlyElevenOfTheProducedCounters() {
-        assertThat(producedKeys()).as("control: the transport produces 24 snapshot keys plus the boot-token refusals counter").hasSize(25);
+        assertThat(producedKeys()).as("control: the transport produces 27 snapshot keys (24 plus the three #1535 inbound-refusal counters) plus the boot-token refusals counter").hasSize(28);
         assertThat(exposedKeys()).as("TRIPWIRE D-05: exactly these 11 transport counters reach Prometheus; a counter was "
                                      + "registered or removed. Delete this tripwire and enable "
                                      + "registerTransportMetrics_exposesEveryProducedCounter.")
@@ -80,7 +80,7 @@ class TransportMetricsExposureTripwireTest {
                                                             "quic_bytes_received_total",
                                                             "quic_write_failures_total",
                                                             "quic_backpressure_drops_total");
-        assertThat(unexposedKeys()).as("the 14 counters missing from Prometheus").hasSize(14);
+        assertThat(unexposedKeys()).as("the 17 counters missing from Prometheus (14 plus the three #1535 inbound-refusal counters)").hasSize(17);
     }
 
     @Disabled("D-05: enable when every transport counter (QuicTransportMetrics.snapshot() plus boot_token_refusals_total) is "

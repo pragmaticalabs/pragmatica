@@ -76,6 +76,207 @@ class CstAbsorbedFailureRuleTest {
         }
     }
 
+    /// #1568 item 2: the tag must be found in a COMMENT. A string literal spelling it is code, not a recorded reason.
+    @Nested
+    class TagMustBeInAComment {
+        @Test
+        void tagOnlyInAStringLiteral_fires() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   static final String LABEL = "FER";
+
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+                               }
+                               """)).isEqualTo(1);
+        }
+
+        @Test
+        void tagOnlyInAStringLiteralInsideTheMethod_fires() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       log.info("design-out");
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+                               }
+                               """)).isEqualTo(1);
+        }
+    }
+
+    /// #1568 item 2: a comment directly above the method is that method's reason. Before, only the file-level
+    /// proportional count ever credited it, so with two absorptions BOTH methods were flagged, the commented one included.
+    @Nested
+    class CommentAboveTheMethod {
+        @Test
+        void commentAboveOneOfTwo_flagsOnlyTheUncommentedMethod() {
+            var source = """
+                         package demo;
+                         class Sample {
+                             // FER: a notification failure must not fail the buy.
+                             Promise<Unit> notifyBuyer(Confirmation c) {
+                                 return notifier.send(c).recover(_ -> Unit.unit());
+                             }
+
+                             Promise<Unit> publishFact(Confirmation c) {
+                                 return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                             }
+                         }
+                         """;
+            var diagnostics = CstLinter.cstLinter(LintContext.defaultContext())
+                                       .lint(SourceFile.sourceFile(Path.of("Sample.java"), source))
+                                       .or(List.of())
+                                       .stream()
+                                       .filter(diagnostic -> diagnostic.ruleId().equals(RULE))
+                                       .toList();
+
+            assertThat(diagnostics).hasSize(1);
+            assertThat(diagnostics.getFirst().line()).as("the uncommented publishFact").isEqualTo(8);
+        }
+
+        /// D2 of the verifier round: the lines above the method are collected bottom-up, so a multi-line block comment was
+        /// reassembled reversed (`*/` before `/**`) and no comment matched. Each case has two absorbing methods and a reason
+        /// above only the first, so a missed reason shows as 2 findings instead of 1.
+        @Test
+        void multiLineJavadocAboveTheMethod_countsAsItsReason() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   /**
+                                    * FER: a notification failure must not fail the buy.
+                                    */
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
+        @Test
+        void multiLineAnnotationBetweenTheCommentAndTheMethod_commentStillCounts() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   // FER: a notification failure must not fail the buy.
+                                   @SuppressWarnings({"JBCT-UTIL-01",
+                                                      "JBCT-EX-01"})
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
+        @Test
+        void tagQuotedInsideTheComment_stillCounts() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   // "FER": a notification failure must not fail the buy.
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
+        @Test
+        void multiLinePlainBlockCommentAboveTheMethod_countsAsItsReason() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   /*
+                                    * FER: a notification failure must not fail the buy.
+                                    */
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
+        @Test
+        void javadocAndAnnotationAboveTheMethod_countAsItsReason() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   /// BER: the hold is released by its inverse when the charge fails.
+                                   @SuppressWarnings("unused")
+                                   Promise<Unit> releaseHold(Hold h) {
+                                       return holds.release(h).recover(_ -> Unit.unit());
+                                   }
+
+                                   Promise<Unit> publishFact(Confirmation c) {
+                                       return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                                   }
+                               }
+                               """)).isEqualTo(1);
+        }
+
+        @Test
+        void commentSeparatedByABlankLine_isNotTheMethodsReason() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   // FER: about something else entirely.
+
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                                   Promise<Unit> publishFact(Confirmation c) {
+                                       return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                                   }
+                               }
+                               """)).isEqualTo(2);
+        }
+    }
+
+    /// #1568 item 2: BER is Backward Error Recovery (compensate by an inverse); best-effort degradation is FER.
+    @Nested
+    class MessageTeachesTheBookMeaning {
+        @Test
+        void details_defineBerAsBackwardAndFerAsForward() {
+            var details = CstLinter.cstLinter(LintContext.defaultContext())
+                                   .lint(SourceFile.sourceFile(Path.of("Sample.java"), """
+                                                               package demo;
+                                                               class Sample {
+                                                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                                                   }
+                                                               }
+                                                               """))
+                                   .or(List.of())
+                                   .stream()
+                                   .filter(diagnostic -> diagnostic.ruleId().equals(RULE))
+                                   .findFirst()
+                                   .map(Diagnostic::details)
+                                   .orElse("");
+
+            assertThat(details).contains("Backward Error Recovery").contains("Forward Error Recovery");
+            assertThat(details).doesNotContain("best-effort");
+        }
+    }
+
     @Nested
     class NearMisses {
         @Test

@@ -13,8 +13,8 @@
 [streams.test-events]
 partitions = 4
 retention = "time"
-retention-value = "5m"
-max-event-size = "64KB"
+retention_value = "5m"
+max_event_size = "64KB"
 
 [database.testpersistence]
 # Required by PersistenceSlice's PgSqlConnector qualifier (@TestPersistenceDb).

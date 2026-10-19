@@ -516,6 +516,16 @@ public interface AetherNode extends ManageableNode {
     /// "drained" by exit status alone. 78 is `EX_CONFIG` in sysexits(3): the node's configured identity is
     /// unusable, and restarting it unchanged cannot succeed.
     int EXIT_IDENTITY_REFUSED = 78;
+    /// Process exit code when this node's OWN persisted consensus history could not be restored and the
+    /// node stayed fenced in `JOINING` for the whole bound (#1468, [OwnRestoreWatchdog]). 74 is `EX_IOERR` in
+    /// sysexits(3): the node's snapshot could not be read. Restarting it unchanged reads the same snapshot, so
+    /// a supervisor should not (`RestartPreventExitStatus=74`); the node never started with partial state.
+    int EXIT_CONSENSUS_RESTORE_FAILED = 74;
+    /// Process exit code when this node restored (or adopted) consensus state but could not persist it, and stayed
+    /// fenced in `JOINING` for the whole bound (#1516, [OwnRestoreWatchdog]). 75 is `EX_TEMPFAIL` in sysexits(3):
+    /// the failure is the node's storage, not its snapshot, so unlike 74 a restart after the storage fault is fixed
+    /// can succeed (the node re-syncs); a restart on the same fault stops the same way.
+    int EXIT_CONSENSUS_STATE_PERSIST_FAILED = 75;
     /// Process exit code when the SWIM gossip-key divergence gate refuses the boot (#683): gossip arrives
     /// under a key epoch this node does not hold and none has ever decrypted. Production reaches it through
     /// `System.exit` so the node's shutdown hooks run ([GossipKeyDivergenceGuard] measured that path); an
@@ -1131,9 +1141,9 @@ public interface AetherNode extends ManageableNode {
     /// FSM entirely. The FSM holder is deref'd lazily: the registry-backed sinks are wired before
     /// the FSM exists; pre-FSM the registry path alone applies (boot window only).
     @Contract
-    private static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
-                                               AtomicReference<MembershipFsm> membershipFsmRef,
-                                               NodeId target) {
+    static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
+                                       AtomicReference<MembershipFsm> membershipFsmRef,
+                                       NodeId target) {
         drainCommandRegistry.requestDrain(target);
         Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
     }
@@ -1973,6 +1983,27 @@ public interface AetherNode extends ManageableNode {
         if ("Dead".equals(record.toState())) {
             managementServerRef.get().onPresent(server -> server.onMemberDeparted(record.nodeId()));
         }
+    }
+
+    /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the
+    /// drains the topology manager started itself had a removal path. A node that was drained, left and came back under the
+    /// SAME id (ids come from config) was then told to drain again by the same leader. The entry ends with the node's
+    /// departure, on either of two edges: into DEAD (the departure the drain was for), and out of DEAD (a drain commanded on
+    /// an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise be inherited by the
+    /// rejoin). It deliberately does NOT end on DEPARTING back to MEMBER: that edge is the FSM's VIEW refuting or withdrawing
+    /// the drain (a higher-incarnation `SwimHealthy` from a live SWIM refutation, or the #1054 undelivered-drain withdrawal),
+    /// while the command is still in flight and the target is still to be told to drain. Clearing there stops the leader
+    /// pinging the DRAIN and the node never leaves.
+    @Contract
+    static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry,
+                                          MembershipTransitionRecord record) {
+        if (isDrainEpisodeEnd(record)) {
+            drainCommandRegistry.clearDrain(record.nodeId());
+        }
+    }
+
+    private static boolean isDrainEpisodeEnd(MembershipTransitionRecord record) {
+        return "Dead".equals(record.toState()) || "Dead".equals(record.fromState());
     }
 
     @Contract
@@ -3052,6 +3083,16 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public Option<Cause> ownRestoreFailure() {
+                return clusterNode.ownRestoreFailure();
+            }
+
+            @Override
+            public Option<Cause> restoredStateSaveFailure() {
+                return clusterNode.restoredStateSaveFailure();
+            }
+
+            @Override
             public Set<NodeId> coreNodeIds() {
                 return configuredWorker(config)
                        ? membershipFsm.memberDescriptors()
@@ -3814,52 +3855,52 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                  .maxNodes()
                                                                                                                                                  .or(Integer.MAX_VALUE),
                                                                                                                                      new org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler.Actuator() {
-            @Override
-            public Result<String> sourceBinding(SourceName source) {
-                                                                                                                                         return lifecycleManager.sourceBinding(source);
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Result<String> sourceBinding(SourceName source) {
+                                                                                                                                             return lifecycleManager.sourceBinding(source);
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> create(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return clusterTopologyManager.provisionPlacementNode(operation);
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> create(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return clusterTopologyManager.provisionPlacementNode(operation);
+                                                                                                                                         }
 
-            @Override
-            public Promise<Boolean> retirementSafe(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return Promise.success(operation.previousNode()
-                                                                                                                                                                         .map(node -> deploymentMap.byNode(node)
-                                                                                                                                                                                                   .isEmpty())
-                                                                                                                                                                         .or(true));
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Boolean> retirementSafe(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return Promise.success(operation.previousNode()
+                                                                                                                                                                             .map(node -> deploymentMap.byNode(node)
+                                                                                                                                                                                                       .isEmpty())
+                                                                                                                                                                             .or(true));
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> drain(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         operation.previousNode()
-                                                                                                                                                  .onPresent(node -> clusterNode.network()
-                                                                                                                                                                                .send(node,
-                                                                                                                                                                                      new CommunityPlacementMessage.DrainRequested(config.self(),
-                                                                                                                                                                                                                                   operation.operationId())));
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> drain(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             operation.previousNode()
+                                                                                                                                                      .onPresent(node -> clusterNode.network()
+                                                                                                                                                                                    .send(node,
+                                                                                                                                                                                          new CommunityPlacementMessage.DrainRequested(config.self(),
+                                                                                                                                                                                                                                       operation.operationId())));
 
-                                                                                                                                         return Promise.unitPromise();
-                                                                                                                                     }
+                                                                                                                                             return Promise.unitPromise();
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> terminate(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return operation.previousNode()
-                                                                                                                                                         .fold(Promise::unitPromise,
-                                                                                                                                                               node -> lifecycleManager.terminateNode(node,
-                                                                                                                                                                                                      SourceName.sourceNameOrDefault(operation.previousSource())));
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> terminate(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return operation.previousNode()
+                                                                                                                                                             .fold(Promise::unitPromise,
+                                                                                                                                                                   node -> lifecycleManager.terminateNode(node,
+                                                                                                                                                                                                          SourceName.sourceNameOrDefault(operation.previousSource())));
+                                                                                                                                         }
 
-            @Override
-            public Promise<Boolean> previousInstanceExists(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return operation.previousNode()
-                                                                                                                                                         .fold(() -> Promise.success(false),
-                                                                                                                                                               node -> lifecycleManager.instancesForNode(node,
-                                                                                                                                                                                                         SourceName.sourceNameOrDefault(operation.previousSource()))
-                                                                                                                                                                                       .map(instances -> !instances.isEmpty()));
-                                                                                                                                     }
-        },
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Boolean> previousInstanceExists(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return operation.previousNode()
+                                                                                                                                                             .fold(() -> Promise.success(false),
+                                                                                                                                                                   node -> lifecycleManager.instancesForNode(node,
+                                                                                                                                                                                                             SourceName.sourceNameOrDefault(operation.previousSource()))
+                                                                                                                                                                                           .map(instances -> !instances.isEmpty()));
+                                                                                                                                         }
+                                                                                                                                     },
                                                                                                                                      operation -> eventAggregator.emitAsLeader(new ClusterEvent.NodeLifecycleChanged(hlcClock.now(),
                                                                                                                                                                                                                      ClusterEvent.Severity.WARNING,
                                                                                                                                                                                                                      "Community placement requires operator attention: " + operation.detail(),
@@ -4214,20 +4255,20 @@ public interface AetherNode extends ManageableNode {
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
                                                     event -> {
                                                         if (!configuredWorker(config)) {
-                                                        dhtTopologyListener.onNodeJoined(event);
-                                                    }
+                                                            dhtTopologyListener.onNodeJoined(event);
+                                                        }
                                                     }));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                                     event -> {
                                                         if (!configuredWorker(config)) {
-                                                        dhtTopologyListener.onNodeRemoved(event);
-                                                    }
+                                                            dhtTopologyListener.onNodeRemoved(event);
+                                                        }
                                                     }));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                                     event -> {
                                                         if (!configuredWorker(config)) {
-                                                        dhtTopologyListener.onNodeDecommissioned(event);
-                                                    }
+                                                            dhtTopologyListener.onNodeDecommissioned(event);
+                                                        }
                                                     }));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
@@ -4746,10 +4787,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                             descriptor);
                                                                                                                                                      if (membershipFsm.countedMembers()
                                                                                                                                                                       .contains(peer)) {
-                                                                                                                                                     clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
-                                                                                                                                                                                                                                 descriptor.role(),
-                                                                                                                                                                                                                                 hlcClock.now()));
-                                                                                                                                                 }
+                                                                                                                                                         clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
+                                                                                                                                                                                                                                     descriptor.role(),
+                                                                                                                                                                                                                                     hlcClock.now()));
+                                                                                                                                                     }
                                                                                                                                                  }),
                                                                                                   System::nanoTime,
                                                                                                   config.timeouts()
@@ -4796,8 +4837,8 @@ public interface AetherNode extends ManageableNode {
                                                      if (clusterNode.leaderManager()
                                                                     .isLeader() && candidateHealth.request(request.sender(),
                                                                                                            request.communityId())) {
-                                                     sendObservationProbe(clusterNode, request.sender());
-                                                 }
+                                                         sendObservationProbe(clusterNode, request.sender());
+                                                     }
 
                                                      governorAuthority.handle(request)
                                                                       .onSuccess(response -> clusterNode.network()
@@ -4899,6 +4940,8 @@ public interface AetherNode extends ManageableNode {
             // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
             // Here and not on the DEAD-edge listener, which a wiring pin keeps to the unconditional callback.
             closeSliceFloorRefusalOnDeath(managementServerRef, record);
+            // #2063: the drain episode ended (node died, was refuted back to MEMBER, or rejoined); its operator drain entry must not outlive it.
+            clearOperatorDrainOnDeath(drainCommandRegistry, record);
         });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
@@ -6779,183 +6822,183 @@ public interface AetherNode extends ManageableNode {
                                          .flatMap(_ -> RabiaNode.buildAndWireRouter(delegateRouter, allEntries))
                                          .map(_ -> {
                                                   if (config.managementPort() > 0) {
-                                                  var mgmtSecurityEnabled = config.appHttp()
-                                                                                  .securityEnabled();
-                                                  // #573: the false arm must DENY, not permit-all. It previously used the validator now
-                                                  // named `permitAllValidator`, which grants ADMIN + SERVICE to every caller — so a node
-                                                  // whose `[app-http] enabled` was false (the DEFAULT) served an unauthenticated,
-                                                  // fully-privileged Management API. `denyUnlessPublicValidator` refuses anything but a
-                                                  // Public route, and by FAILING rather than succeeding it also lets the
-                                                  // `kvStoreAwareValidator` below consult the cluster's bootstrap admin keys, which the
-                                                  // unconditionally-succeeding grant short-circuited entirely.
-                                                  var configValidator = mgmtSecurityEnabled
-                                                                        ? SecurityValidator.apiKeyValidator(config.appHttp()
-                                                                                                                  .apiKeys())
-                                                                        : SecurityValidator.denyUnlessPublicValidator();
+                                                      var mgmtSecurityEnabled = config.appHttp()
+                                                                                      .securityEnabled();
+                                                      // #573: the false arm must DENY, not permit-all. It previously used the validator now
+                                                      // named `permitAllValidator`, which grants ADMIN + SERVICE to every caller — so a node
+                                                      // whose `[app-http] enabled` was false (the DEFAULT) served an unauthenticated,
+                                                      // fully-privileged Management API. `denyUnlessPublicValidator` refuses anything but a
+                                                      // Public route, and by FAILING rather than succeeding it also lets the
+                                                      // `kvStoreAwareValidator` below consult the cluster's bootstrap admin keys, which the
+                                                      // unconditionally-succeeding grant short-circuited entirely.
+                                                      var configValidator = mgmtSecurityEnabled
+                                                                            ? SecurityValidator.apiKeyValidator(config.appHttp()
+                                                                                                                      .apiKeys())
+                                                                            : SecurityValidator.denyUnlessPublicValidator();
 
-                                                  if (!mgmtSecurityEnabled) {
-                                                  LOG.warn("Management API on port {} has NO configured credentials — non-public routes will be"
-                                                          + " REFUSED unless a cluster bootstrap admin key is present in KV. Set [app-http] enabled"
-                                                          + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
-                                                           config.managementPort());
-                                              }
-                                                  // The OTHER credential-less shape, and until now it had no voice at all. Above is
-                                                  // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
-                                                  // the published image now boots with, since `docker/aether-node/aether.toml` no longer
-                                                  // bakes a key. The node is fail-closed and that is intended, so this is not a
-                                                  // misconfiguration warning; it states WHICH credential is the only way in, because the
-                                                  // alternative is an operator reading 401s with nothing in the log explaining them.
-                                                  //
-                                                  // Deliberately not silent-because-intended: a default applied when nothing was
-                                                  // configured has to be loud, or it becomes the fail-open nobody notices. The precedent
-                                                  // is this repo's own log-and-drop-plus-caller-default, which turned a fail-closed
-                                                  // encryption refusal into a green boot with plaintext.
-                                                  if (mgmtSecurityEnabled && config.appHttp()
-                                                                                   .apiKeys()
-                                                                                   .isEmpty()) {
-                                                  LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
-                                                          + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
-                                                          + " The cluster bootstrap admin key (printed once at formation, derived from the"
-                                                          + " cluster secret) is the only credential this node will accept; it is enumerable and"
-                                                          + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
-                                                          + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
-                                                           config.managementPort());
-                                              }
+                                                      if (!mgmtSecurityEnabled) {
+                                                          LOG.warn("Management API on port {} has NO configured credentials — non-public routes will be"
+                                                                  + " REFUSED unless a cluster bootstrap admin key is present in KV. Set [app-http] enabled"
+                                                                  + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
+                                                                   config.managementPort());
+                                                      }
+                                                      // The OTHER credential-less shape, and until now it had no voice at all. Above is
+                                                      // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
+                                                      // the published image now boots with, since `docker/aether-node/aether.toml` no longer
+                                                      // bakes a key. The node is fail-closed and that is intended, so this is not a
+                                                      // misconfiguration warning; it states WHICH credential is the only way in, because the
+                                                      // alternative is an operator reading 401s with nothing in the log explaining them.
+                                                      //
+                                                      // Deliberately not silent-because-intended: a default applied when nothing was
+                                                      // configured has to be loud, or it becomes the fail-open nobody notices. The precedent
+                                                      // is this repo's own log-and-drop-plus-caller-default, which turned a fail-closed
+                                                      // encryption refusal into a green boot with plaintext.
+                                                      if (mgmtSecurityEnabled && config.appHttp()
+                                                                                       .apiKeys()
+                                                                                       .isEmpty()) {
+                                                          LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
+                                                                  + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
+                                                                  + " The cluster bootstrap admin key (printed once at formation, derived from the"
+                                                                  + " cluster secret) is the only credential this node will accept; it is enumerable and"
+                                                                  + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
+                                                                  + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
+                                                                   config.managementPort());
+                                                      }
 
-                                                  var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
-                                                                                                                      () -> node.kvStore());
-                                                  var managementServer = ManagementServer.managementServer(config.managementPort(),
-                                                                                                           () -> node,
-                                                                                                           entityCheckpointDriver,
-                                                                                                           alertManager,
-                                                                                                           configRegistry,
-                                                                                                           traceStore,
-                                                                                                           logLevelRegistry,
-                                                                                                           dynamicConfigManager,
-                                                                                                           scheduledTaskRegistry,
-                                                                                                           scheduledTaskManager,
-                                                                                                           sliceInvoker,
-                                                                                                           scheduledTaskStateRegistry,
-                                                                                                           config.tls(),
-                                                                                                           mgmtSecurityValidator,
-                                                                                                           mgmtSecurityEnabled,
-                                                                                                           () -> config.appHttp()
-                                                                                                                       .apiKeys(),
-                                                                                                           serverBossGroup,
-                                                                                                           serverWorkerGroup,
-                                                                                                           config.managementHttpProtocol(),
-                                                                                                           config.timeouts()
-                                                                                                                 .forwarding(),
-                                                                                                           Option.some(clusterNode.network()),
-                                                                                                           Option.some(serializer),
-                                                                                                           Option.some(deserializer),
-                                                                                                           target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                                                            membershipFsmRef,
-                                                                                                                                            target),
-                                                                                                           drainCommandRegistry::drainTargets,
+                                                      var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
+                                                                                                                          () -> node.kvStore());
+                                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
+                                                                                                               () -> node,
+                                                                                                               entityCheckpointDriver,
+                                                                                                               alertManager,
+                                                                                                               configRegistry,
+                                                                                                               traceStore,
+                                                                                                               logLevelRegistry,
+                                                                                                               dynamicConfigManager,
+                                                                                                               scheduledTaskRegistry,
+                                                                                                               scheduledTaskManager,
+                                                                                                               sliceInvoker,
+                                                                                                               scheduledTaskStateRegistry,
+                                                                                                               config.tls(),
+                                                                                                               mgmtSecurityValidator,
+                                                                                                               mgmtSecurityEnabled,
+                                                                                                               () -> config.appHttp()
+                                                                                                                           .apiKeys(),
+                                                                                                               serverBossGroup,
+                                                                                                               serverWorkerGroup,
+                                                                                                               config.managementHttpProtocol(),
+                                                                                                               config.timeouts()
+                                                                                                                     .forwarding(),
+                                                                                                               Option.some(clusterNode.network()),
+                                                                                                               Option.some(serializer),
+                                                                                                               Option.some(deserializer),
+                                                                                                               target -> requestDrainThroughFsm(drainCommandRegistry,
+                                                                                                                                                membershipFsmRef,
+                                                                                                                                                target),
+                                                                                                               drainCommandRegistry::drainTargets,
 
-                                                  // #1720: operator drain and shutdown honour the slice minAvailable floor,
-                                                  // as the automatic drain does (same KV-backed guard, same counting rules).
-                                                  NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
-                                                                                            operatorWarningSink));
+                                                      // #1720: operator drain and shutdown honour the slice minAvailable floor,
+                                                      // as the automatic drain does (same KV-backed guard, same counting rules).
+                                                      NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                                                                operatorWarningSink));
 
-                                                  managementServer.setOperatorWarningSink(operatorWarningSink);
-                                                  managementServerRef.set(Option.some(managementServer));
-                                                  // #278: expose the node's real MeterRegistry to slice-facing resource
-                                                  // provisioning so MetricsInterceptorFactory records into the SAME
-                                                  // registry the Management API scrapes, instead of each interceptor
-                                                  // fabricating its own disconnected one.
-                                                  resourceProviderSetup.spiProvider()
-                                                                       .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
-                                                                                                               managementServer.meterRegistry()));
+                                                      managementServer.setOperatorWarningSink(operatorWarningSink);
+                                                      managementServerRef.set(Option.some(managementServer));
+                                                      // #278: expose the node's real MeterRegistry to slice-facing resource
+                                                      // provisioning so MetricsInterceptorFactory records into the SAME
+                                                      // registry the Management API scrapes, instead of each interceptor
+                                                      // fabricating its own disconnected one.
+                                                      resourceProviderSetup.spiProvider()
+                                                                           .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
+                                                                                                                   managementServer.meterRegistry()));
 
-                                                  return new aetherNode(workerMetadataChannel,
-                                                                        config,
-                                                                        delegateRouter,
-                                                                        kvStore,
-                                                                        ownershipEpochHighWater,
-                                                                        sliceRegistry,
-                                                                        sliceStore,
-                                                                        clusterNode,
-                                                                        taskGroupOwnerResolver,
-                                                                        switchableCluster,
-                                                                        nodeDeploymentManager,
-                                                                        clusterDeploymentManager,
-                                                                        endpointRegistry,
-                                                                        httpRouteRegistry,
-                                                                        metricsCollector,
-                                                                        metricsScheduler,
-                                                                        deploymentMetricsCollector,
-                                                                        deploymentMetricsScheduler,
-                                                                        controlLoop,
-                                                                        workerMetricsAggregator,
-                                                                        sliceInvoker,
-                                                                        invocationHandler,
-                                                                        blueprintService,
-                                                                        mavenProtocolHandler,
-                                                                        artifactStore,
-                                                                        invocationMetrics,
-                                                                        controller,
-                                                                        deploymentManager,
-                                                                        abTestManager,
-                                                                        alertManager,
-                                                                        traceStore,
-                                                                        logLevelRegistry,
-                                                                        dynamicConfigManager,
-                                                                        appHttpServer,
-                                                                        ttmManager,
-                                                                        rollbackManager,
-                                                                        scheduledTaskManager,
-                                                                        snapshotCollector,
-                                                                        artifactMetricsCollector,
-                                                                        deploymentMap,
-                                                                        eventAggregator,
-                                                                        streamPartitionManager,
-                                                                        streamSegmentIndex,
-                                                                        streamReadRouter,
-                                                                        streamWriteRouter,
-                                                                        consumerGroupCoordinator,
-                                                                        consumerGroupRegistry,
-                                                                        streamConsumerManager,
-                                                                        Option.some(projectionNodeSupport),
-                                                                        streamNamespacesService,
-                                                                        storageSetups,
-                                                                        clusterTopologyManager,
-                                                                        eventLoopMetricsCollector,
-                                                                        swimHealthDetector,
-                                                                        presenceSampler,
-                                                                        leaderReconciler,
-                                                                        membershipFsm,
-                                                                        quorumLossDetector,
-                                                                        coreAbsenceDetector,
-                                                                        transitionJournal,
-                                                                        startSwimTrigger,
-                                                                        Option.some(managementServer),
-                                                                        discoveryProvider,
-                                                                        certRenewalScheduler,
-                                                                        inFlightTrackerForDrain,
-                                                                        nodeLifecycle,
-                                                                        hlcClock,
-                                                                        dhtClientOption,
-                                                                        Option.some(dhtNode),
-                                                                        effectivePhaseSupplier,
-                                                                        currentGenerationEpochSupplier,
-                                                                        observabilityBaseline,
-                                                                        spokesmanPingLoop,
-                                                                        governorAnnouncerHolder,
-                                                                        streamRetentionEnforcer,
-                                                                        streamConsumerRuntime,
-                                                                        startTimeMs,
-                                                                        swimBootAtMs,
-                                                                        periodicTasks,
-                                                                        kvBackupService,
-                                                                        leaderTerm,
-                                                                        streamReplicationShutdown,
-                                                                        backupRestoreCoordinator::onNodeStopping,
-                                                                        resourceProviderSetup.spiProvider(),
-                                                                        replacementWiring.service(),
-                                                                        upgradeWiring.service());
-                                              }
+                                                      return new aetherNode(workerMetadataChannel,
+                                                                            config,
+                                                                            delegateRouter,
+                                                                            kvStore,
+                                                                            ownershipEpochHighWater,
+                                                                            sliceRegistry,
+                                                                            sliceStore,
+                                                                            clusterNode,
+                                                                            taskGroupOwnerResolver,
+                                                                            switchableCluster,
+                                                                            nodeDeploymentManager,
+                                                                            clusterDeploymentManager,
+                                                                            endpointRegistry,
+                                                                            httpRouteRegistry,
+                                                                            metricsCollector,
+                                                                            metricsScheduler,
+                                                                            deploymentMetricsCollector,
+                                                                            deploymentMetricsScheduler,
+                                                                            controlLoop,
+                                                                            workerMetricsAggregator,
+                                                                            sliceInvoker,
+                                                                            invocationHandler,
+                                                                            blueprintService,
+                                                                            mavenProtocolHandler,
+                                                                            artifactStore,
+                                                                            invocationMetrics,
+                                                                            controller,
+                                                                            deploymentManager,
+                                                                            abTestManager,
+                                                                            alertManager,
+                                                                            traceStore,
+                                                                            logLevelRegistry,
+                                                                            dynamicConfigManager,
+                                                                            appHttpServer,
+                                                                            ttmManager,
+                                                                            rollbackManager,
+                                                                            scheduledTaskManager,
+                                                                            snapshotCollector,
+                                                                            artifactMetricsCollector,
+                                                                            deploymentMap,
+                                                                            eventAggregator,
+                                                                            streamPartitionManager,
+                                                                            streamSegmentIndex,
+                                                                            streamReadRouter,
+                                                                            streamWriteRouter,
+                                                                            consumerGroupCoordinator,
+                                                                            consumerGroupRegistry,
+                                                                            streamConsumerManager,
+                                                                            Option.some(projectionNodeSupport),
+                                                                            streamNamespacesService,
+                                                                            storageSetups,
+                                                                            clusterTopologyManager,
+                                                                            eventLoopMetricsCollector,
+                                                                            swimHealthDetector,
+                                                                            presenceSampler,
+                                                                            leaderReconciler,
+                                                                            membershipFsm,
+                                                                            quorumLossDetector,
+                                                                            coreAbsenceDetector,
+                                                                            transitionJournal,
+                                                                            startSwimTrigger,
+                                                                            Option.some(managementServer),
+                                                                            discoveryProvider,
+                                                                            certRenewalScheduler,
+                                                                            inFlightTrackerForDrain,
+                                                                            nodeLifecycle,
+                                                                            hlcClock,
+                                                                            dhtClientOption,
+                                                                            Option.some(dhtNode),
+                                                                            effectivePhaseSupplier,
+                                                                            currentGenerationEpochSupplier,
+                                                                            observabilityBaseline,
+                                                                            spokesmanPingLoop,
+                                                                            governorAnnouncerHolder,
+                                                                            streamRetentionEnforcer,
+                                                                            streamConsumerRuntime,
+                                                                            startTimeMs,
+                                                                            swimBootAtMs,
+                                                                            periodicTasks,
+                                                                            kvBackupService,
+                                                                            leaderTerm,
+                                                                            streamReplicationShutdown,
+                                                                            backupRestoreCoordinator::onNodeStopping,
+                                                                            resourceProviderSetup.spiProvider(),
+                                                                            replacementWiring.service(),
+                                                                            upgradeWiring.service());
+                                                  }
 
                                                   return node;
                                               });
