@@ -125,4 +125,20 @@ class TomlDocumentTypeMismatchTest {
                ? Option.some("FAST")
                : Option.none();
     }
+
+    /// The ledger belongs to the document INSTANCE: two documents with equal content (equal as records) keep separate ledgers,
+    /// so one parser's wrong-typed read cannot refuse another parser's load of the same text.
+    @Test
+    void ledgers_belongToTheInstance_notToTheContent() {
+        var text = "[server]\nport = \"80x\"\n";
+        var first = parse(text);
+        var second = parse(text);
+
+        assertThat(first).isEqualTo(second);
+        assertThat(first.getInt("server", "port")).isEqualTo(Option.none());
+        assertThat(first.typeMismatches()).hasSize(1);
+        assertThat(second.typeMismatches()).isEmpty();
+        assertThat(second.requireNoTypeMismatches().isSuccess()).isTrue();
+        assertThat(first.requireNoTypeMismatches().isFailure()).isTrue();
+    }
 }

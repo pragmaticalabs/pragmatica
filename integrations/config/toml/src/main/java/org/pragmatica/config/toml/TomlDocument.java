@@ -15,12 +15,14 @@
  */
 package org.pragmatica.config.toml;
 
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.pragmatica.lang.Functions.Fn1;
@@ -53,37 +55,21 @@ import org.pragmatica.lang.Unit;
 /// (`port = "80x"`, `enabled = "yes"`, `tags = "a"`) both read as empty — which is what lets every
 /// `.or(default)` caller apply its default to a value the operator did write (#1455). The getters
 /// keep their shape (they have ~80 `.or(default)` call sites), and instead RECORD each such read on
-/// the document's [TypeMismatchLedger]; a parser checks [#requireNoTypeMismatches()] once after
+/// a ledger kept for the document; a parser checks [#requireNoTypeMismatches()] once after
 /// its reads and fails the load naming every offending key, value and expected type. The ledger is
-/// read-side state, not content: it is fresh on every parsed, merged or [#with]-derived document and
-/// excluded from [#equals] / [#hashCode].
+/// read-side state, not content: it is not a record component, it is fresh on every parsed, merged or
+/// [#with]-derived document (a new instance), and it takes no part in equality.
 ///
-public final class TomlDocument {
+public record TomlDocument(Map<String, Map<String, Object>> sections,
+                           Map<String, List<Map<String, Object>>> tableArrays) {
     /// Empty document constant.
     public static final TomlDocument EMPTY = new TomlDocument(Map.of("", Map.of()),
                                                               Map.of());
 
-    private final Map<String, Map<String, Object>> sections;
-    private final Map<String, List<Map<String, Object>>> tableArrays;
-    private final TypeMismatchLedger ledger = new TypeMismatchLedger();
-
-    /// Content constructor ensuring immutable storage; every document starts with a fresh ledger.
-    ///
-    /// @param sections    Map of section names to their key-value pairs
-    /// @param tableArrays Map of array table names to list of table maps
-    public TomlDocument(Map<String, Map<String, Object>> sections, Map<String, List<Map<String, Object>>> tableArrays) {
-        this.sections = Map.copyOf(sections);
-        this.tableArrays = Map.copyOf(tableArrays);
-    }
-
-    /// Section names to their key-value pairs.
-    public Map<String, Map<String, Object>> sections() {
-        return sections;
-    }
-
-    /// Array table names to their list of table maps.
-    public Map<String, List<Map<String, Object>>> tableArrays() {
-        return tableArrays;
+    /// Canonical constructor ensuring immutable storage.
+    public TomlDocument {
+        sections = Map.copyOf(sections);
+        tableArrays = Map.copyOf(tableArrays);
     }
 
     /// One read that found `section.key` present but not of the type the reader asked for.
@@ -95,9 +81,8 @@ public final class TomlDocument {
         }
     }
 
-    /// Append-only, thread-safe (a document may be read from several threads); equality is by the
-    /// recorded list so two untouched ledgers compare equal.
-    private static final class TypeMismatchLedger {
+    /// Append-only and thread-safe (a document may be read from several threads).
+    private static final class Ledger {
         private final ConcurrentLinkedQueue<TypeMismatch> mismatches = new ConcurrentLinkedQueue<>();
 
         Unit record(String section, String key, String expected, Object raw) {
@@ -106,29 +91,65 @@ public final class TomlDocument {
             return Unit.unit();
         }
 
-        public List<TypeMismatch> snapshot() {
+        List<TypeMismatch> snapshot() {
             return List.copyOf(mismatches);
+        }
+    }
+
+    /// The ledgers of the documents being read, keyed by document IDENTITY and held weakly.
+    ///
+    /// The ledger is read-side state of a document the parsers are reading, not content of it, so it is not a record
+    /// component: equality and the accessors stay content-only, and a derived or merged document (a new instance)
+    /// starts with an empty ledger. A document that never saw a wrong-typed read has no entry at all.
+    private static final class Ledgers {
+        private static final ReferenceQueue<TomlDocument> RECLAIMED = new ReferenceQueue<>();
+        private static final ConcurrentHashMap<IdentityKey, Ledger> BY_DOCUMENT = new ConcurrentHashMap<>();
+
+        private Ledgers() {}
+
+        static Ledger forWriting(TomlDocument document) {
+            drainReclaimed();
+
+            return BY_DOCUMENT.computeIfAbsent(new IdentityKey(document, RECLAIMED), _ -> new Ledger());
+        }
+
+        static List<TypeMismatch> recordedFor(TomlDocument document) {
+            drainReclaimed();
+
+            return Option.option(BY_DOCUMENT.get(new IdentityKey(document, null)))
+                         .map(Ledger::snapshot)
+                         .or(List.of());
+        }
+
+        private static void drainReclaimed() {
+            for (var reclaimed = RECLAIMED.poll(); reclaimed != null; reclaimed = RECLAIMED.poll()) {
+                BY_DOCUMENT.remove(reclaimed);
+            }
+        }
+    }
+
+    private static final class IdentityKey extends WeakReference<TomlDocument> {
+        private final int hash;
+
+        IdentityKey(TomlDocument document, ReferenceQueue<TomlDocument> queue) {
+            super(document, queue);
+            this.hash = System.identityHashCode(document);
         }
 
         @Override
         public boolean equals(Object other) {
-            return other instanceof TypeMismatchLedger that && snapshot().equals(that.snapshot());
+            return this == other || other instanceof IdentityKey key && get() != null && get() == key.get();
         }
 
         @Override
         public int hashCode() {
-            return snapshot().hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return snapshot().toString();
+            return hash;
         }
     }
 
     /// Every typed read so far that found its key present with the wrong type, in read order.
     public List<TypeMismatch> typeMismatches() {
-        return ledger.snapshot();
+        return Ledgers.recordedFor(this);
     }
 
     /// The load-time gate (#1455): `this` when no typed read hit a wrong-typed value, otherwise
@@ -139,23 +160,6 @@ public final class TomlDocument {
         return mismatches.isEmpty()
                ? Result.success(this)
                : new TomlError.TypeMismatches(mismatches).result();
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return other instanceof TomlDocument that
-               && sections.equals(that.sections)
-               && tableArrays.equals(that.tableArrays);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sections, tableArrays);
-    }
-
-    @Override
-    public String toString() {
-        return "TomlDocument[sections=" + sections + ", tableArrays=" + tableArrays + "]";
     }
 
     /// Compatibility constructor for documents without array tables.
@@ -360,7 +364,7 @@ public final class TomlDocument {
         var converted = convert.apply(raw);
 
         if (converted.isEmpty()) {
-            ledger.record(section, key, expected, raw);
+            Ledgers.forWriting(this).record(section, key, expected, raw);
         }
 
         return converted;
