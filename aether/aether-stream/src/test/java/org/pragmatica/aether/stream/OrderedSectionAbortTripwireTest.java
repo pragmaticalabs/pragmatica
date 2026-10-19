@@ -8,7 +8,6 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -162,13 +161,16 @@ class OrderedSectionAbortTripwireTest {
         }
     }
 
-    /// T0 publishes at E1 and, inside its own section, parks a stale-epoch publisher T2 on the section monitor, bumps the
-    /// epoch to E3 reentrantly, then releases. T2 enters with offset 2 and the WAL refuses E1 after E3.
+    /// T0 publishes at E1 and, inside its own section, starts a stale-epoch publisher T2, bumps the epoch to E3 reentrantly,
+    /// then releases. T2 cannot enter before T0 leaves (T0 holds the section monitor), so it enters with offset 2 and the WAL
+    /// refuses E1 after E3. The order is forced by joins, not by timing: `run` joins T0, then T2, and only then publishes the
+    /// E3 record, so no thread can take offset 2 ahead of T2 and no probe of T2's state is needed.
     private final class Race implements ReplicationManager {
         private final Path walDir;
         private final ReplicaRegistry registry = ReplicaRegistry.replicaRegistry();
         private final AtomicInteger sends = new AtomicInteger();
         private final AtomicReference<Result<Long>> stalled = new AtomicReference<>();
+        private final AtomicReference<Thread> staleThread = new AtomicReference<>();
         private StreamPartitionManager manager;
 
         Race(Path walDir) {
@@ -182,6 +184,8 @@ class OrderedSectionAbortTripwireTest {
             t0.start();
             t0.join(TimeUnit.SECONDS.toMillis(30));
             assertThat(t0.isAlive()).as("T0 finished").isFalse();
+            staleThread.get().join(TimeUnit.SECONDS.toMillis(30));
+            assertThat(staleThread.get().isAlive()).as("T2 finished").isFalse();
             manager.publishLocal(STREAM, PARTITION, bytes("e3-after"), 5L, E3).onFailure(cause -> fail(cause.message()));
         }
 
@@ -196,33 +200,15 @@ class OrderedSectionAbortTripwireTest {
 
         @Contract
         private void bumpEpochWhileStalePublisherWaits() {
-            var queued = new CountDownLatch(1);
-            var stale = new Thread(() -> {
-                queued.countDown();
-                stalled.set(manager.publishLocal(STREAM, PARTITION, bytes("e1-stale"), 2L, E1));
-            });
+            var stale = new Thread(() -> stalled.set(manager.publishLocal(STREAM, PARTITION, bytes("e1-stale"), 2L, E1)));
 
+            staleThread.set(stale);
             stale.start();
-            awaitBlocked(stale, queued);
             manager.publishLocal(STREAM, PARTITION, bytes("e3-reentrant"), 3L, E3).onFailure(cause -> fail(cause.message()));
             sends.set(Integer.MIN_VALUE / 2);
-            joinLater(stale);
         }
 
-        /// The stale thread must finish after the section is released, so the join is deferred to a daemon waiter.
-        @Contract
-        private void joinLater(Thread stale) {
-            var waiter = new Thread(() -> joinQuietly(stale));
-
-            waiter.setDaemon(true);
-            waiter.start();
-            pendingJoin = waiter;
-        }
-
-        private Thread pendingJoin;
-
-        boolean stalledOffsetVisibleToReaders() throws InterruptedException {
-            pendingJoin.join(TimeUnit.SECONDS.toMillis(30));
+        boolean stalledOffsetVisibleToReaders() {
             var ring = manager.partitionBuffer(STREAM, PARTITION).unwrap();
 
             return texts(ring.read(0, 10).unwrap()).contains("e1-stale");
@@ -305,27 +291,6 @@ class OrderedSectionAbortTripwireTest {
 
         field.setAccessible(true);
         ((FileChannel) field.get(GatedWalFsync.walOf(manager, STREAM, PARTITION))).close();
-    }
-
-    private static void awaitBlocked(Thread thread, CountDownLatch started) {
-        try {
-            started.await(10, TimeUnit.SECONDS);
-            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-
-            while (thread.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
-                Thread.sleep(5);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private static void joinQuietly(Thread thread) {
-        try {
-            thread.join(TimeUnit.SECONDS.toMillis(30));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 
     private static byte[] bytes(String text) {
