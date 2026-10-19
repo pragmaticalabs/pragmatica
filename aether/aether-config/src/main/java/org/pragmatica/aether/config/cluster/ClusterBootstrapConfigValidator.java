@@ -483,11 +483,10 @@ public final class ClusterBootstrapConfigValidator {
     /// ([ConfigLoader#refuseUnsupportedSecurityModes]) on the COMPOSED document a node loads, so key, value and allowed values read exactly
     /// as the node would report them and the two cannot disagree.
     private static void checkSecurityModesAreSupported(String name, SourceProfile source, List<String> errors) {
-        composedAppHttp(source).onPresent(doc -> ConfigLoader.refuseUnsupportedSecurityModes(doc)
-                                                             .onFailure(cause -> errors.add("PF-24: Source '" + name + "': "
-                                                                                           + cause.message()
-                                                                                           + " Every node would refuse to start on it;"
-                                                                                           + " fix the node_config before provisioning.")));
+        composedAppHttp(source).onPresent(doc -> ConfigLoader.refuseUnsupportedSecurityModes(doc).onFailure(cause -> errors.add("PF-24: Source '" + name
+                                                                                                                               + "': " + cause.message()
+                                                                                                                               + " Every node would refuse to start on it;"
+                                                                                                                               + " fix the node_config before provisioning.")));
     }
 
     /// PF-34 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
