@@ -90,10 +90,12 @@ missing from the complete source listing obtain a node-specific source-bound obs
 Previously observed absent resources can then release their allocations. DISPATCHED allocations
 remain reserved even if both observations are empty. Failed or partial listings establish no absence. Confirm at most 32 missing observed allocations per source per pass, rotating the starting position so failures cannot starve later entries.
 
-Initial admission still requires complete configured-source inventory. Each process inventories
-again before its first admission, and changes to committed configuration invalidate its cached
-inventory completion. Creates defer during this inventory pause (bounded by the default
-replacement ceiling of ten minutes). Reservation commits witness the configuration used for admission.
+Initial admission still requires complete configured-source inventory, kept per source: a process
+lists every source of the committed configuration it has not listed yet before an admission, and
+forgets a source that leaves the configuration. A termination needs only a ledger inventoried at
+all, never the per-source inventory. Creates defer during this inventory pause (bounded by the default
+replacement ceiling of ten minutes). Reservation commits witness the configuration the admission
+inventoried under, so a configuration committed while the inventory was being taken refuses the admission.
 Out-of-band cloud administration remains outside transactional fleet-cap enforcement.
 
 ## Worker policies and scheduling
@@ -114,9 +116,15 @@ committed capacity admission protects allocations across leadership change. Thes
 limits do not claim cancellation of an already-issued provider request or global provider rate quotas.
 
 Typed pre-dispatch refusals (source admission, incomplete inventory, unavailable authority or seed
-peers, and invalid preparation) leave the community identity reserved for retry. They do not claim
-an uncertain provider create or increment the core provider-failure circuit. Once a create might
+peers, and invalid preparation) leave the community identity reserved for retry and do not claim
+an uncertain provider create. A core replacement that is refused this way is deferred to the
+reconciler and is still counted as a provisioning failure (logged, last failure recorded, circuit
+after three consecutive), so a permanent refusal does not retry invisibly. Once a create might
 have been dispatched, its durable uncertainty cannot be downgraded to a pre-dispatch refusal.
+A create whose reservation committed but whose dispatch was abandoned before the provider call
+(leadership lost in between) provably did not happen: its DISPATCHED reservation is recorded as
+no-create evidence and released the next time the instance that abandoned it leads. If a different
+instance leads instead, it cannot know the create did not happen and keeps counting it.
 
 READINESS_DELAYED distinguishes missed readiness deadlines from changed identity/policy
 preconditions. It does not depend on how a community came to be, so it applies to explicit policies. It preserves identity and allocation, emits the existing operation escalation, and
