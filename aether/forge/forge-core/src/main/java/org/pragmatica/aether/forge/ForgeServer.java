@@ -395,16 +395,21 @@ public final class ForgeServer {
     /// an explicit `api-key` management mode with no key declared would leave Forge's own control calls refused
     /// (401) by the fail-closed plane: that is a refusal to start, never a cluster Forge cannot drive.
     @Contract
-    private void applyManagementSecurityMode(EmberCluster clusterInstance, Option<AppHttpConfig> appHttp, IntConsumer exit) {
+    private void applyManagementSecurityMode(EmberCluster clusterInstance,
+                                             Option<AppHttpConfig> appHttp,
+                                             IntConsumer exit) {
         appHttp.onPresent(config -> config.managementSecurityMode()
                                           .onPresent(mode -> applyManagementMode(clusterInstance, config, mode, exit)));
     }
 
     @Contract
-    private void applyManagementMode(EmberCluster clusterInstance, AppHttpConfig config, SecurityMode mode, IntConsumer exit) {
-        if (mode != SecurityMode.NONE && config.apiKeys()
-                                               .isEmpty()) {
+    private void applyManagementMode(EmberCluster clusterInstance,
+                                     AppHttpConfig config,
+                                     SecurityMode mode,
+                                     IntConsumer exit) {
+        if (mode != SecurityMode.NONE && config.apiKeys().isEmpty()) {
             ForgeAppConfig.refuse(ForgeAppConfig.keylessManagementRefusal(siblingConfigName()), exit);
+
             return;
         }
 

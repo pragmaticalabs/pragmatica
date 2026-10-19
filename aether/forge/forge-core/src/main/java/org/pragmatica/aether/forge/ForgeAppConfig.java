@@ -44,9 +44,9 @@ interface ForgeAppConfig {
     /// fail-closed management plane would be refused with 401. Names the file, the setting and both ways out.
     static String keylessManagementRefusal(String file) {
         return "refusing to start: " + file
-               + " sets [management] security_mode = \"api-key\" but declares no API key, so Forge's own control calls to the"
-               + " management plane would be refused with 401. Declare a key ([app-http.api-keys.<key>] or AETHER_API_KEYS),"
-               + " or choose another mode: set [management] security_mode = \"none\" or remove the setting.";
+             + " sets [management] security_mode = \"api-key\" but declares no API key, so Forge's own control calls to the"
+             + " management plane would be refused with 401. Declare a key ([app-http.api-keys.<key>] or AETHER_API_KEYS),"
+             + " or choose another mode: set [management] security_mode = \"none\" or remove the setting.";
     }
 
     @Contract
