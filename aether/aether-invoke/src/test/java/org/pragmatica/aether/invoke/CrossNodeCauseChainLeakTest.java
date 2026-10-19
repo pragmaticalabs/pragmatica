@@ -188,7 +188,7 @@ class CrossNodeCauseChainLeakTest {
     /// the chain the handler writes, not through the message line.
     @Test
     void chainedErrorOnNodeB_isInNodeBLog_withBothIdsToJoinTheNodes() {
-        try (var calleeLog = LogCapture.capture(InvocationHandlerImpl.class, Level.ALL, true)) {
+        try (var calleeLog = LogCapture.capture(InvocationHandlerImpl.class, Level.ERROR, true)) {
             clientBodyOnA(new Chained(VISIBLE, Causes.cause(HIDDEN)));
 
             assertThat(String.join("\n", calleeLog.messages())).contains(HIDDEN)

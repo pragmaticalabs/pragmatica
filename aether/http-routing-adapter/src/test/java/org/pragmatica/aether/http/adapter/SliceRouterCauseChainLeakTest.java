@@ -53,7 +53,7 @@ class SliceRouterCauseChainLeakTest {
 
     @BeforeEach
     void attach() {
-        capture = LogCapture.capture(SliceRouter.class, Level.ALL, true);
+        capture = LogCapture.capture(SliceRouter.class, Level.WARN, true);
     }
 
     @AfterEach
