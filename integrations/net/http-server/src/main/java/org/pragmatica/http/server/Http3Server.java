@@ -19,6 +19,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -407,9 +408,11 @@ final class Http3Server {
             this.requestId = requestId;
         }
 
+        /// #2310: HTTP/3 field names are lowercase (RFC 9114 §4.2), and Netty refuses a HEADERS frame with an
+        /// uppercase one. A handler's `X-Request-Id` used to fail the whole response, leaving the stream unanswered.
         @Override
         public ResponseWriter header(String name, String value) {
-            pendingHeaders.put(name, value);
+            pendingHeaders.put(name.toLowerCase(Locale.ROOT), value);
 
             return this;
         }
