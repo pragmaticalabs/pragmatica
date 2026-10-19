@@ -1068,6 +1068,29 @@ class CapacityControlledLifecycleTest {
         assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
     }
 
+    /// The counts are "this leader's": misses collected before leadership was lost do not carry into the next leadership.
+    @Test
+    void leadershipRegained_restartsTheAbsenceCount() {
+        initialize(0);
+        var losing = new java.util.concurrent.atomic.AtomicBoolean(true);
+        losingLeadership(losing, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SUCCESSOR, 2)));
+        var next = clocked(SUCCESSOR, leading::get, commands -> Promise.success(store.process(store.createBatch(commands))));
+
+        for (int pass = 1; pass < CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            now.addAndGet(2 * GRACE_MS);
+            next.reconcileInventory().await().unwrap();
+        }
+        leading.set(false);
+        next.reconcileInventory().await().unwrap();
+        leading.set(true);
+        now.addAndGet(2 * GRACE_MS);
+        next.reconcileInventory().await().unwrap();
+
+        assertThat(phaseOf("first")).as("one miss under the new leadership, not the third overall").isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+    }
+
     /// "Consecutive": a sighting between misses restarts the count, even when the adoption commit of that sighting is refused.
     @Test
     void earlierTermMisses_mustBeConsecutive_aSightingRestartsTheCount() {
