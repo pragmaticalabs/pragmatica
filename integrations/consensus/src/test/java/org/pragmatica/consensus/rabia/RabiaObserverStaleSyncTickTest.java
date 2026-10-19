@@ -32,7 +32,7 @@ class RabiaObserverStaleSyncTickTest {
 
     @Test void queuedSyncRetryTick_afterObserverActivation_doesNotPublishQuorumLoss() throws Exception {
         engine = observerEngine();
-        adoptAsObserver();
+        adoptFromPeers();
         assertThat(engine.isObserving()).as("control: the engine really activated as an observer").isTrue();
         assertThat(routed).as("control: nothing was published while joining").isEmpty();
 
@@ -68,15 +68,42 @@ class RabiaObserverStaleSyncTickTest {
                                          .anyMatch(RabiaProtocolMessage.Asynchronous.SyncRequest.class::isInstance);
     }
 
+    @Test void queuedSyncRetryTick_onActiveVoter_leavesItActive() throws Exception {
+        engine = voterEngine();
+        adoptFromPeers();
+        assertThat(engine.isActive()).as("control: the voter really activated").isTrue();
+        var published = routed.size();
+
+        runQueuedSyncTick();
+
+        assertThat(engine.isActive()).as("the late tick leaves the voter active").isTrue();
+        assertThat(routed).as("nothing further is published").hasSize(published);
+    }
+
+    @Test void queuedSyncRetryTick_onSettledObserver_adoptsNothingFromLeftoverResponses() throws Exception {
+        engine = observerEngine();
+        adoptFromPeers();
+        var settledPhase = engine.currentPhaseForTesting();
+        seedSyncResponses(RabiaPersistence.SavedState.<TestCommand>savedState(new byte[]{1}, Phase.phase(7), List.of()));
+
+        runQueuedSyncTick();
+
+        assertThat(engine.currentPhaseForTesting()).as("a settled observer does not re-adopt from responses a tick finds").isEqualTo(settledPhase);
+    }
+
     private void seedSyncResponses() throws Exception {
+        seedSyncResponses(RabiaPersistence.SavedState.empty());
+    }
+
+    private void seedSyncResponses(RabiaPersistence.SavedState<TestCommand> state) throws Exception {
         var field = RabiaEngine.class.getDeclaredField("syncResponses");
 
         field.setAccessible(true);
         @SuppressWarnings("unchecked")
         var responses = (Map<NodeId, SyncResponse<TestCommand>>) field.get(engine);
 
-        responses.put(B, new SyncResponse<>(B, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
-        responses.put(C, new SyncResponse<>(C, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        responses.put(B, new SyncResponse<>(B, state, ResponderState.COLD));
+        responses.put(C, new SyncResponse<>(C, state, ResponderState.COLD));
     }
 
     private void runQueuedSyncTick() throws Exception {
@@ -87,7 +114,7 @@ class RabiaObserverStaleSyncTickTest {
         settle();
     }
 
-    private void adoptAsObserver() {
+    private void adoptFromPeers() {
         engine.clusterState(ClusterStateNotification.active());
         engine.processSyncResponse(new SyncResponse<>(B, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         engine.processSyncResponse(new SyncResponse<>(C, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
@@ -95,6 +122,17 @@ class RabiaObserverStaleSyncTickTest {
     }
 
     private RabiaEngine<TestCommand> observerEngine() {
+        var created = engineWithRoster();
+
+        created.authorizeObservation();
+        return created;
+    }
+
+    private RabiaEngine<TestCommand> voterEngine() {
+        return engineWithRoster();
+    }
+
+    private RabiaEngine<TestCommand> engineWithRoster() {
         var router = MessageRouter.mutable();
 
         router.addRoute(ClusterStateNotification.class, routed::add);
@@ -103,7 +141,6 @@ class RabiaObserverStaleSyncTickTest {
             ConsensusMetrics.noop(), false, RabiaPersistence.inMemory(), RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
             ConsensusBridge.consensusBridge(router));
         assertThat(created.initializeVoters(new VoterConfiguration(0, ROSTER)).isSuccess()).isTrue();
-        created.authorizeObservation();
         return created;
     }
 
