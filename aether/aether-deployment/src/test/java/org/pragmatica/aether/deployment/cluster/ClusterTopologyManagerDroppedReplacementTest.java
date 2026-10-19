@@ -13,16 +13,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.DroppedInstance;
-import org.pragmatica.aether.deployment.cluster.ClusterTopologyManagerActuatorTest.CapturingAppender;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -46,6 +42,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -69,9 +66,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
     private final Set<Integer> failingListings = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicBoolean terminateRemoves = new AtomicBoolean(true);
     private final AtomicReference<Set<NodeId>> swimAlive = new AtomicReference<>(Set.of());
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture appender;
     private ClusterTopologyManager ctm;
 
     @BeforeEach
@@ -85,31 +80,11 @@ class ClusterTopologyManagerDroppedReplacementTest {
     @AfterEach
     void tearDown() {
         ctm.deactivate();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        appender.close();
     }
 
     private void attachAppender() {
-        appender = CapturingAppender.create("CtmDroppedReplacementCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        loggerConfig = LOGGER_NAME.equals(existing.getName())
-                       ? existing
-                       : new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-        if (!LOGGER_NAME.equals(existing.getName())) {
-            configuration.addLogger(LOGGER_NAME, loggerConfig);
-        }
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+        appender = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
     }
 
     /// A small provisioning timeout makes every retry interval of the confirmed reap a few milliseconds.
@@ -161,7 +136,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
     }
 
     private boolean warned(String... fragments) {
-        return appender.capturedWarns()
+        return appender.messages()
                        .stream()
                        .anyMatch(message -> List.of(fragments).stream().allMatch(message::contains));
     }
@@ -177,7 +152,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
         ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", DroppedInstance.LISTED);
 
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
-        assertThat(warned("in-flight replacement", DROPPED.id(), "i-orphan-7", "source=", "still unjoined after its ceiling")).as("warns: " + appender.capturedWarns()).isTrue();
+        assertThat(warned("in-flight replacement", DROPPED.id(), "i-orphan-7", "source=", "still unjoined after its ceiling")).as("warns: " + appender.messages()).isTrue();
     }
 
     @Test

@@ -68,7 +68,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           Set<String> activeSources,
                                           ConcurrentHashMap<String, AtomicInteger> inventoryCursors,
                                           ConcurrentHashMap<NodeId, SourceName> undispatched,
-                                          ConcurrentHashMap<NodeId, Long> dispatchGenerations,
+                                          ConcurrentHashMap<NodeId, DispatchStamp> dispatchStamps,
                                           ConcurrentHashMap<NodeId, AtomicInteger> dispatchMisses,
                                           ConcurrentHashMap<NodeId, Long> unmatchedSince,
                                           AtomicBoolean leading,
@@ -184,7 +184,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private void forgetResolvedDispatches() {
         var current = reservations();
 
-        dispatchGenerations.keySet().removeIf(node -> !isDispatched(current, node));
+        dispatchStamps.keySet().removeIf(node -> !isDispatched(current, node));
         unmatchedSince.keySet().removeIf(node -> !isDispatched(current, node));
         dispatchMisses.keySet().removeIf(node -> !isDispatched(current, node));
     }
@@ -257,12 +257,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// Consecutive provider answers that must show no instance before an earlier term's DISPATCHED allocation is released.
     static final int ABSENCE_CONFIRMATIONS = 3;
 
-    /// A DISPATCHED allocation is an uncertain create, and one this leader dispatched itself since it last gained leadership is in flight:
-    /// neither is touched. One written before that (a leader that lost leadership between the reservation and an acknowledgement, a
-    /// restarted process, or another node's) is examined once this instance has inventoried every committed source: its instance is
-    /// adopted when a lookup shows it, and it is released only after [#ABSENCE_CONFIRMATIONS] consecutive misses AND a grace of the create
-    /// ceiling since this leader first found it unmatched, so a slow cloud boot is never released mid-boot. The same bounded lanes as the
-    /// OBSERVED absence confirmation.
+    /// A DISPATCHED allocation is an uncertain create. One this leader dispatched itself since it last gained leadership, and younger than
+    /// the create ceiling, is in flight and is not touched. Any other (written before that, older than the ceiling, another node's, or from
+    /// a restarted process) is examined once this instance has inventoried every committed source: its instance is adopted when a lookup
+    /// shows it, and it is released only after [#ABSENCE_CONFIRMATIONS] consecutive misses AND a grace of the create ceiling since this
+    /// leader first found it unmatched, so a slow cloud boot is never released mid-boot. The same bounded lanes as the OBSERVED absence
+    /// confirmation.
     private Promise<Unit> confirmDispatches(SourceName source, String binding, Set<NodeId> observed) {
         return leader().filter(_ -> allSourcesInventoried())
                      .fold(Promise::unitPromise,
@@ -278,6 +278,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     private List<NodeId> staleDispatches(SourceName source, String binding, Set<NodeId> observed) {
         var generation = leadershipGeneration.get();
+        var now = clock.getAsLong();
 
         return reservations().entrySet()
                            .stream()
@@ -290,11 +291,23 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                            .filter(entry -> entry.getValue()
                                                  .phase() == CapacityReservationPhase.DISPATCHED)
                            .filter(entry -> !observed.contains(entry.getKey()))
-                           .filter(entry -> dispatchGenerations.getOrDefault(entry.getKey(),
-                                                                             Long.MIN_VALUE) < generation)
+                           .filter(entry -> isUnmatchedDispatch(entry.getKey(), generation, now))
                            .map(Map.Entry::getKey)
                            .sorted(Comparator.comparing(NodeId::id))
                            .toList();
+    }
+
+    /// When and under which leadership generation this process dispatched a create.
+    public record DispatchStamp(long generation, long at) {}
+
+    /// The leadership generation decides only whether a dispatch is this leadership's own; the create ceiling bounds EVERY dispatch. An
+    /// allocation this process does not remember, one from an earlier generation, and an own one older than the ceiling (a provider call
+    /// that never resolved, an uncertain failure, an interlude of another leader this instance never observed) all enter the absence
+    /// confirmation.
+    private boolean isUnmatchedDispatch(NodeId node, long generation, long now) {
+        return Option.option(dispatchStamps.get(node))
+                     .fold(() -> true,
+                           stamp -> stamp.generation() < generation || now - stamp.at() >= ceiling.millis());
     }
 
     private Promise<Unit> confirmEarlierTermDispatches(SourceName source, String binding, List<NodeId> stale) {
@@ -462,7 +475,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// DISPATCHED allocation treats it as earlier, which is what a restarted or newly elected leader is. The generation advances only when
     /// this node GAINS leadership; a same-leader re-commit (new view sequence, no lost leadership) does not advance it.
     private Promise<InstanceInfo> dispatchUnder(NodeId node, ProvisionSpec spec, LeaderValue current) {
-        dispatchGenerations.put(node, leadershipGeneration.get());
+        dispatchStamps.put(node, new DispatchStamp(leadershipGeneration.get(), clock.getAsLong()));
 
         return store.getTyped(new AetherKey.CapacityReservationKey(node),
                               CapacityReservationValue.class)

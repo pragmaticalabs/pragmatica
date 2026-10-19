@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// that registers a `LoggerConfig` and does not take it out again silently kills the capture of every later test in
 /// the same JVM that uses the same logger name. [LogCapture] is the one place that does this and always restores.
 ///
-/// Every `src/test` source outside this module that still touches the configuration by hand is listed in
-/// `raw-log4j-allowlist.txt`. The list may only shrink: a new raw site fails here, and so does a listed file that no
-/// longer matches (delete its entry, which is the point).
+/// A `src/test` source outside this module that touches the configuration by hand fails here unless it is listed in
+/// `raw-log4j-allowlist.txt` (currently empty). The list may only shrink: a listed file that no longer matches fails
+/// too, so its entry has to be deleted.
 class LogCaptureUsageGuardTest {
     private static final Pattern RAW = Pattern.compile("addLogger\\(|new LoggerConfig\\(|addAppender\\(|extends AbstractAppender|new AbstractAppender\\(");
     private static final Set<String> SKIPPED_DIRS = Set.of("target", ".git", ".m2-local", "node_modules");
@@ -54,9 +54,9 @@ class LogCaptureUsageGuardTest {
     }
 
     @Test
-    void theScan_findsTheKnownRawSites() throws IOException {
-        assertThat(matchingSources(repositoryRoot())).as("control: the scan reaches the repository's test sources")
-                                                     .containsAll(allowList());
+    void theScan_reachesTheRepositoryTestSources() throws IOException {
+        assertThat(testSourceCount(repositoryRoot())).as("control: the scan walks the repository's test sources, so an empty result means clean, not blind")
+                                                     .isGreaterThan(500);
     }
 
     private static Path repositoryRoot() {
@@ -89,6 +89,12 @@ class LogCaptureUsageGuardTest {
                         .filter(LogCaptureUsageGuardTest::matches)
                         .map(path -> root.relativize(path).toString().replace('\\', '/'))
                         .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+        }
+    }
+
+    private static long testSourceCount(Path root) throws IOException {
+        try (Stream<Path> files = Files.walk(root)) {
+            return files.filter(path -> path.toString().endsWith(".java")).filter(path -> isTestSource(root.relativize(path))).count();
         }
     }
 

@@ -1036,12 +1036,98 @@ class CapacityControlledLifecycleTest {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 3)));
 
         for (int pass = 0; pass < 2 * CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
-            now.addAndGet(2 * GRACE_MS);
+            now.addAndGet(GRACE_MS / 10);
             own.reconcileInventory().await().unwrap();
         }
 
-        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        assertThat(phaseOf("first")).as("young: inside the create ceiling").isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
         assertThat(ledger().allocated()).isEqualTo(1);
+    }
+
+    private void passesBeyondTheCeiling(CapacityControlledLifecycle lc, int passes) {
+        for (int pass = 0; pass < passes; pass++) {
+            now.addAndGet(2 * GRACE_MS);
+            lc.reconcileInventory().await().unwrap();
+        }
+    }
+
+    /// The leadership generation only says whose dispatch it is; the create ceiling bounds EVERY dispatch. A provider call that never
+    /// resolves fails the admission at the ceiling and leaves the reservation DISPATCHED: once older than the ceiling it is confirmed absent
+    /// and released like an earlier leadership's.
+    @Test
+    void ownDispatchWhoseCallNeverResolves_isBoundedByTheCreateCeiling() {
+        initialize(0);
+        var own = clocked(CORE, () -> true, commands -> Promise.success(store.process(store.createBatch(commands))));
+        createOutcome = Option.some(Promise.<InstanceInfo>promise());
+
+        var admission = own.provisionNode(spec("first", "east")).await();
+        createOutcome = Option.none();
+
+        assertThat(admission.isFailure()).as("failed at the ceiling").isTrue();
+        passesBeyondTheCeiling(own, CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS - 1);
+        assertThat(phaseOf("first")).as("two misses: not yet").isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        passesBeyondTheCeiling(own, 1);
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+        assertThat(ledger().allocated()).isZero();
+    }
+
+    @Test
+    void ownUncertainFailure_isBoundedByTheCreateCeiling() {
+        initialize(0);
+        var own = clocked(CORE, () -> true, commands -> Promise.success(store.process(store.createBatch(commands))));
+        own.provisionNode(spec("first", "east")).await();
+
+        passesBeyondTheCeiling(own, CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS);
+
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+    }
+
+    /// The documented limit of the generation: another leader committed and then this node again, with no call in between, reads as
+    /// continuous leadership. The ceiling still bounds the dispatch.
+    @Test
+    void unobservedInterlude_ownCreateStaysOwn_thenIsBoundedByTheCeiling() {
+        initialize(0);
+        var own = clocked(CORE, () -> true, commands -> Promise.success(store.process(store.createBatch(commands))));
+        own.provisionNode(spec("first", "east")).await();
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SUCCESSOR, 2)));
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 3)));
+
+        passesBeyondTheCeiling(own, CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS);
+
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+    }
+
+    /// A sighting restarts both the count and the grace clock: the grace runs from when this leader last saw the allocation unmatched.
+    @Test
+    void aSighting_restartsTheGraceClockToo() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
+        var refuseAdoption = new java.util.concurrent.atomic.AtomicBoolean();
+        var next = successor(new java.util.concurrent.CopyOnWriteArrayList<>(),
+            commands -> refuseAdoption.get() && commands.stream().anyMatch(this::reservesCapacity)
+                        ? Promise.success(List.<Object>of())
+                        : Promise.success(store.process(store.createBatch(commands))));
+
+        next.reconcileInventory().await().unwrap();
+        now.addAndGet(GRACE_MS * 6 / 10);
+        inventory.set(List.of(observedCore("first")));
+        refuseAdoption.set(true);
+        next.reconcileInventory().await().unwrap();
+        refuseAdoption.set(false);
+        inventory.set(List.of());
+        now.addAndGet(GRACE_MS / 10);
+        next.reconcileInventory().await().unwrap();
+        now.addAndGet(GRACE_MS / 10);
+        next.reconcileInventory().await().unwrap();
+        now.addAndGet(GRACE_MS * 3 / 10);
+        next.reconcileInventory().await().unwrap();
+        assertThat(phaseOf("first")).as("three misses since the sighting, but under a ceiling since it").isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+
+        now.addAndGet(GRACE_MS * 7 / 10);
+        next.reconcileInventory().await().unwrap();
+
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
     }
 
     /// Leadership lost and regained (A -> B -> A): what the node dispatched before is now an earlier leadership's, and goes through the

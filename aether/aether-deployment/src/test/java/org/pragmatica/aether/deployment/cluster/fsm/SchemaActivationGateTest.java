@@ -9,21 +9,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -67,6 +55,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -426,30 +415,16 @@ class SchemaActivationGateTest {
     /// the log statement at no extra setup cost, so there is no such tradeoff to make.
     @Nested
     class HoldVisibility {
-        private CapturingAppender appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture appender;
 
         @BeforeEach
         void captureActiveLogger() {
-            appender = CapturingAppender.create("SchemaHoldCapture");
-            appender.start();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var configuration = ctx.getConfiguration();
-            loggerConfig = getOrCreateLoggerConfig(configuration);
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.WARN, null);
-            loggerConfig.setLevel(Level.WARN);
-            ctx.updateLoggers();
+            appender = LogCapture.capture(ACTIVE_LOGGER_NAME, Level.WARN, false);
         }
 
         @AfterEach
         void releaseActiveLogger() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            appender.stop();
+            appender.close();
         }
 
         @Test
@@ -460,7 +435,7 @@ class SchemaActivationGateTest {
 
             harness.dispatch(new Activate());
 
-            assertThat(appender.capturedWarns()).as("a held slice must be reported at WARN, naming the blocking datasource and its status")
+            assertThat(appender.messages()).as("a held slice must be reported at WARN, naming the blocking datasource and its status")
                                                 .anyMatch(msg -> msg.contains("held in LOADED")
                                                                  && msg.contains(OWNED_DATASOURCE)
                                                                  && msg.contains("PENDING"));
@@ -474,7 +449,7 @@ class SchemaActivationGateTest {
 
             harness.dispatch(new Activate());
 
-            assertThat(appender.capturedWarns()).as("a released slice must not be reported as held")
+            assertThat(appender.messages()).as("a released slice must not be reported as held")
                                                 .noneMatch(msg -> msg.contains("held in LOADED"));
         }
 
@@ -503,7 +478,7 @@ class SchemaActivationGateTest {
 
             harness.dispatch(new NodeArtifactPutReceived(secondTick));
 
-            var heldWarns = appender.capturedWarns()
+            var heldWarns = appender.messages()
                                     .stream()
                                     .filter(msg -> msg.contains("held in LOADED"))
                                     .toList();
@@ -538,7 +513,7 @@ class SchemaActivationGateTest {
 
             harness.dispatch(new NodeArtifactPutReceived(secondTick));
 
-            var heldWarns = appender.capturedWarns()
+            var heldWarns = appender.messages()
                                     .stream()
                                     .filter(msg -> msg.contains("held in LOADED"))
                                     .toList();
@@ -573,14 +548,6 @@ class SchemaActivationGateTest {
             var reversed = ClusterDeploymentState.Active.schemaHoldSignature(List.of(second, first));
 
             assertThat(forward).isEqualTo(reversed);
-        }
-
-        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
-            if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {return existing;}
-            var fresh = new LoggerConfig(ACTIVE_LOGGER_NAME, Level.WARN, false);
-            configuration.addLogger(ACTIVE_LOGGER_NAME, fresh);
-            return fresh;
         }
     }
 
@@ -812,31 +779,5 @@ class SchemaActivationGateTest {
                 return null;
             }
         };
-    }
-
-    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions. Mirrors
-    /// `ClusterTopologyManagerCasLossLoggingTest.CapturingAppender` — kept self-contained here
-    /// rather than shared, matching that precedent's own per-file scope.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            var layout = PatternLayout.createDefaultLayout();
-            return new CapturingAppender(name, layout);
-        }
-
-        @Override public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedWarns() {
-            return messages.stream().collect(Collectors.toUnmodifiableList());
-        }
     }
 }

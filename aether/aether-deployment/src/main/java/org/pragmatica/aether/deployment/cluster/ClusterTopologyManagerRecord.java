@@ -737,6 +737,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var prev = consecutiveProvisioningFailures.getAndSet(0);
 
         nextProvisioningAllowedMs.set(0L);
+        // A reset is a change of circumstance (node joined, phase NORMAL, desired count changed, new activation): a wait recorded before it
+        // is not known to still exist, and a status must not report one that no longer does.
+        inventoryWaitRef.set(null);
         lifecycleManager.resetProvisionerState(resolveClusterName());
         if (prev > 0) {
             log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
@@ -3575,6 +3578,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // A deposed view never reaps: parked (abandoned) reaps die with the activation. The next activation's
         // replay re-parks any such instance its own SWIM still reports alive (SF-1) and reaps the rest.
         abandonedReaps.clear();
+        inventoryWaitRef.set(null);
         workerTopologyPolling.cancel();
         unconfirmedRecheck.cancel();
         pendingDrains.keySet().forEach(drainCommandClear);

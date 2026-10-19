@@ -6,21 +6,13 @@ package org.pragmatica.aether.node;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configurator;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,6 +31,7 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.EncryptingStorageTier;
 import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.storage.StorageError;
+import org.pragmatica.testlogging.LogCapture;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,31 +72,19 @@ class StorageFactoryDhtMarkerRetryTest {
     @TempDir
     Path tempDir;
 
-    private CapturingAppender appender;
-    private LoggerContext loggerContext;
+    private LogCapture capture;
 
     /// Same shape as `MavenProtocolRoutesAuthTest`: the node logs through SLF4J onto log4j2, so the
-    /// appender attaches to the log4j2 `LoggerConfig` for `StorageFactory`'s logger name (#1077: a
+    /// capture attaches to the log4j2 `LoggerConfig` for `StorageFactory`'s logger name (#1077: a
     /// `System.Logger` emission would bypass this and the node's appenders alike).
     @BeforeEach
     void installLogCapture() {
-        Configurator.setLevel(FACTORY_LOGGER, Level.WARN);
-        loggerContext = (LoggerContext) LogManager.getContext(false);
-        appender = new CapturingAppender();
-        appender.start();
-        loggerContext.getConfiguration()
-                     .getLoggerConfig(FACTORY_LOGGER)
-                     .addAppender(appender, Level.WARN, null);
-        loggerContext.updateLoggers();
+        capture = LogCapture.capture(FACTORY_LOGGER, Level.WARN, true);
     }
 
     @AfterEach
     void removeLogCapture() {
-        loggerContext.getConfiguration()
-                     .getLoggerConfig(FACTORY_LOGGER)
-                     .removeAppender(appender.getName());
-        appender.stop();
-        loggerContext.updateLoggers();
+        capture.close();
     }
 
     private StorageConfig vaultConfig() {
@@ -305,7 +286,7 @@ class StorageFactoryDhtMarkerRetryTest {
 
         assertThat(client.markerGets()).as("PRECONDITION: three failed attempts and one successful retry").isEqualTo(4);
 
-        var attemptWarnings = appender.warnings()
+        var attemptWarnings = capture.messages()
                                       .stream()
                                       .filter(message -> message.startsWith(ATTEMPT_WARN_PREFIX))
                                       .toList();
@@ -350,24 +331,6 @@ class StorageFactoryDhtMarkerRetryTest {
 
         assertThat(client.markerGets()).as("PRECONDITION: the check must be retrying before the owner stops")
                                        .isGreaterThanOrEqualTo(atLeast);
-    }
-
-    /// Captures WARN events emitted by `StorageFactory` so the #1052 per-attempt line can be asserted.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender() {
-            super("storage-factory-dht-marker-capture", null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> warnings() {
-            return List.copyOf(messages);
-        }
     }
 
     /// In-memory `DHTClient` whose marker-key gets can be scripted to hang, to fail fast without quorum, or

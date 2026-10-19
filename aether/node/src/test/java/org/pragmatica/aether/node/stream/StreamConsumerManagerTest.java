@@ -68,19 +68,12 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -1402,38 +1395,28 @@ class StreamConsumerManagerTest {
         /// nothing.
         private static final String UNDECLARE_TICKET = "#1448";
 
-        private CapturingAppender appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture capture;
 
         @BeforeEach
         void captureLog() {
-            appender = new CapturingAppender("ParkedAssignmentCapture");
-            appender.start();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var configuration = ctx.getConfiguration();
-            var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-            if (LOGGER_NAME.equals(existing.getName())) {
-                loggerConfig = existing;
-            } else {
-                loggerConfig = new LoggerConfig(LOGGER_NAME, Level.INFO, true);
-                configuration.addLogger(LOGGER_NAME, loggerConfig);
-            }
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.INFO, null);
-            loggerConfig.setLevel(Level.INFO);
-            ctx.updateLoggers();
+            capture = LogCapture.capture(LOGGER_NAME, Level.INFO, true);
         }
 
         @AfterEach
         void releaseLog() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
+            capture.close();
+        }
 
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            appender.stop();
+        private void clearCapture() {
+            capture.close();
+            capture = LogCapture.capture(LOGGER_NAME, Level.INFO, true);
+        }
+
+        private List<String> capturedLines() {
+            return capture.entries()
+                          .stream()
+                          .map(entry -> entry.level() + " " + entry.message())
+                          .toList();
         }
 
         /// The fault itself. The committed records name this node for every partition; placement still
@@ -1466,9 +1449,9 @@ class StreamConsumerManagerTest {
                                                      .contains(GROUP)
                                                      .contains(SELF.id())
                                                      .contains(ARTIFACT.asString()));
-            var warns = appender.warns();
+            var warns = capture.messages(Level.WARN);
 
-            assertThat(warns).describedAs("#1389: a committed assignee with no local slice is never silent; captured: %s", appender.all())
+            assertThat(warns).describedAs("#1389: a committed assignee with no local slice is never silent; captured: %s", capturedLines())
                              .hasSize(1);
             assertThat(warns.getFirst()).contains(GROUP)
                                         .contains(STREAM)
@@ -1477,7 +1460,7 @@ class StreamConsumerManagerTest {
                                         .contains(ARTIFACT.asString());
             assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("one entry into the parked state, four partitions — the unit is reports, not partitions")
                                                                 .isEqualTo(1L);
-            assertThat(appender.infos()).describedAs("the misleading 'consuming … forwarded' INFO must not fire for a node that consumes nothing")
+            assertThat(capture.messages(Level.INFO)).describedAs("the misleading 'consuming … forwarded' INFO must not fire for a node that consumes nothing")
                                         .noneMatch(line -> line.contains("forwarded to the owner"));
         }
 
@@ -1497,7 +1480,7 @@ class StreamConsumerManagerTest {
             manager.reconcile();
             manager.reconcile();
 
-            assertThat(appender.warns()).hasSize(1);
+            assertThat(capture.messages(Level.WARN)).hasSize(1);
             assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("three passes, one entry")
                                                                 .isEqualTo(1L);
             assertThat(manager.statuses()).singleElement()
@@ -1519,7 +1502,7 @@ class StreamConsumerManagerTest {
 
             manager.reconcile();
 
-            assertThat(appender.warns()).isEmpty();
+            assertThat(capture.messages(Level.WARN)).isEmpty();
             assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.diagnostic()).isEqualTo(Option.none()));
@@ -1556,7 +1539,7 @@ class StreamConsumerManagerTest {
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.partitionAssignments()).describedAs("control: and this pass really did compute every partition onto PEER")
                                                      .allSatisfy(assignment -> assertThat(assignment.consumerNode()).isEqualTo(Option.some(PEER))));
-            assertThat(appender.warns()).describedAs("a reassignment in flight is not a fault; captured: %s", appender.all())
+            assertThat(capture.messages(Level.WARN)).describedAs("a reassignment in flight is not a fault; captured: %s", capturedLines())
                                         .isEmpty();
             assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
         }
@@ -1583,7 +1566,7 @@ class StreamConsumerManagerTest {
             verify(invocationHandler, times(2)).localSlice(ARTIFACT);
             assertThat(runtime.subscribedPartitions()).describedAs("control: the attach found no bridge and subscribed nothing")
                                                       .isEmpty();
-            assertThat(appender.warns()).describedAs("#1389: the attach-time drop names what it dropped; captured: %s", appender.all())
+            assertThat(capture.messages(Level.WARN)).describedAs("#1389: the attach-time drop names what it dropped; captured: %s", capturedLines())
                                         .singleElement()
                                         .satisfies(line -> assertThat(line).contains(GROUP)
                                                                            .contains(STREAM)
@@ -1629,7 +1612,7 @@ class StreamConsumerManagerTest {
                 assertThat(record.assignmentTerm()).describedAs("a rewrite, not a first put")
                                                    .isEqualTo(2L);
             }
-            assertThat(appender.warns()).describedAs("the pass computed the partitions away, so nothing is parked here")
+            assertThat(capture.messages(Level.WARN)).describedAs("the pass computed the partitions away, so nothing is parked here")
                                         .isEmpty();
             assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
         }
@@ -1665,7 +1648,7 @@ class StreamConsumerManagerTest {
             manager.reconcile();
             assertThat(runtime.subscribedPartitions()).describedAs("precondition: the leader committed itself and attached")
                                                       .containsExactlyInAnyOrder(0, 1, 2, 3);
-            appender.clear();
+            clearCapture();
 
             // The bridge is unregistered with NO placement transition — the `suspendSlice` shape. Note what
             // is NOT written here: `placement.activeOn(...)` is deliberately left saying SELF and PEER.
@@ -1683,7 +1666,7 @@ class StreamConsumerManagerTest {
                 assertThat(record.assignmentTerm()).describedAs("no rewrite happened at all")
                                                    .isEqualTo(1L);
             }
-            assertThat(appender.warns()).describedAs("so the WARN is the ONLY observable; captured: %s", appender.all())
+            assertThat(capture.messages(Level.WARN)).describedAs("so the WARN is the ONLY observable; captured: %s", capturedLines())
                                         .hasSize(1);
             assertThat(manager.attachSkippedNoLocalSliceCount()).isEqualTo(1L);
 
@@ -1746,7 +1729,7 @@ class StreamConsumerManagerTest {
             // PEER's instance is descaled: NodeDeploymentState.handleUnloading unpublishes ITS row, which
             // is no longer the row SELF's declaration is synthesised from. The capture is cleared first:
             // the stub bridge's codec draws an unrelated publishability WARN on pass one.
-            appender.clear();
+            clearCapture();
             topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(peerKey), Option.none()));
             manager.reconcile();
 
@@ -1756,7 +1739,7 @@ class StreamConsumerManagerTest {
             assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("and the group still has a status row, so a later fault would have somewhere to be reported")
                                                                 .singleElement()
                       .satisfies(status -> assertThat(status.consumerGroup()).isEqualTo(group));
-            assertThat(appender.warns()).describedAs("a routine descale of a peer instance is not a fault here")
+            assertThat(capture.messages(Level.WARN)).describedAs("a routine descale of a peer instance is not a fault here")
                                         .isEmpty();
         }
 
@@ -2158,44 +2141,6 @@ class StreamConsumerManagerTest {
 
             assertThat(runtime.subscribedPartitions()).isEmpty();
             assertThat(divergencesUpToASentinelLoss(manager)).singleElement().matches(AbandonDuringAttach::isSentinelLoss);
-        }
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name) {
-            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(event.toImmutable());
-        }
-
-        List<String> warns() {
-            return lines(Level.WARN);
-        }
-
-        List<String> infos() {
-            return lines(Level.INFO);
-        }
-
-        void clear() {
-            events.clear();
-        }
-
-        List<String> all() {
-            return events.stream()
-                         .map(event -> event.getLevel() + " " + event.getMessage().getFormattedMessage())
-                         .toList();
-        }
-
-        private List<String> lines(Level level) {
-            return events.stream()
-                         .filter(event -> event.getLevel().equals(level))
-                         .map(event -> event.getMessage().getFormattedMessage())
-                         .toList();
         }
     }
 

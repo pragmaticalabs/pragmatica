@@ -5,18 +5,9 @@ package org.pragmatica.aether.cli;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +17,7 @@ import org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
@@ -89,24 +81,18 @@ class CliLoggingPinTest {
                                 .unwrap()
                                 .withDiscovery(clusterName("test-cluster").unwrap());
 
-    private CapturingAppender appender;
-    private LoggerConfig rootConfig;
+    private LogCapture appender;
 
     @BeforeEach
     void setUp() {
         var shipped = ShippedLogging.activate();
 
-        appender = CapturingAppender.create("CliLoggingPinCapture");
-        appender.start();
-        rootConfig = shipped.getRootLogger();
-        rootConfig.addAppender(appender, null, null);
-        ((LoggerContext) LogManager.getContext(false)).updateLoggers();
+        appender = LogCapture.captureRoot(shipped);
     }
 
     @AfterEach
     void tearDown() {
-        rootConfig.removeAppender(appender.getName());
-        appender.stop();
+        appender.close();
         ShippedLogging.restoreTestDefault();
     }
 
@@ -115,13 +101,13 @@ class CliLoggingPinTest {
     void logCreateRequest_absent_atShippedDefaultVerbosity() {
         provisionAgainstStubClient();
 
-        assertThat(appender.captured())
+        assertThat(appender.messages())
             .describedAs("positive control: the provision MUST have reached createAndConfirm and the "
                          + "provider's WARN line MUST have reached this appender, otherwise the absence "
                          + "below says nothing about the log level")
             .anyMatch(line -> line.contains(PROVISION_FAILED_FRAGMENT));
 
-        assertThat(appender.captured())
+        assertThat(appender.messages())
             .describedAs("the create-request line is INFO and the shipped default for org.pragmatica is "
                          + "WARN, so it must not appear without -v")
             .noneMatch(line -> line.contains(CREATE_REQUEST_FRAGMENT));
@@ -134,7 +120,7 @@ class CliLoggingPinTest {
 
         provisionAgainstStubClient();
 
-        assertThat(appender.capturedAt(Level.INFO))
+        assertThat(appender.messages(Level.INFO))
             .describedAs("-v must surface the line that records what was actually sent to Hetzner")
             .anyMatch(line -> line.contains(CREATE_REQUEST_FRAGMENT));
     }
@@ -147,7 +133,7 @@ class CliLoggingPinTest {
 
         provisionAgainstStubClient();
 
-        assertThat(appender.capturedLoggerNamesContaining(CREATE_REQUEST_FRAGMENT))
+        assertThat(loggerNamesContaining(CREATE_REQUEST_FRAGMENT))
             .describedAs("the pinned line must come from the environment provider package")
             .isNotEmpty()
             .allMatch(loggerName -> loggerName.startsWith(PROVIDER_PACKAGE));
@@ -174,38 +160,11 @@ class CliLoggingPinTest {
                                                       (proxy, method, args) -> CLIENT_UNUSED.promise());
     }
 
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(event.toImmutable());
-        }
-
-        List<String> captured() {
-            return events.stream().map(event -> event.getMessage().getFormattedMessage()).toList();
-        }
-
-        List<String> capturedAt(Level level) {
-            return events.stream()
-                         .filter(event -> event.getLevel().equals(level))
-                         .map(event -> event.getMessage().getFormattedMessage())
-                         .toList();
-        }
-
-        List<String> capturedLoggerNamesContaining(String fragment) {
-            return events.stream()
-                         .filter(event -> event.getMessage().getFormattedMessage().contains(fragment))
-                         .map(LogEvent::getLoggerName)
-                         .toList();
-        }
+    private List<String> loggerNamesContaining(String fragment) {
+        return appender.events()
+                       .stream()
+                       .filter(event -> event.getMessage().getFormattedMessage().contains(fragment))
+                       .map(LogEvent::getLoggerName)
+                       .toList();
     }
 }
