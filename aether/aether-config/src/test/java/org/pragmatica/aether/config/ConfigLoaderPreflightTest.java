@@ -53,4 +53,23 @@ class ConfigLoaderPreflightTest {
 
         assertThat(ConfigLoader.checkNodeDocument(doc).isFailure()).isTrue();
     }
+
+    @Test
+    void checkNodeDocument_runsTheStorageEncryptionValidation_too() {
+        var doc = TomlParser.parse("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [storage.encryption]
+            active_key_id = "k1"
+
+            [storage.encryption.keys]
+            k1 = "inline-secret"
+            """).unwrap();
+
+        ConfigLoader.checkNodeDocument(doc)
+                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("an inline keyring entry must be refused"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("storage.encryption.keys.k1"));
+    }
 }
