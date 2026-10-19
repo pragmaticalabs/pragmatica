@@ -5,6 +5,7 @@ package org.pragmatica.jbct.config;
 
 import org.pragmatica.lang.Option;
 
+
 /// Blueprint build-time validation configuration.
 ///
 /// Controls whether `GenerateBlueprintMojo` validates the presence of schema migration
@@ -22,7 +23,6 @@ public record BlueprintConfig(SchemaMode schema) {
         EXTERNAL,
         OPTIONAL;
         public static final String ALLOWED = "one of: required, external, optional";
-
         /// The mode a config file names, or empty for a token that names none; the config parser refuses
         /// it (#1455) instead of falling back to [#REQUIRED].
         public static Option<SchemaMode> schemaMode(String value) {
@@ -34,7 +34,6 @@ public record BlueprintConfig(SchemaMode schema) {
                 default -> Option.none();
             };
         }
-
         public static SchemaMode fromString(String value) {
             return switch (value.toLowerCase()
                                 .trim()) {

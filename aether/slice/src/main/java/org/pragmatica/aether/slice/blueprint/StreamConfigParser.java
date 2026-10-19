@@ -794,9 +794,15 @@ public interface StreamConfigParser {
                                                  String groupName,
                                                  long checkpointIntervalMs) {
         var batchSize = doc.getInt(section, "batch-size").or(1);
-        var processing = doc.getParsed(section, "processing", "one of: ordered, parallel", StreamConfigParser::parseProcessingMode)
+        var processing = doc.getParsed(section,
+                                       "processing",
+                                       "one of: ordered, parallel",
+                                       StreamConfigParser::parseProcessingMode)
                             .or(ProcessingMode.ORDERED);
-        var onFailure = doc.getParsed(section, "on-failure", "one of: retry, skip, stall", StreamConfigParser::parseErrorStrategy)
+        var onFailure = doc.getParsed(section,
+                                      "on-failure",
+                                      "one of: retry, skip, stall",
+                                      StreamConfigParser::parseErrorStrategy)
                            .or(ErrorStrategy.RETRY);
         var maxRetries = doc.getInt(section, "max-retries").or(3);
         var deadLetterStream = doc.getString(section, "dead-letter").or("");

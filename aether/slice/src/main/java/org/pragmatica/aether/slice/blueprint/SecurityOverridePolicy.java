@@ -28,7 +28,6 @@ public enum SecurityOverridePolicy {
             default -> Option.none();
         };
     }
-
     public static SecurityOverridePolicy fromString(String raw) {
         return switch (raw.toLowerCase()
                           .strip()) {

@@ -69,7 +69,10 @@ public interface BlueprintParser {
     }
 
     private static Option<DeploymentConfig> parseDeploymentConfig(TomlDocument doc) {
-        var strategyOpt = doc.getParsed("deployment", "strategy", "one of: rolling, canary, blue-green", BlueprintParser::parseStrategy);
+        var strategyOpt = doc.getParsed("deployment",
+                                        "strategy",
+                                        "one of: rolling, canary, blue-green",
+                                        BlueprintParser::parseStrategy);
 
         if (strategyOpt.isEmpty()) {
             return none();

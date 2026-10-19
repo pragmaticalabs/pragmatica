@@ -497,15 +497,17 @@ public final class ClusterBootstrapConfigValidator {
     /// so the bootstrap check and the node give the same verdict.
     private static void checkAppHttpEnabledIsBoolean(String name, SourceProfile source, List<String> errors) {
         composedAppHttp(source).flatMap(ClusterBootstrapConfigValidator::unusableEnabled)
-                              .onPresent(raw -> errors.add("PF-35: Source '" + name
-                                                          + "' sets [app-http] enabled = \"" + raw
-                                                          + "\", which is not true or false. Every node would refuse to start; use a TOML boolean."));
+                       .onPresent(raw -> errors.add("PF-35: Source '" + name
+                                                   + "' sets [app-http] enabled = \"" + raw
+                                                   + "\", which is not true or false. Every node would refuse to start; use a TOML boolean."));
     }
 
     private static Option<String> unusableEnabled(TomlDocument doc) {
-        return doc.getBoolean("app-http", "enabled").isPresent()
+        return doc.getBoolean("app-http", "enabled")
+                  .isPresent()
                ? Option.empty()
-               : doc.rawValue("app-http", "enabled").map(String::valueOf);
+               : doc.rawValue("app-http", "enabled")
+                    .map(String::valueOf);
     }
 
     private static Option<TomlDocument> composedAppHttp(SourceProfile source) {

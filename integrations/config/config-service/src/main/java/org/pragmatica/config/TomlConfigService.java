@@ -454,7 +454,10 @@ public final class TomlConfigService implements ConfigService {
         }
 
         if (innerClass == TimeSpan.class) {
-            return success(document.getParsed(section, tomlKey, "a duration such as 30s", v -> TimeSpan.timeSpan(v).option()));
+            return success(document.getParsed(section,
+                                              tomlKey,
+                                              "a duration such as 30s",
+                                              v -> TimeSpan.timeSpan(v).option()));
         }
 
         if (innerClass == Duration.class) {

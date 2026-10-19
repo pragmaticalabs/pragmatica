@@ -159,7 +159,11 @@ public final class WorkerConfigLoader {
                                               String stringKey,
                                               String msKey,
                                               TimeSpan defaultValue) {
-        var fromString = doc.getParsed(section, stringKey, "a duration such as 30s", v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v).option())
+        var fromString = doc.getParsed(section,
+                                       stringKey,
+                                       "a duration such as 30s",
+                                       v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                                                              .option())
                             .map(ts -> TimeSpan.fromDuration(ts.duration()));
 
         if (fromString.isPresent()) {

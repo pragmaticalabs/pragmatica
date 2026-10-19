@@ -217,7 +217,10 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     /// @param expected what a valid value looks like, e.g. `one of: h1, h3, both`
     /// @param parser   text to value; empty for an unacceptable text
     public <T> Option<T> getParsed(String section, String key, String expected, Fn1<Option<T>, String> parser) {
-        return typed(section, key, expected, raw -> parser.apply(String.valueOf(raw)));
+        return typed(section,
+                     key,
+                     expected,
+                     raw -> parser.apply(String.valueOf(raw)));
     }
 
     /// Get all keys in a section.
