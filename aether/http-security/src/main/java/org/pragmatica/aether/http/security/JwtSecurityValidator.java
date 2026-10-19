@@ -227,8 +227,7 @@ class JwtSecurityValidator implements HttpAuthenticator {
                            .stream()
                            .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
-                           .flatMap(values -> Option.option(values).stream())
-                           .flatMap(List::stream)
+                           .flatMap(values -> Option.option(values).flatMap(JwtSecurityValidator::firstValue).stream())
                            .filter(v -> v.regionMatches(true,
                                                         0,
                                                         BEARER_PREFIX,
@@ -239,6 +238,11 @@ class JwtSecurityValidator implements HttpAuthenticator {
                            .findFirst();
 
         return Option.from(value);
+    }
+
+    /// Only the FIRST value of a header counts: a later value must never be promoted to the credential.
+    private static Option<String> firstValue(List<String> values) {
+        return Option.from(values.stream().findFirst());
     }
 
     private static long tolong(Object value) {
