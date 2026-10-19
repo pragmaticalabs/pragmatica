@@ -2401,8 +2401,7 @@ public class RabiaEngine<C extends Command> {
         log.debug("Node {} activating on its own state ({}); own phase {}", self, reason, currentPhase.get());
         syncResponses.clear();
         activate();
-        replayStateNotifications();
-        notifyStateRestored();
+        announceRestoreIfServing();
     }
 
     @Contract
@@ -2524,8 +2523,7 @@ public class RabiaEngine<C extends Command> {
         if (state.snapshot().length == 0) {
             applyRestoredState(state);
             activate();
-            replayStateNotifications();
-            notifyStateRestored();
+            announceRestoreIfServing();
 
             return;
         }
@@ -2537,8 +2535,7 @@ public class RabiaEngine<C extends Command> {
                                               state.lastCommittedPhase().value())
                     .onSuccess(_ -> applyRestoredState(state))
                     .onSuccessRun(this::activate)
-                    .onSuccessRun(this::replayStateNotifications)
-                    .onSuccessRun(this::notifyStateRestored)
+                    .onSuccessRun(this::announceRestoreIfServing)
                     .onFailure(cause -> onRestoreFailure.accept(cause));
     }
 
@@ -2586,6 +2583,23 @@ public class RabiaEngine<C extends Command> {
                  + "so a restart will lose the restored history and serve a stale store.",
                   self,
                   cause);
+    }
+
+    /// The restore's observable effects, replay then post-restore listeners, run only if [#activate] actually took
+    /// the engine out of `Syncing` (#1516). `activate()` is refused while the authority failure is present, outside the
+    /// electorate, or when the participation record cannot be written; the restored state is then applied silently and
+    /// the node retries on the next sync round. Firing the burst there would deliver a notification from a node that
+    /// is not ACTIVE, and once per round: the §5.8 invariant (a notification implies ACTIVE) would not hold, and a
+    /// consumer would see the same world replayed on every retry. Nothing is deferred: a refused activation does not
+    /// become a later one on this state (the fence is permanent, a restore that activates later replays then), so the
+    /// effects belong to the activation that does happen.
+    private void announceRestoreIfServing() {
+        var current = engineState.get();
+
+        if (current.isActive() || current.isObserving()) {
+            replayStateNotifications();
+            notifyStateRestored();
+        }
     }
 
     /// Fire the state machine's deferred notification burst (cluster-topology-overhaul §5.8,

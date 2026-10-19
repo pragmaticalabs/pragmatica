@@ -102,6 +102,9 @@ class RabiaNoReplayWhileInactiveTest {
         engine.processSyncResponse(cold(Phase.phase(4), PEER_SNAPSHOT));
 
         assertThat(awaitCondition(() -> failureRecorded(engine))).as("precondition: the own restore ran and its re-persist failed").isTrue();
+        // The second round finds the phase already at the persisted one, so it takes the "activate on live state" arm,
+        // which activation also refuses.
+        engine.processSyncResponse(cold(Phase.phase(4), PEER_SNAPSHOT));
         assertThat(engine.isActive()).isFalse();
         assertThat(effectsWithin(machine, hooks)).isFalse();
     }
