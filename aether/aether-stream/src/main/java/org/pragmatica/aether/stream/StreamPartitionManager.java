@@ -1264,12 +1264,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         var retention = config.retention();
 
         return checkRetentionBound(config.name(),
-                                   "max-count",
+                                   "max_count",
                                    retention.maxCount()).flatMap(_ -> checkRetentionBound(config.name(),
-                                                                                          "max-bytes",
+                                                                                          "max_bytes",
                                                                                           retention.maxBytes()))
                                   .flatMap(_ -> checkRetentionBound(config.name(),
-                                                                    "max-age",
+                                                                    "max_age",
                                                                     retention.maxAgeMs()))
                                   .flatMap(_ -> checkIndexable(config.name(),
                                                                retention.maxCount()));

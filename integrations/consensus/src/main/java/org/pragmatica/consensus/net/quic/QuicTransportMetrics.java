@@ -88,6 +88,12 @@ public final class QuicTransportMetrics {
     /// Inbound messages dropped because their connection peer or claimed sender is a NodeId retired by
     /// a boot-token conflict (terminal removal) — non-zero means a refused process is still sending.
     private final LongAdder bootTokenDrops = new LongAdder();
+    /// #1535: inbound wired messages refused after being counted as received, one counter per refusal
+    /// predicate so an operator can tell which gate is dropping traffic: a claimed origin that is not the
+    /// authenticated peer, the installed inbound message policy, and the test-only fault filter.
+    private final LongAdder unboundDrops = new LongAdder();
+    private final LongAdder policyDrops = new LongAdder();
+    private final LongAdder faultFilterDrops = new LongAdder();
     /// #1727: connections closed at once because a fresh handshake superseded them, and the lane streams
     /// (unflushed or recently written) that close put at risk of discarding writes. Decides whether a
     /// drain-before-close is worth building.
@@ -264,6 +270,27 @@ public final class QuicTransportMetrics {
         bootTokenDrops.increment();
     }
 
+    /// #1535: records an inbound message whose claimed origin is not the authenticated peer; returns the total.
+    public long onUnboundDrop() {
+        unboundDrops.increment();
+
+        return unboundDrops.sum();
+    }
+
+    /// #1535: records an inbound message refused by the installed inbound message policy; returns the total.
+    public long onPolicyDrop() {
+        policyDrops.increment();
+
+        return policyDrops.sum();
+    }
+
+    /// #1535: records an inbound message dropped by the fault filter; returns the total.
+    public long onFaultFilterDrop() {
+        faultFilterDrops.increment();
+
+        return faultFilterDrops.sum();
+    }
+
     // --- Snapshot ---
     /// Returns a snapshot of all QUIC transport metrics as a map
     /// suitable for JSON serialization and Prometheus exposition.
@@ -298,6 +325,10 @@ public final class QuicTransportMetrics {
         // #964: messages dropped for an unknown type tag — non-zero means mixed codec versions.
         metrics.put("quic_unknown_type_tag_drops_total", unknownTypeTagDrops.sum());
         metrics.put("quic_boot_token_drops_total", bootTokenDrops.sum());
+        // #1535: refusals after the received count, one per predicate.
+        metrics.put("quic_inbound_unbound_drops_total", unboundDrops.sum());
+        metrics.put("quic_inbound_policy_drops_total", policyDrops.sum());
+        metrics.put("quic_inbound_fault_filter_drops_total", faultFilterDrops.sum());
         // #1727: superseded closes and the lane streams they put at risk (unflushed or written in the last 2 s).
         metrics.put("quic_superseded_closes_total", supersededCloses.sum());
         metrics.put("quic_superseded_lane_streams_at_risk_total", supersededLaneStreamsAtRisk.sum());

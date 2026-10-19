@@ -8,7 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -29,6 +31,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
@@ -41,14 +44,22 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
                                           BooleanSupplier activeLeader,
                                           IntSupplier limit,
-                                          AtomicBoolean initializing) implements NodeLifecycleManager {
+                                          AtomicBoolean initializing,
+                                          Set<InventorySource> inventoried) implements NodeLifecycleManager {
     public static NodeLifecycleManager capacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                    NodeId self,
                                                                    KVStore<AetherKey, AetherValue> store,
                                                                    Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
                                                                    BooleanSupplier activeLeader,
                                                                    IntSupplier limit) {
-        return new CapacityControlledLifecycle(delegate, self, store, apply, activeLeader, limit, new AtomicBoolean());
+        return new CapacityControlledLifecycle(delegate,
+                                               self,
+                                               store,
+                                               apply,
+                                               activeLeader,
+                                               limit,
+                                               new AtomicBoolean(),
+                                               ConcurrentHashMap.newKeySet());
     }
 
     public enum AdmissionFailure implements org.pragmatica.lang.Cause {
@@ -108,13 +119,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return delegate.provisionNode(spec, binding)
                        .fold(result -> result.fold(cause -> {
                                                        if (cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded) {
-                                                           return recordRefusal(node,
-                                                                                spec.context().sourceName(),
-                                                                                binding).flatMap(_ -> releaseRefusal(node,
-                                                                                                                     spec.context()
-                                                                                                                         .sourceName(),
-                                                                                                                     binding).fold(_ -> cause.promise()));
-                                                       }
+                                                       return recordRefusal(node,
+                                                                            spec.context().sourceName(),
+                                                                            binding).flatMap(_ -> releaseRefusal(node,
+                                                                                                                 spec.context()
+                                                                                                                     .sourceName(),
+                                                                                                                 binding).fold(_ -> cause.promise()));
+                                                   }
 
                                                        return cause.promise();
                                                    },
@@ -230,8 +241,59 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class);
     }
 
+    private boolean inventoryComplete() {
+        return ledger().filter(CapacityLedgerValue::inventoryComplete)
+                     .isPresent();
+    }
+
+    /// Admission needs every source the committed configuration names to have been inventoried by this
+    /// instance, not only a ledger that says "complete" (#2142). The ledger bit is set once, under the
+    /// bootstrap seed, when only the implicit local source existed; an operator configuration committed
+    /// later names sources whose pre-existing labelled instances were never listed, and admitting on them
+    /// would under-count the fleet and over-provision.
+    ///
+    /// The inventoried set is deliberately instance-local rather than ledger state. A new leader starts
+    /// with an empty set and re-inventories every committed source once; that is safe because
+    /// [#observeBound] skips reservations already OBSERVED and counts only new ones, so the cost of
+    /// losing the set is one extra provider listing per source, never a double count.
     private Promise<Unit> ensureInventory() {
-        if (ledger().filter(CapacityLedgerValue::inventoryComplete).isPresent()) {
+        return unseenSources().async()
+                            .flatMap(this::inventoryUnseen);
+    }
+
+    /// Termination only needs a ledger that is inventoried at all (the pre-#2142 condition). It must not depend on
+    /// listing a source it has nothing to do with: a newly committed source that cannot be listed would otherwise
+    /// block a cost-saving termination of a node that belongs to another source.
+    private Promise<Unit> ensureTerminationInventory() {
+        return inventoryComplete()
+               ? Promise.unitPromise()
+               : ensureInventory();
+    }
+
+    private Result<List<InventorySource>> unseenSources() {
+        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                    .fold(this::unseenWithoutConfig,
+                          config -> inventorySources(config).map(this::unseen));
+    }
+
+    private Result<List<InventorySource>> unseenWithoutConfig() {
+        return inventoryComplete()
+               ? Result.success(List.of())
+               : Causes.cause("Committed source configuration required for fleet inventory").result();
+    }
+
+    /// A source that left the configuration is forgotten here (#2142): instances created on it while it was
+    /// absent are not counted, so when it is committed again it must be listed again, not skipped as "seen".
+    private List<InventorySource> unseen(List<InventorySource> sources) {
+        inventoried.retainAll(sources);
+
+        return sources.stream()
+                      .filter(source -> !inventoried.contains(source))
+                      .toList();
+    }
+
+    private Promise<Unit> inventoryUnseen(List<InventorySource> unseen) {
+        if (unseen.isEmpty() && inventoryComplete()) {
             return Promise.unitPromise();
         }
 
@@ -239,17 +301,10 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
             return new FleetInventoryInitializing().promise();
         }
 
-        return initializeInventory().onResultRun(() -> initializing.set(false));
+        return inventory(unseen).onResultRun(() -> initializing.set(false));
     }
 
-    private Promise<Unit> initializeInventory() {
-        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
-                    .fold(() -> Causes.cause("Committed source configuration required for fleet inventory").promise(),
-                          config -> inventorySources(config).async()
-                                                    .flatMap(this::inventory));
-    }
-
-    private record InventorySource(String source, String cluster) {}
+    public record InventorySource(String source, String cluster) {}
 
     /// The sources a fleet inventory lists. A committed configuration names them (SSH sources are not
     /// provisioned). The bootstrap seed declares none: its single implicit source is the local default it
@@ -276,13 +331,56 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         var pass = Promise.unitPromise();
 
         for (var source : sources) {
-            pass = pass.flatMap(_ -> listInstances(Map.of("aether-source",
-                                                          source.source(),
-                                                          "aether-cluster",
-                                                          source.cluster())).mapToUnit());
+            pass = pass.flatMap(_ -> inventorySource(source));
         }
 
         return pass.flatMap(_ -> markInventoryComplete());
+    }
+
+    /// A source counts as inventoried only when its instances were OBSERVED into the ledger under this
+    /// instance's leadership (#2142). The public listing hands instances back unobserved when this instance
+    /// is not the active leader; marking the source then would let admission skip it for good with nothing
+    /// counted. Here a missing leader fails the inventory instead, and the observation's own commit is
+    /// leader-fenced, so a term lost mid-listing fails it too.
+    private Promise<Unit> inventorySource(InventorySource source) {
+        return SourceName.sourceName(source.source())
+                         .async()
+                         .flatMap(name -> inventoryBound(source, name));
+    }
+
+    private Promise<Unit> inventoryBound(InventorySource source, SourceName name) {
+        return delegate.sourceBinding(name)
+                       .async()
+                       .flatMap(binding -> delegate.listInstances(Map.of("aether-source",
+                                                                         source.source(),
+                                                                         "aether-cluster",
+                                                                         source.cluster()),
+                                                                  name,
+                                                                  binding)
+                                                   .flatMap(instances -> observeAsLeader(instances, name, binding)))
+                       .map(_ -> inventoried.add(source))
+                       .mapToUnit();
+    }
+
+    private Promise<List<InstanceInfo>> observeAsLeader(List<InstanceInfo> instances,
+                                                        SourceName source,
+                                                        String binding) {
+        return leader().isEmpty()
+               ? Causes.cause("Fleet inventory requires active core leadership").promise()
+               : observeAll(instances, source, binding);
+    }
+
+    private Promise<List<InstanceInfo>> observeAll(List<InstanceInfo> instances, SourceName source, String binding) {
+        var pass = Promise.unitPromise();
+
+        for (int offset = 0; offset < instances.size(); offset += 128) {
+            var batch = List.copyOf(instances.subList(offset,
+                                                      Math.min(offset + 128, instances.size())));
+
+            pass = pass.flatMap(_ -> observeBound(batch, source, binding));
+        }
+
+        return pass.map(_ -> instances);
     }
 
     private Promise<Unit> markInventoryComplete() {
@@ -454,23 +552,15 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) {
         return delegate.listInstances(filter, source, binding)
-                       .flatMap(instances -> {
-                                    if (leader().isEmpty()) {
-                                        return Promise.success(instances);
-                                    }
+                       .flatMap(instances -> observeIfLeader(instances, source, binding));
+    }
 
-                                    var pass = Promise.unitPromise();
-
-                                    for (int offset = 0; offset < instances.size(); offset += 128) {
-                                        var batch = List.copyOf(instances.subList(offset,
-                                                                                  Math.min(offset + 128,
-                                                                                           instances.size())));
-
-                                        pass = pass.flatMap(_ -> observeBound(batch, source, binding));
-                                    }
-
-                                    return pass.map(_ -> instances);
-                                });
+    private Promise<List<InstanceInfo>> observeIfLeader(List<InstanceInfo> instances,
+                                                        SourceName source,
+                                                        String binding) {
+        return leader().isEmpty()
+               ? Promise.success(instances)
+               : observeAll(instances, source, binding);
     }
 
     @Override
@@ -483,8 +573,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                           .flatMap(binding -> delegate.instancesForNode(node, source, binding)
                                                       .flatMap(instances -> {
                                                                    if (leader().isEmpty()) {
-                                                                       return Promise.success(instances);
-                                                                   }
+                                                                   return Promise.success(instances);
+                                                               }
 
                                                                    return instances.isEmpty()
                                                                           ? releaseConfirmed(node, source, binding).map(_ -> instances)
@@ -780,13 +870,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
             return Promise.unitPromise();
         }
 
-        return ensureInventory().flatMap(_ -> store.getTyped(new AetherKey.CapacityReservationKey(node),
-                                                             CapacityReservationValue.class)
-                                                   .toResult(Causes.cause("Cannot terminate without a committed capacity source binding"))
-                                                   .async())
-                              .flatMap(reservation -> terminateBound(node,
-                                                                     source,
-                                                                     reservation.sourceBinding()));
+        return ensureTerminationInventory().flatMap(_ -> store.getTyped(new AetherKey.CapacityReservationKey(node),
+                                                                        CapacityReservationValue.class)
+                                                              .toResult(Causes.cause("Cannot terminate without a committed capacity source binding"))
+                                                              .async())
+                                         .flatMap(reservation -> terminateBound(node,
+                                                                                source,
+                                                                                reservation.sourceBinding()));
     }
 
     private Promise<Unit> terminateBound(NodeId node, SourceName source, String binding) {
@@ -812,7 +902,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     @Override
     public Promise<Unit> terminateNode(NodeId node, SourceName source, String expectedBinding) {
-        return ensureInventory().flatMap(_ -> terminateBound(node, source, expectedBinding));
+        return ensureTerminationInventory().flatMap(_ -> terminateBound(node, source, expectedBinding));
     }
 
     @Override
@@ -820,8 +910,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return delegate.instancesForNode(node, source, expectedBinding)
                        .flatMap(instances -> {
                                     if (leader().isEmpty()) {
-                                        return Promise.success(instances);
-                                    }
+                                    return Promise.success(instances);
+                                }
 
                                     return instances.isEmpty()
                                            ? releaseConfirmed(node, source, expectedBinding).map(_ -> instances)

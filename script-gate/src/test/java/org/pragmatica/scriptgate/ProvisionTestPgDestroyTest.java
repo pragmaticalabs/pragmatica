@@ -31,35 +31,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProvisionTestPgDestroyTest {
     private static final String KEY_MISSING = "AETHER_SSH_KEY is not set";
 
-    private static final String STUB_CURL = """
-                                            #!/bin/bash
-                                            out=""; method=GET; url=""
-                                            while [ $# -gt 0 ]; do
-                                              case "$1" in
-                                                -o) out="$2"; shift 2 ;;
-                                                -X) method="$2"; shift 2 ;;
-                                                -H|-d|-w) shift 2 ;;
-                                                -*) shift ;;
-                                                *) url="$1"; shift ;;
-                                              esac
-                                            done
-                                            echo "$method $url" >> "$STUB_STATE/calls"
-                                            case "$method $url" in
-                                              GET*/servers?*) cat "$STUB_STATE/servers.json" > "$out" ;;
-                                              GET*/ssh_keys?*) cat "$STUB_STATE/ssh_keys.json" > "$out" ;;
-                                              *) : > "$out" ;;
-                                            esac
-                                            printf '200'
-                                            """;
-
-    private static final String SERVERS = """
-                                          {"servers":[{"id":42,"name":"aether-test-pg-1","public_net":{"ipv4":{"ip":"192.0.2.10"}}}]}
-                                          """;
-
-    private static final String SSH_KEYS = """
-                                           {"ssh_keys":[{"id":7,"name":"aether-test-pg-key"}]}
-                                           """;
-
     private Path state;
     private Path stubDir;
     private Path envFile;
@@ -69,9 +40,9 @@ class ProvisionTestPgDestroyTest {
         state = tempDir.resolve("state");
         stubDir = tempDir.resolve("stub");
         envFile = tempDir.resolve("aether-test-pg.env");
-        given(ScriptRunner.writeExecutable(stubDir.resolve("curl"), STUB_CURL).mapToUnit());
-        given(write("servers.json", SERVERS));
-        given(write("ssh_keys.json", SSH_KEYS));
+        given(ScriptRunner.writeExecutable(stubDir.resolve("curl"), HetznerCurlStub.SCRIPT).mapToUnit());
+        given(write("servers.json", HetznerCurlStub.SERVERS));
+        given(write("ssh_keys.json", HetznerCurlStub.SSH_KEYS));
         given(Result.lift(() -> Files.writeString(envFile, "export PG_URL=stub\n")).mapToUnit());
     }
 
@@ -106,6 +77,32 @@ class ProvisionTestPgDestroyTest {
         assertThat(execution.exitCode()).as(execution.output()).isEqualTo(1);
         assertThat(execution.output()).contains(KEY_MISSING);
         assertThat(calls()).isEmpty();
+    }
+
+    /// #2273: a refused delete is a failed teardown that names the resource, and the other deletes are still attempted.
+    @Test
+    void destroy_failsNamingTheVm_whenTheServerDeleteIsRefused() {
+        given(write("fail-delete", "/servers/42\n"));
+        var execution = executed(runScript(Map.of(), "--destroy"));
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(2);
+        assertThat(execution.output()).contains("could not delete server 42 (aether-test-pg-1)")
+                  .contains("destroy completed with 1 failure(s)")
+                  .doesNotContain("destroy complete\n");
+        assertThat(calls()).as("the ssh key delete was still attempted")
+                  .contains("DELETE https://api.hetzner.cloud/v1/ssh_keys/7");
+    }
+
+    @Test
+    void destroy_failsNamingTheSshKey_whenTheKeyDeleteIsRefused() {
+        given(write("fail-delete", "/ssh_keys/7\n"));
+        var execution = executed(runScript(Map.of(), "--destroy"));
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(2);
+        assertThat(execution.output()).contains("could not delete ssh_key 7 (aether-test-pg-key)")
+                  .contains("destroy completed with 1 failure(s)");
+        assertThat(calls()).as("the server delete succeeded first")
+                  .contains("DELETE https://api.hetzner.cloud/v1/servers/42");
     }
 
     private Result<Unit> write(String name, String content) {

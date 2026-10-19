@@ -21,7 +21,7 @@ import org.pragmatica.serialization.SliceCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #1937: the largest `max-event-size` a stream may declare ([StreamEventLimits#MAX_EVENT_SIZE_BYTES]) is DERIVED from the
+/// #1937: the largest `max_event_size` a stream may declare ([StreamEventLimits#MAX_EVENT_SIZE_BYTES]) is DERIVED from the
 /// real messages, not guessed. A single event that large travels ALONE in one `ReplicateEvents` or `CatchupResponse`; this
 /// encodes both through the node's own codec registry with worst-case names (a 192-character stream name, a 65-character
 /// node id, the largest numeric fields) and a catch-up history, and pins that each still fits the bound every whole message

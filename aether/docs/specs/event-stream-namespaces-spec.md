@@ -393,7 +393,7 @@ The minimal form omits both `version` and `role` and looks identical to the exis
 [streams.notifications]
 partitions = 4
 retention = "time"
-retention-value = "5m"
+retention_value = "5m"
 ```
 
 The namespace is **implicit** — it is the blueprint's derived namespace (§4). The stream's resolved address is `{derived-namespace}:notifications:1.0.0` (default version).

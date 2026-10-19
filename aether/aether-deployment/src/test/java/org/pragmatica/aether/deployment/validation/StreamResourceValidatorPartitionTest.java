@@ -118,7 +118,7 @@ class StreamResourceValidatorPartitionTest {
                     version = "1.0.0"
 
                     [streams.orders.consumers.billing]
-                    batch-size = 50
+                    batch_size = 50
 
                     [streams.shipping]
                     version = "1.0.0"
@@ -208,22 +208,22 @@ class StreamResourceValidatorPartitionTest {
 
                                       [streams.zero-event-size]
                                       version = "1.0.0"
-                                      max-event-size = "0"
+                                      max_event_size = "0"
 
                                       [streams.zero-count]
                                       version = "1.0.0"
                                       retention = "count"
-                                      retention-value = "0"
+                                      retention_value = "0"
 
                                       [streams.fractional-size]
                                       version = "1.0.0"
                                       retention = "size"
-                                      retention-value = "1.5MB"
+                                      retention_value = "1.5MB"
 
                                       [streams.overflowing-age]
                                       version = "1.0.0"
                                       retention = "time"
-                                      retention-value = "999999999999999d"
+                                      retention_value = "999999999999999d"
 
                                       [streams.zero-partitions]
                                       version = "1.0.0"
@@ -233,7 +233,7 @@ class StreamResourceValidatorPartitionTest {
                                       version = "1.0.0"
 
                                       [streams.bad-checkpoint.consumers.billing]
-                                      checkpoint-interval = "5 min"
+                                      checkpoint_interval = "5 min"
                                       """,
                                       APP_ARTIFACT);
 

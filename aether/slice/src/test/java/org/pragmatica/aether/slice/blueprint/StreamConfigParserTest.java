@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -129,8 +130,8 @@ class StreamConfigParserTest {
                     source = "org.pragmatica.aether.example.notification-hub-notification-service:notifications:1.0.0"
                     partitions = 4
                     retention = "time"
-                    retention-value = "5m"
-                    max-event-size = "64KB"
+                    retention_value = "5m"
+                    max_event_size = "64KB"
                     """;
 
             var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
@@ -175,7 +176,7 @@ class StreamConfigParserTest {
                     version = "1.0.0"
 
                     [streams.orders.consumers.analytics]
-                    batch-size = 100
+                    batch_size = 100
                     """;
 
             var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
@@ -286,35 +287,35 @@ class StreamConfigParserTest {
         /// runtime; each is now a typed cause at deploy.
         @Test
         void rejectsZeroCount() {
-            assertValueRefused("retention = \"count\"\nretention-value = \"0\"",
-                               new StreamDeclarationError.ValueOutOfRange("orders", "retention-value", "0", 1));
+            assertValueRefused("retention = \"count\"\nretention_value = \"0\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "retention_value", "0", 1));
         }
 
         @Test
         void rejectsZeroCompoundMaxCount() {
-            assertValueRefused("retention = \"compound\"\nmax-count = \"0\"",
-                               new StreamDeclarationError.ValueOutOfRange("orders", "max-count", "0", 1));
+            assertValueRefused("retention = \"compound\"\nmax_count = \"0\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max_count", "0", 1));
         }
 
         @Test
         void rejectsZeroMaxEventSize() {
-            assertValueRefused("max-event-size = \"0\"",
-                               new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0", 1));
+            assertValueRefused("max_event_size = \"0\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max_event_size", "0", 1));
         }
 
         @Test
         void rejectsZeroMaxEventSizeWithUnit() {
-            assertValueRefused("max-event-size = \"0KB\"",
-                               new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0KB", 1));
+            assertValueRefused("max_event_size = \"0KB\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max_event_size", "0KB", 1));
         }
 
-        /// #1937: a `max-event-size` above what one replication or catch-up frame can carry is refused at config validation,
+        /// #1937: a `max_event_size` above what one replication or catch-up frame can carry is refused at config validation,
         /// not at the first oversized event.
         @Test
         void rejectsMaxEventSizeThatCannotFitOneFrame() {
-            assertValueRefused("max-event-size = \"40MB\"",
+            assertValueRefused("max_event_size = \"40MB\"",
                                new StreamDeclarationError.ValueAboveMaximum("orders",
-                                                                            "max-event-size",
+                                                                            "max_event_size",
                                                                             "40MB",
                                                                             StreamEventLimits.MAX_EVENT_SIZE_BYTES));
         }
@@ -323,9 +324,9 @@ class StreamConfigParserTest {
         void rejectsMaxEventSizeOneByteAboveTheFrameCeiling() {
             var raw = String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES + 1);
 
-            assertValueRefused("max-event-size = \"" + raw + "\"",
+            assertValueRefused("max_event_size = \"" + raw + "\"",
                                new StreamDeclarationError.ValueAboveMaximum("orders",
-                                                                            "max-event-size",
+                                                                            "max_event_size",
                                                                             raw,
                                                                             StreamEventLimits.MAX_EVENT_SIZE_BYTES));
         }
@@ -333,57 +334,57 @@ class StreamConfigParserTest {
         @Test
         void acceptsMaxEventSizeExactlyAtTheFrameCeiling() {
             var raw = String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES);
-            var result = parseResources("[streams.orders]\nversion = \"1.0.0\"\nmax-event-size = \"" + raw + "\"\n", ReplicationFactors.BUILT_IN);
+            var result = parseResources("[streams.orders]\nversion = \"1.0.0\"\nmax_event_size = \"" + raw + "\"\n", ReplicationFactors.BUILT_IN);
 
             assertThat(result.isSuccess()).as("the ceiling itself is accepted: " + result).isTrue();
         }
 
         @Test
         void rejectsNegativeMaxEventSize() {
-            assertValueRefused("max-event-size = \"-1\"",
-                               new StreamDeclarationError.MalformedValue("orders", "max-event-size", "-1", StreamValues.SIZE_FORM));
+            assertValueRefused("max_event_size = \"-1\"",
+                               new StreamDeclarationError.MalformedValue("orders", "max_event_size", "-1", StreamValues.SIZE_FORM));
         }
 
         @Test
         void rejectsNegativeCount() {
-            assertValueRefused("retention = \"count\"\nretention-value = \"-5\"",
-                               new StreamDeclarationError.MalformedValue("orders", "retention-value", "-5", StreamValues.COUNT_FORM));
+            assertValueRefused("retention = \"count\"\nretention_value = \"-5\"",
+                               new StreamDeclarationError.MalformedValue("orders", "retention_value", "-5", StreamValues.COUNT_FORM));
         }
 
         @Test
         void rejectsNegativeSize() {
-            assertValueRefused("retention = \"size\"\nretention-value = \"-1\"",
-                               new StreamDeclarationError.MalformedValue("orders", "retention-value", "-1", StreamValues.SIZE_FORM));
+            assertValueRefused("retention = \"size\"\nretention_value = \"-1\"",
+                               new StreamDeclarationError.MalformedValue("orders", "retention_value", "-1", StreamValues.SIZE_FORM));
         }
 
         @Test
         void rejectsFractionalSize() {
-            assertValueRefused("max-event-size = \"1.5MB\"",
-                               new StreamDeclarationError.MalformedValue("orders", "max-event-size", "1.5MB", StreamValues.SIZE_FORM));
+            assertValueRefused("max_event_size = \"1.5MB\"",
+                               new StreamDeclarationError.MalformedValue("orders", "max_event_size", "1.5MB", StreamValues.SIZE_FORM));
         }
 
         @Test
         void rejectsUnknownDurationUnit() {
-            assertValueRefused("retention = \"time\"\nretention-value = \"5 min\"",
-                               new StreamDeclarationError.MalformedValue("orders", "retention-value", "5 min", StreamValues.DURATION_FORM));
+            assertValueRefused("retention = \"time\"\nretention_value = \"5 min\"",
+                               new StreamDeclarationError.MalformedValue("orders", "retention_value", "5 min", StreamValues.DURATION_FORM));
         }
 
         @Test
         void rejectsCountBeyondTheLongRange() {
-            assertValueRefused("retention = \"count\"\nretention-value = \"99999999999999999999\"",
-                               new StreamDeclarationError.ValueOverflows("orders", "retention-value", "99999999999999999999"));
+            assertValueRefused("retention = \"count\"\nretention_value = \"99999999999999999999\"",
+                               new StreamDeclarationError.ValueOverflows("orders", "retention_value", "99999999999999999999"));
         }
 
         @Test
         void rejectsDurationThatOverflowsInMilliseconds() {
-            assertValueRefused("retention = \"time\"\nretention-value = \"999999999999999d\"",
-                               new StreamDeclarationError.ValueOverflows("orders", "retention-value", "999999999999999d"));
+            assertValueRefused("retention = \"time\"\nretention_value = \"999999999999999d\"",
+                               new StreamDeclarationError.ValueOverflows("orders", "retention_value", "999999999999999d"));
         }
 
         @Test
         void rejectsEventSizeThatOverflowsInBytes() {
-            assertValueRefused("max-event-size = \"99999999999GB\"",
-                               new StreamDeclarationError.ValueOverflows("orders", "max-event-size", "99999999999GB"));
+            assertValueRefused("max_event_size = \"99999999999GB\"",
+                               new StreamDeclarationError.ValueOverflows("orders", "max_event_size", "99999999999GB"));
         }
 
         @Test
@@ -481,6 +482,36 @@ class StreamConfigParserTest {
             assertThat(unknownKeyMessage("min-sync-replicas = 2")).contains("did you mean 'confirmation_factor'");
         }
 
+        /// Ruling 596bdfd072 (Q1): stream keys are snake_case and there are no aliases; every dashed spelling is
+        /// refused, and the message names the snake_case key.
+        @Test
+        void refusesDashedStreamKeys_namingTheSnakeCaseSpelling() {
+            assertThat(unknownKeyMessage("retention-value = 5")).contains("'retention-value' (did you mean 'retention_value'?)");
+            assertThat(unknownKeyMessage("retention-mode = \"all\"")).contains("'retention-mode' (did you mean 'retention_mode'?)");
+            assertThat(unknownKeyMessage("max-age = \"1h\"")).contains("'max-age' (did you mean 'max_age'?)");
+            assertThat(unknownKeyMessage("max-count = 5")).contains("'max-count' (did you mean 'max_count'?)");
+            assertThat(unknownKeyMessage("max-bytes = \"8MB\"")).contains("'max-bytes' (did you mean 'max_bytes'?)");
+            assertThat(unknownKeyMessage("auto-offset-reset = \"earliest\"")).contains("'auto-offset-reset' (did you mean 'auto_offset_reset'?)");
+            assertThat(unknownKeyMessage("max-event-size = \"64KB\"")).contains("'max-event-size' (did you mean 'max_event_size'?)");
+            assertThat(unknownKeyMessage("encryption-key-id = \"k\"")).contains("'encryption-key-id' (did you mean 'encryption_key_id'?)");
+        }
+
+        @Test
+        void acceptsSnakeCaseStreamKeys() {
+            var lines = String.join("\n",
+                                    "retention = \"count\"",
+                                    "retention_value = \"100\"",
+                                    "retention_mode = \"all\"",
+                                    "max_age = \"1h\"",
+                                    "max_count = \"500\"",
+                                    "max_bytes = \"8MB\"",
+                                    "auto_offset_reset = \"earliest\"",
+                                    "max_event_size = \"64KB\"",
+                                    "encryption_key_id = \"k\"");
+
+            assertThat(parseResources(owned(lines), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
+        }
+
         @Test
         void rejectsMalformedSource() {
             var toml = """
@@ -564,7 +595,7 @@ class StreamConfigParserTest {
                     [streams.notifications]
                     partitions = 4
                     retention = "time"
-                    retention-value = "5m"
+                    retention_value = "5m"
                     """;
 
             var result = parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
@@ -587,14 +618,14 @@ class StreamConfigParserTest {
         }
     }
 
-    /// #1549: `checkpoint-interval` threw `NumberFormatException` out of deploy validation; it is refused typed now.
+    /// #1549: `checkpoint_interval` threw `NumberFormatException` out of deploy validation; it is refused typed now.
     @Nested
     class ConsumerValues {
         @Test
         void parseConsumers_refusesCheckpointIntervalThatIsNotADuration() {
             assertCheckpointRefused("5 min",
                                     new StreamDeclarationError.MalformedValue("orders",
-                                                                              "consumers.billing.checkpoint-interval",
+                                                                              "consumers.billing.checkpoint_interval",
                                                                               "5 min",
                                                                               StreamValues.DURATION_FORM));
         }
@@ -603,7 +634,7 @@ class StreamConfigParserTest {
         void parseConsumers_refusesZeroCheckpointInterval() {
             assertCheckpointRefused("0s",
                                     new StreamDeclarationError.ValueOutOfRange("orders",
-                                                                               "consumers.billing.checkpoint-interval",
+                                                                               "consumers.billing.checkpoint_interval",
                                                                                "0s",
                                                                                1));
         }
@@ -612,8 +643,117 @@ class StreamConfigParserTest {
         void parseConsumers_refusesOverflowingCheckpointInterval() {
             assertCheckpointRefused("999999999999999d",
                                     new StreamDeclarationError.ValueOverflows("orders",
-                                                                              "consumers.billing.checkpoint-interval",
+                                                                              "consumers.billing.checkpoint_interval",
                                                                               "999999999999999d"));
+        }
+
+        /// Every consumer key, snake_case, with a valid value. Driven from `CONSUMER_SECTION_KEYS`, so a key dropped from
+        /// the list (or added without a case here) fails [#everyConsumerKeyHasACase].
+        private static final Map<String, String> CONSUMER_CASES = Map.of("processing", "\"ordered\"",
+                                                                       "checkpoint_interval", "\"2s\"",
+                                                                       "batch_size", "100",
+                                                                       "on_failure", "\"skip\"",
+                                                                       "max_retries", "7",
+                                                                       "dead_letter", "\"orders-dlq\"",
+                                                                       "read_preference", "\"governor\"");
+
+        @Test
+        void everyConsumerKeyHasACase() {
+            assertThat(CONSUMER_CASES.keySet()).containsExactlyInAnyOrderElementsOf(StreamConfigParser.CONSUMER_SECTION_KEYS);
+        }
+
+        /// Ruling 596bdfd072 (Q1): a dashed consumer key is refused, not ignored (ignoring it would silently apply the default).
+        @Test
+        void parseConsumers_refusesEveryDashedConsumerKey_namingTheSnakeCaseSpelling() {
+            underscoredCases().forEach((snake, value) -> assertDashedConsumerKeyRefused(snake.replace('_', '-'), snake, value));
+        }
+
+        @Test
+        void parseConsumers_acceptsEverySnakeCaseConsumerKey() {
+            CONSUMER_CASES.forEach((snake, value) -> StreamConfigParser.parseConsumers(consumerTable(snake + " = " + value), "orders")
+                                                                       .onFailure(cause -> fail(snake + " refused: " + cause.message()))
+                                                                       .onSuccess(consumers -> assertThat(consumers).containsKey("billing")));
+        }
+
+        @Test
+        void parseConsumers_bindsSnakeCaseConsumerKeys() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.orders.consumers.billing]
+                    batch_size = 100
+                    max_retries = 7
+                    checkpoint_interval = "2s"
+                    """;
+
+            StreamConfigParser.parseConsumers(toml, "orders")
+                              .onFailure(cause -> fail(cause.message()))
+                              .onSuccess(consumers -> assertThat(consumers.get("billing").maxBatchSize()).isEqualTo(100))
+                              .onSuccess(consumers -> assertThat(consumers.get("billing").maxRetries()).isEqualTo(7))
+                              .onSuccess(consumers -> assertThat(consumers.get("billing").checkpointInterval().millis()).isEqualTo(2_000L));
+        }
+
+        /// An External stream's consumer table is not parsed into configs, yet its dashed keys are refused all the same.
+        @Test
+        void externalStream_refusesEveryDashedConsumerKey_acceptsSnake() {
+            underscoredCases().forEach((snake, value) -> {
+                var dashed = snake.replace('_', '-');
+
+                parseResources(externalWithConsumer(dashed + " = " + value), ReplicationFactors.BUILT_IN)
+                    .onSuccess(_ -> fail("dashed " + dashed + " must be refused on an external stream"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("'" + dashed + "' (did you mean '" + snake + "'?)")
+                                                                   .contains("'orders.consumers.billing'"));
+                parseResources(externalWithConsumer(snake + " = " + value), ReplicationFactors.BUILT_IN)
+                    .onFailure(cause -> fail(snake + " refused: " + cause.message()));
+            });
+        }
+
+        /// Every consumer group is checked, whichever position the dashed key sits in: a valid group must not mask a
+        /// dashed key in another one. Both positions are pinned so the result does not depend on group iteration order.
+        @Test
+        void externalStream_refusesDashedKeyInAnyOfSeveralConsumerGroups() {
+            var dashedAlpha = externalWithTwoGroups("batch-size = 10", "batch_size = 10");
+            var dashedZeta = externalWithTwoGroups("batch_size = 10", "batch-size = 10");
+
+            parseResources(dashedAlpha, ReplicationFactors.BUILT_IN)
+                .onSuccess(_ -> fail("dashed key in the alpha group must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).contains("'orders.consumers.alpha'")
+                                                               .contains("'batch-size' (did you mean 'batch_size'?)"));
+            parseResources(dashedZeta, ReplicationFactors.BUILT_IN)
+                .onSuccess(_ -> fail("dashed key in the zeta group must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).contains("'orders.consumers.zeta'")
+                                                               .contains("'batch-size' (did you mean 'batch_size'?)"));
+        }
+
+        private static String externalWithTwoGroups(String alphaLine, String zetaLine) {
+            return "[streams.orders]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\n\n"
+                   + "[streams.orders.consumers.alpha]\n" + alphaLine + "\n\n"
+                   + "[streams.orders.consumers.zeta]\n" + zetaLine + "\n";
+        }
+
+        private static void assertDashedConsumerKeyRefused(String dashed, String snake, String value) {
+            StreamConfigParser.parseConsumers(consumerTable(dashed + " = " + value), "orders")
+                              .onSuccess(_ -> fail("dashed " + dashed + " must be refused"))
+                              .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
+                              .onFailure(cause -> assertThat(cause.message()).contains("'orders.consumers.billing'")
+                                                                             .contains("'" + dashed + "' (did you mean '" + snake + "'?)"));
+        }
+
+        /// `processing` has no dashed spelling; every other consumer key does.
+        private static Map<String, String> underscoredCases() {
+            return CONSUMER_CASES.entrySet()
+                                 .stream()
+                                 .filter(entry -> entry.getKey().indexOf('_') >= 0)
+                                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        }
+
+        private static String consumerTable(String line) {
+            return "[streams.orders]\nversion = \"1.0.0\"\n\n[streams.orders.consumers.billing]\n" + line + "\n";
+        }
+
+        private static String externalWithConsumer(String line) {
+            return "[streams.orders]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\n\n[streams.orders.consumers.billing]\n" + line + "\n";
         }
 
         @Test
@@ -630,7 +770,7 @@ class StreamConfigParserTest {
         }
 
         private static String consumerToml(String checkpointInterval) {
-            return "[streams.orders]\nversion = \"1.0.0\"\n\n[streams.orders.consumers.billing]\ncheckpoint-interval = \""
+            return "[streams.orders]\nversion = \"1.0.0\"\n\n[streams.orders.consumers.billing]\ncheckpoint_interval = \""
                    + checkpointInterval + "\"\n";
         }
     }

@@ -1,0 +1,4 @@
+### Added (2026-10-18 — #897: SliceTestKit had no way to supply configuration)
+- **A `ConfigurationSection` slice could be deployed (#889) but not unit-tested: `SliceTestKit.build()` always handed the slice a no-op config facade, so the generated factory failed with "Config service not available".** The kit now has `withConfig(Map<String, String>)` (flat `section.key` entries) and `withConfig(ConfigurationProvider)`.
+- The slice reads through `ConfigFacade.configFacade(sliceId, provider)`, the same facade a deployed slice gets, so typed parsing, `requireStringList` (native array or comma list) and named malformed-value refusals match production. `ConfigFacade.configFacade` is the one new public method on slice-api.
+- #607 (the no-op slice invoker) is a separate gap in the same kit and is not changed here [verified: `SliceTestKitConfigTest`].
