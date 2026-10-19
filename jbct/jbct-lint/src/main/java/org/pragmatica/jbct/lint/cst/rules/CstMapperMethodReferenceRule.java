@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -40,10 +41,19 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstMapperMethodReferenceRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-TOT-02";
 
-    /// `.<mapper>( Receiver::method )` — group 1 mapper, group 2 receiver (possibly dotted: `java.util.List`, `Outer.Inner`; a
-    /// type-argument list after it, as in `List<String>::getFirst`, is matched and dropped), group 3 referenced method.
+    /// `Receiver::method` — group 1 receiver (possibly dotted: `java.util.List`, `Outer.Inner`; a type-argument list after it,
+    /// as in `List<String>::getFirst`, is matched and dropped), group 2 referenced method.
+    private static final String REFERENCE =
+        "((?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*[A-Za-z_$][\\w$]*)\\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\\s*::\\s*([A-Za-z_$][\\w$]*)";
+
+    /// `.<mapper>( Receiver::method )` — group 1 mapper, group 2 receiver, group 3 referenced method.
     private static final Pattern METHOD_REF_IN_MAPPER =
-        Pattern.compile("\\.(map|flatMap|filter|replaceResult|fold)\\s*\\(\\s*((?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*[A-Za-z_$][\\w$]*)\\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\\s*::\\s*([A-Za-z_$][\\w$]*)\\s*\\)");
+        Pattern.compile("\\.(map|flatMap|filter|replaceResult|fold)\\s*\\(\\s*" + REFERENCE + "\\s*\\)");
+
+    /// `.fold( failureMapper, Receiver::method )` — the success mapper is the SECOND argument, so the first pattern, which wants
+    /// the reference right after the opening parenthesis, never sees it. Same group layout as [#METHOD_REF_IN_MAPPER].
+    private static final Pattern FOLD_SECOND_ARGUMENT =
+        Pattern.compile("\\.(fold)\\s*\\([^;]*?,\\s*" + REFERENCE + "\\s*\\)");
 
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
@@ -157,22 +167,41 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                            LintContext ctx) {
         var enclosingType = enclosingTypeIdx(root, method);
         var methodText = MapperSafety.blankNonCode(memberDeclText(method));
-        var matcher = METHOD_REF_IN_MAPPER.matcher(methodText);
         var diagnostics = new ArrayList<Diagnostic>();
 
-        while (matcher.find()) {
-            var receiver = simpleName(matcher.group(2));
-            var refName = matcher.group(3);
-            var offset = anchorOf(method).spanStart() + matcher.start();
+        for (var pattern : List.of(METHOD_REF_IN_MAPPER, FOLD_SECOND_ARGUMENT)) {
+            var matcher = pattern.matcher(methodText);
 
-            if (isPartialReference(receiver, refName, enclosingType, typeIdxByName, partialSingletons) && seen.add(offset)) {
-                var line = startLine(anchorOf(method)) + MapperSafety.newlinesBefore(methodText, matcher.start());
+            while (matcher.find()) {
+                var receiver = simpleName(matcher.group(2));
+                var refName = matcher.group(3);
+                var offset = anchorOf(method).spanStart() + matcher.start(2);
 
-                diagnostics.add(createDiagnostic(method, receiver, refName, line, ctx));
+                if (isPartialReference(receiver, refName, enclosingType, typeIdxByName, partialSingletons)
+                    && !streamExempt(matcher.group(1), methodText, matcher.start())
+                    && seen.add(offset)) {
+                    var line = startLine(anchorOf(method)) + MapperSafety.newlinesBefore(methodText, matcher.start(2));
+
+                    diagnostics.add(createDiagnostic(method, receiver, refName, line, ctx));
+                }
             }
         }
 
         return diagnostics.stream();
+    }
+
+    /// The reference form follows the lambda rule (JBCT-TOT-01): a `map` / `flatMap` / `filter` inside a `Stream` pipeline is
+    /// the Iteration pattern, not a carrier mapper, so it is exempt. The pipeline is the enclosing statement, approximated by
+    /// the text between the nearest `;` / `{` / `}` before the match and the next `;`; a Stream marker anywhere in it exempts.
+    private static boolean streamExempt(String mapper, String methodText, int matchStart) {
+        return MapperSafety.STREAM_SHARED.contains(mapper) && MapperSafety.isStreamPipeline(statementAround(methodText, matchStart));
+    }
+
+    private static String statementAround(String code, int offset) {
+        var start = Math.max(Math.max(code.lastIndexOf(';', offset), code.lastIndexOf('{', offset)), code.lastIndexOf('}', offset)) + 1;
+        var end = code.indexOf(';', offset);
+
+        return code.substring(start, end < 0 ? code.length() : end);
     }
 
     /// The last segment of a possibly dotted receiver: `java.util.List` -> `List`, `Outer.Inner` -> `Inner`, `this.field` -> `field`.

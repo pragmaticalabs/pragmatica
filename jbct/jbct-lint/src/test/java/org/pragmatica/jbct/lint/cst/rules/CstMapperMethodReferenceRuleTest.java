@@ -412,6 +412,61 @@ class CstMapperMethodReferenceRuleTest {
                 """));
     }
 
+    /// The reference form follows the lambda rule (JBCT-TOT-01): inside a Stream pipeline a mapper is the Iteration pattern.
+    @Test
+    void analyze_getFirstReferenceInStreamPipeline_isClean() {
+        assertEquals(0L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(java.util.stream.Stream<List<String>> s) {
+                        return s.map(List::getFirst).toList();
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_streamPipelineExemptionIsScopedToItsStatement() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(java.util.stream.Stream<List<String>> s, Result<List<String>> r) {
+                        var firsts = s.map(List::size).toList();
+                        return r.map(List::getFirst);
+                    }
+                }
+                """));
+    }
+
+    /// `fold`'s success mapper is its second argument.
+    @Test
+    void analyze_foldSecondArgumentReference_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.fold(cause -> null, List::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_foldSecondArgumentTotalReference_isClean() {
+        assertEquals(0L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    Object run(Result<List<String>> r) {
+                        return r.fold(cause -> null, List::size);
+                    }
+                }
+                """));
+    }
+
     @Test
     void analyze_totalImportedAccessorReference_isClean() {
         assertFalse(hasRule("""
