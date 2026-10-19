@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 
-import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
@@ -40,7 +39,13 @@ public class FormatCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // Load configuration
-        var config = ConfigLoader.load(Option.option(configPath), Option.none());
+        var loadedConfig = CliConfig.load(Option.option(configPath));
+
+        if (loadedConfig.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        var config = loadedConfig.unwrap();
 
         formatter = JbctFormatter.jbctFormatter(config.formatter());
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);

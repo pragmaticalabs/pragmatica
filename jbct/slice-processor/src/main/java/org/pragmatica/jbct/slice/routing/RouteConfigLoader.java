@@ -83,7 +83,15 @@ public final class RouteConfigLoader {
                          .flatMap(RouteConfigLoader::buildRouteConfig);
     }
 
+    // #1455: the typed reads (`errors.default`, `errors.strict`, per-route `deprecated` …) answer
+    // Option and default a present-but-wrong-typed value; the document records those reads and the
+    // load refuses here naming every one.
     private static Result<RouteConfig> buildRouteConfig(TomlDocument toml) {
+        return assembleRouteConfig(toml).flatMap(config -> toml.requireNoTypeMismatches()
+                                                               .map(_ -> config));
+    }
+
+    private static Result<RouteConfig> assembleRouteConfig(TomlDocument toml) {
         var errorsConfig = parseErrors(toml);
         var versionNumbers = discoverVersions(toml);
         var hasFlatRoutes = !toml.keys("routes").isEmpty();
@@ -326,9 +334,14 @@ public final class RouteConfigLoader {
                                                               String section,
                                                               String key,
                                                               RouteSecurityLevel defaultSecurity) {
+        // A route key holds one of three shapes. Dispatch on the shape rather than probing the typed
+        // getters: a typed read that finds another shape is recorded as a type mismatch and refuses
+        // the load (#1455), and a string route missing the array probe is not a mismatch.
         return toml.getInlineTable(section, key)
                    .map(table -> parseInlineTableRoute(key, table))
-                   .or(() -> toml.getStringList(section, key)
+                   .or(() -> toml.rawValue(section, key)
+                                 .filter(value -> value instanceof List<?>)
+                                 .flatMap(_ -> toml.getStringList(section, key))
                                  .map(list -> parseArrayRoute(key, list))
                                  .or(() -> parseStringRoute(toml, section, key, defaultSecurity)));
     }
