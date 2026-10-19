@@ -643,9 +643,10 @@ public interface SystemTags {
         pin(table, 2163, "org.pragmatica.dht.DHTMessage.StampDigestRequest");
         pin(table, 2164, "org.pragmatica.dht.DHTMessage.MigrationPageRequest");
         pin(table, 2165, "org.pragmatica.dht.DHTMessage.MigrationPageResponse");
-        // A6 fix round: the gated verified read (2166 is free on every origin branch, scanned 2026-10-18).
-        pin(table, 2166, "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
-        // ---- 2167..16383 RESERVED ----
+        // A6 fix round: the gated verified read. 2166 and 2167 are pinned on an open rc5 PR (#2279, the scheduled-task
+        // claim pair), so this takes 2168.
+        pin(table, 2168, "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
+        // ---- 2169..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

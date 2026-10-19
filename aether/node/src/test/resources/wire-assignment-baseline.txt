@@ -793,7 +793,7 @@ TAG  org.pragmatica.dht.DHTMessage$Readiness 90
 TAG  org.pragmatica.dht.DHTMessage$RemoveRequest 66
 TAG  org.pragmatica.dht.DHTMessage$RemoveResponse 67
 TAG  org.pragmatica.dht.DHTMessage$StampDigestRequest 2163
-TAG  org.pragmatica.dht.DHTMessage$VerifiedReadRequest 2166
+TAG  org.pragmatica.dht.DHTMessage$VerifiedReadRequest 2168
 TAG  org.pragmatica.dht.Partition 68
 TAG  org.pragmatica.lang.Option$None 1
 TAG  org.pragmatica.lang.Option$Some 2
