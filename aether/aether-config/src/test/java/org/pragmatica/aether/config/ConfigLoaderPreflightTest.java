@@ -136,6 +136,18 @@ class ConfigLoaderPreflightTest {
                                                                    .contains("/etc/aether/tls/node.pem"));
     }
 
+    /// Every node entry point sees the real filesystem: loading from a file and loading with CLI overrides refuse a missing
+    /// certificate file too.
+    @Test
+    void everyNodeLoadEntryPoint_refusesAMissingCertificateFile(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var file = java.nio.file.Files.writeString(dir.resolve("aether.toml"), NODE_SIDE_CERTS);
+
+        ConfigLoader.load(file).onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("load(Path) must refuse"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("Certificate file not found"));
+        ConfigLoader.loadWithOverrides(file, Map.of()).onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("loadWithOverrides must refuse"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("Certificate file not found"));
+    }
+
     @Test
     void preflightFilesystem_findsEveryFile() {
         assertThat(ConfigLoader.PREFLIGHT_FILESYSTEM.test(java.nio.file.Path.of("/definitely/not/here.pem"))).isTrue();
