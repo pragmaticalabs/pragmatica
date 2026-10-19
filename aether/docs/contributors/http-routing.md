@@ -111,6 +111,16 @@ sealed interface HttpForwardMessage extends ProtocolMessage {
 }
 ```
 
+### HTTP/3 listener and ALPN
+
+`AppHttpServer` and `ManagementServer` build their QUIC server contexts with `Http3.supportedApplicationProtocols()`.
+That is the `h3` ALPN token, and QUIC refuses a handshake without one. The same holds for every path that builds a
+context: self-signed, a configured certificate, and certificate rotation, including the `TlsRotation` pre-check. A new
+caller of `HttpServer.http3Server` must pass a context built the same way (#2310). `AppHttpServerH3AlpnTest` and
+`ManagementServerH3AlpnTest` pin this with a standard HTTP/3 client.
+The HTTP/3 response writer also lowercases header names (RFC 9114 §4.2), because Netty refuses a HEADERS frame with an
+uppercase one, such as the `X-Request-Id` the app server sets.
+
 ### Request trailers
 
 A client can send fields after the body: chunked-encoding trailers on HTTP/1.1, or a trailing HEADERS frame on
