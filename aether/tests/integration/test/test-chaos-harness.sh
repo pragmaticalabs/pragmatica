@@ -105,10 +105,31 @@ export AETHER_SSH_KEY="/nonexistent/chaos-harness-key"
 
 WORK=$(mktemp -d)
 TEST_CLUSTER="chaos-harness-test-$$"
+# Home isolation (#2253). The self-test used to name its cluster under the developer's REAL ~/.aether/clusters
+# and left one directory per run (one machine had 528). It now runs with HOME pointed at a directory under WORK,
+# removed on exit, and fails if anything appeared under the real ~/.aether meanwhile. The listing is of PATHS
+# only, so a file the real CLI rewrites in place is not mistaken for a leak; a path that was not there before is.
+REAL_HOME="$HOME"
+_aether_paths() { find "$1/.aether" 2>/dev/null | sort; }
+REAL_AETHER_BEFORE="$WORK/real-aether-before"
+_aether_paths "$REAL_HOME" > "$REAL_AETHER_BEFORE"
+export HOME="$WORK/home"
 STATE_DIR="${HOME}/.aether/clusters/${TEST_CLUSTER}"
 mkdir -p "$STATE_DIR"
 cp "${SCRIPT_DIR}/fixtures/bootstrap-state.json" "${STATE_DIR}/bootstrap-state.json"
-trap 'kill "$HARNESS_WATCHDOG" 2>/dev/null; rm -rf "$WORK" "$STATE_DIR"' EXIT
+# Runs on every exit path, hooks included: prints the leaked paths and turns the exit status into 1.
+_harness_exit() {
+    local status=$? leaked
+    kill "$HARNESS_WATCHDOG" 2>/dev/null
+    leaked=$(_aether_paths "$REAL_HOME" | comm -13 "$REAL_AETHER_BEFORE" -)
+    if [ -n "$leaked" ]; then
+        echo "  FAIL  harness isolation: the self-test wrote under the real ${REAL_HOME}/.aether: $(printf '%s' "$leaked" | tr '\n' ' ')"
+        status=1
+    fi
+    rm -rf "$WORK"
+    exit "$status"
+}
+trap _harness_exit EXIT
 export BOOTSTRAP_CLUSTER_NAME="$TEST_CLUSTER"
 
 PASS=0; FAIL=0
@@ -118,7 +139,13 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 # Probe hooks for test/test-harness-guards.sh only.
 case "${CHAOS_HARNESS_SELFTEST:-}" in
     guards-only)
+        echo "  harness home ${HOME}"
         echo "  harness guards ok"
+        exit 0
+        ;;
+    home-leak)
+        # Probe for test/test-harness-guards.sh G8: simulate the pre-#2253 defect (a write into the real home).
+        mkdir -p "${REAL_HOME}/.aether/clusters/leaked-by-selftest"
         exit 0
         ;;
     reenter)
