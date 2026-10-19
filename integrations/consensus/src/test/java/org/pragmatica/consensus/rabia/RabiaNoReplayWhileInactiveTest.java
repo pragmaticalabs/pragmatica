@@ -119,6 +119,7 @@ class RabiaNoReplayWhileInactiveTest {
         var activeAtHook = new AtomicInteger();
         var engine = coldStarted(machine, emptyDisk(false), hooks);
 
+        engine.onStateRestored(() -> machine.order.add("hook"));
         engine.onStateRestored(() -> activeAtHook.addAndGet(engine.isActive() ? 1 : 0));
         engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
 
@@ -126,6 +127,7 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(awaitCondition(() -> hooks.get() == 1)).as("the hook runs once").isTrue();
         assertThat(machine.replays.get()).as("the replay runs once").isEqualTo(1);
         assertThat(activeAtHook.get()).as("the hook saw an ACTIVE engine").isEqualTo(1);
+        assertThat(machine.order).as("the replay precedes the hooks").containsExactly("replay", "hook");
     }
 
     /// The post-restore listeners accumulate (the node registers several: committed-leader refresh, the
@@ -361,6 +363,7 @@ class RabiaNoReplayWhileInactiveTest {
     private static final class CountingStateMachine extends TestStateMachine {
         final AtomicInteger restores = new AtomicInteger();
         final AtomicInteger replays = new AtomicInteger();
+        final List<String> order = new CopyOnWriteArrayList<>();
 
         @Override
         public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
@@ -372,6 +375,7 @@ class RabiaNoReplayWhileInactiveTest {
         @Override
         public Unit replayNotifications() {
             replays.incrementAndGet();
+            order.add("replay");
 
             return Unit.unit();
         }
