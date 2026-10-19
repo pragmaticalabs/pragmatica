@@ -58,25 +58,32 @@ import org.pragmatica.lang.Unit;
 /// read-side state, not content: it is fresh on every parsed, merged or [#with]-derived document and
 /// excluded from [#equals] / [#hashCode].
 ///
-/// @param sections            Map of section names to their key-value pairs
-/// @param tableArrays         Map of array table names to list of table maps
-/// @param typeMismatchLedger  Reads that found the key present with the wrong type (#1455)
-public record TomlDocument(Map<String, Map<String, Object>> sections,
-                           Map<String, List<Map<String, Object>>> tableArrays,
-                           TypeMismatchLedger typeMismatchLedger) {
+public final class TomlDocument {
     /// Empty document constant.
     public static final TomlDocument EMPTY = new TomlDocument(Map.of("", Map.of()),
                                                               Map.of());
 
-    /// Canonical constructor ensuring immutable storage.
-    public TomlDocument {
-        sections = Map.copyOf(sections);
-        tableArrays = Map.copyOf(tableArrays);
+    private final Map<String, Map<String, Object>> sections;
+    private final Map<String, List<Map<String, Object>>> tableArrays;
+    private final TypeMismatchLedger ledger = new TypeMismatchLedger();
+
+    /// Content constructor ensuring immutable storage; every document starts with a fresh ledger.
+    ///
+    /// @param sections    Map of section names to their key-value pairs
+    /// @param tableArrays Map of array table names to list of table maps
+    public TomlDocument(Map<String, Map<String, Object>> sections, Map<String, List<Map<String, Object>>> tableArrays) {
+        this.sections = Map.copyOf(sections);
+        this.tableArrays = Map.copyOf(tableArrays);
     }
 
-    /// The constructor every producer uses: content only, with a fresh ledger.
-    public TomlDocument(Map<String, Map<String, Object>> sections, Map<String, List<Map<String, Object>>> tableArrays) {
-        this(sections, tableArrays, new TypeMismatchLedger());
+    /// Section names to their key-value pairs.
+    public Map<String, Map<String, Object>> sections() {
+        return sections;
+    }
+
+    /// Array table names to their list of table maps.
+    public Map<String, List<Map<String, Object>>> tableArrays() {
+        return tableArrays;
     }
 
     /// One read that found `section.key` present but not of the type the reader asked for.
@@ -90,7 +97,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
 
     /// Append-only, thread-safe (a document may be read from several threads); equality is by the
     /// recorded list so two untouched ledgers compare equal.
-    public static final class TypeMismatchLedger {
+    private static final class TypeMismatchLedger {
         private final ConcurrentLinkedQueue<TypeMismatch> mismatches = new ConcurrentLinkedQueue<>();
 
         Unit record(String section, String key, String expected, Object raw) {
@@ -121,7 +128,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
 
     /// Every typed read so far that found its key present with the wrong type, in read order.
     public List<TypeMismatch> typeMismatches() {
-        return typeMismatchLedger().snapshot();
+        return ledger.snapshot();
     }
 
     /// The load-time gate (#1455): `this` when no typed read hit a wrong-typed value, otherwise
@@ -144,6 +151,11 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     @Override
     public int hashCode() {
         return Objects.hash(sections, tableArrays);
+    }
+
+    @Override
+    public String toString() {
+        return "TomlDocument[sections=" + sections + ", tableArrays=" + tableArrays + "]";
     }
 
     /// Compatibility constructor for documents without array tables.
@@ -348,7 +360,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
         var converted = convert.apply(raw);
 
         if (converted.isEmpty()) {
-            typeMismatchLedger().record(section, key, expected, raw);
+            ledger.record(section, key, expected, raw);
         }
 
         return converted;
