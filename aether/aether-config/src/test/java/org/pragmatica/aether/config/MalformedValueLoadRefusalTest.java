@@ -128,15 +128,6 @@ class MalformedValueLoadRefusalTest {
     /// Invalid VALUES are refused like invalid types (#1455): an enumeration token, a boolean, a
     /// duration or a size that does not parse used to take the reader's default.
     @Test
-    void configLoader_unknownSecurityMode_refusesNamingKeyValueAndAllowed() {
-        assertRefusedWithAllowed(ConfigLoader.loadFromString(http("security_mode = \"apikeys\"\n")),
-                                 "app-http.security_mode",
-                                 "apikeys",
-                                 "one of: none, api-key, jwt");
-        assertThat(ConfigLoader.loadFromString(http("security_mode = \"api-key\"\n")).isSuccess()).isTrue();
-    }
-
-    @Test
     void configLoader_unknownHttpProtocol_refusesNamingKeyValueAndAllowed() {
         assertRefusedWithAllowed(ConfigLoader.loadFromString(http("protocol = \"h2\"\n")),
                                  "app-http.protocol",

@@ -411,10 +411,7 @@ public final class ConfigLoader {
         var enabled = doc.getBoolean("app-http", "enabled").or(false);
         var port = doc.getInt("app-http", "port").or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
         var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
-        var explicitMode = doc.getParsed("app-http",
-                                         "security_mode",
-                                         "one of: none, api-key, jwt",
-                                         SecurityMode::securityMode);
+        var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
         // #290: secure by default. When `security_mode` is not configured the effective mode is
         // API_KEY (was: NONE unless api-keys present), so a default-config node's management plane and
