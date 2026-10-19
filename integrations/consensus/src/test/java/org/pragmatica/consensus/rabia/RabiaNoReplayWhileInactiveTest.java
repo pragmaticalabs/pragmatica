@@ -161,10 +161,10 @@ class RabiaNoReplayWhileInactiveTest {
 
         engines.add(engine);
         engine.onStateRestored(hooks::incrementAndGet);
+        engine.clusterState(ClusterStateNotification.active());
         if (gatedObserver) {
             engine.authorizeObservation();
         }
-        engine.clusterState(ClusterStateNotification.active());
         assertThat(awaitCondition(() -> network.getMessages().stream().anyMatch(SyncRequest.class::isInstance)))
             .as("the engine started its sync round before responses are delivered")
             .isTrue();
