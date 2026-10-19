@@ -98,11 +98,20 @@ public class CstAbsorbedFailureRule implements CstLintRule {
         var lines = input.substring(0, Math.max(0, lineStart(input, anchorOf(method).spanStart()) - 1)).split("\n", -1);
         var block = new StringBuilder();
 
+        // unmatched ')' seen below: lines of a multi-line annotation's argument list (`@SuppressWarnings({"a",\n "b"})`) sit between
+        // the comment and the method, and are not comment or annotation lines on their own
+        var open = 0;
+
         for (var i = lines.length - 1; i >= 0; i--) {
             var line = lines[i].trim();
+            var commentLine = isCommentOrAnnotationLine(line);
 
-            if (!isCommentOrAnnotationLine(line)) {
+            if (line.isEmpty() || !commentLine && open == 0 && !line.endsWith(")")) {
                 break;
+            }
+
+            if (!line.startsWith("//") && !line.startsWith("/*") && !line.startsWith("*")) {
+                open = Math.max(0, open + count(line, ')') - count(line, '('));
             }
 
             // the scan walks upward, so prepend: a multi-line /* */ or Javadoc must be reassembled in source order
@@ -110,6 +119,12 @@ public class CstAbsorbedFailureRule implements CstLintRule {
         }
 
         return MapperSafety.commentsOnly(block.toString());
+    }
+
+    private static int count(String text, char c) {
+        return (int) text.chars()
+                         .filter(ch -> ch == c)
+                         .count();
     }
 
     private static int lineStart(String input, int offset) {

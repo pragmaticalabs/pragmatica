@@ -79,8 +79,10 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         // absolute offset in the file, so two identical references on one line stay two findings.
         var seen = new HashSet<Integer>();
 
-        return findAllMethods(root).stream()
-                             .flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, seen, ctx));
+        // methods, and field declarations too: `static final X = opt.map(List::getFirst)` has no method around it
+        var members = Stream.concat(findAllMethods(root).stream(), findAll(root, CstNodes::isFieldDecl).stream());
+
+        return members.flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, seen, ctx));
     }
 
     /// Declared name → CST index for every type in the file (used to resolve an `X::m` receiver).

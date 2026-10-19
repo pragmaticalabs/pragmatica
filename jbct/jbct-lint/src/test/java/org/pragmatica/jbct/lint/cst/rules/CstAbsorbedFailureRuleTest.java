@@ -160,6 +160,61 @@ class CstAbsorbedFailureRuleTest {
         }
 
         @Test
+        void multiLineAnnotationBetweenTheCommentAndTheMethod_commentStillCounts() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   // FER: a notification failure must not fail the buy.
+                                   @SuppressWarnings({"JBCT-UTIL-01",
+                                                      "JBCT-EX-01"})
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
+        @Test
+        void tagQuotedInsideTheComment_stillCounts() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   // "FER": a notification failure must not fail the buy.
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(1);
+        }
+
+        @Test
+        void codeLineEndingInParenthesisAboveTheComment_isNotSwallowed() {
+            assertThat(countOf("""
+                               package demo;
+                               class Sample {
+                                   // FER: about the field only
+                                   static final Object X = make(1)
+
+                                   Promise<Unit> notifyBuyer(Confirmation c) {
+                                       return notifier.send(c).recover(_ -> Unit.unit());
+                                   }
+
+                               Promise<Unit> publishFact(Confirmation c) {
+                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
+                               }
+                           }
+                           """)).isEqualTo(2);
+        }
+
+        @Test
         void multiLinePlainBlockCommentAboveTheMethod_countsAsItsReason() {
             assertThat(countOf("""
                                package demo;

@@ -116,6 +116,9 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// mentioned only in a comment is never mistaken for code.
     Pattern COMMENT = Pattern.compile("//[^\\n]*|/\\*.*?\\*/", Pattern.DOTALL);
 
+    /// A string literal or a comment, whichever starts first: lets one scan tell the two apart.
+    Pattern STRING_OR_COMMENT = Pattern.compile(STRING_LITERAL.pattern() + "|" + COMMENT.pattern(), Pattern.DOTALL);
+
     /// True when the given code fragment contains a partial operation.
     ///
     /// Op-scanning masks string literals with a NON-space placeholder (not blanks): collapsing a
@@ -208,23 +211,22 @@ public sealed interface MapperSafety permits MapperSafety.unused {
         return blankComments(fillMatches(code, STRING_LITERAL.matcher(code), '#'));
     }
 
-    /// Comment-only view of `code`: everything except comment text becomes a space (newlines preserved). Strings are blanked
-    /// first so a `//` inside a literal is not read as a comment, and so a tag spelled only in a literal is not found.
+    /// Comment-only view of `code`: everything except comment text becomes a space (newlines preserved). Strings and comments
+    /// are found in ONE left-to-right pass, so a `//` inside a literal is not read as a comment, a tag spelled only in a literal
+    /// is not found, and a quote inside a comment (`// "FER": degrade`) stays part of that comment.
     static String commentsOnly(String code) {
-        var noStrings = blankStrings(code);
-        var sb = new StringBuilder(noStrings);
-        var comments = COMMENT.matcher(noStrings);
-        var keep = new boolean[noStrings.length()];
+        var sb = new StringBuilder(code);
+        var tokens = STRING_OR_COMMENT.matcher(code);
 
-        while (comments.find()) {
-            for (var i = comments.start(); i < comments.end(); i++) {
-                keep[i] = true;
+        for (var i = 0; i < sb.length(); i++) {
+            if (sb.charAt(i) != '\n' && sb.charAt(i) != '\r') {
+                sb.setCharAt(i, ' ');
             }
         }
 
-        for (var i = 0; i < sb.length(); i++) {
-            if (!keep[i] && sb.charAt(i) != '\n' && sb.charAt(i) != '\r') {
-                sb.setCharAt(i, ' ');
+        while (tokens.find()) {
+            if (tokens.group().startsWith("//") || tokens.group().startsWith("/*")) {
+                sb.replace(tokens.start(), tokens.end(), tokens.group());
             }
         }
 

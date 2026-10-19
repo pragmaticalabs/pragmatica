@@ -467,6 +467,29 @@ class CstMapperMethodReferenceRuleTest {
                 """));
     }
 
+    /// A field initializer has no method around it; the success mapper of a constant is as exposed as any other.
+    @Test
+    void analyze_referenceInFieldInitializer_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    static final Object FIRST = Option.some(List.of()).map(List::getFirst);
+                }
+                """));
+    }
+
+    @Test
+    void analyze_totalReferenceInFieldInitializer_isClean() {
+        assertEquals(0L, count("""
+                package org.example;
+                import java.util.List;
+                class Handler {
+                    static final Object SIZE = Option.some(List.of()).map(List::size);
+                }
+                """));
+    }
+
     @Test
     void analyze_totalImportedAccessorReference_isClean() {
         assertFalse(hasRule("""
