@@ -126,6 +126,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
                                     AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink,
+                                    AtomicBoolean admissionDeferred,
                                     Set<NodeId> unconfirmedReaps,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
@@ -278,6 +279,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
+                                                new AtomicBoolean(false),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
@@ -919,7 +921,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// [#recordProvisioningFailure] (WARN, last failure, circuit after 3): a permanent refusal (fleet limit reached) must not retry
     /// invisibly on every reconcile tick for ever.
     private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result) {
-        return result.fold(this::provisionRefused, Promise::success);
+        return result.fold(this::provisionRefused, this::provisionAccepted);
+    }
+
+    private Promise<ProvisionDisposition> provisionAccepted(ProvisionDisposition disposition) {
+        return Promise.success(disposition)
+                      .onSuccess(this::resumeAdmission);
+    }
+
+    /// The recovery of [#recordAdmissionDeferral]: a replacement passed admission and was dispatched.
+    @Contract
+    private void resumeAdmission(ProvisionDisposition disposition) {
+        if (disposition instanceof ProvisionDisposition.Dispatched && admissionDeferred.compareAndSet(true, false)) {
+            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                                  warningSink.get(),
+                                                                  org.pragmatica.utility.warning.OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
+                                                                  ADMISSION_SUBJECT,
+                                                                  "Core replacement passed capacity admission and was dispatched");
+        }
     }
 
     private Promise<ProvisionDisposition> provisionRefused(Cause cause) {
@@ -929,8 +948,25 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Promise<ProvisionDisposition> deferAdmission(Cause cause) {
-        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION)).onSuccess(_ -> recordProvisioningFailure(cause));
+        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION)).onSuccess(_ -> recordAdmissionDeferral(cause));
     }
+
+    /// Counted like every refused provision, and told to the operator once per run of deferrals (the flag is the flood guard; the
+    /// recovery clears it): a permanent refusal keeps the event open instead of retrying invisibly.
+    @Contract
+    private void recordAdmissionDeferral(Cause cause) {
+        recordProvisioningFailure(cause);
+        if (admissionDeferred.compareAndSet(false, true)) {
+            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                                  warningSink.get(),
+                                                                  org.pragmatica.utility.warning.OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
+                                                                  ADMISSION_SUBJECT,
+                                                                  "Core replacement is deferred by capacity admission ({}); it is retried on the next pass and counts toward the provisioning circuit",
+                                                                  cause.message());
+        }
+    }
+
+    private static final String ADMISSION_SUBJECT = "core-provisioning";
 
     /// #1022 — the leader has just created a BILLABLE server, and until this line it dropped the
     /// provider's id for it on the floor: [#asDispatched] takes an [InstanceInfo] and ignores it.

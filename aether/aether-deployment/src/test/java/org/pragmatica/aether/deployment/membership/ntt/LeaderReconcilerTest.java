@@ -262,6 +262,33 @@ class LeaderReconcilerTest {
             assertThat(reconciler.currentProvisioningSnapshot().effective()).isEqualTo(5);
         }
 
+        /// The stall is told to the operator once it outlasts the join grace, once per run, and its recovery follows when the ledger resolves it.
+        @Test
+        void uncertainAllocationStall_isAnOperatorEventOnceItOutlastsTheJoinGrace_andRecovers() {
+            var events = new CopyOnWriteArrayList<String>();
+            var durable = new AtomicReference<Map<NodeId, LeaderReconciler.DurableAllocation>>(
+                Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+
+            ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+            armWithDurable(durable::get);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("AWAITING_DURABLE_CAPACITY");
+            assertThat(events).as("inside the join grace the stall is not yet an event").isEmpty();
+
+            advancePollIntervals(CEILING_WINDOW_INTERVALS);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            triggerAndFireReconcile();
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
+            assertThat(events).as("raised once per run, not once per pass").containsExactly("core-capacity-awaiting-durable");
+
+            durable.set(Map.of());
+            triggerAndFireReconcile();
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> events.size() == 2);
+            assertThat(events).containsExactly("core-capacity-awaiting-durable", "core-capacity-durable-resolved");
+        }
+
         /// An uncertain create is never aged out by its mint time either: an id minted long before the join grace still counts while the
         /// create is unresolved.
         @Test
@@ -4463,6 +4490,14 @@ class LeaderReconcilerTest {
         @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
         @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation) {
             return org.pragmatica.lang.Promise.unitPromise();
+        }
+
+        private final java.util.concurrent.atomic.AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink =
+            new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly());
+        @Override public org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() { return warningSink.get(); }
+        @Override public org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+            warningSink.set(sink);
+            return org.pragmatica.lang.Unit.unit();
         }
 
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();

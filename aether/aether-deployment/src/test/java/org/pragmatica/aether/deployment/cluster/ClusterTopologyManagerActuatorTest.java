@@ -483,6 +483,26 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.provisionCount.get()).as("the open circuit stops reaching admission").isEqualTo(3);
     }
 
+    /// The deferral is an operator event, raised once per run of deferrals, and its recovery follows when a replacement is dispatched.
+    @Test
+    void sourceAdmissionDeferral_raisesOneOperatorEvent_andRecoversOnDispatch() {
+        var events = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+        ctm.activate();
+        lifecycleManager.deferProvision = true;
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
+        assertThat(events).as("one event for the run, not one per deferral").containsExactly("provision-admission-deferred");
+
+        lifecycleManager.deferProvision = false;
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> events.size() == 2);
+        assertThat(events).containsExactly("provision-admission-deferred", "provision-admission-resumed");
+    }
+
     private static AetherValue.CommunityPlacementOperationValue placementOperation() {
         return new AetherValue.CommunityPlacementOperationValue("operation", "community", NodeId.randomNodeId(), "default", Option.none(),
                                                                 "binding", Option.none(), "", AetherValue.PlacementOperationPhase.CREATE_REQUESTED,

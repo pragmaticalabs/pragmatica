@@ -40,6 +40,8 @@ import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -292,6 +294,9 @@ public final class LeaderReconciler {
     /// transient reconnect dip resets it; a genuine departure lets it age past the debounce
     /// window so auto-heal fires.
     private volatile long deficitSinceNanos = UNSET_NANOS;
+    private static final String DURABLE_STALL_SUBJECT = "core";
+    private volatile long awaitingDurableSinceNanos = UNSET_NANOS;
+    private volatile boolean durableStallRaised;
     /// #336 observability — the provisioning-decision snapshot captured at the END of the most
     /// recent reconcile pass (the same context [`#logProvisioningDecision`] traces). Empty (`null`)
     /// until the first pass runs; surfaced via [`#lastProvisioningDecision`] so the management API
@@ -624,6 +629,8 @@ public final class LeaderReconciler {
         statusQueriesOutstanding.clear();
         recordLeadershipLoss();
         deficitSinceNanos = UNSET_NANOS;
+        awaitingDurableSinceNanos = UNSET_NANOS;
+        durableStallRaised = false;
         lastProvisioningDecision = null;
         reachedFullMembership.set(false);
     }
@@ -1061,6 +1068,7 @@ public final class LeaderReconciler {
                                     quorumSafe,
                                     provisioningPermitted,
                                     autoHealEnabled);
+        trackDurableStall(now, currentMembers, effective, configuredCoreCount, provisioningPermitted);
         var peersToProvision = provisioningPermitted
                                ? computePeersToProvision(configuredCoreCount, effective)
                                : Set.<NodeId> of();
@@ -1195,6 +1203,53 @@ public final class LeaderReconciler {
                  deficitAgeMs(now),
                  quorumSafe,
                  suppressionReason(effective, configuredCoreCount, quorumSafe, provisioningPermitted, autoHealEnabled));
+    }
+
+    /// A deficit held open only by committed allocations (AWAITING_DURABLE_CAPACITY) is an operator-attention situation once it outlasts the
+    /// join grace: a provider-confirmed allocation stops counting then, so only an uncertain create can still hold it, and nothing but the
+    /// operator resolves that one. Raised once per run and closed by the recovery when durable allocations no longer cover the deficit. The
+    /// state is per reconciler instance: a new leader starts a new run, and re-raises if the stall is still there.
+    @Contract
+    private void trackDurableStall(long now,
+                                   Set<NodeId> currentMembers,
+                                   int effective,
+                                   int configuredCoreCount,
+                                   boolean provisioningPermitted) {
+        var awaiting = !provisioningPermitted && effective >= configuredCoreCount && durableCoversDeficit(currentMembers, configuredCoreCount);
+
+        if (!awaiting) {
+            closeDurableStall();
+
+            return;
+        }
+
+        if (awaitingDurableSinceNanos == UNSET_NANOS) {
+            awaitingDurableSinceNanos = now;
+        }
+
+        if (!durableStallRaised && now - awaitingDurableSinceNanos >= joinGraceWindow.nanos()) {
+            durableStallRaised = true;
+            OperatorWarnings.raise(log,
+                                   ctm.operatorWarningSink(),
+                                   OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
+                                   DURABLE_STALL_SUBJECT,
+                                   "The core deficit is held open by committed allocations that never joined ({} configured, {} counted); no replacement is created while an uncertain create is unresolved: verify at the provider and resolve the allocation",
+                                   configuredCoreCount,
+                                   effective);
+        }
+    }
+
+    @Contract
+    private void closeDurableStall() {
+        awaitingDurableSinceNanos = UNSET_NANOS;
+        if (durableStallRaised) {
+            durableStallRaised = false;
+            OperatorWarnings.raise(log,
+                                   ctm.operatorWarningSink(),
+                                   OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
+                                   DURABLE_STALL_SUBJECT,
+                                   "Durable allocations no longer hold the core deficit open");
+        }
     }
 
     /// Age in milliseconds of the current deficit run (`now - deficitSinceNanos`), or `-1` when no
