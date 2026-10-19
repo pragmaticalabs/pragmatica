@@ -83,6 +83,36 @@ class CatchUpInstallsOntoMaterializedLogTest {
         }
 
         @Test
+        void applyAttributed_staysPaced_whenThePageStartsAboveZeroAndSlotsAreBusy() {
+            var manager = managerWithBusySlots();
+
+            var applied = manager.applyAttributed(FRESH, 0, 3, 5, sourceSlice(), () -> Result.success(3L));
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(manager.partitionBuffer(FRESH, 0).isPresent()).isFalse();
+        }
+
+        @Test
+        void liveAppendAfterSealedCatchUp_raisesIncompleteNotMissing_whenReshuffleSlotsAreBusy() {
+            var manager = managerWithBusySlots();
+
+            sealedCatchUpFromZero(manager);
+            liveAppend(manager);
+
+            assertThat(kinds()).containsExactly(PartitionRecoveryReasonKind.HISTORY_INCOMPLETE);
+        }
+
+        @Test
+        void liveAppendAfterSealedCatchUp_raisesIncompleteNotMissing_whenNothingIsPaced() {
+            var manager = managerWithoutSlotPressure();
+
+            sealedCatchUpFromZero(manager);
+            liveAppend(manager);
+
+            assertThat(kinds()).containsExactly(PartitionRecoveryReasonKind.HISTORY_INCOMPLETE);
+        }
+
+        @Test
         void applyAttributed_succeedsWithoutInstalling_whenThisNodeHoldsNoCopy() {
             var manager = managerWithoutSlotPressure();
 
@@ -139,6 +169,13 @@ class CatchUpInstallsOntoMaterializedLogTest {
     /// The backfill's first catch-up page 0..2 from a source whose history is `[E1 @ 0]`.
     private static void catchUpFromZero(StreamPartitionManager manager) {
         var applied = manager.applyAttributed(FRESH, 0, 0, 2, sourceSlice(), () -> applyThree(manager));
+
+        assertThat(applied.isSuccess()).as("apply %s", applied).isTrue();
+    }
+
+    /// The first catch-up page 0..2 served from a sealed segment, which carries no provenance.
+    private static void sealedCatchUpFromZero(StreamPartitionManager manager) {
+        var applied = manager.applyUnattributed(FRESH, 0, 2, () -> applyThree(manager));
 
         assertThat(applied.isSuccess()).as("apply %s", applied).isTrue();
     }
