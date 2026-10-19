@@ -624,7 +624,10 @@ public final class ConfigLoader {
         doc.getString("cloud", "provider").onPresent(provider -> applyCloudConfig(doc, builder, provider, env));
     }
 
-    private static void applyCloudConfig(TomlDocument doc, AetherConfig.Builder builder, String provider, Fn1<String, String> env) {
+    private static void applyCloudConfig(TomlDocument doc,
+                                         AetherConfig.Builder builder,
+                                         String provider,
+                                         Fn1<String, String> env) {
         var credentials = doc.getSection("cloud.credentials");
         var compute = doc.getSection("cloud.compute");
         var cc = CloudConfig.cloudConfig(provider, resolveEnvVars(credentials, env), resolveEnvVars(compute, env)).unwrap();
@@ -1303,9 +1306,11 @@ public final class ConfigLoader {
     }
 
     static Result<Unit> checkNodeDocument(TomlDocument doc, Fn1<String, String> env) {
-        return fromDocumentWithOverrides(doc, Map.of(), env).flatMap(ConfigValidator::validate)
-                                                            .flatMap(StorageEncryptionConfigValidator::validate)
-                                                            .mapToUnit();
+        return fromDocumentWithOverrides(doc,
+                                         Map.of(),
+                                         env).flatMap(ConfigValidator::validate)
+                                        .flatMap(StorageEncryptionConfigValidator::validate)
+                                        .mapToUnit();
     }
 
     public static boolean toBooleanValue(String s) {
