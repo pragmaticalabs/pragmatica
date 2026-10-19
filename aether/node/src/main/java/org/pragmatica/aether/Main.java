@@ -54,6 +54,7 @@ import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
@@ -461,10 +462,14 @@ public record Main(String[] args) {
                            .or(HttpProtocol.H1);
     }
 
-    private static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::storage)
-                           .filter(m -> !m.isEmpty())
-                           .or(Map.of());
+    /// #249: the storage map the node is handed, with every shared-only instance's paths derived HERE, once
+    /// ([StorageFactory#derivedStorage]). Every reader in the node -- the instances `StorageFactory.createAll` builds,
+    /// the synthesized `content` placement, the stream segment and WAL directories -- reads this map, so none of
+    /// them can see a shared-only instance's blank paths. A keyring exists exactly when `[storage.encryption]` is
+    /// present (the node refuses to boot when it cannot resolve one), which is the `encrypted` the derivation needs.
+    static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
+        return StorageFactory.derivedStorage(aetherConfig.map(AetherConfig::storage).or(Map.of()),
+                                             resolveStorageEncryption(aetherConfig).isPresent());
     }
 
     private static Option<StorageEncryptionConfig> resolveStorageEncryption(Option<AetherConfig> aetherConfig) {

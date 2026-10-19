@@ -11,8 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.SharedTierConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /// #249: only a [StorageConfig#sharedOnly] instance is placed on derived paths. A configuration built any other way
 /// is placed as written, a blank `diskPath` included: before the explicit flag, a blank `diskPath` alone read as
@@ -55,5 +57,20 @@ class StorageFactoryDerivedPathsTest {
         assertThat(placed.diskPath()).isEqualTo(defaults().diskPath());
         assertThat(placed.snapshotPath()).isEqualTo(defaults().snapshotPath());
         assertThat(placed.shared()).isEqualTo(shared);
+    }
+
+    /// The node builds only from the derived map: a shared-only configuration handed to `createAll` underived is
+    /// refused before any tier is built, instead of being placed on its blank paths. Mutation that reddens it: drop
+    /// the `UnderivedStoragePaths` check in `StorageFactory#pendingSetups`.
+    @Test
+    void createAll_underivedSharedOnlyInstance_isRefused_namingIt() {
+        StorageFactory.createAll(Map.of("vault", StorageConfig.sharedOnly(SharedTierConfig.dht())),
+                                 "derived-paths-node",
+                                 Option.none(),
+                                 Option.none(),
+                                 defaults())
+                      .onSuccess(setups -> fail("an underived shared-only instance must not be built: " + setups.keySet()))
+                      .onFailure(cause -> assertThat(cause).isInstanceOf(StorageFactory.UnderivedStoragePaths.class)
+                                                           .satisfies(refusal -> assertThat(refusal.message()).contains("'vault'")));
     }
 }

@@ -1260,11 +1260,18 @@ public interface AetherNode extends ManageableNode {
     /// link and content-addressed blocks — and (c) it is stable across a same-node restart because the
     /// node id is stable, so sealed segments are reclaimed on reboot.
     private static Path streamDataDir(AetherNodeConfig config) {
-        var artifactsConfig = Option.option(config.storageConfig().get("artifacts")).or(StorageConfig.storageConfig());
+        return streamDataDir(config.storageConfig(), config.self());
+    }
+
+    /// #249: [#streamDataDir(AetherNodeConfig)] over the node's storage map, which is the DERIVED one
+    /// ([StorageFactory#derivedStorage], applied once in `Main`): a shared-only `artifacts` reads its derived default
+    /// path here, never the blank path of its raw configuration.
+    static Path streamDataDir(Map<String, StorageConfig> storage, NodeId self) {
+        var artifactsConfig = Option.option(storage.get("artifacts")).or(StorageConfig.storageConfig());
 
         return Path.of(artifactsConfig.diskPath())
                    .resolveSibling("stream-segments")
-                   .resolve(config.self().id());
+                   .resolve(self.id());
     }
 
     /// The per-node stream WAL BASE directory (#634-3): the `streams` storage instance's explicit
@@ -1273,9 +1280,14 @@ public interface AetherNode extends ManageableNode {
     /// from ever sharing one WAL dir — the same invariant `streamDataDir` enforces, independent of
     /// operator input.
     private static Path streamWalBaseDir(AetherNodeConfig config) {
-        var streamsConfig = Option.option(config.storageConfig().get("streams")).or(StorageConfig.storageConfig());
+        return streamWalBaseDir(config.storageConfig(), config.self());
+    }
 
-        return effectiveWalBase(streamsConfig, config.self(), streamDataDir(config).resolve("wal"));
+    /// #249: [#streamWalBaseDir(AetherNodeConfig)] over the node's derived storage map, as [#streamDataDir(Map, NodeId)].
+    static Path streamWalBaseDir(Map<String, StorageConfig> storage, NodeId self) {
+        var streamsConfig = Option.option(storage.get("streams")).or(StorageConfig.storageConfig());
+
+        return effectiveWalBase(streamsConfig, self, streamDataDir(storage, self).resolve("wal"));
     }
 
     /// The pure wal-path decision, package-visible so the SUFFIX invariant is pinned (review m10

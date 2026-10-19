@@ -143,7 +143,17 @@ class StorageFactoryS3SharedTierTest {
     }
 
     private Result<Map<String, StorageFactory.StorageSetup>> createContent(SharedTierConfig.S3 s3, Option<EncryptionKeyring> keyring) {
-        return StorageFactory.createAll(Map.of("content", StorageConfig.sharedOnly(s3)), NODE_ID, Option.none(), keyring, defaults());
+        return createSharedOnly("content", s3, keyring, defaults());
+    }
+
+    /// A boot whose only configured instance is `[storage.<name>.shared]`, derived as `Main` derives it.
+    private static Result<Map<String, StorageFactory.StorageSetup>> createSharedOnly(String name,
+                                                                                    SharedTierConfig.S3 s3,
+                                                                                    Option<EncryptionKeyring> keyring,
+                                                                                    StorageConfig defaults) {
+        var derived = StorageFactory.withDerivedPaths(Map.of(name, StorageConfig.sharedOnly(s3)), defaults, keyring.isPresent());
+
+        return StorageFactory.createAll(derived, NODE_ID, Option.none(), keyring, defaults);
     }
 
     private String keyOf(BlockId id) {
@@ -196,7 +206,7 @@ class StorageFactoryS3SharedTierTest {
         createContent(s3, Option.some(keyring("k1"))).onFailure(cause -> fail(cause.message()));
         var second = defaultsInFreshDir();
 
-        StorageFactory.createAll(Map.of("content", StorageConfig.sharedOnly(s3)), NODE_ID, Option.none(), Option.none(), second)
+        createSharedOnly("content", s3, Option.none(), second)
                       .onSuccess(_ -> fail("a keyring-less boot over an encrypted prefix must be refused"))
                       .onFailure(cause -> assertThat(chainHas(cause, EncryptionError.EncryptedTierRequiresKeyring.class)).as(cause.message())
                                                                                                                  .isTrue());
@@ -227,8 +237,7 @@ class StorageFactoryS3SharedTierTest {
         var plain = createContent(s3, Option.none()).fold(cause -> fail(cause.message()), setups -> setups);
         plain.get("content").instance().put(PLAINTEXT).await().onFailure(cause -> fail(cause.message()));
 
-        StorageFactory.createAll(Map.of("content", StorageConfig.sharedOnly(s3)), NODE_ID, Option.none(), Option.some(keyring("k1")),
-                                 defaultsInFreshDir())
+        createSharedOnly("content", s3, Option.some(keyring("k1")), defaultsInFreshDir())
                       .onSuccess(_ -> fail("enabling encryption over a plaintext prefix must be refused"))
                       .onFailure(cause -> assertThat(chainHas(cause, EncryptionError.EnablingOverExistingPlaintext.class)).as(cause.message())
                                                                                                                      .isTrue());
@@ -241,12 +250,8 @@ class StorageFactoryS3SharedTierTest {
     /// case), which leave it unencrypted.
     @Test
     void sharedOnlyArtifacts_isPlacedAsTheSynthesizedDefault_encryptedWithAKeyring() throws IOException {
-        var setups = StorageFactory.createAll(Map.of("artifacts", StorageConfig.sharedOnly(s3Config(ACCESS_KEY, SECRET_KEY))),
-                                              NODE_ID,
-                                              Option.none(),
-                                              Option.some(keyring("k1")),
-                                              defaults())
-                                   .fold(cause -> fail(cause.message()), s -> s);
+        var setups = createSharedOnly("artifacts", s3Config(ACCESS_KEY, SECRET_KEY), Option.some(keyring("k1")), defaults())
+                         .fold(cause -> fail(cause.message()), s -> s);
 
         var id = setups.get("artifacts").instance().put(PLAINTEXT).await().fold(cause -> fail(cause.message()), blockId -> blockId);
 

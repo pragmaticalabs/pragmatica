@@ -402,14 +402,22 @@ public final class StorageFactory {
                       .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
-    private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> explicit,
+    private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> configs,
                                                             String nodeId,
                                                             Option<DHTClient> dhtClient,
                                                             Option<EncryptionKeyring> keyring,
                                                             StorageConfig defaults,
                                                             List<StoragePathsOverlap.Claim> reserved) {
         var results = new ArrayList<Result<PendingSetup>>();
-        var configs = withDerivedPaths(explicit, defaults, keyring.isPresent());
+        var underived = UnderivedStoragePaths.find(configs);
+        // #249: `configs` is the derived map ([#derivedStorage]); a shared-only instance still in it was never
+        // derived, and building it would place it on its blank paths.
+        if (underived.isPresent()) {
+            results.add(underived.unwrap().result());
+
+            return results;
+        }
+
         var effective = effectiveConfigs(configs, defaults, keyring.isPresent());
         var overlap = StoragePathsOverlap.find(effective, reserved);
         // #856: refused BEFORE any instance is built, so a refused boot opens no tier and stamps nothing.
@@ -458,10 +466,18 @@ public final class StorageFactory {
         return results;
     }
 
+    /// #249: the node's storage map with every shared-only instance's paths derived, over the production defaults
+    /// ([StorageConfig#storageConfig()]). The ONE derivation site: `Main` applies it once and hands the node the
+    /// result, which [#createAll] builds from and the node's stream directories read. `encrypted` is keyring presence.
+    public static Map<String, StorageConfig> derivedStorage(Map<String, StorageConfig> configs, boolean encrypted) {
+        return withDerivedPaths(configs, StorageConfig.storageConfig(), encrypted);
+    }
+
     /// #249: an instance configured only through `[storage.<name>.shared]` ([StorageConfig#derivesPaths]) is
     /// placed as if `[storage.<name>]` were absent -- `artifacts` and `content` exactly as their synthesized
     /// defaults (paths and keyring-tracking `encrypted`), any other name on the bare defaults, as an empty
-    /// `[storage.<name>]` section would be -- and keeps its shared tier.
+    /// `[storage.<name>]` section would be -- and keeps its shared tier. `defaults` is a parameter so tests root
+    /// it in their own directory, as [#createAll]'s does (#1276).
     static Map<String, StorageConfig> withDerivedPaths(Map<String, StorageConfig> configs,
                                                        StorageConfig defaults,
                                                        boolean encrypted) {
@@ -617,6 +633,30 @@ public final class StorageFactory {
                  + "disk_max_bytes and they would share metadata snapshots. Give every [storage.<name>] section its "
                  + "own disk_path and snapshot_path (an instance that omits them resolves the shared "
                  + "/data/aether/... default)";
+        }
+    }
+
+    /// #249: a shared-only configuration ([StorageConfig#derivesPaths]) reached [#createAll] without passing through
+    /// [#derivedStorage]. Building it would place the instance on its blank paths, under the process's working
+    /// directory, so the boot is refused, naming the instance.
+    public record UnderivedStoragePaths(String instance) implements Cause {
+        static Option<UnderivedStoragePaths> find(Map<String, StorageConfig> configs) {
+            return Option.from(configs.entrySet()
+                                      .stream()
+                                      .filter(entry -> entry.getValue()
+                                                            .derivesPaths())
+                                      .map(Map.Entry::getKey)
+                                      .sorted()
+                                      .map(UnderivedStoragePaths::new)
+                                      .findFirst());
+        }
+
+        @Override
+        public String message() {
+            return "storage instance '" + instance
+                 + "' is configured only through its shared section but its paths were never derived -- refusing to "
+                 + "boot rather than place it on blank paths. Derive the storage map with StorageFactory.derivedStorage "
+                 + "before building the node";
         }
     }
 

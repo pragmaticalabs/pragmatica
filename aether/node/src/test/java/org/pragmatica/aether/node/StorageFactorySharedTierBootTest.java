@@ -20,6 +20,7 @@ import org.pragmatica.aether.config.SharedTierConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -61,8 +62,16 @@ class StorageFactorySharedTierBootTest {
     }
 
     private Cause refusal(Map<String, StorageConfig> configs) {
-        return StorageFactory.createAll(configs, NODE_ID, Option.none(), Option.none(), defaults())
-                             .fold(cause -> cause, setups -> fail("storage construction must fail, built " + setups.keySet()));
+        return boot(configs).fold(cause -> cause, setups -> fail("storage construction must fail, built " + setups.keySet()));
+    }
+
+    /// Storage construction over `configs` derived as `Main` derives them, keyring-less.
+    private Result<Map<String, StorageFactory.StorageSetup>> boot(Map<String, StorageConfig> configs) {
+        return StorageFactory.createAll(StorageFactory.withDerivedPaths(configs, defaults(), false),
+                                        NODE_ID,
+                                        Option.none(),
+                                        Option.none(),
+                                        defaults());
     }
 
     /// Mutation that reddens it: skip `S3SharedTier#admit` (no probe): construction then succeeds, because nothing
