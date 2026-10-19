@@ -5,20 +5,10 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +21,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,31 +55,16 @@ class BootstrapAdminKeyLegFallbackWarnTest {
     private static final String APPENDER_SENTINEL =
         "positive control: BootstrapAdminKeyLegFallbackWarnTest appender is attached";
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("BootstrapAdminKeyLegFallbackWarnCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        loggerConfig = getOrCreateLoggerConfig(configuration);
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     /// THE pin. A fail-open must announce itself, at WARN, naming what did not happen AND what will
@@ -101,10 +77,10 @@ class BootstrapAdminKeyLegFallbackWarnTest {
         runLeg(Option.none());
 
         assertAppenderIsLive();
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
             .describedAs("the fallback must say the key was NOT derived")
             .anyMatch(message -> message.contains(NOT_DERIVED_FRAGMENT));
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
             .describedAs("and must name the consequence — a silent fallback reproduces the #980 defect "
                          + "with nothing pointing at the cause")
             .anyMatch(message -> message.contains(CONSEQUENCE_FRAGMENT));
@@ -119,7 +95,7 @@ class BootstrapAdminKeyLegFallbackWarnTest {
         runLeg(Option.some("   "));
 
         assertAppenderIsLive();
-        assertThat(appender.capturedWarns()).anyMatch(message -> message.contains(NOT_DERIVED_FRAGMENT));
+        assertThat(capture.messages()).anyMatch(message -> message.contains(NOT_DERIVED_FRAGMENT));
     }
 
     /// The complement, and the reason the sentinel exists: on the normal derived path the warning must
@@ -132,7 +108,7 @@ class BootstrapAdminKeyLegFallbackWarnTest {
         runLeg(Option.some("fallback-warn-test-cluster-secret"));
 
         assertAppenderIsLive();
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
             .describedAs("the derived path is the healthy one and must stay quiet")
             .noneMatch(message -> message.contains(NOT_DERIVED_FRAGMENT));
     }
@@ -167,24 +143,10 @@ class BootstrapAdminKeyLegFallbackWarnTest {
     /// Asserts the capture is actually working. Paired with every assertion above, and load-bearing
     /// for the `noneMatch` one, which an empty list would satisfy.
     private void assertAppenderIsLive() {
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
             .describedAs("the appender must be attached to %s, or these assertions examine nothing",
                          LOGGER_NAME)
             .anyMatch(message -> message.contains(APPENDER_SENTINEL));
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
     }
 
     private static Serializer stubSerializer() {
@@ -199,29 +161,5 @@ class BootstrapAdminKeyLegFallbackWarnTest {
                 return null;
             }
         };
-    }
-
-    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedWarns() {
-            return List.copyOf(messages);
-        }
     }
 }

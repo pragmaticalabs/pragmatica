@@ -5,16 +5,6 @@
 package org.pragmatica.aether.deployment.cluster.fsm;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -65,16 +55,15 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
-import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
 
@@ -497,30 +486,16 @@ class ClusterDeploymentStateTransactionalTest {
         // from inFlightBlueprints, so reconcile() has nothing left to revisit. Before this fix, a
         // failed apply() here was indistinguishable from any other transient batch failure. This
         // drives that failure with RecordingClusterNode.forcedApplyFailure and pins the targeted WARN.
-        private CapturingAppender appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture appender;
 
         @BeforeEach
         void captureActiveLogger() {
-            appender = CapturingAppender.create("SucceededOutcomeWriteFailureCapture");
-            appender.start();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var configuration = ctx.getConfiguration();
-            loggerConfig = getOrCreateLoggerConfig(configuration);
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.WARN, null);
-            loggerConfig.setLevel(Level.WARN);
-            ctx.updateLoggers();
+            appender = LogCapture.capture(ACTIVE_LOGGER_NAME, Level.WARN, false);
         }
 
         @AfterEach
         void releaseActiveLogger() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            appender.stop();
+            appender.close();
         }
 
         @Test
@@ -540,19 +515,11 @@ class ClusterDeploymentStateTransactionalTest {
 
             harness.dispatch(event);
 
-            assertThat(appender.capturedWarns())
+            assertThat(appender.messages())
                     .as("a failed recordSucceededOutcome write must be reported at WARN, naming the blueprint and that it will not be retried")
                     .anyMatch(msg -> msg.contains(deploying.id().asString())
                                      && msg.contains("NOT persisted")
                                      && msg.contains("NOT be retried"));
-        }
-
-        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
-            if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {return existing;}
-            var fresh = new LoggerConfig(ACTIVE_LOGGER_NAME, Level.WARN, false);
-            configuration.addLogger(ACTIVE_LOGGER_NAME, fresh);
-            return fresh;
         }
     }
 
@@ -562,36 +529,16 @@ class ClusterDeploymentStateTransactionalTest {
     /// that ignores it cannot pass both.
     @Nested
     class AbsentBlueprintRemoval {
-        private InfoAppender appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture appender;
 
         @BeforeEach
         void captureActiveLogger() {
-            appender = new InfoAppender("AbsentBlueprintRemovalCapture");
-            appender.start();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var configuration = ctx.getConfiguration();
-            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
-            if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {
-                loggerConfig = existing;
-            } else {
-                loggerConfig = new LoggerConfig(ACTIVE_LOGGER_NAME, Level.INFO, false);
-                configuration.addLogger(ACTIVE_LOGGER_NAME, loggerConfig);
-            }
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.INFO, null);
-            loggerConfig.setLevel(Level.INFO);
-            ctx.updateLoggers();
+            appender = LogCapture.capture(ACTIVE_LOGGER_NAME, Level.INFO, false);
         }
 
         @AfterEach
         void releaseActiveLogger() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            appender.stop();
+            appender.close();
         }
 
         @Test
@@ -600,7 +547,7 @@ class ClusterDeploymentStateTransactionalTest {
 
             dispatchRemove(id, Option.none());
 
-            assertThat(appender.messages).as("an absent blueprint must not be reported as removed")
+            assertThat(appender.messages()).as("an absent blueprint must not be reported as removed")
                                          .noneMatch(msg -> msg.contains("App blueprint '" + id.artifact().asString() + "' removed"))
                                          .anyMatch(msg -> msg.contains(id.artifact().asString())
                                                           && msg.contains("absent key — nothing was removed"));
@@ -612,7 +559,7 @@ class ClusterDeploymentStateTransactionalTest {
 
             dispatchRemove(present.id(), Option.some(AppBlueprintValue.appBlueprintValue(present)));
 
-            assertThat(appender.messages).as("a present blueprint's removal is still reported")
+            assertThat(appender.messages()).as("a present blueprint's removal is still reported")
                                          .anyMatch(msg -> msg.contains("App blueprint '" + present.id().artifact().asString() + "' removed"))
                                          .noneMatch(msg -> msg.contains("absent key"));
         }
@@ -621,18 +568,6 @@ class ClusterDeploymentStateTransactionalTest {
             var key = AppBlueprintKey.appBlueprintKey(id);
 
             harness.dispatch(new AppBlueprintRemoveReceived(new ValueRemove<>(new KVCommand.Remove<>(key), oldValue)));
-        }
-    }
-
-    private static final class InfoAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private InfoAppender(String name) {
-            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        @Override public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
         }
     }
 
@@ -1018,31 +953,5 @@ class ClusterDeploymentStateTransactionalTest {
                 return null;
             }
         };
-    }
-
-    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions. Mirrors
-    /// `SchemaActivationGateTest.CapturingAppender` — kept self-contained here rather than shared,
-    /// matching that precedent's own per-file scope.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            var layout = PatternLayout.createDefaultLayout();
-            return new CapturingAppender(name, layout);
-        }
-
-        @Override public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedWarns() {
-            return messages.stream().collect(Collectors.toUnmodifiableList());
-        }
     }
 }

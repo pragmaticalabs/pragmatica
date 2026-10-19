@@ -7,47 +7,26 @@ package org.pragmatica.aether.invoke;
 import java.util.List;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 
-
-/// Test-only: capture the formatted WARN messages one class's logger emits. The returned runnable
-/// detaches the appender; call it in a `finally`. Filtering on the logger NAME keeps other loggers'
-/// WARNs out. Same shape as the deployment module's capture helpers.
-@SuppressWarnings("JBCT-RET-01")  // `Appender.append` is log4j's void override
+/// Test-only: capture the formatted WARN messages one class's logger emits into a caller-owned list, as they
+/// arrive. The returned runnable detaches the capture; call it in a `finally`. The capture itself is
+/// [org.pragmatica.testlogging.LogCapture], which restores the log4j2 configuration it displaced.
 final class LogCapture {
     private LogCapture() {}
 
     static Runnable warningsOf(Class<?> loggerOwner, List<String> sink) {
-        var loggerName = loggerOwner.getName();
-        var context = (LoggerContext) LogManager.getContext(false);
-        var config = context.getConfiguration();
-        var loggerConfig = config.getLoggerConfig(loggerName);
-        var appender = new AbstractAppender("warn-capture-" + loggerOwner.getSimpleName(),
-                                            null,
-                                            PatternLayout.createDefaultLayout(),
-                                            true,
-                                            Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && loggerName.equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
+        var capture = org.pragmatica.testlogging.LogCapture.capture(loggerOwner.getName(),
+                                                                    Level.WARN,
+                                                                    true,
+                                                                    event -> deliver(event, sink));
 
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        context.updateLoggers();
+        return capture::close;
+    }
 
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
+    private static void deliver(LogEvent event, List<String> sink) {
+        if (event.getLevel() == Level.WARN) {
+            sink.add(event.getMessage().getFormattedMessage());
+        }
     }
 }

@@ -7,19 +7,9 @@ package org.pragmatica.aether.api.routes;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,6 +25,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -54,9 +45,7 @@ class GossipKeyRoutesTest {
     private ManageableNode node;
     private KVStore<AetherKey, AetherValue> kvStore;
     private final List<KVCommand<AetherKey>> applied = new ArrayList<>();
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
@@ -72,30 +61,12 @@ class GossipKeyRoutesTest {
             return org.pragmatica.lang.Promise.success(List.of());
         });
 
-        appender = CapturingAppender.create("GossipKeyRoutesCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        var existing = configuration.getLoggerConfig(ROUTES_LOGGER);
-        loggerConfig = ROUTES_LOGGER.equals(existing.getName())
-                       ? existing
-                       : new LoggerConfig(ROUTES_LOGGER, Level.DEBUG, false);
-        if (loggerConfig != existing) {
-            configuration.addLogger(ROUTES_LOGGER, loggerConfig);
-        }
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.TRACE, null);
-        loggerConfig.setLevel(Level.TRACE);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(ROUTES_LOGGER, Level.TRACE, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     @Test
@@ -144,9 +115,9 @@ class GossipKeyRoutesTest {
         GossipKeyRoutes.gossipKeyRoutes(() -> node).rotate().await(timeSpan(5).seconds()).unwrap();
         var value = rotationValueOf(applied.getFirst());
 
-        assertThat(appender.lines()).as("control: the rotation is logged by key id")
+        assertThat(capture.messages()).as("control: the rotation is logged by key id")
                                     .anyMatch(line -> line.contains("keyId=1"));
-        assertThat(appender.lines()).as("#683: 0 lines carry the key material")
+        assertThat(capture.messages()).as("#683: 0 lines carry the key material")
                                     .noneMatch(line -> line.contains(value.currentKey()));
     }
 
@@ -216,25 +187,5 @@ class GossipKeyRoutesTest {
                 return null;
             }
         };
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> lines = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override public void append(LogEvent event) {
-            lines.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> lines() {
-            return List.copyOf(lines);
-        }
     }
 }
