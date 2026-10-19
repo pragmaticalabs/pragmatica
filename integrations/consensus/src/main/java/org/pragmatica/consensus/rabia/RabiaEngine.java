@@ -2629,8 +2629,10 @@ public class RabiaEngine<C extends Command> {
     /// is running it. Containment, not recovery: the failed listener is not retried (the restore is announced once).
     @Contract
     private void runIsolated(String what, Runnable step) {
-        Result.lift(Causes::fromThrowable, step::run)
-              .onFailure(cause -> log.error("Node {} {} failed and was skipped: {}", self, what, cause.message()));
+        Result.lift(Causes::fromThrowable, step::run).onFailure(cause -> log.error("Node {} {} failed and was skipped: {}",
+                                                                                   self,
+                                                                                   what,
+                                                                                   cause.message()));
     }
 
     /// Fire the state machine's deferred notification burst (cluster-topology-overhaul §5.8,

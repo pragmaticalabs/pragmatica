@@ -367,6 +367,22 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(machine.replays.get()).isEqualTo(1);
     }
 
+    /// The replay is contained too: it is the first step of the announce, and the listeners after it still run.
+    @Test
+    void aThrowingReplay_doesNotWedgeStart_andTheListenersStillRun() {
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks);
+        var startPromise = engine.start();
+
+        machine.failReplay = true;
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(engine::isActive)).isTrue();
+        assertThat(awaitCondition(startPromise::isResolved)).as("start() resolves although the replay threw").isTrue();
+        assertThat(awaitCondition(() -> hooks.get() == 1)).as("the listeners ran after the failed replay").isTrue();
+    }
+
     /// The announce follows the activation event: a consumer sees `ConsensusActive` first (the deployment manager drops
     /// replayed puts while it still considers the node dormant), then the replay, then the listeners.
     @Test
@@ -504,6 +520,7 @@ class RabiaNoReplayWhileInactiveTest {
         final AtomicInteger restores = new AtomicInteger();
         final AtomicInteger replays = new AtomicInteger();
         final List<String> order = new CopyOnWriteArrayList<>();
+        volatile boolean failReplay;
 
         @Override
         public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
@@ -516,6 +533,9 @@ class RabiaNoReplayWhileInactiveTest {
         public Unit replayNotifications() {
             replays.incrementAndGet();
             order.add("replay");
+            if (failReplay) {
+                throw new IllegalStateException("replay failure");
+            }
 
             return Unit.unit();
         }
