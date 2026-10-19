@@ -12,7 +12,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
@@ -60,8 +59,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(coreCount),
+                                                  RoleSubTable.roleSubTable(Option.some(coreCount),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -86,14 +84,12 @@ class BootstrapPhaseProvisionUserDataTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(1),
+                                                  RoleSubTable.roleSubTable(Option.some(1),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default"),
                                                   NodeRole.WORKER,
-                                                  RoleSubTable.roleSubTable(NodeRole.WORKER,
-                                                                            Option.some(1),
+                                                  RoleSubTable.roleSubTable(Option.some(1),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             Option.some("worker-snap-99"),
@@ -102,12 +98,11 @@ class BootstrapPhaseProvisionUserDataTest {
     }
 
     private static ClusterBootstrapConfig configWithSource(SourceProfile source) {
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", source),
                                                              Map.of(),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 

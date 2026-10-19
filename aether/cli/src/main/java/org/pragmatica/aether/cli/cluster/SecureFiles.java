@@ -125,8 +125,8 @@ public sealed interface SecureFiles {
         return Result.lift(Causes::fromThrowable,
                            () -> {
                                if (posixSupported()) {
-                               Files.setPosixFilePermissions(path, OWNER_ONLY);
-                           }
+                                   Files.setPosixFilePermissions(path, OWNER_ONLY);
+                               }
 
                                return Unit.unit();
                            });

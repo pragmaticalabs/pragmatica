@@ -67,8 +67,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// own-restore arm is again `activateWithoutAdoption` → `restoreState`: a failed restore skips
 /// `activate()`, records the cause as the authority failure (reported by `voterReconfigurationStatus()`
 /// and fencing activation on later sync rounds), and `logRestoreFailure` reports it at ERROR.
-/// **#1468 stays OPEN** for whether that stop is bounded (wedge) or terminal (exit), and what the start
-/// promise and readiness surface report meanwhile.
+/// The stop is bounded (decided on #1468, 2026-10-18): the process-level `OwnRestoreWatchdog` exits the process
+/// with a distinct code once [RabiaEngine#ownRestoreFailure] has persisted for its bound. The engine's side of
+/// that is pinned here; the bound and the exit are pinned by `OwnRestoreWatchdogTest`.
 ///
 /// **The negative assertions are meaningful only because of the control.** `#ownRestoreSucceeds_activates`
 /// runs the identical fixture with a SUCCEEDING `restoreSnapshot` and activates well inside the same
@@ -83,6 +84,7 @@ class RabiaOwnRestoreFailureTest {
     private static final byte[] OWN_SNAPSHOT = "own".getBytes(StandardCharsets.UTF_8);
     private static final byte[] PEER_SNAPSHOT = "peer".getBytes(StandardCharsets.UTF_8);
     private static final Phase OWN_PHASE = Phase.phase(5);
+    private static final Phase PEER_PHASE = Phase.phase(10);
     private static final String STUCK_FRAGMENT = "still SYNCING after";
     private static final int WARN_ROUNDS = 6;
     private static final long FAST_RETRY_MILLIS = 20;
@@ -143,6 +145,55 @@ class RabiaOwnRestoreFailureTest {
             .contains(UNREADABLE_SNAPSHOT.message());
     }
 
+    /// #1468 bound: the typed own-restore failure is what the process-level watchdog samples. It is the
+    /// cause itself, not its text, and it is absent on the control path below.
+    @Test
+    void ownRestoreFails_exposesTheTypedCauseToTheWatchdog() {
+        var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        becameActive(engine);
+
+        assertThat(engine.ownRestoreFailure()).as("the watchdog's input is the restore failure itself").isEqualTo(Option.some(UNREADABLE_SNAPSHOT));
+    }
+
+    /// D1, the false-positive class: a responder's snapshot that fails to restore is NOT the node's own history.
+    /// Another sync round may adopt a readable snapshot, so the watchdog must have nothing to bound. The control
+    /// is the own-restore test above, where the identical failing state machine DOES set the failure; the
+    /// precondition below shows the responder restore really ran and failed.
+    @Test
+    void responderSnapshotRestoreFails_leavesOwnRestoreFailureEmpty() {
+        var engine = coldStarted(3, new FailingRestoreStateMachine(), noOwnHistory());
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> appender.capturedErrors().stream().anyMatch(message -> message.contains(FAILURE_FRAGMENT))))
+            .as("precondition: the responder's snapshot was restored and the restore failed")
+            .isTrue();
+        assertThat(engine.isActive()).as("the node did not activate on the unreadable snapshot").isFalse();
+        assertThat(engine.ownRestoreFailure()).as("a responder-snapshot failure is recoverable and is not the own-restore failure")
+                                              .isEqualTo(Option.none());
+        assertThat(engine.restoredStateSaveFailure()).as("nor is it a failed re-persist: no save was attempted")
+                                                     .isEqualTo(Option.none());
+    }
+
+    /// D3: the own-restore arm runs only once a genesis has resolved, and no genesis installs after that, so
+    /// `ownRestoreFailure` is never cleared in-process (there is deliberately no clear in `installGenesis`). This
+    /// pins the claim from the one entry point that could install one: `initializeVoters` is refused once the
+    /// engine has started, and the failure stays.
+    @Test
+    void ownRestoreFails_noGenesisCanInstallAfterwards_theFailureStays() {
+        var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> engine.ownRestoreFailure().isPresent())).as("precondition: the failure was recorded").isTrue();
+
+        var refusal = engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(List.of(NODE_1, NODE_2))));
+
+        assertThat(refusal.isFailure()).as("a started engine refuses a genesis install").isTrue();
+        assertThat(engine.ownRestoreFailure()).isEqualTo(Option.some(UNREADABLE_SNAPSHOT));
+    }
+
     /// Pins the diagnostic itself. The ERROR is the per-attempt operator signal on this path, so it must
     /// name the consequence and render the cause, not log a bare object. The periodic stuck-in-`Syncing`
     /// WARN reports the stall's length on top of it (#1447, pinned below).
@@ -174,6 +225,7 @@ class RabiaOwnRestoreFailureTest {
         assertThat(stateMachine.lastRestored()).as("control: the own-restore branch is the one exercised").isEqualTo(OWN_SNAPSHOT);
         assertThat(appender.capturedErrors()).as("a successful restore reports no failure")
                   .noneMatch(message -> message.contains(FAILURE_FRAGMENT));
+        assertThat(engine.ownRestoreFailure()).as("a successful restore leaves nothing for the watchdog to bound").isEqualTo(Option.none());
     }
 
     /// #1447 — the stuck-sync WARN was structurally suppressed on the adoption loop: `adoptCollectedState`
@@ -308,6 +360,25 @@ class RabiaOwnRestoreFailureTest {
         }
 
         return new durable(phase, snapshot);
+    }
+
+    /// Persistence with no own history: nothing to restore, saves succeed.
+    private static RabiaPersistence<TestCommand> noOwnHistory() {
+        record noOwnHistory() implements RabiaPersistence<TestCommand> {
+            @Override
+            public Result<Unit> save(StateMachine<TestCommand> stateMachine,
+                                     Phase lastCommittedPhase,
+                                     Collection<Batch<TestCommand>> pendingBatches) {
+                return Result.success(Unit.unit());
+            }
+
+            @Override
+            public Option<SavedState<TestCommand>> load() {
+                return Option.none();
+            }
+        }
+
+        return new noOwnHistory();
     }
 
     private static SyncResponse<TestCommand> cold(NodeId sender, Phase phase, byte[] snapshot) {

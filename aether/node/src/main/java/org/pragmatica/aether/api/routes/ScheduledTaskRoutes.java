@@ -154,11 +154,16 @@ public final class ScheduledTaskRoutes implements RouteSource {
                        int totalExecutions,
                        String lastOutcome,
                        int completionTimeouts,
-                       int lateResolutions) {}
+                       int lateResolutions,
+                       boolean eligibleHere,
+                       String ineligibleReason) {}
 
-    record ScheduledTasksResponse(List<TaskSummary> tasks, int activeTimers) {}
+    /// `schedulerState` and each task's `eligibleHere`/`ineligibleReason` tell apart the causes a bare
+    /// `activeTimers == 0` conflates (#1469): see [ScheduledTaskManager.SchedulerPhase] and
+    /// [ScheduledTaskManager.Ineligibility]. They describe THIS node, the one answering.
+    record ScheduledTasksResponse(List<TaskSummary> tasks, int activeTimers, String schedulerState) {}
 
-    record FilteredTasksResponse(List<TaskSummary> tasks, String configSection) {}
+    record FilteredTasksResponse(List<TaskSummary> tasks, String configSection, String schedulerState) {}
 
     record TaskActionResult(boolean success, String configSection, String artifact, String method, String action) {}
 
@@ -428,7 +433,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
     private ScheduledTasksResponse buildTasksResponse() {
         var tasks = registry.allTasks().stream().sorted(TASK_ORDER).map(this::toSummary).toList();
 
-        return new ScheduledTasksResponse(tasks, manager.activeTimerCount());
+        return new ScheduledTasksResponse(tasks,
+                                          manager.activeTimerCount(),
+                                          manager.schedulerPhase().name());
     }
 
     private Promise<FilteredTasksResponse> buildFilteredResponse(String configSection) {
@@ -440,7 +447,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
                             .map(this::toSummary)
                             .toList();
 
-        return Promise.success(new FilteredTasksResponse(tasks, configSection));
+        return Promise.success(new FilteredTasksResponse(tasks,
+                                                         configSection,
+                                                         manager.schedulerPhase().name()));
     }
 
     private Promise<TaskActionResult> setPaused(String configSection,
@@ -571,14 +580,16 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                         state.lateResolutions()));
     }
 
-    private static TaskSummary buildSummary(ScheduledTask task,
-                                            long lastExecutionAt,
-                                            long nextFireAt,
-                                            int consecutiveFailures,
-                                            int totalExecutions,
-                                            String lastOutcome,
-                                            int completionTimeouts,
-                                            int lateResolutions) {
+    private TaskSummary buildSummary(ScheduledTask task,
+                                     long lastExecutionAt,
+                                     long nextFireAt,
+                                     int consecutiveFailures,
+                                     int totalExecutions,
+                                     String lastOutcome,
+                                     int completionTimeouts,
+                                     int lateResolutions) {
+        var reason = manager.ineligibilityOf(task);
+
         return new TaskSummary(task.configSection(),
                                task.artifact().asString(),
                                task.methodName().name(),
@@ -593,7 +604,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                totalExecutions,
                                lastOutcome,
                                completionTimeouts,
-                               lateResolutions);
+                               lateResolutions,
+                               reason.isEmpty(),
+                               reason.map(Enum::name).or(""));
     }
 
     private Promise<TaskStateResponse> getTaskState(String configSection, String artifactStr, String methodStr) {

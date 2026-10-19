@@ -85,15 +85,28 @@ sealed interface BootstrapPhaseDeploy {
             }
         }
 
-        return verifyForgeReachable(ctx).map(_ -> withPersistedLedger(ctx));
+        return verifyForgeReachable(ctx).flatMap(_ -> withPersistedLedger(ctx));
     }
 
     /// #1543 — the started ledger is written to the state FILE as each node starts, but the phase-completion
     /// save writes this context's state, which would erase it. Carry the file's ledger into the context.
-    private static BootstrapContext withPersistedLedger(BootstrapContext ctx) {
-        var persisted = BootstrapStatePersistence.load(ctx.config().cluster().name())
-                                                 .map(BootstrapState::startedNodeIds)
-                                                 .or(List.of());
+    ///
+    /// Reads with the REFUSING read, not the swallowing `load`: a ledger that is present but unreadable
+    /// (torn, or holding an entry this CLI does not know) would read as "no started nodes" here, and the
+    /// phase-completion save would then write over it. The phase fails instead and the file is untouched.
+    private static Result<BootstrapContext> withPersistedLedger(BootstrapContext ctx) {
+        return BootstrapStatePersistence.read(ctx.config().cluster().name())
+                                        .mapError(cause -> BootstrapStatePersistence.LEDGER_UNREADABLE.apply(cause.message()))
+                                        .map(BootstrapPhaseDeploy::persistedStartedNodes)
+                                        .map(persisted -> mergeStartedNodes(ctx, persisted));
+    }
+
+    private static List<String> persistedStartedNodes(Option<BootstrapState> state) {
+        return state.map(BootstrapState::startedNodeIds)
+                    .or(List.of());
+    }
+
+    private static BootstrapContext mergeStartedNodes(BootstrapContext ctx, List<String> persisted) {
         var merged = new ArrayList<>(ctx.state().startedNodeIds());
 
         persisted.stream().filter(id -> !merged.contains(id)).forEach(merged::add);
@@ -292,10 +305,19 @@ sealed interface BootstrapPhaseDeploy {
                                                      .type() == SourceType.CLOUD;
     }
 
+    // #1965: a core source declares its members by `count` (cloud) or by an SSH `hosts=[...]` list, never
+    // both; counting `count` alone made a hosts-declared core source invisible to the discovery gate.
     private static int coreCount(SourceProfile source) {
         return Option.option(source.roles().get(NodeRole.CORE))
-                     .flatMap(role -> role.count())
+                     .map(BootstrapPhaseDeploy::roleSize)
                      .or(0);
+    }
+
+    private static int roleSize(RoleSubTable role) {
+        return role.count()
+                   .or(0) + role.hosts()
+                                .map(List::size)
+                                .or(0);
     }
 
     /// C4 — readiness without inbound ports: poll the provider API for instances carrying
@@ -1197,16 +1219,14 @@ sealed interface BootstrapPhaseDeploy {
                                                     SourceProfile source,
                                                     NodeRole role,
                                                     String nodeId) {
-        var profile = Option.option(source.roles().get(role))
-                            .map(RoleSubTable::runtimeRef)
-                            .flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
+        var runtimeRef = Option.option(source.roles().get(role)).map(RoleSubTable::runtimeRef);
+        var profile = runtimeRef.flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
         var type = profile.map(RuntimeProfile::type).or(RuntimeType.CONTAINER);
 
         if (type != RuntimeType.CONTAINER) {
             return new BootstrapError.DeploymentFailed(nodeId,
                                                        "SSH source '" + sourceNameOf(source)
-                                                      + "' declares runtime '" + profile.map(RuntimeProfile::name)
-                                                                                        .or("?")
+                                                      + "' declares runtime '" + runtimeRef.or("?")
                                                       + "' of type " + type
                                                       + "; only CONTAINER can be launched over SSH in this release (#1090)").result();
         }

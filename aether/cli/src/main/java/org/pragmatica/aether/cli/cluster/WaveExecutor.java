@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -316,6 +317,8 @@ public final class WaveExecutor {
                                                        CreatedNodes created) {
         return switch (action) {
             case DiffAction.RuntimeChange a -> executeRuntimeChange(a, stored, desired, created);
+            case DiffAction.RuntimeProfileChange a -> new ClusterConfigError.RuntimeProfileChangeViaApply(a.profileName(),
+                                                                                                          a.fields()).result();
             case DiffAction.SourceFieldChange a -> executeSourceFieldChange(a, stored, desired, created);
             case DiffAction.ClusterLevelChange a -> logClusterLevelChange(a);
             default -> logUnknownModification(action);
@@ -718,7 +721,7 @@ public final class WaveExecutor {
 
     /// Every cloud VM one apply creates, recorded as it is created, so an apply that fails later — in any step — names
     /// them all (#1695, CodeRabbit on #1716). The apply records nothing else about them: `ApplyState` holds no created
-    /// resources and `--rollback` does not see them.
+    /// resources (the apply holds no rollback; `--rollback` is not implemented, #686).
     ///
     /// Only CLOUD sources are recorded, because only there did a provider create a billed VM. An SSH "node" is one of
     /// the operator's own pre-existing hosts, so telling them to delete it would be harmful advice. A FORGE node is an

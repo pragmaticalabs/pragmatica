@@ -16,7 +16,6 @@ import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
@@ -43,7 +42,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
     private static SourceProfile source(String name, SourceType type, int coreCount) {
         var roles = coreCount > 0
                     ? Map.of(NodeRole.CORE,
-                             RoleSubTable.roleSubTable(NodeRole.CORE, Option.some(coreCount), Option.empty(), Option.empty(), "default"))
+                             RoleSubTable.roleSubTable(Option.some(coreCount), Option.empty(), Option.empty(), "default"))
                     : Map.<NodeRole, RoleSubTable> of();
 
         return SourceProfile.sourceProfile(sourceNameOrDefault(name),
@@ -65,18 +64,38 @@ class BootstrapPhaseDeployFormationLabelsTest {
                                            List.of());
     }
 
+    private static SourceProfile sshHostsSource(String name, List<String> hosts) {
+        var roles = Map.of(NodeRole.CORE,
+                           RoleSubTable.roleSubTable(Option.empty(), Option.some(hosts), Option.empty(), "default"));
+
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
+                                           SourceType.SSH,
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           roles,
+                                           List.of());
+    }
+
     private static ClusterBootstrapConfig config(Map<String, SourceProfile> sources) {
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
-                                                    TimeoutsConfig.timeoutsConfig("3s", "10s", "10s"),
+                                                    TimeoutsConfig.timeoutsConfig("3s", "10s"),
                                                     PortMapping.defaultPortMapping());
 
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              sources,
                                                              Map.of(),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              ops, java.util.Map.of());
     }
 
@@ -102,6 +121,25 @@ class BootstrapPhaseDeployFormationLabelsTest {
         assertThat(BootstrapPhaseDeploy.discoveryAssembly(config(Map.of("dc", source("dc", SourceType.SSH, 3)))))
                 .as("SSH sources have no provider API to discover through")
                 .isFalse();
+    }
+
+    /// #1965: an SSH core source that declares its members as `hosts=[...]` has an empty `count`; it is
+    /// still a core-bearing source, so a cloud core source next to it is a two-source cluster and must
+    /// not take the discovery path (which would render install-only user data and skip the SSH push gate).
+    @Test
+    void discoveryAssembly_refuses_whenASecondCoreSourceDeclaresHostsInsteadOfCount() {
+        assertThat(BootstrapPhaseDeploy.discoveryAssembly(config(Map.of("eu",
+                                                                        source("eu", SourceType.CLOUD, 3),
+                                                                        "dc",
+                                                                        sshHostsSource("dc", List.of("10.0.0.1", "10.0.0.2")))))).as(
+                "cores in an SSH hosts=[...] source count as core sources — two sources, legacy path")
+                .isFalse();
+    }
+
+    @Test
+    void discoveryAssembly_refuses_forASingleSshHostsCoreSource() {
+        assertThat(BootstrapPhaseDeploy.discoveryAssembly(config(Map.of("dc",
+                                                                        sshHostsSource("dc", List.of("10.0.0.1")))))).isFalse();
     }
 
     @Test

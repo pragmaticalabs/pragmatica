@@ -4,8 +4,10 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -14,6 +16,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -23,6 +26,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,10 +63,17 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private static final String SNAPSHOT_PARTIAL = "snapshot.partial";
     private static final String LATEST_PARTIAL = "LATEST.partial";
     private static final HexFormat HEX = HexFormat.of();
+    /// #2257: version of the snapshot text layout this class WRITES. 1 is the unversioned layout
+    /// (no `format` header, raw ref names) that is still READ; see [#parseSnapshotContent].
+    static final String FORMAT_VERSION = "2";
+    private static final String LEGACY_FORMAT_VERSION = "1";
+    private static final Cause MALFORMED_REF_LINE = Causes.cause("Malformed ref line in snapshot");
+    private static final Cause DUPLICATE_REF_NAME = Causes.cause("Duplicate ref name in snapshot");
 
     private final MetadataStore metadataStore;
     private final SnapshotConfig config;
     private final Function<Path, Result<Unit>> fsync;
+    private final BiFunction<MetadataSnapshot, MetadataSnapshot.Body, String> serializer;
     private final AtomicLong lastSnapshotEpoch = new AtomicLong();
     private final AtomicBoolean snapshotInProgress = new AtomicBoolean();
     /// Serialises [#forceSnapshot]. The `maybeSnapshot` CAS only coalesces TICKS; `forceSnapshot`
@@ -82,9 +93,27 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// disk that fills or a process that dies mid-snapshot), replace it, count calls or measure
     /// concurrent depth. The write itself, the rename and the cleanup are the production path.
     DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config, Function<Path, Result<Unit>> fsync) {
+        this(metadataStore, config, fsync, DefaultSnapshotManager::serializeBody);
+    }
+
+    /// Test seam (#2257): the encoder only. A fixture can hand the write path a serializer with a defect
+    /// -- a dropped line, a mangled separator -- and observe that the write-time read-back refuses the
+    /// result. Production passes [#serializeBody].
+    DefaultSnapshotManager(MetadataStore metadataStore,
+                           SnapshotConfig config,
+                           Function<Path, Result<Unit>> fsync,
+                           Function<MetadataSnapshot, String> serializer) {
+        this(metadataStore, config, fsync, (snapshot, _) -> serializer.apply(snapshot));
+    }
+
+    private DefaultSnapshotManager(MetadataStore metadataStore,
+                                   SnapshotConfig config,
+                                   Function<Path, Result<Unit>> fsync,
+                                   BiFunction<MetadataSnapshot, MetadataSnapshot.Body, String> serializer) {
         this.metadataStore = metadataStore;
         this.config = config;
         this.fsync = fsync;
+        this.serializer = serializer;
         this.lastSnapshotTimestamp = System.currentTimeMillis();
     }
 
@@ -123,9 +152,10 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     private Result<MetadataSnapshot> takeSnapshot() {
-        var snapshot = captureSnapshot();
+        var capture = captureSnapshot();
+        var snapshot = capture.snapshot();
 
-        return writeSnapshotToDisk(snapshot).onSuccess(_ -> recordSnapshotTaken(snapshot))
+        return writeSnapshotToDisk(capture).onSuccess(_ -> recordSnapshotTaken(snapshot))
                                   .onFailure(cause -> LOG.warn("Snapshot write failed: {}",
                                                                cause.message()))
                                   .map(_ -> snapshot);
@@ -167,11 +197,23 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     // --- Snapshot capture ---
-    private MetadataSnapshot captureSnapshot() {
-        return MetadataSnapshot.metadataSnapshot(metadataStore.currentEpoch(),
-                                                 config.nodeId(),
-                                                 metadataStore.listAllLifecycles(),
-                                                 metadataStore.listAllRefs());
+    /// The snapshot and its canonical body, rendered once: the hash, the file and the write-time read-back
+    /// all use these lines.
+    private record Capture(MetadataSnapshot snapshot, MetadataSnapshot.Body body) {}
+
+    private Capture captureSnapshot() {
+        var epoch = metadataStore.currentEpoch();
+        var lifecycles = metadataStore.listAllLifecycles();
+        var refs = metadataStore.listAllRefs();
+        var body = MetadataSnapshot.render(epoch, lifecycles, refs);
+
+        return new Capture(new MetadataSnapshot(epoch,
+                                                System.currentTimeMillis(),
+                                                config.nodeId(),
+                                                lifecycles,
+                                                refs,
+                                                body.hash()),
+                           body);
     }
 
     private void recordSnapshotTaken(MetadataSnapshot snapshot) {
@@ -185,21 +227,43 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     // --- Disk write ---
-    private Result<Path> writeSnapshotToDisk(MetadataSnapshot snapshot) {
-        return ensureDirectory().flatMap(_ -> serializeAndWrite(snapshot));
+    private Result<Path> writeSnapshotToDisk(Capture capture) {
+        return ensureDirectory().flatMap(_ -> serializeAndWrite(capture));
     }
 
     private Result<Path> ensureDirectory() {
         return createDirectories(config.snapshotPath()).mapError(e -> new SnapshotError.DirectoryCreateFailed(new RuntimeException(e.message())));
     }
 
-    private Result<Path> serializeAndWrite(MetadataSnapshot snapshot) {
+    private Result<Path> serializeAndWrite(Capture capture) {
+        var snapshot = capture.snapshot();
         var fileName = snapshotFileName(snapshot.epoch());
         var filePath = config.snapshotPath().resolve(fileName);
-        var content = serializeSnapshot(snapshot);
+        var content = serializer.apply(snapshot, capture.body());
 
-        return writeAtomically(SNAPSHOT_PARTIAL, filePath, content).flatMap(_ -> replaceLatestPointer(filePath))
+        return verifyReadsBack(snapshot, content).flatMap(_ -> writeAtomically(SNAPSHOT_PARTIAL, filePath, content))
+                              .flatMap(_ -> replaceLatestPointer(filePath))
                               .map(_ -> filePath);
+    }
+
+    /// #2257: the encoded text is read back in ONE pass ([SnapshotReadBack]) and compared by value with the
+    /// snapshot that was captured in memory: header (format, epoch, node id, hash), then every lifecycle
+    /// field and every ref name and target, in the order they were written. Each line is DECODED and the
+    /// result compared with the value it was rendered from, so no collection of parsed values is built. The
+    /// hash alone cannot do this job: it is computed over the same encoder output that was written, so an
+    /// encoder that loses information hashes identically on both sides. The hash is computed ONCE, while
+    /// the body is rendered; the file is checked to carry that value, which together with equal content is
+    /// the integrity check the restore applies. A snapshot that would not restore as captured is refused
+    /// here, loudly, while the previous snapshot and `LATEST` are still in place.
+    private Result<Unit> verifyReadsBack(MetadataSnapshot captured, String content) {
+        return Result.lift(SnapshotError.ParseFailed::new,
+                           () -> SnapshotReadBack.matches(captured, content))
+                     .filter(SnapshotError.General.ROUND_TRIP_MISMATCH, matches -> matches)
+                     .mapError(SnapshotError.RoundTripFailed::new)
+                     .onFailure(cause -> LOG.error("Snapshot epoch={} refused: {}",
+                                                   captured.epoch(),
+                                                   cause.message()))
+                     .mapToUnit();
     }
 
     /// `LATEST` is a regular one-line file naming the current snapshot, replaced by rename -- not a
@@ -466,44 +530,21 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     // --- Serialization ---
-    private static String serializeSnapshot(MetadataSnapshot snapshot) {
-        var sb = new StringBuilder();
-
-        sb.append("epoch=").append(snapshot.epoch()).append('\n');
-        sb.append("timestamp=").append(snapshot.timestamp()).append('\n');
-        sb.append("nodeId=").append(snapshot.nodeId()).append('\n');
-        sb.append("contentHash=").append(HEX.formatHex(snapshot.contentHash())).append('\n');
-        sb.append('\n');
-        sb.append("# Lifecycles\n");
-        snapshot.lifecycles().forEach(lc -> appendLifecycleLine(sb, lc));
-        sb.append('\n');
-        sb.append("# Refs\n");
-        snapshot.refs().forEach((name, id) -> appendRefLine(sb, name, id));
-
-        return sb.toString();
+    /// #2257: `format=2` is the first header. Ref names are percent-encoded ([SnapshotNameCodec]); a file
+    /// with no `format` header is the pre-#2257 layout, which [#parseLegacyContent] still reads.
+    static String serializeSnapshot(MetadataSnapshot snapshot) {
+        return serializeBody(snapshot,
+                             MetadataSnapshot.render(snapshot.epoch(), snapshot.lifecycles(), snapshot.refs()));
     }
 
-    private static void appendLifecycleLine(StringBuilder sb, BlockLifecycle lc) {
-        var tiers = lc.presentIn().stream().map(TierLevel::name).collect(Collectors.joining(","));
-
-        sb.append(lc.blockId().hexString())
-          .append('|')
-          .append(tiers)
-          .append('|')
-          .append(lc.refCount())
-          .append('|')
-          .append(lc.lastAccessedAt())
-          .append('|')
-          .append(lc.createdAt())
-          .append('|')
-          .append(lc.accessCount())
-          .append('|')
-          .append(lc.orphanedAt())
-          .append('\n');
-    }
-
-    private static void appendRefLine(StringBuilder sb, String name, BlockId id) {
-        sb.append(name).append('|').append(id.hexString()).append('\n');
+    /// Header, a blank line, then the body exactly as it was hashed.
+    static String serializeBody(MetadataSnapshot snapshot, MetadataSnapshot.Body body) {
+        return "format=" + FORMAT_VERSION + '\n'
+             + "epoch=" + snapshot.epoch() + '\n'
+             + "timestamp=" + snapshot.timestamp() + '\n'
+             + "nodeId=" + snapshot.nodeId() + '\n'
+             + "contentHash=" + HEX.formatHex(snapshot.contentHash())
+             + "\n\n" + body.text();
     }
 
     // --- Deserialization ---
@@ -511,21 +552,107 @@ final class DefaultSnapshotManager implements SnapshotManager {
         return Result.lift(SnapshotError.ParseFailed::new, () -> parseSnapshotContent(content)).flatMap(parsed -> parsed);
     }
 
+    /// #2257: dispatch on the `format` header. Absent means the unversioned pre-#2257 layout, which keeps
+    /// its known limits (a ref name with `=`, `|`, a leading `#`, a newline, or the EMPTY name never reads back; the empty one is dropped without failing the hash, so the next format=2 write makes the loss permanent) but is
+    /// still restored, so a node holding only such files is not bricked by the upgrade. A version this
+    /// code does not know is refused, never guessed at.
     private static Result<MetadataSnapshot> parseSnapshotContent(String content) {
         var lines = content.split("\n");
         var headers = parseHeaders(lines);
-        var epoch = Long.parseLong(headers.get("epoch"));
-        var timestamp = Long.parseLong(headers.get("timestamp"));
-        var nodeId = headers.get("nodeId");
-        var contentHash = HEX.parseHex(headers.get("contentHash"));
+        var version = headers.getOrDefault("format", LEGACY_FORMAT_VERSION);
+
+        return switch (version) {
+            case FORMAT_VERSION -> parseCurrentContent(lines, headers);
+            case LEGACY_FORMAT_VERSION -> parseLegacyContent(lines, headers);
+            default -> new SnapshotError.UnsupportedFormat(version).result();
+        };
+    }
+
+    private static MetadataSnapshot snapshotOf(Map<String, String> headers,
+                                               List<BlockLifecycle> lifecycles,
+                                               Map<String, BlockId> refs) {
+        return new MetadataSnapshot(Long.parseLong(headers.get("epoch")),
+                                    Long.parseLong(headers.get("timestamp")),
+                                    headers.get("nodeId"),
+                                    lifecycles,
+                                    refs,
+                                    HEX.parseHex(headers.get("contentHash")));
+    }
+
+    // --- Current format (format=2) ---
+    private static Result<MetadataSnapshot> parseCurrentContent(String[] lines, Map<String, String> headers) {
+        var sections = splitSections(lines);
+
+        return Result.all(Result.allOf(sections.getOrDefault("lifecycles",
+                                                             List.of())
+                                               .stream()
+                                               .map(DefaultSnapshotManager::parseLifecycleLine)
+                                               .toList()),
+                          parseRefs(sections.getOrDefault("refs",
+                                                          List.of())))
+                     .map((lifecycles, refs) -> snapshotOf(headers, lifecycles, refs));
+    }
+
+    /// The data lines of each `# ...` section, none dropped: in this format a name is percent-encoded, so
+    /// no data line can look like a header or a comment.
+    private static Map<String, List<String>> splitSections(String[] lines) {
+        var sections = new HashMap<String, List<String>>();
+        var section = "";
+
+        for (var line : lines) {
+            if (line.equals("# Lifecycles")) {
+                section = "lifecycles";
+            } else if (line.equals("# Refs")) {
+                section = "refs";
+            } else if (!line.isEmpty() && !section.isEmpty()) {
+                sections.computeIfAbsent(section, _ -> new ArrayList<>()).add(line);
+            }
+        }
+
+        return sections;
+    }
+
+    /// A duplicate name or a malformed line fails the snapshot; nothing is skipped (a partially parsed
+    /// snapshot is worse than a clean failure).
+    private static Result<Map<String, BlockId>> parseRefs(List<String> lines) {
+        return Result.allOf(lines.stream().map(DefaultSnapshotManager::parseRefEntry).toList()).flatMap(DefaultSnapshotManager::toDistinctMap);
+    }
+
+    private static Result<Map<String, BlockId>> toDistinctMap(List<Map.Entry<String, BlockId>> entries) {
+        Map<String, BlockId> refs = entries.stream()
+                                           .collect(Collectors.toMap(Map.Entry::getKey,
+                                                                     Map.Entry::getValue,
+                                                                     (_, last) -> last,
+                                                                     LinkedHashMap::new));
+
+        return Result.success(refs).filter(DUPLICATE_REF_NAME,
+                                           distinct -> distinct.size() == entries.size());
+    }
+
+    private static Result<Map.Entry<String, BlockId>> parseRefEntry(String line) {
+        var pipeIndex = line.indexOf('|');
+
+        if (pipeIndex < 0) {
+            return MALFORMED_REF_LINE.result();
+        }
+
+        return Result.all(SnapshotNameCodec.decode(line.substring(0, pipeIndex)),
+                          BlockId.fromHex(line.substring(pipeIndex + 1)))
+                     .map(Map::entry);
+    }
+
+    // --- Legacy format (no format header) ---
+    private static Result<MetadataSnapshot> parseLegacyContent(String[] lines, Map<String, String> headers) {
         var refs = new LinkedHashMap<String, BlockId>();
 
-        return parseLifecycles(lines, refs).map(lifecycles -> new MetadataSnapshot(epoch,
-                                                                                   timestamp,
-                                                                                   nodeId,
-                                                                                   lifecycles,
-                                                                                   refs,
-                                                                                   contentHash));
+        return parseLifecycles(lines, refs).map(lifecycles -> snapshotOf(headers, lifecycles, refs))
+                              .filter(SnapshotError.INTEGRITY_CHECK_FAILED, DefaultSnapshotManager::matchesLegacyHash)
+                              .map(MetadataSnapshot::resealed);
+    }
+
+    private static boolean matchesLegacyHash(MetadataSnapshot snapshot) {
+        return Arrays.equals(snapshot.contentHash(),
+                             MetadataSnapshot.legacyContentHash(snapshot.lifecycles(), snapshot.refs()));
     }
 
     /// Parse the lifecycle and ref data lines, propagating any malformed-line failure rather than
@@ -560,7 +687,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
         }
     }
 
-    private static Map<String, String> parseHeaders(String[] lines) {
+    static Map<String, String> parseHeaders(String[] lines) {
         var headers = new LinkedHashMap<String, String>();
 
         for (var line : lines) {

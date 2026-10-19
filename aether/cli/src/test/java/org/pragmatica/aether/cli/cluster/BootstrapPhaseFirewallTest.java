@@ -12,7 +12,6 @@ import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
@@ -109,8 +108,7 @@ class BootstrapPhaseFirewallTest {
                                             Option.empty(),
                                             Map.of(),
                                             Map.of(NodeRole.CORE,
-                                                    RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                                Option.some(3),
+                                                    RoleSubTable.roleSubTable(Option.some(3),
                                                                                 Option.empty(),
                                                                                 Option.empty(),
                                                                                 "default")),
@@ -118,12 +116,11 @@ class BootstrapPhaseFirewallTest {
     }
 
     private static BootstrapContext contextWith(SourceProfile source) {
-        var config = ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                                    ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
+        var config = ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                                     CoreTopology.defaultCoreTopology(),
                                                                     Map.of(source.name().value(), source),
                                                                     Map.of(),
-                                                                    InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                                    InfrastructureConfig.infrastructureConfig(),
                                                                     OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
 
         return BootstrapContext.bootstrapContext(config,
@@ -212,7 +209,7 @@ class BootstrapPhaseFirewallTest {
     }
 
     /// REQ-5.1.8.3 — cluster (8090) and management (8080) stay operator-managed. Aether must never
-    /// open them, consistent with `[infrastructure.networking] type = "manual"`.
+    /// open them, consistent with the manual networking model.
     @Test
     void execute_neverOpensClusterOrManagementPorts() {
         var compute = new RecordingCompute();
@@ -335,8 +332,7 @@ class BootstrapPhaseFirewallTest {
                                             Option.empty(),
                                             Map.of(),
                                             Map.of(NodeRole.CORE,
-                                                    RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                                Option.some(3),
+                                                    RoleSubTable.roleSubTable(Option.some(3),
                                                                                 Option.empty(),
                                                                                 Option.empty(),
                                                                                 "default")),

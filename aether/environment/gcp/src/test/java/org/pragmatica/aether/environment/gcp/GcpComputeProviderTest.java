@@ -15,6 +15,7 @@ import org.pragmatica.aether.environment.MarketOptions;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.cloud.gcp.GcpError;
+import org.pragmatica.cloud.gcp.api.Operation;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -124,6 +125,17 @@ class GcpComputeProviderTest {
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(cause -> assertThat(cause.message()).contains("zz-sentinel-size-99")
                                                   .contains("zz-sentinel-zone-99"));
+        }
+
+        /// #1535: GCP answers a rejected insert with a 200 whose Operation carries an `error` member; it must fail
+        /// the provision with that error, not wait for a readiness timeout on a VM that was never created.
+        @Test
+        void provision_operationReportsError_failsWithTheOperationsOwnError() {
+            testClient.insertInstanceResponse = Promise.success(new Operation("op-9", "DONE", "", "insert", new Operation.OperationError(List.of(new Operation.Detail("QUOTA_EXCEEDED", "Quota 'CPUS' exceeded")))));
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause.message()).contains("QUOTA_EXCEEDED").contains("op-9"));
         }
 
         @Test
