@@ -612,8 +612,14 @@ class BlueprintSecurityOverrideClusterWideTest {
         await().alias(what)
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
-             .until(() -> echoActiveNodeIds().size() == expectedNodeIds.size()
-                          && echoActiveNodeIds().containsAll(expectedNodeIds));
+             .until(() -> echoActiveExactlyOn(expectedNodeIds));
+    }
+
+    /// One read per poll: two reads could come from different snapshots and combine into a spurious pass.
+    private boolean echoActiveExactlyOn(List<String> expectedNodeIds) {
+        var active = echoActiveNodeIds();
+
+        return active.size() == expectedNodeIds.size() && active.containsAll(expectedNodeIds);
     }
 
     private List<String> echoActiveNodeIds() {
