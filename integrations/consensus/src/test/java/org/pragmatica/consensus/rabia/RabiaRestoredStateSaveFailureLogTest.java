@@ -23,16 +23,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -49,6 +39,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,22 +80,11 @@ class RabiaRestoredStateSaveFailureLogTest {
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture appender;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("RabiaRestoredStateSaveFailureCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-
-        loggerConfig = getOrCreateLoggerConfig(configuration);
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ERROR, null);
-        loggerConfig.setLevel(Level.ERROR);
-        ctx.updateLoggers();
+        appender = LogCapture.capture(LOGGER_NAME, Level.ERROR, false);
     }
 
     @AfterEach
@@ -112,12 +92,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         engines.forEach(engine -> engine.stop()
                                         .await());
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        appender.close();
     }
 
     /// A restart from disk restores its own snapshot, and the re-persist that should make the restore
@@ -140,7 +115,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         assertThat(started.engine().voterReconfigurationStatus().failure())
             .as("the save failure is recorded as the authority failure that fences activation")
             .contains(DISK_FULL.message());
-        assertThat(appender.capturedErrors()).as("the failed re-persist must be logged at ERROR, naming the consequence and the cause")
+        assertThat(appender.messages(Level.ERROR)).as("the failed re-persist must be logged at ERROR, naming the consequence and the cause")
                   .isNotEmpty()
                   .anyMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT)
                                        && message.contains(ADOPTION_CONSEQUENCE_FRAGMENT)
@@ -160,7 +135,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).as("precondition: the same restore path must have run")
                   .isEqualTo(OWN_SNAPSHOT);
-        assertThat(appender.capturedErrors()).as("a save that succeeded must not report a persist failure")
+        assertThat(appender.messages(Level.ERROR)).as("a save that succeeded must not report a persist failure")
                   .noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
     }
 
@@ -294,7 +269,7 @@ class RabiaRestoredStateSaveFailureLogTest {
 
         engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
 
-        assertThat(awaitCondition(() -> appender.capturedErrors()
+        assertThat(awaitCondition(() -> appender.messages(Level.ERROR)
                                                 .stream()
                                                 .anyMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT)
                                                                      && message.contains(ADOPTION_CONSEQUENCE_FRAGMENT)
@@ -315,7 +290,7 @@ class RabiaRestoredStateSaveFailureLogTest {
 
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).isEqualTo(PEER_SNAPSHOT);
-        assertThat(appender.capturedErrors()).noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
+        assertThat(appender.messages(Level.ERROR)).noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
     }
 
     /// Persistence with NO own history — nothing to restore — whose `save` fails
@@ -432,20 +407,6 @@ class RabiaRestoredStateSaveFailureLogTest {
         return new Started(engine, network);
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.ERROR, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
     private static final class RecordingStateMachine extends TestStateMachine {
         private volatile byte[] lastRestored;
 
@@ -458,30 +419,6 @@ class RabiaRestoredStateSaveFailureLogTest {
 
         byte[] lastRestored() {
             return lastRestored;
-        }
-    }
-
-    /// In-memory log4j2 appender capturing ERROR-and-above messages for assertions.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.ERROR)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedErrors() {
-            return List.copyOf(messages);
         }
     }
 

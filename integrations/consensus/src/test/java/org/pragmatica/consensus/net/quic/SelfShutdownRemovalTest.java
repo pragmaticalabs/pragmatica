@@ -11,14 +11,6 @@
 package org.pragmatica.consensus.net.quic;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +23,7 @@ import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.consensus.topology.TransportObservation.SelfShutdown;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,30 +49,18 @@ class SelfShutdownRemovalTest {
     private static final NodeId PEER = new NodeId("zzz-peer");
 
     private final List<QuicClusterNetwork> networks = new ArrayList<>();
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
+    private LogCapture appender;
 
     @BeforeEach
     void captureTheTransportLog() {
-        appender = new CapturingAppender("SelfShutdownRemovalCapture");
-        appender.start();
-        var context = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = new LoggerConfig(LOGGER_NAME, Level.INFO, true);
-        loggerConfig.addAppender(appender, Level.INFO, null);
-        context.getConfiguration().addLogger(LOGGER_NAME, loggerConfig);
-        context.updateLoggers();
+        appender = LogCapture.capture(LOGGER_NAME, Level.INFO, true);
     }
 
     @AfterEach
     void tearDown() {
-        var context = (LoggerContext) LogManager.getContext(false);
-
         networks.forEach(network -> network.stop().await(AWAIT));
         networks.clear();
-        context.getConfiguration().removeLogger(LOGGER_NAME);
-        context.updateLoggers();
-        appender.stop();
+        appender.close();
     }
 
     @Test
@@ -105,25 +86,5 @@ class SelfShutdownRemovalTest {
         assertThat(stoppingObserved.stream().filter(SelfShutdown.class::isInstance)).as("SelfShutdown routed by the stopping node").isEmpty();
         assertThat(appender.messages(Level.WARN)).as("WARNs logged by the transport across the stop").noneMatch(m -> m.contains("Ignoring view change"));
         assertThat(peerObserved.stream().map(TransportObservation::nodeId)).as("the peer saw the stopping node leave").contains(STOPPING);
-    }
-
-    /// In-memory log4j2 appender capturing formatted messages with their levels.
-    private static final class CapturingAppender extends AbstractAppender {
-        private record Entry(Level level, String message) {}
-
-        private final List<Entry> entries = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name) {
-            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            entries.add(new Entry(event.getLevel(), event.getMessage().getFormattedMessage()));
-        }
-
-        List<String> messages(Level level) {
-            return entries.stream().filter(entry -> entry.level() == level).map(Entry::message).toList();
-        }
     }
 }
