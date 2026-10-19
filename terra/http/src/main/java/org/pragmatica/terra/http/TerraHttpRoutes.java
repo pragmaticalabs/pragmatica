@@ -168,9 +168,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                 }));
     }
 
-    private static <T> Route<T> secure(Route<T> route,
-                                       SecurityPolicy defaultPolicy,
-                                       HttpAuthenticator authenticator) {
+    private static <T> Route<T> secure(Route<T> route, SecurityPolicy defaultPolicy, HttpAuthenticator authenticator) {
         return Route.route(route.method(),
                            route.path(),
                            context -> authenticate(route, context, defaultPolicy, authenticator).flatMap(security -> invoke(route,
@@ -208,9 +206,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
 
     // The rebuilt context keeps the router's codec (the generated one where the slice has it), so a request body is
     // read in the wire form the router writes responses in: one form across Terra and Aether (#2229 F1).
-    private static <T> Promise<T> invoke(Route<T> route,
-                                         RequestContext context,
-                                         SecurityContext security) {
+    private static <T> Promise<T> invoke(Route<T> route, RequestContext context, SecurityContext security) {
         var routed = (SliceRequestContext) context;
         var request = routed.original().withSecurity(security);
 
