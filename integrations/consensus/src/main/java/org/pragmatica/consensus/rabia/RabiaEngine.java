@@ -2218,6 +2218,11 @@ public class RabiaEngine<C extends Command> {
     /// after that adoption has settled the engine. Both [#isSyncSettled] checks are therefore load-bearing:
     /// without them a late tick re-enters `Syncing` from `Observing` and publishes PASSIVE for an observer
     /// that never had a quorum to lose (auto-heal replacements join as observers).
+    ///
+    /// A `Paused` engine is settled too: quorum loss paused it, and it leaves `Paused` only on the next quorum ACTIVE (`Idle` or
+    /// `Observing`, no sync round) or on `reconfigure`/`stop`. Pausing from `Syncing` cancels the scheduled retry but not a tick
+    /// already queued on the executor; that tick must not turn `Paused` into `Syncing`, because `Syncing` ignores the ACTIVE that
+    /// would have resumed the engine.
     private void doSynchronize() {
         if (isSyncSettled()) {
             return;
@@ -2246,13 +2251,13 @@ public class RabiaEngine<C extends Command> {
         notifyConsensusStateTransition();
     }
 
-    /// Synchronization has nothing left to do: the engine is a voter in `Idle`/`InPhase`, or an observer
-    /// that has adopted state. `Observing` is a settled outcome of the sync loop, not a station on the way
-    /// to `Active`, so no tick may move it back to `Syncing`.
+    /// Synchronization has nothing left to do: the engine is a voter in `Idle`/`InPhase`, an observer that has adopted state, or paused
+    /// for quorum loss. `Observing` is a settled outcome of the sync loop, not a station on the way to `Active`, and `Paused` is left
+    /// only by a quorum ACTIVE, so no tick may move either back to `Syncing`.
     private boolean isSyncSettled() {
         var current = engineState.get();
 
-        return current.isActive() || current.isObserving();
+        return current.isActive() || current.isObserving() || current.isPaused();
     }
 
     /// #660 observability half: the retry loop logged only at TRACE, so a node deadlocked in `Syncing`
