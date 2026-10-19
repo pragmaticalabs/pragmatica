@@ -15,17 +15,10 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.storage.StorageTier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,18 +43,18 @@ class StorageFactoryVolumeSentinelTest {
     Path tempDir;
 
     private String previousRoot;
-    private WarnCapture appender;
+    private LogCapture appender;
 
     @BeforeEach
     void pointTheStateDirAtTheTestDirectory() {
         previousRoot = System.getProperty(ROOT_PROPERTY);
         System.setProperty(ROOT_PROPERTY, stateDir().toString());
-        appender = WarnCapture.attachTo(StorageFactory.class.getName());
+        appender = LogCapture.capture(StorageFactory.class, Level.ALL, true);
     }
 
     @AfterEach
     void restoreStateDir() {
-        appender.detach();
+        appender.close();
         if (previousRoot == null) {
             System.clearProperty(ROOT_PROPERTY);
         } else {
@@ -261,7 +254,7 @@ class StorageFactoryVolumeSentinelTest {
     void createAll_warnsOnce_whenTheStateDirSharesAFilesystemWithTheGuardedVolume() {
         boot(armedConfig());
 
-        var warns = appender.warnsMentioning(snapshotDir().toString());
+        var warns = warnsMentioning(snapshotDir().toString());
 
         assertThat(warns).hasSize(1);
         assertThat(warns.getFirst()).contains("INACTIVE").contains(stateDir().toString());
@@ -280,7 +273,7 @@ class StorageFactoryVolumeSentinelTest {
             System.setProperty(ROOT_PROPERTY, otherState.toString());
             boot(armedConfig());
 
-            assertThat(appender.warnsMentioning(snapshotDir().toString())).isEmpty();
+            assertThat(warnsMentioning(snapshotDir().toString())).isEmpty();
         } finally {
             deleteTree(otherState);
         }
@@ -289,6 +282,10 @@ class StorageFactoryVolumeSentinelTest {
     @Test
     void onSameFilesystem_isTrue_withinOneTreeEvenBeforeTheDirectoryExists() {
         assertThat(StorageFactory.onSameFilesystem(tempDir, tempDir.resolve("not").resolve("yet"))).isTrue();
+    }
+
+    private java.util.List<String> warnsMentioning(String fragment) {
+        return appender.messages(Level.WARN).stream().filter(w -> w.contains(fragment)).toList();
     }
 
     private static void deleteTree(Path root) throws IOException {
@@ -320,51 +317,6 @@ class StorageFactoryVolumeSentinelTest {
             return sentinelPath();
         } catch (IOException e) {
             throw new AssertionError("the first boot's snapshot must have written a sentinel", e);
-        }
-    }
-
-    private static final class WarnCapture extends AbstractAppender {
-        private final java.util.List<String> warns = new java.util.concurrent.CopyOnWriteArrayList<>();
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
-
-        private WarnCapture() {
-            super("StorageFactoryWarnCapture", (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        static WarnCapture attachTo(String logger) {
-            var capture = new WarnCapture();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var existing = ctx.getConfiguration().getLoggerConfig(logger);
-
-            capture.start();
-            capture.loggerConfig = existing.getName().equals(logger) ? existing : new LoggerConfig(logger, Level.ALL, true);
-            ctx.getConfiguration().addLogger(logger, capture.loggerConfig);
-            capture.originalLevel = capture.loggerConfig.getLevel();
-            capture.loggerConfig.addAppender(capture, Level.ALL, null);
-            capture.loggerConfig.setLevel(Level.ALL);
-            ctx.updateLoggers();
-            return capture;
-        }
-
-        void detach() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            loggerConfig.removeAppender(getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            stop();
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel() == Level.WARN) {
-                warns.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        java.util.List<String> warnsMentioning(String fragment) {
-            return warns.stream().filter(w -> w.contains(fragment)).toList();
         }
     }
 }
