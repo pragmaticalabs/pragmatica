@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.node.NodeCodecs;
@@ -69,7 +70,7 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
 
     static final class Marker implements ParticipationMarker {
         final AtomicBoolean refuse = new AtomicBoolean();
-        final java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+        final AtomicInteger attempts = new AtomicInteger();
         public Participation resolve() { return Participation.NEVER_PARTICIPATED; }
         public Result<Unit> recordParticipation() {
             attempts.incrementAndGet();
@@ -109,13 +110,20 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
                                                           ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(50).millis(), Option.some(marker)),
                                                           ConsensusMetrics.noop(), true, RabiaPersistence.inMemory(), timeSpan(50).millis());
         try {
+            var announces = new AtomicInteger();
+
             engine.onStateRestored(server::onStateRestored);
+            engine.onStateRestored(announces::incrementAndGet);
             engine.clusterState(ClusterStateNotification.active());
             engine.authorizeObservation();
             assertThat(await(() -> network.sawSyncRequest())).isTrue();
             deliver(engine, source("initial", 5), 5);
             assertThat(await(engine::isObserving)).as("phase A: first restore, observing").isTrue();
-            // phase A: the worker's first successful poll builds the server's index (server.initialized becomes true)
+            // phase A: the worker's first successful poll builds the server's index (server.initialized becomes true).
+            // The server refuses a manifest while the store still holds undelivered notifications and the client backs off
+            // after a refusal, so the first poll waits for the restore's announce (the counting hook runs after the
+            // server's own) instead of racing it.
+            assertThat(await(() -> announces.get() >= 1)).as("phase A: the first restore was announced").isTrue();
             assertThat(await(() -> pollOnce(engine, server, client, requests, responses, worker))).as("phase A: the worker read the initial projection").isTrue();
             assertThat(worker.getTyped(configKey, AetherValue.ConfigValue.class).unwrap().value()).isEqualTo("initial");
 
@@ -138,12 +146,15 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
             assertThat(await(engine::isObserving)).as("PRECONDITION: the Decision moved the observer to Observing").isTrue();
             assertThat(servingGate(engine)).as("PRECONDITION: the production gate is open for a non-voter observer").isTrue();
 
-            // phase D: the worker polls the serving observer
+            // phase D: the worker polls the serving observer. On a correct engine the second restore has been announced by
+            // now (the wait below is soft: an engine that never announces must fail on what the worker reads, not here).
+            await(() -> announces.get() >= 2);
             assertThat(await(() -> {
                 pollOnce(engine, server, client, requests, responses, worker);
                 return "restored".equals(worker.getTyped(configKey, AetherValue.ConfigValue.class).fold(() -> "", AetherValue.ConfigValue::value));
             })).as("the projection served after reaching Observing is the restored store, not the one built before the restore")
                .isTrue();
+            assertThat(announces.get()).as("the second restore was announced exactly once").isEqualTo(2);
         } finally {
             engine.stop().await();
         }
