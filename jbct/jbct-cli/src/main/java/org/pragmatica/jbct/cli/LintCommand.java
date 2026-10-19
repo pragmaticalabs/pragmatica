@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
-import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
@@ -49,7 +48,13 @@ public class LintCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // Load configuration
-        var config = ConfigLoader.load(Option.option(configPath), Option.none());
+        var loadedConfig = CliConfig.load(Option.option(configPath));
+
+        if (loadedConfig.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        var config = loadedConfig.unwrap();
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);

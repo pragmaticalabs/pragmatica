@@ -5,7 +5,7 @@ package org.pragmatica.aether.deadsurface;
 
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.Type;
-import org.pragmatica.aether.config.ConfigKeyLive;
+import org.pragmatica.config.toml.ConfigKeyLive;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 
 import java.nio.file.Path;
