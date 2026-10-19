@@ -162,6 +162,8 @@ public class RabiaEngine<C extends Command> {
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
 
     private volatile Option<Cause> authorityFailure = Option.none();
+    /// Set by a restore, cleared by the announce that follows the first transition into a serving state (#1516).
+    private final AtomicBoolean restoreAnnouncePending = new AtomicBoolean();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
     private final Map<Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
     /// The §4 command this voter currently carries on its proposals. Always of the current base epoch:
@@ -1103,6 +1105,7 @@ public class RabiaEngine<C extends Command> {
         exitState(oldState);
         notifyConsensusStateTransition();
         log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
+        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
@@ -1242,6 +1245,7 @@ public class RabiaEngine<C extends Command> {
         // Replay through the live ordering guard. A remaining gap starts synchronization;
         // only a decision at the applied frontier can mutate the state machine.
         drainBufferedDecisions();
+        announceRestoreIfPending();
         if (!pendingBatches.isEmpty() || requestedConfiguration.isPresent()) {
             safeExecute(this::startPhase);
         }
@@ -2400,8 +2404,8 @@ public class RabiaEngine<C extends Command> {
     private void activateOnLiveState(String reason) {
         log.debug("Node {} activating on its own state ({}); own phase {}", self, reason, currentPhase.get());
         syncResponses.clear();
+        restoreAnnouncePending.set(true);
         activate();
-        announceRestoreIfServing();
     }
 
     @Contract
@@ -2522,8 +2526,8 @@ public class RabiaEngine<C extends Command> {
         // up perpetually `MAX_PHASE_AHEAD` behind and burns its retry budget on resyncs.
         if (state.snapshot().length == 0) {
             applyRestoredState(state);
+            restoreAnnouncePending.set(true);
             activate();
-            announceRestoreIfServing();
 
             return;
         }
@@ -2534,8 +2538,8 @@ public class RabiaEngine<C extends Command> {
         stateMachine.restoreCommittedSnapshot(state.snapshot(),
                                               state.lastCommittedPhase().value())
                     .onSuccess(_ -> applyRestoredState(state))
+                    .onSuccessRun(() -> restoreAnnouncePending.set(true))
                     .onSuccessRun(this::activate)
-                    .onSuccessRun(this::announceRestoreIfServing)
                     .onFailure(cause -> onRestoreFailure.accept(cause));
     }
 
@@ -2585,18 +2589,22 @@ public class RabiaEngine<C extends Command> {
                   cause);
     }
 
-    /// The restore's observable effects, replay then post-restore listeners, run only if [#activate] actually took
-    /// the engine out of `Syncing` (#1516). `activate()` is refused while the authority failure is present, outside the
-    /// electorate, or when the participation record cannot be written; the restored state is then applied silently and
-    /// the node retries on the next sync round. Firing the burst there would deliver a notification from a node that
-    /// is not ACTIVE, and once per round: the §5.8 invariant (a notification implies ACTIVE) would not hold, and a
-    /// consumer would see the same world replayed on every retry. Nothing is deferred: a refused activation does not
-    /// become a later one on this state (the fence is permanent, a restore that activates later replays then), so the
-    /// effects belong to the activation that does happen.
-    private void announceRestoreIfServing() {
+    /// A restore installs the state silently and marks it unannounced; the restore's observable effects, the
+    /// notification replay and then the post-restore listeners, run when the engine next stands in `Idle`, `InPhase`
+    /// or `Observing` and clears the mark (#1516). The invariant is "a notification implies ACTIVE": a restore on a
+    /// node whose [#activate] is refused (authority failure, outside the electorate, participation record not
+    /// writable) retries on the next sync round, and replaying on each of those rounds delivered the same world once
+    /// per round from a node that was not serving. Dropping the effects instead would lose them: the node can reach
+    /// `Idle`/`Observing` without a second restore (`Syncing` -> `Paused` -> [#doResumeFromPause], or a promotion), and a
+    /// consumer that never saw the replay would serve a world it was never told about, with derived views that the
+    /// listeners invalidate left stale. So every transition into a serving state calls this; with the mark clear it is a
+    /// no-op, and with the mark set it announces exactly once, whatever the path, and the burst reads the LATEST
+    /// installed state (two restores while inactive produce one announce). A node that is fenced for good never
+    /// reaches a serving state and so never announces.
+    private void announceRestoreIfPending() {
         var current = engineState.get();
 
-        if (current.isActive() || current.isObserving()) {
+        if ((current.isActive() || current.isObserving()) && restoreAnnouncePending.compareAndSet(true, false)) {
             replayStateNotifications();
             notifyStateRestored();
         }
@@ -2811,6 +2819,7 @@ public class RabiaEngine<C extends Command> {
         // Must happen AFTER engineState=Idle so that `handleDecision`'s state guard accepts
         // re-applied Decisions, and AFTER the Idle-restore so phase-filter math is correct.
         drainBufferedDecisions();
+        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
@@ -2827,6 +2836,7 @@ public class RabiaEngine<C extends Command> {
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
         drainBufferedDecisions();
+        announceRestoreIfPending();
     }
 
     /// Cancels any timers owned by the old state during a transition.
@@ -4039,6 +4049,7 @@ public class RabiaEngine<C extends Command> {
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());
+        announceRestoreIfPending();
         safeExecute(this::openSlotAfterChange);
     }
 

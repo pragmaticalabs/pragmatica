@@ -180,6 +180,32 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("the deferred announce ran on the resume").isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("and only once").isFalse();
         assertThat(machine.restores.get()).as("the resume did not restore again").isEqualTo(1);
+
+        engine.clusterState(ClusterStateNotification.passive());
+        assertThat(awaitCondition(engine::isPaused)).isTrue();
+        engine.clusterState(ClusterStateNotification.active());
+        assertThat(awaitCondition(engine::isActive)).isTrue();
+        assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("a later pause and resume does not announce again").isFalse();
+    }
+
+    /// The empty-snapshot branch marks the restore unannounced too.
+    @Test
+    void emptySnapshotWhileRefused_thenPauseAndResume_announcesOnceOnTheResume() {
+        var marker = new GateMarker();
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks, false, refusingConfig(marker));
+
+        engine.processSyncResponse(cold(PEER_PHASE, new byte[0]));
+        assertThat(awaitCondition(() -> marker.attempts.get() >= 1)).as("precondition: the empty answer was applied and activation attempted").isTrue();
+        assertThat(effectsWithin(machine, hooks)).isFalse();
+
+        engine.clusterState(ClusterStateNotification.passive());
+        assertThat(awaitCondition(engine::isPaused)).isTrue();
+        marker.allow.set(true);
+        engine.clusterState(ClusterStateNotification.active());
+
+        assertThat(awaitCondition(() -> machine.replays.get() == 1 && hooks.get() == 1)).isTrue();
     }
 
     @Test
@@ -211,6 +237,7 @@ class RabiaNoReplayWhileInactiveTest {
     /// A participation marker whose record is refused until `allow` is set: `activate()` fails closed meanwhile.
     private static final class GateMarker implements ParticipationMarker {
         final AtomicBoolean allow = new AtomicBoolean();
+        final AtomicInteger attempts = new AtomicInteger();
 
         @Override
         public Participation resolve() {
@@ -219,6 +246,8 @@ class RabiaNoReplayWhileInactiveTest {
 
         @Override
         public Result<Unit> recordParticipation() {
+            attempts.incrementAndGet();
+
             return allow.get()
                    ? Result.success(Unit.unit())
                    : MARKER_REFUSED.result();
