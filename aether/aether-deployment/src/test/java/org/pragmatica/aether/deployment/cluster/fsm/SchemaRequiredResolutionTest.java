@@ -9,22 +9,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
-import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
@@ -59,6 +47,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -377,30 +366,16 @@ class SchemaRequiredResolutionTest {
     /// this split silently inverted or collapsed to a single level.
     @Nested
     class LogLevelSplit {
-        private CapturingAppender appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture appender;
 
         @BeforeEach
         void captureActiveLogger() {
-            appender = CapturingAppender.create("SchemaRequiredResolutionCapture");
-            appender.start();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var configuration = ctx.getConfiguration();
-            loggerConfig = getOrCreateLoggerConfig(configuration);
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.DEBUG, null);
-            loggerConfig.setLevel(Level.DEBUG);
-            ctx.updateLoggers();
+            appender = LogCapture.capture(ACTIVE_LOGGER_NAME, Level.DEBUG, false);
         }
 
         @AfterEach
         void releaseActiveLogger() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            appender.stop();
+            appender.close();
         }
 
         @Test
@@ -415,10 +390,10 @@ class SchemaRequiredResolutionTest {
             dispatchSliceTargetPut(SliceTargetKey.sliceTargetKey(target.base()),
                                    SliceTargetValue.sliceTargetValue(target.version(), 3, 2, Option.some(owner)));
 
-            assertThat(appender.capturedAt(Level.DEBUG)).as("a resolved schemaRequired must be reported at DEBUG, naming the owning blueprint")
+            assertThat(appender.messages(Level.DEBUG)).as("a resolved schemaRequired must be reported at DEBUG, naming the owning blueprint")
                                                          .anyMatch(msg -> msg.contains("schemaRequired resolved to")
                                                                           && msg.contains(owner.asString()));
-            assertThat(appender.capturedAt(Level.WARN)).as("a successfully resolved schemaRequired must not also warn about being unresolved")
+            assertThat(appender.messages(Level.WARN)).as("a successfully resolved schemaRequired must not also warn about being unresolved")
                                                         .noneMatch(msg -> msg.contains("schemaRequired unresolved"));
         }
 
@@ -435,20 +410,12 @@ class SchemaRequiredResolutionTest {
             dispatchSliceTargetPut(SliceTargetKey.sliceTargetKey(target.base()),
                                    SliceTargetValue.sliceTargetValue(target.version(), 3, 2, Option.some(owner)));
 
-            assertThat(appender.capturedAt(Level.WARN)).as("an unresolvable schemaRequired must warn and name the defaulting blueprint")
+            assertThat(appender.messages(Level.WARN)).as("an unresolvable schemaRequired must warn and name the defaulting blueprint")
                                                         .anyMatch(msg -> msg.contains("schemaRequired unresolved")
                                                                          && msg.contains(owner.asString()));
-            assertThat(appender.capturedAt(Level.DEBUG)).as("a defaulted schemaRequired must not also log a resolved-DEBUG message")
+            assertThat(appender.messages(Level.DEBUG)).as("a defaulted schemaRequired must not also log a resolved-DEBUG message")
                                                          .noneMatch(msg -> msg.contains("schemaRequired resolved to"));
             assertSchemaRequired(target, true);
-        }
-
-        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
-            if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {return existing;}
-            var fresh = new LoggerConfig(ACTIVE_LOGGER_NAME, Level.DEBUG, false);
-            configuration.addLogger(ACTIVE_LOGGER_NAME, fresh);
-            return fresh;
         }
     }
 
@@ -557,35 +524,5 @@ class SchemaRequiredResolutionTest {
                 return null;
             }
         };
-    }
-
-    /// In-memory log4j2 appender capturing DEBUG-and-above messages, split back out by level.
-    /// Mirrors `SchemaActivationGateTest.CapturingAppender` — kept self-contained here rather than
-    /// shared, matching that precedent's own per-file scope — but that copy only captures WARN and
-    /// above, which cannot see the DEBUG side of #760 review TEST GAP 4's resolved/defaulted split.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            var layout = PatternLayout.createDefaultLayout();
-            return new CapturingAppender(name, layout);
-        }
-
-        @Override public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.DEBUG)) {
-                events.add(event.toImmutable());
-            }
-        }
-
-        List<String> capturedAt(Level level) {
-            return events.stream()
-                         .filter(event -> event.getLevel().equals(level))
-                         .map(event -> event.getMessage().getFormattedMessage())
-                         .collect(Collectors.toUnmodifiableList());
-        }
     }
 }

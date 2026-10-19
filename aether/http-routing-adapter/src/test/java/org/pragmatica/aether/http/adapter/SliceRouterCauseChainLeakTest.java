@@ -4,10 +4,6 @@
 package org.pragmatica.aether.http.adapter;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,10 +20,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -53,34 +49,16 @@ class SliceRouterCauseChainLeakTest {
         default -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
     };
 
-    private final List<String> events = new ArrayList<>();
-    private final AbstractAppender appender = new AbstractAppender("cause-chain-capture", null, null, true, Property.EMPTY_ARRAY) {
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLoggerName().equals(SliceRouter.class.getName())) {
-                synchronized (events) {
-                    events.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        }
-    };
+    private LogCapture capture;
 
     @BeforeEach
     void attach() {
-        var context = (LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
-
-        appender.start();
-        context.getConfiguration().getRootLogger().addAppender(appender, Level.ALL, null);
-        context.updateLoggers();
+        capture = LogCapture.capture(SliceRouter.class, Level.ALL, true);
     }
 
     @AfterEach
     void detach() {
-        var context = (LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
-
-        context.getConfiguration().getRootLogger().removeAppender(appender.getName());
-        context.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     private static JsonMapper failingSerializer() {
@@ -118,9 +96,7 @@ class SliceRouterCauseChainLeakTest {
     }
 
     private String serverLog() {
-        synchronized (events) {
-            return String.join("\n", events);
-        }
+        return String.join("\n", capture.messages());
     }
 
     @Test

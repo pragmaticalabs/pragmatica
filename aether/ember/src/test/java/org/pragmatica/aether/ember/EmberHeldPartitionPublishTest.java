@@ -10,16 +10,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -32,6 +24,7 @@ import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -107,10 +100,7 @@ class EmberHeldPartitionPublishTest {
     @Test
     @Timeout(420)
     void ownerPromotion_ofAStreamWhoseReplicasArePacedByReshuffleConcurrency_doesNotWaitForTheSourceWait() {
-        var backfillWarnings = new CopyOnWriteArrayList<String>();
-        var detach = warningsOf(PartitionBackfill.class, backfillWarnings);
-
-        try {
+        try (var backfillWarnings = LogCapture.capture(PartitionBackfill.class, Level.WARN, true)) {
             cluster = EmberTestPorts.startedCluster(PORTS, this::clusterWithOneReshuffleSlot, START_BOUND);
             awaitLeader();
 
@@ -127,12 +117,10 @@ class EmberHeldPartitionPublishTest {
                                            + "PartitionBackfill warnings seen: %s",
                                            HELD_ENGINE_KEY,
                                            PROMOTION_BOUND_MS,
-                                           backfillWarnings.stream().filter(line -> line.contains(HELD_ENGINE_KEY)).toList())
+                                           backfillWarnings.messages(Level.WARN).stream().filter(line -> line.contains(HELD_ENGINE_KEY)).toList())
                                        .isLessThan(PROMOTION_BOUND_MS);
             ownerGateOpensPromptly();
             everyNodePublishesWithinTheBudget();
-        } finally {
-            detach.run();
         }
     }
 
@@ -166,11 +154,11 @@ class EmberHeldPartitionPublishTest {
 
     /// Milliseconds from `createdNanos` until the owner's self-promotion WARN for the held stream is seen, or twice the
     /// bound when it never is.
-    private static long awaitSelfPromotion(List<String> warnings, long createdNanos) {
+    private static long awaitSelfPromotion(LogCapture warnings, long createdNanos) {
         var deadline = System.currentTimeMillis() + 2 * PROMOTION_BOUND_MS;
 
         while (System.currentTimeMillis() < deadline) {
-            if (warnings.stream().anyMatch(line -> line.contains(SELF_PROMOTION))) {
+            if (warnings.messages(Level.WARN).stream().anyMatch(line -> line.contains(SELF_PROMOTION))) {
                 return elapsedMs(createdNanos);
             }
 
@@ -178,36 +166,6 @@ class EmberHeldPartitionPublishTest {
         }
 
         return 2 * PROMOTION_BOUND_MS;
-    }
-
-    /// Capture the formatted WARN messages one class's logger emits; the returned runnable detaches the appender.
-    @SuppressWarnings("JBCT-RET-01")
-    private static Runnable warningsOf(Class<?> loggerOwner, List<String> sink) {
-        var loggerName = loggerOwner.getName();
-        var context = (LoggerContext) LogManager.getContext(false);
-        var loggerConfig = context.getConfiguration().getLoggerConfig(loggerName);
-        var appender = new AbstractAppender("warn-capture-" + loggerOwner.getSimpleName(),
-                                            null,
-                                            PatternLayout.createDefaultLayout(),
-                                            true,
-                                            Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && loggerName.equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
     }
 
     /// The node the committed ownership record names for partition 0 — the one whose append path the gate guards.

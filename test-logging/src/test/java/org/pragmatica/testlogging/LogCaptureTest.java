@@ -72,4 +72,44 @@ class LogCaptureTest {
 
         assertThat(registered()).isNull();
     }
+
+    @Test
+    void events_carryTheThrowableAndTheLoggerName() {
+        try (var capture = LogCapture.capture(NAME, Level.INFO, true)) {
+            LogManager.getLogger(NAME).error("boom", new IllegalStateException("cause"));
+
+            var event = capture.events().getFirst();
+
+            assertThat(event.getThrown()).isInstanceOf(IllegalStateException.class);
+            assertThat(event.getLoggerName()).isEqualTo(NAME);
+            assertThat(capture.entries()).containsExactly(new LogCapture.Entry(Level.ERROR, "boom"));
+        }
+    }
+
+    @Test
+    void observer_seesEveryEventSynchronouslyInArrivalOrder() {
+        var seen = new java.util.ArrayList<String>();
+
+        try (var capture = LogCapture.capture(NAME, Level.INFO, true, event -> seen.add(event.getMessage().getFormattedMessage()))) {
+            LogManager.getLogger(NAME).info("one");
+            LogManager.getLogger(NAME).warn("two");
+
+            assertThat(seen).containsExactly("one", "two");
+            assertThat(capture.messages()).containsExactly("one", "two");
+        }
+    }
+
+    @Test
+    void captureRoot_seesEventsOfAReplacementConfiguration_andDetachesOnClose() {
+        var configuration = context().getConfiguration();
+        var before = configuration.getRootLogger().getAppenders().size();
+
+        try (var capture = LogCapture.captureRoot(configuration)) {
+            LogManager.getLogger(NAME).warn("rooted");
+
+            assertThat(capture.messages(Level.WARN)).contains("rooted");
+        }
+
+        assertThat(configuration.getRootLogger().getAppenders()).hasSize(before);
+    }
 }

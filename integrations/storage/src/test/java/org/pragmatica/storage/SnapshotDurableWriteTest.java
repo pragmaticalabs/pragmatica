@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
@@ -24,18 +23,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileError;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -64,33 +54,18 @@ class SnapshotDurableWriteTest {
 
     private InMemoryMetadataStore store;
     private SnapshotConfig config;
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
         store = inMemoryMetadataStore("durable");
         config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
-        appender = CapturingAppender.create("SnapshotDurableWriteCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.ALL);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER, Level.ALL, true);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     // --- Write path: interrupted writes ---
@@ -114,7 +89,7 @@ class SnapshotDurableWriteTest {
 
         assertThat(restored.isPresent()).as("the previous complete snapshot still restores").isTrue();
         assertThat(restored.unwrap().epoch()).isEqualTo(epochOnDisk);
-        assertThat(appender.warnsMentioning("Snapshot restore failed")).isEmpty();
+        assertThat(warnsMentioning("Snapshot restore failed")).isEmpty();
         assertThat(manager.lastSnapshotEpoch()).as("the interrupted snapshot was not recorded as taken")
                   .isEqualTo(epochOnDisk);
         assertThat(disk.tornPath.get()).as("the fixture tore the LATEST write").hasFileName("LATEST.partial");
@@ -252,7 +227,7 @@ class SnapshotDurableWriteTest {
         assertThat(misnamed).as("files whose content epoch differs from the name").isEmpty();
         assertThat(raceDir.resolve(FileOps.readString(raceDir.resolve("LATEST")).unwrap().trim())).as("LATEST names an existing file")
                   .exists();
-        assertThat(appender.warnsMentioning("Snapshot write failed")).isEmpty();
+        assertThat(warnsMentioning("Snapshot write failed")).isEmpty();
     }
 
     // --- Write-time read-back (#2257) ---
@@ -509,7 +484,7 @@ class SnapshotDurableWriteTest {
                .onFailure(cause -> assertThat(cause).isInstanceOf(SnapshotError.RoundTripFailed.class));
         assertThat(readLatest()).as("LATEST still names the previous snapshot").isEqualTo(latestBefore);
         assertThat(snapshotFiles()).as("no new snapshot file").hasSize(1);
-        assertThat(appender.errorsMentioning("NOT written")).as("the refusal is logged at ERROR").hasSize(1);
+        assertThat(errorsMentioning("NOT written")).as("the refusal is logged at ERROR").hasSize(1);
         assertThat(new DefaultSnapshotManager(inMemoryMetadataStore("boot"), config).restoreFromLatest().unwrap().isPresent())
             .as("the previous snapshot still restores")
             .isTrue();
@@ -539,13 +514,13 @@ class SnapshotDurableWriteTest {
         assertThat(restored.isPresent()).as("the previous retained snapshot restores").isTrue();
         assertThat(restored.unwrap().epoch()).isEqualTo(previousEpoch);
         assertThat(restored.unwrap().lifecycles()).hasSize(1);
-        assertThat(appender.warnsMentioning("restored another retained snapshot")).hasSize(1)
+        assertThat(warnsMentioning("restored another retained snapshot")).hasSize(1)
                   .first()
-                  .satisfies(warn -> assertThat(warn.message()).contains(newest.getFileName().toString())
+                  .satisfies(warn -> assertThat(warn).contains(newest.getFileName().toString())
                                                .contains("snapshot-000001.dat"));
         assertThat(readLatest()).as("restore does not rewrite LATEST").isEqualTo(latestBefore);
         assertThat(newest).as("the torn file is left as evidence").exists();
-        assertThat(appender.warnsMentioning("Snapshot restore failed")).as("the torn target is tried once, via LATEST, and not again as a candidate")
+        assertThat(warnsMentioning("Snapshot restore failed")).as("the torn target is tried once, via LATEST, and not again as a candidate")
                   .hasSize(1);
     }
 
@@ -566,7 +541,7 @@ class SnapshotDurableWriteTest {
 
         assertThat(restored.isPresent()).isTrue();
         assertThat(restored.unwrap().epoch()).as("newest complete snapshot, not the oldest").isEqualTo(newestEpoch);
-        assertThat(appender.warnsMentioning("restored another retained snapshot")).hasSize(1);
+        assertThat(warnsMentioning("restored another retained snapshot")).hasSize(1);
     }
 
     /// Every candidate is tried newest-first and a torn one is skipped, never restored: two torn
@@ -671,7 +646,7 @@ class SnapshotDurableWriteTest {
         var manager = SnapshotManager.snapshotManager(store, config);
 
         assertThat(manager.restoreFromLatest().unwrap().isEmpty()).isTrue();
-        assertThat(appender.warns()).isEmpty();
+        assertThat(capture.messages(Level.WARN)).isEmpty();
     }
 
     /// #1013: the snapshot directory does not exist yet either (the first boot of a node whose data
@@ -695,7 +670,7 @@ class SnapshotDurableWriteTest {
 
         assertThat(FileOps.exists(missing)).isFalse();
         assertThat(manager.restoreFromLatest().unwrap().isEmpty()).isTrue();
-        assertThat(appender.warns()).isEmpty();
+        assertThat(capture.messages(Level.WARN)).isEmpty();
     }
 
     /// #1013 round 2: the AGGREGATE verdict is WARNed, not only returned. The PR that made this state
@@ -719,13 +694,12 @@ class SnapshotDurableWriteTest {
         truncateToHalf(torn);
         manager.restoreFromLatest();
 
-        assertThat(appender.warnsMentioning("refusing to start with EMPTY metadata")).as("the aggregate verdict is WARNed, not only returned")
+        assertThat(warnsMentioning("refusing to start with EMPTY metadata")).as("the aggregate verdict is WARNed, not only returned")
                                                                                      .hasSize(1);
-        assertThat(appender.warnsMentioning("Snapshot restore failed")).as("control: the per-file WARN is a separate line and still fires")
+        assertThat(warnsMentioning("Snapshot restore failed")).as("control: the per-file WARN is a separate line and still fires")
                                                                        .hasSize(1);
-        assertThat(appender.warnsMentioning("Snapshot restore failed")
-                           .getFirst()
-                           .message()).as("control: the per-file line does NOT carry the aggregate text, so the assertion above needs the restored WARN")
+        assertThat(warnsMentioning("Snapshot restore failed")
+                           .getFirst()).as("control: the per-file line does NOT carry the aggregate text, so the assertion above needs the restored WARN")
                                       .doesNotContain("refusing to start with EMPTY metadata");
     }
 
@@ -912,58 +886,17 @@ class SnapshotDurableWriteTest {
         }
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER);
-
-        if (existing.getName().equals(LOGGER)) {
-            return existing;
-        }
-
-        var created = new LoggerConfig(LOGGER, Level.ALL, true);
-
-        configuration.addLogger(LOGGER, created);
-
-        return created;
+    private List<String> warnsMentioning(String fragment) {
+        return capture.messages(Level.WARN)
+                      .stream()
+                      .filter(message -> message.contains(fragment))
+                      .toList();
     }
 
-    record Captured(Level level, String message) {}
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<Captured> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(new Captured(event.getLevel(),
-                                    event.getMessage().getFormattedMessage()));
-        }
-
-        List<Captured> warns() {
-            return events.stream()
-                         .filter(e -> e.level() == Level.WARN)
-                         .toList();
-        }
-
-        List<Captured> errorsMentioning(String fragment) {
-            return events.stream()
-                         .filter(e -> e.level() == Level.ERROR)
-                         .filter(e -> e.message()
-                                       .contains(fragment))
-                         .toList();
-        }
-
-        List<Captured> warnsMentioning(String fragment) {
-            return warns().stream()
-                        .filter(e -> e.message()
-                                      .contains(fragment))
-                        .toList();
-        }
+    private List<String> errorsMentioning(String fragment) {
+        return capture.messages(Level.ERROR)
+                      .stream()
+                      .filter(message -> message.contains(fragment))
+                      .toList();
     }
 }

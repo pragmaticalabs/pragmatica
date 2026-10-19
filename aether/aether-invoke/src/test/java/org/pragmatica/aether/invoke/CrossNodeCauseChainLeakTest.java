@@ -5,18 +5,12 @@
 package org.pragmatica.aether.invoke;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -45,6 +39,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
@@ -125,34 +120,8 @@ class CrossNodeCauseChainLeakTest {
         };
     }
 
-    private static Runnable capture(Class<?> owner, List<String> sink) {
-        var name = owner.getName();
-        var context = (LoggerContext) LogManager.getContext(false);
-        var loggerConfig = context.getConfiguration().getLoggerConfig(name);
-        var appender = new AbstractAppender("capture-" + owner.getSimpleName(), null, null, true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (name.equals(event.getLoggerName())) {
-                    synchronized (sink) {
-                        sink.add(event.getLevel() + " " + event.getMessage().getFormattedMessage());
-                    }
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
-    }
-
     /// The failure A's HTTP route sees for a call whose callee B failed with `calleeFailure`, rendered by the real router.
-    private static String clientBodyOnA(Cause calleeFailure, List<String> calleeLog) {
+    private static String clientBodyOnA(Cause calleeFailure) {
         var network = new Loopback();
         var handlerA = InvocationHandler.invocationHandler(NODE_A, network);
         var handlerB = InvocationHandler.invocationHandler(NODE_B, network);
@@ -172,7 +141,6 @@ class CrossNodeCauseChainLeakTest {
                                                  30_000L,
                                                  60_000L,
                                                  new StubDeploymentManager());
-        var detach = capture(InvocationHandlerImpl.class, calleeLog);
 
         network.invokerA = invokerA;
         try {
@@ -194,7 +162,6 @@ class CrossNodeCauseChainLeakTest {
 
             return new String(response.body(), StandardCharsets.UTF_8);
         } finally {
-            detach.run();
             invokerA.stop().await();
         }
     }
@@ -211,8 +178,7 @@ class CrossNodeCauseChainLeakTest {
 
     @Test
     void chainedErrorOnNodeB_isAbsentFromNodeAClientBody() {
-        var calleeLog = new ArrayList<String>();
-        var body = clientBodyOnA(chainedHttpError(), calleeLog);
+        var body = clientBodyOnA(chainedHttpError());
 
         assertThat(body).as("the call must have failed through the remote path, not vanished").contains(VISIBLE);
         assertThat(body).doesNotContain(HIDDEN);
@@ -222,13 +188,11 @@ class CrossNodeCauseChainLeakTest {
     /// the chain the handler writes, not through the message line.
     @Test
     void chainedErrorOnNodeB_isInNodeBLog_withBothIdsToJoinTheNodes() {
-        var calleeLog = new ArrayList<String>();
+        try (var calleeLog = LogCapture.capture(InvocationHandlerImpl.class, Level.ALL, true)) {
+            clientBodyOnA(new Chained(VISIBLE, Causes.cause(HIDDEN)));
 
-        clientBodyOnA(new Chained(VISIBLE, Causes.cause(HIDDEN)), calleeLog);
-
-        synchronized (calleeLog) {
-            assertThat(String.join("\n", calleeLog)).contains(HIDDEN)
-                                                      .containsPattern("requestId=\\S+\\] Failed to complete invocation \\[[^\\]]+\\]");
+            assertThat(String.join("\n", calleeLog.messages())).contains(HIDDEN)
+                                                                .containsPattern("requestId=\\S+\\] Failed to complete invocation \\[[^\\]]+\\]");
         }
     }
 }
