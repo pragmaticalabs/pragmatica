@@ -172,6 +172,10 @@ public final class ClusterEventAggregator {
     /// True while THIS node drains because the leader commanded it (#2014); wired by `AetherNode`.
     private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCommandedDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
 
+    /// True while THIS node is in the voter roster; wired by `AetherNode`. Defaults to true, so an unwired aggregator keeps
+    /// the strict reading: a PASSIVE is a quorum loss. `QUORUM_LOST` is a statement about voters (#2306).
+    private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfIsVoter = new java.util.concurrent.atomic.AtomicReference<>(() -> true);
+
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
@@ -1204,10 +1208,27 @@ public final class ClusterEventAggregator {
                       });
     }
 
+    /// #2306: a non-voter's PASSIVE is never a quorum loss. An observer leaves `Observing` for reasons that have nothing to do
+    /// with the cluster's quorum (a far-behind catch-up resync, an adoption still running), so the CRITICAL `QuorumLost` is
+    /// withheld and the operator gets a distinct WARNING instead.
+    private void raiseObserverLagging() {
+        LOG.warn("Observer {} is not applying consensus decisions — not a voter, so not a quorum loss", selfNode.id());
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                                                          selfNode.id(),
+                                                          "Observer " + selfNode.id()
+                                                         + " is not applying consensus decisions while it catches up; it is not a voter, so this is not a quorum loss"));
+    }
+
     /// Wire the "this node is draining by command" probe (#2014), from the local `DrainProcedure`.
     @Contract
     public void bindSelfCommandedDrain(BooleanSupplier selfCommandedDrain) {
         this.selfCommandedDrain.set(selfCommandedDrain);
+    }
+
+    /// Wire the "this node is in the voter roster" probe (#2306), from the installed voter configuration.
+    @Contract
+    public void bindSelfIsVoter(BooleanSupplier selfIsVoter) {
+        this.selfIsVoter.set(selfIsVoter);
     }
 
     /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
@@ -1268,6 +1289,12 @@ public final class ClusterEventAggregator {
                     // (`ClusterStateNotification#demoted`, #1790). Planned work: it is not quorum loss,
                     // so it neither pages nor needs a recovery event.
                     LOG.info("Node {} left the electorate by reconfiguration — observing a live quorum", selfNode.id());
+
+                    return;
+                }
+
+                if (!selfIsVoter.get().getAsBoolean()) {
+                    raiseObserverLagging();
 
                     return;
                 }

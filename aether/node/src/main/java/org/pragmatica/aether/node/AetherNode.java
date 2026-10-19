@@ -3914,6 +3914,7 @@ public interface AetherNode extends ManageableNode {
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
         // ClusterEvent dependency.
         eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
+        eventAggregator.bindSelfIsVoter(() -> isInstalledVoterOrUnknown(clusterNode, config.self()));
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
@@ -7450,6 +7451,14 @@ public interface AetherNode extends ManageableNode {
                    .map(instance -> new NodeId(instance.nodeId()))
                    .filter(membershipFsm::isCountedMember)
                    .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// #2306: a node counts as a voter unless an installed configuration excludes it. No configuration yet (genesis pending)
+    /// keeps the strict reading, so a cluster that never formed still reports its quorum loss.
+    private static boolean isInstalledVoterOrUnknown(RabiaNode<KVCommand<AetherKey>> node, NodeId self) {
+        return node.voterConfiguration()
+                   .map(configuration -> configuration.contains(self))
+                   .or(true);
     }
 
     private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {

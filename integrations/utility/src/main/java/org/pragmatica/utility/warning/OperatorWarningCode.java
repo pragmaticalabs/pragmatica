@@ -347,7 +347,12 @@ public enum OperatorWarningCode {
     /// A SWIM datagram presented a different process token for a member whose live process answered with its own,
     /// and was refused. A genuinely new process under the same identity is not this: it answers with the new token
     /// and is refused by the identity rule.
-    SWIM_MEMBER_IDENTITY_CONFLICT("swim-member-identity-conflict", "membership", WarningLevel.WARNING);
+    SWIM_MEMBER_IDENTITY_CONFLICT("swim-member-identity-conflict", "membership", WarningLevel.WARNING),
+    /// An observer (a node outside the voter roster, such as an auto-heal replacement still joining) stopped applying
+    /// consensus decisions while it catches up or after it lost sight of the quorum. It is not a voter, so this is NOT a
+    /// quorum loss and raises no `QUORUM_LOST`; routing on the node is quiesced until it observes again. A point event,
+    /// subject is the node; the message names it.
+    OBSERVER_CONSENSUS_LAGGING("observer-consensus-lagging", "consensus", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

@@ -713,6 +713,53 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
     }
 
+    /// #2306 — an observer (a node outside the voter roster) that goes passive, for example on a catch-up resync after
+    /// `triggerResync`, is not a quorum loss: QUORUM_LOST is a statement about voters. It gets a distinct WARNING
+    /// instead. Counting observers (dropping the `selfIsVoter` branch) turns this red.
+    @Test
+    void observerPassive_emitsNoQuorumLost_butAWarningObserverLagEvent() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events).noneMatch(e -> e instanceof ClusterEvent.QuorumLost);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().details()).containsEntry("code", "observer-consensus-lagging");
+    }
+
+    /// #2306 — the counterpart: a voter that goes passive still raises CRITICAL `QuorumLost` and no observer-lag event.
+    /// Suppressing quorum loss for every node turns this red.
+    @Test
+    void voterPassive_stillEmitsCriticalQuorumLost_andNoObserverLagEvent() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> true);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.QuorumLost.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+    }
+
+    /// #2306 — the roster probe is read at the time of the notification, not once at bind time.
+    @Test
+    void passive_readsRosterMembershipAtNotificationTime() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        var voter = new java.util.concurrent.atomic.AtomicBoolean(true);
+        h.aggregator().bindSelfIsVoter(voter::get);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        voter.set(false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.active());
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events.stream().filter(e -> e instanceof ClusterEvent.QuorumLost).count()).isEqualTo(1);
+        assertThat(events.stream().filter(e -> e instanceof ClusterEvent.OperatorWarning).count()).isEqualTo(1);
+    }
+
     /// #926 — the recovery half. Quorum forms BEFORE a leader is elected, so the old gate dropped this
     /// notice at the one moment it was guaranteed false. Un-gating the loss while leaving the recovery
     /// gated would be worse than fixing neither: an operator would watch the cluster enter "quorum lost"
