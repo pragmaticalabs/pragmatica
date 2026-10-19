@@ -8,6 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
@@ -328,9 +330,43 @@ public final class ConfigValidator {
 
     private static void tlsErrors(TlsConfig tls, Predicate<Path> fileExists, List<String> errors) {
         if (!tls.autoGenerate()) {
+            var invalid = invalidPathErrors(tls);
+
+            if (!invalid.isEmpty()) {
+                errors.addAll(invalid);
+
+                return;
+            }
+
             tlsPathErrors(tls, fileExists, errors);
             tlsRequiredErrors(tls, errors);
         }
+    }
+
+    /// #1455: a NUL (or any character the platform refuses) in a certificate, key or CA path made `Path.of` throw out of the
+    /// accessors below, on the node and in cluster bootstrap's pre-flight. It is a refusal naming the key and the path.
+    private static List<String> invalidPathErrors(TlsConfig tls) {
+        return Stream.of(invalidPath("Certificate file", "tls.cert_path", tls.certPath()),
+                         invalidPath("Private key file", "tls.key_path", tls.keyPath()),
+                         invalidPath("CA certificate file", "tls.ca_path", tls.caPath()))
+                     .flatMap(Option::stream)
+                     .toList();
+    }
+
+    private static Option<String> invalidPath(String fileType, String key, String raw) {
+        return raw.isBlank()
+               ? Option.none()
+               : Result.lift(cause -> cause, () -> Path.of(raw))
+                       .fold(_ -> Option.some(fileType + " path is invalid (" + key + "): '" + printable(raw) + "'"),
+                             _ -> Option.<String> none());
+    }
+
+    private static String printable(String raw) {
+        return raw.chars()
+                  .mapToObj(c -> c < 0x20 || c == 0x7f
+                                 ? String.format("\\u%04x", c)
+                                 : String.valueOf((char) c))
+                  .collect(Collectors.joining());
     }
 
     private static void tlsPathErrors(TlsConfig tls, Predicate<Path> fileExists, List<String> errors) {

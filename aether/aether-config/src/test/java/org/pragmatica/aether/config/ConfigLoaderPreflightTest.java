@@ -211,6 +211,22 @@ class ConfigLoaderPreflightTest {
         }
     }
 
+    /// A NUL (or any character the platform refuses) in a cert/key/ca path is a typed refusal naming the key and the path, on the node
+    /// and in pre-flight, not an `InvalidPathException` thrown out of validation.
+    @Test
+    void invalidCharacterInATlsPath_isARefusalNamingKeyAndPath_notAThrow() {
+        for (var key : java.util.List.of("cert_path", "key_path", "ca_path")) {
+            var toml = NODE_SIDE_CERTS.replace(key + " = \"/etc/aether/tls/", key + " = \"/etc/aether/tls/bad\\u0000");
+
+            ConfigLoader.checkNodeDocument(TomlParser.parse(toml).unwrap())
+                        .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("pre-flight must refuse a NUL in " + key))
+                        .onFailure(cause -> assertThat(cause.message()).contains("tls." + key).contains("bad\\u0000").contains("path is invalid"));
+            ConfigLoader.loadFromString(toml)
+                        .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("the node load must refuse a NUL in " + key))
+                        .onFailure(cause -> assertThat(cause.message()).contains("tls." + key).contains("bad\\u0000").contains("path is invalid"));
+        }
+    }
+
     @Test
     void preflightFilesystem_findsEveryFile() {
         assertThat(ConfigLoader.PREFLIGHT_FILESYSTEM.test(java.nio.file.Path.of("/definitely/not/here.pem"))).isTrue();
