@@ -169,6 +169,25 @@ public class PromiseAnyTest {
     }
 
     @Nested
+    class ExplicitFailureResultWithSuccess {
+        @Test
+        void any_succeeds_explicitFailureResultVarargs() {
+            Promise.any(THIRD.<String>result(), FIRST.<String>promise(), Promise.success("winner"))
+                   .await()
+                   .onFailure(_ -> fail("Expected success"))
+                   .onSuccess(value -> assertEquals("winner", value));
+        }
+
+        @Test
+        void any_succeeds_explicitFailureResultList() {
+            Promise.any(THIRD.<String>result(), List.of(FIRST.<String>promise(), Promise.success("winner")))
+                   .await()
+                   .onFailure(_ -> fail("Expected success"))
+                   .onSuccess(value -> assertEquals("winner", value));
+        }
+    }
+
+    @Nested
     class EmptyInput {
         // An empty input can never produce a success or an event, so it resolves at once instead of hanging.
         @Test
