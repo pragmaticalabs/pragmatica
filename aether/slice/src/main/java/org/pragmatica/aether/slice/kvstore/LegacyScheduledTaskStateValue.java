@@ -34,13 +34,17 @@ public record LegacyScheduledTaskStateValue(long lastExecutionAt,
                                             int lateResolutions) {
     public static final int TAG = SliceCodec.deterministicTag("org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue");
 
+    public static final TypeCodec<LegacyScheduledTaskStateValue> CODEC = codec();
+
     /// Raw on purpose: the registry keys the codec by this class and by tag 1634, and the reader answers the type the old bytes
     /// mean now, so the reader's result type is not this record's.
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public static final TypeCodec<LegacyScheduledTaskStateValue> CODEC = new TypeCodec(LegacyScheduledTaskStateValue.class,
-                                                                                       TAG,
-                                                                                       (TypeWriter) LegacyScheduledTaskStateValue::writeBody,
-                                                                                       (TypeReader) LegacyScheduledTaskStateValue::readBody);
+    private static TypeCodec<LegacyScheduledTaskStateValue> codec() {
+        TypeWriter<LegacyScheduledTaskStateValue> writer = LegacyScheduledTaskStateValue::writeBody;
+        TypeReader<AetherValue.ScheduledTaskStateValue> reader = LegacyScheduledTaskStateValue::readBody;
+
+        return new TypeCodec(LegacyScheduledTaskStateValue.class, TAG, writer, reader);
+    }
 
     static void writeBody(SliceCodec codec, ByteBuf buf, LegacyScheduledTaskStateValue value) {
         buf.writeByte(SliceCodec.TAG_LONG);
