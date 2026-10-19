@@ -1424,6 +1424,10 @@ that belongs to a different (dead or retired) process:
   evidence and QUIC Hello together);
 - `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
   sender is a retired NodeId;
+- `quic_inbound_unbound_drops_total`, `quic_inbound_policy_drops_total` and `quic_inbound_fault_filter_drops_total` —
+  inbound messages refused after they were counted in `quic_messages_received_total`: the claimed origin is not
+  the authenticated peer, the installed inbound message policy refused it, or the fault filter dropped it. The
+  first two also log a WARN on the first and every power-of-two occurrence. These three are on this endpoint only, not on the Prometheus transport surface;
 - `quic_superseded_closes_total` and `quic_superseded_lane_streams_at_risk_total` — connections closed at once
   because a fresh handshake superseded them, and the lane streams (writes not yet accepted by quiche, or
   written within the last 2 s) that close put at risk of discarding writes; unacked writes themselves are not
