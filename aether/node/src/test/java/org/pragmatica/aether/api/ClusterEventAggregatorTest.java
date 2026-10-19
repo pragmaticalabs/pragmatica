@@ -800,6 +800,55 @@ class ClusterEventAggregatorTest {
         assertThat(events.getLast().details()).containsEntry("code", "observer-consensus-resumed");
     }
 
+    /// #2306 — the lag warning also closes when the lagging observer is PROMOTED to a voter (Passive -> ACTIVE): the ACTIVE
+    /// branch only reported QuorumEstablished before, leaving the warning open until restart. Removing the close from the
+    /// ACTIVE branch turns this red.
+    @Test
+    void lagWarning_isClosed_whenTheObserverIsPromotedAndPublishesActive() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.active());
+
+        assertThat(codes(h)).containsExactly("observer-consensus-lagging", "observer-consensus-resumed", null);
+        assertThat(h.events().getLast()).isInstanceOf(ClusterEvent.QuorumEstablished.class);
+    }
+
+    /// #2306 — an ACTIVE on a node that never lagged publishes QuorumEstablished only, no recovery.
+    @Test
+    void activeWithoutALagWarning_publishesNoObserverRecovery() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.active());
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.events().getFirst()).isInstanceOf(ClusterEvent.QuorumEstablished.class);
+    }
+
+    /// #2306 — the lag warning closes when the lagging node shuts down.
+    @Test
+    void lagWarning_isClosed_whenTheNodeShutsDown() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onSelfShutdown(TransportObservation.selfShutdown(SELF, TransportObservation.ObservationSource.SWIM));
+
+        assertThat(codes(h)).containsExactly("observer-consensus-lagging", "observer-consensus-resumed");
+    }
+
+    /// #2306 — the lag warning closes when the lagging node is removed from the cluster; the removal of ANOTHER node does not close it.
+    @Test
+    void lagWarning_isClosed_whenTheNodeItselfIsRemoved_notWhenAnotherIs() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(new NodeId("another"), List.of(), 1L, h.hlc().now()));
+        assertThat(codes(h)).as("control: another node's removal leaves the warning open").containsExactly("observer-consensus-lagging");
+
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(SELF, List.of(), 2L, h.hlc().now()));
+
+        assertThat(codes(h)).containsExactly("observer-consensus-lagging", "observer-consensus-resumed");
+    }
+
     /// #2306 — a cold-start observer adopts state without ever lagging: the engine still signals `Observing`, and the
     /// recovery layer drops it because no warning is open.
     @Test

@@ -29,6 +29,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// Five voters plus one node outside the voter roster (an observer, as an auto-heal replacement is while it joins).
 ///   - The observer is told it went passive: it publishes the WARNING `observer-consensus-lagging`, never `QUORUM_LOST`;
 ///     told it observes again, it publishes the INFO recovery `observer-consensus-resumed`.
+///   - A lagging observer that is then promoted (ACTIVE) closes the warning with the same recovery.
 ///   - Two voters are killed: a voter majority remains, so a commit still succeeds (the observer in the cluster does
 ///     not turn a surviving majority into a loss); a killed voter's own shutdown is still published as CRITICAL
 ///     `QUORUM_LOST` (a node wired as an observer would publish the warning instead), and no survivor raises one.
@@ -81,6 +82,15 @@ class EmberObserverQuorumLossWiringTest {
                        () -> hasWarning(observer, "observer-consensus-resumed", observerId));
         assertThat(quorumLossObservers(observer)).as("the observer's passive is not a quorum loss").doesNotContain(observerId);
 
+        observer.route(ClusterStateNotification.passive());
+        awaitCondition(() -> "second observer-consensus-lagging for " + observerId + "; events: " + codesSeenBy(observer),
+                       60_000L,
+                       () -> countWarnings(observer, "observer-consensus-lagging", observerId) >= 2);
+        observer.route(ClusterStateNotification.active());
+        awaitCondition(() -> "observer-consensus-resumed on promotion (ACTIVE) for " + observerId + "; events: " + codesSeenBy(observer),
+                       60_000L,
+                       () -> countWarnings(observer, "observer-consensus-resumed", observerId) >= 2);
+
         var leaderId = cluster.currentLeader().unwrap();
         var killed = voterIds.stream().filter(id -> !id.equals(leaderId)).limit(2).toList();
 
@@ -109,6 +119,13 @@ class EmberObserverQuorumLossWiringTest {
         return events(node).stream()
                            .anyMatch(e -> e instanceof ClusterEvent.OperatorWarning && code.equals(e.details().get("code"))
                                           && subject.equals(e.details().get("subject")));
+    }
+
+    private static long countWarnings(AetherNode node, String code, String subject) {
+        return events(node).stream()
+                           .filter(e -> e instanceof ClusterEvent.OperatorWarning && code.equals(e.details().get("code"))
+                                        && subject.equals(e.details().get("subject")))
+                           .count();
     }
 
     private static List<String> quorumLossObservers(AetherNode node) {

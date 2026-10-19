@@ -354,7 +354,8 @@ public enum OperatorWarningCode {
     /// warning; subject is the node; the message names it. Closed by [#OBSERVER_CONSENSUS_RESUMED].
     OBSERVER_CONSENSUS_LAGGING("observer-consensus-lagging", "consensus", WarningLevel.WARNING),
     /// The recovery of [#OBSERVER_CONSENSUS_LAGGING], same subject (#2306): the observer is observing again and applies committed
-    /// decisions. INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
+    /// decisions, or it left the lagging state another way (promoted to a voter, removed from the cluster, shutting down; the message
+    /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING);
     private final String code;

@@ -1214,11 +1214,38 @@ public final class ClusterEventAggregator {
     /// adoption, which never lagged, publishes nothing.
     @Contract
     public void onObserverResumed(ObserverResumedNotification event) {
-        LOG.info("Observer {} applies consensus decisions again", selfNode.id());
+        closeObserverLag("applies consensus decisions again");
+    }
+
+    /// #2306: every exit from lagging closes the warning. Observing again is [#onObserverResumed]; promotion to voter is the
+    /// ACTIVE branch of [#onQuorumStateChange]; leaving the cluster is [#onSelfShutdown] and [#onMembershipDecision]. A crash
+    /// publishes nothing from this node, and the node's NODE_FAILED supersedes the open warning. A close with no open warning
+    /// publishes nothing (#752), so the exits need no state of their own.
+    private void closeObserverLag(String how) {
+        LOG.info("Observer {} {}", selfNode.id(), how);
         onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
                                                           selfNode.id(),
-                                                          "Observer " + selfNode.id()
-                                                         + " applies consensus decisions again"));
+                                                          "Observer " + selfNode.id() + " " + how));
+    }
+
+    /// #2306: this node is shutting down; a lag warning still open for it is closed.
+    @Contract
+    public void onSelfShutdown(TransportObservation.SelfShutdown event) {
+        closeObserverLag("is shutting down, no longer lagging");
+    }
+
+    private void closeObserverLagWhenSelfLeaves(MembershipDecision decision) {
+        switch (decision) {
+            case MembershipDecision.NodeRemoved removed -> closeObserverLagIfSelf(removed.nodeId());
+            case MembershipDecision.NodeDecommissioned decommissioned -> closeObserverLagIfSelf(decommissioned.nodeId());
+            default -> {}
+        }
+    }
+
+    private void closeObserverLagIfSelf(NodeId node) {
+        if (node.equals(selfNode)) {
+            closeObserverLag("left the cluster, no longer lagging");
+        }
     }
 
     /// #2306: a non-voter's PASSIVE is never a quorum loss. An observer leaves `Observing` for reasons that have nothing to do
@@ -1282,6 +1309,7 @@ public final class ClusterEventAggregator {
                 // it restored — the same latched-red failure the un-gating of QUORUM_ESTABLISHED
                 // exists to prevent, reached on a different surface.
                 LOG.info("Quorum established on {} — consensus available", selfNode.id());
+                closeObserverLag("was promoted to a voter, no longer lagging");
                 emitLocal(new QuorumEstablished(hlcClock.now(),
                                                 Severity.INFO,
                                                 "Quorum established",
@@ -1333,6 +1361,7 @@ public final class ClusterEventAggregator {
     /// is the cluster leader.
     @Contract
     public void onMembershipDecision(MembershipDecision decision) {
+        closeObserverLagWhenSelfLeaves(decision);
         switch (decision) {
             // NODE_FAILED moved to the ungated FSM DEAD edge (#210) — the projector can drop this
             // quorum-gated decision during post-kill churn, so it is no longer the failure source.

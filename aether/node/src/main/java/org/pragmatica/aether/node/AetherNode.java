@@ -9721,6 +9721,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ObserverResumedNotification.class, eventAggregator::onObserverResumed));
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
+                                              eventAggregator::onSelfShutdown));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
