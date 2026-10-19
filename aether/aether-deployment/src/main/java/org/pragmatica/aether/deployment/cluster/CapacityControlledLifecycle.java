@@ -15,10 +15,12 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -66,9 +68,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           Set<String> activeSources,
                                           ConcurrentHashMap<String, AtomicInteger> inventoryCursors,
                                           ConcurrentHashMap<NodeId, SourceName> undispatched,
-                                          ConcurrentHashMap<NodeId, Long> dispatchTerms,
+                                          ConcurrentHashMap<NodeId, Long> dispatchGenerations,
                                           ConcurrentHashMap<NodeId, AtomicInteger> dispatchMisses,
+                                          ConcurrentHashMap<NodeId, Long> unmatchedSince,
+                                          AtomicBoolean leading,
+                                          AtomicLong leadershipGeneration,
                                           AtomicReference<OperatorWarningSink> warningSink,
+                                          LongSupplier clock,
                                           TimeSpan ceiling) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(CapacityControlledLifecycle.class);
 
@@ -96,6 +102,18 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                    BooleanSupplier activeLeader,
                                                                    IntSupplier limit,
                                                                    TimeSpan ceiling) {
+        return capacityControlledLifecycle(delegate, self, store, apply, activeLeader, limit, ceiling, System::currentTimeMillis);
+    }
+
+    /// `clock` (epoch milliseconds) times the grace an earlier-term allocation is given before it can be released.
+    static CapacityControlledLifecycle capacityControlledLifecycle(NodeLifecycleManager delegate,
+                                                                   NodeId self,
+                                                                   KVStore<AetherKey, AetherValue> store,
+                                                                   Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
+                                                                   BooleanSupplier activeLeader,
+                                                                   IntSupplier limit,
+                                                                   TimeSpan ceiling,
+                                                                   LongSupplier clock) {
         return new CapacityControlledLifecycle(delegate,
                                                self,
                                                store,
@@ -110,7 +128,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                new ConcurrentHashMap<>(),
                                                new ConcurrentHashMap<>(),
                                                new ConcurrentHashMap<>(),
+                                               new ConcurrentHashMap<>(),
+                                               new AtomicBoolean(),
+                                               new AtomicLong(),
                                                new AtomicReference<>(OperatorWarningSink.logOnly()),
+                                               clock,
                                                ceiling);
     }
 
@@ -155,7 +177,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private void forgetResolvedDispatches() {
         var current = reservations();
 
-        dispatchTerms.keySet().removeIf(node -> !isDispatched(current, node));
+        dispatchGenerations.keySet().removeIf(node -> !isDispatched(current, node));
+        unmatchedSince.keySet().removeIf(node -> !isDispatched(current, node));
         dispatchMisses.keySet().removeIf(node -> !isDispatched(current, node));
     }
 
@@ -227,26 +250,28 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// Consecutive provider answers that must show no instance before an earlier term's DISPATCHED allocation is released.
     static final int ABSENCE_CONFIRMATIONS = 3;
 
-    /// A DISPATCHED allocation is an uncertain create, and one this leader dispatched itself in its own term is in flight: neither is touched.
-    /// One written under an EARLIER term (a leader that lost its term between the reservation and an acknowledgement, or died) is examined once
-    /// this instance has inventoried every committed source: its instance is adopted when a listing or lookup shows it, and it is released only
-    /// after [#ABSENCE_CONFIRMATIONS] consecutive pass-level misses, the same bounded lanes the OBSERVED absence confirmation uses.
+    /// A DISPATCHED allocation is an uncertain create, and one this leader dispatched itself since it last gained leadership is in flight:
+    /// neither is touched. One written before that (a leader that lost leadership between the reservation and an acknowledgement, a
+    /// restarted process, or another node's) is examined once this instance has inventoried every committed source: its instance is
+    /// adopted when a lookup shows it, and it is released only after [#ABSENCE_CONFIRMATIONS] consecutive misses AND a grace of the create
+    /// ceiling since this leader first found it unmatched, so a slow cloud boot is never released mid-boot. The same bounded lanes as the
+    /// OBSERVED absence confirmation.
     private Promise<Unit> confirmDispatches(SourceName source, String binding, Set<NodeId> observed) {
         return leader().filter(_ -> allSourcesInventoried())
-                     .fold(Promise::unitPromise,
-                           current -> confirmEarlierTermDispatches(source,
-                                                                   binding,
-                                                                   staleDispatches(source,
-                                                                                   binding,
-                                                                                   observed,
-                                                                                   current.viewSequence())));
+                       .fold(Promise::unitPromise,
+                             _ -> confirmEarlierTermDispatches(source,
+                                                               binding,
+                                                               staleDispatches(source, binding, observed)));
     }
 
+    /// Fail-safe: a configuration that cannot be read, or none committed with an incomplete ledger, is not "every source inventoried".
     private boolean allSourcesInventoried() {
         return unseenSources(configuration()).fold(_ -> false, List::isEmpty);
     }
 
-    private List<NodeId> staleDispatches(SourceName source, String binding, Set<NodeId> observed, long term) {
+    private List<NodeId> staleDispatches(SourceName source, String binding, Set<NodeId> observed) {
+        var generation = leadershipGeneration.get();
+
         return reservations().entrySet()
                            .stream()
                            .filter(entry -> entry.getValue()
@@ -258,8 +283,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                            .filter(entry -> entry.getValue()
                                                  .phase() == CapacityReservationPhase.DISPATCHED)
                            .filter(entry -> !observed.contains(entry.getKey()))
-                           .filter(entry -> dispatchTerms.getOrDefault(entry.getKey(),
-                                                                       Long.MIN_VALUE) < term)
+                           .filter(entry -> dispatchGenerations.getOrDefault(entry.getKey(),
+                                                                             Long.MIN_VALUE) < generation)
                            .map(Map.Entry::getKey)
                            .sorted(Comparator.comparing(NodeId::id))
                            .toList();
@@ -276,10 +301,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<Unit> confirmEarlierTermDispatch(NodeId node, SourceName source, String binding) {
-        return instancesForNode(node, source, binding).flatMap(instances -> afterDispatchLookup(node,
-                                                                                                source,
-                                                                                                binding,
-                                                                                                instances));
+        return delegate.instancesForNode(node, source, binding)
+                       .flatMap(instances -> afterDispatchLookup(node, source, binding, instances));
     }
 
     private Promise<Unit> afterDispatchLookup(NodeId node,
@@ -288,13 +311,25 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                               List<InstanceInfo> instances) {
         return instances.isEmpty()
                ? absentDispatch(node, source, binding)
-               : Promise.<Unit> unitPromise().onSuccess(_ -> dispatchMisses.remove(node));
+               : seenDispatch(node, source, binding, instances);
+    }
+
+    /// A sighting restarts the count before the adoption is attempted, so "consecutive" holds even when the adoption commit is refused.
+    private Promise<Unit> seenDispatch(NodeId node, SourceName source, String binding, List<InstanceInfo> instances) {
+        dispatchMisses.remove(node);
+        unmatchedSince.remove(node);
+
+        return observeBound(instances, source, binding);
     }
 
     private Promise<Unit> absentDispatch(NodeId node, SourceName source, String binding) {
-        return dispatchMisses.computeIfAbsent(node,
-                                              _ -> new AtomicInteger())
-                             .incrementAndGet() >= ABSENCE_CONFIRMATIONS
+        var now = clock.getAsLong();
+        var since = unmatchedSince.computeIfAbsent(node, _ -> now);
+        var misses = dispatchMisses.computeIfAbsent(node,
+                                                    _ -> new AtomicInteger())
+                                   .incrementAndGet();
+
+        return misses >= ABSENCE_CONFIRMATIONS && now - since >= ceiling.millis()
                ? releaseAbsentDispatch(node, source, binding)
                : Promise.unitPromise();
     }
@@ -308,11 +343,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     @Contract
     private void announceAbsentDispatch(NodeId node, SourceName source) {
         dispatchMisses.remove(node);
+        unmatchedSince.remove(node);
         OperatorWarnings.raise(log,
                                warningSink.get(),
                                OperatorWarningCode.CAPACITY_DISPATCH_RELEASED,
                                node.id(),
-                               "The create of {} on source {} was dispatched under an earlier leader term and no provider listing or lookup showed an instance in {} consecutive passes: its allocation was released",
+                               "The create of {} on source {} was dispatched before this leader gained leadership and no provider listing or lookup showed an instance in {} consecutive passes over the create ceiling: its allocation was released",
                                node.id(),
                                source.value(),
                                ABSENCE_CONFIRMATIONS);
@@ -416,11 +452,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                              current -> dispatchUnder(node, spec, current));
     }
 
-    /// The term is remembered per node so that a later leader (or this instance in a later term) can tell an allocation it dispatched
-    /// itself, in flight, from one an earlier term left behind. Process-local on purpose: an instance that does not know a DISPATCHED
-    /// allocation treats it as earlier-term, which is what a restarted or newly elected leader is.
+    /// The leadership generation is remembered per node so that this instance can tell an allocation it dispatched itself since it last
+    /// gained leadership, in flight, from one an earlier leadership left behind. Process-local on purpose: an instance that does not know a
+    /// DISPATCHED allocation treats it as earlier, which is what a restarted or newly elected leader is. The generation advances only when
+    /// this node GAINS leadership; a same-leader re-commit (new view sequence, no lost leadership) does not advance it.
     private Promise<InstanceInfo> dispatchUnder(NodeId node, ProvisionSpec spec, LeaderValue current) {
-        dispatchTerms.put(node, current.viewSequence());
+        dispatchGenerations.put(node, leadershipGeneration.get());
 
         return store.getTyped(new AetherKey.CapacityReservationKey(node),
                               CapacityReservationValue.class)
@@ -587,9 +624,22 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Option<LeaderValue> leader() {
-        return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                    .filter(value -> activeLeader.getAsBoolean() && value.leader()
-                                                                         .equals(self));
+        return observeLeadership(store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                                      .filter(value -> activeLeader.getAsBoolean() && value.leader()
+                                                                                          .equals(self)));
+    }
+
+    /// Counts lose -> gain edges as the instance observes them (every reconcile and dispatch asks `leader()`). A gain also starts the
+    /// absence counts afresh: they are "this leader's". [limit: an interlude of another leader that this instance never observed,
+    /// with no call to it in between, reads as continuous leadership.]
+    private Option<LeaderValue> observeLeadership(Option<LeaderValue> current) {
+        if (leading.getAndSet(current.isPresent()) != current.isPresent() && current.isPresent()) {
+            leadershipGeneration.incrementAndGet();
+            dispatchMisses.clear();
+            unmatchedSince.clear();
+        }
+
+        return current;
     }
 
     private Option<CapacityLedgerValue> ledger() {

@@ -20,10 +20,14 @@ import org.pragmatica.lang.Option;
 ///     [`org.pragmatica.aether.deployment.cluster.ClusterTopologyManager`] (consecutive failures,
 ///     trip threshold, next-allowed instant, tripped flag);
 ///   - `lastProvisionFailure`: the most recent provisioning failure (`cause` + epoch-millis), empty
-///     when none has been recorded.
+///     when none has been recorded;
+///   - `inventoryWait` / `inventoryWaits`: the current wait for a complete inventory (a provider not ready at boot, no configuration
+///     committed yet) and how many waits there have been. A wait is not a failure and is never in `lastProvisionFailure`.
 ///
 /// Assembled and surfaced only on a node that is the leader and owns a `ClusterTopologyManager`; the
 /// node accessor returns `Option.empty()` otherwise.
 public record ProvisioningDiagnostics(ProvisioningDecisionSnapshot decision,
                                       CircuitBreakerState circuitBreaker,
-                                      Option<LastProvisionFailure> lastProvisionFailure) {}
+                                      Option<LastProvisionFailure> lastProvisionFailure,
+                                      Option<LastProvisionFailure> inventoryWait,
+                                      long inventoryWaits) {}

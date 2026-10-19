@@ -128,6 +128,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink,
                                     AtomicBoolean admissionDeferred,
                                     AtomicLong inventoryWaitCount,
+                                    AtomicReference<LastProvisionFailure> inventoryWaitRef,
                                     Set<NodeId> unconfirmedReaps,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
@@ -282,6 +283,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
                                                 new AtomicBoolean(false),
                                                 new AtomicLong(0L),
+                                                new AtomicReference<>(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
@@ -928,13 +930,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Promise<ProvisionDisposition> provisionAccepted(ProvisionDisposition disposition) {
-        return Promise.success(disposition).onSuccess(this::resumeAdmission);
+        return Promise.success(disposition).onSuccess(_ -> resumeAdmission());
     }
 
-    /// The recovery of [#recordAdmissionDeferral]: a replacement passed admission and was dispatched.
+    /// The recovery of [#recordAdmissionDeferral]: a replacement passed admission and was dispatched (only a dispatched provision reaches
+    /// here; every deferral is a refusal). It also ends an inventory wait.
     @Contract
-    private void resumeAdmission(ProvisionDisposition disposition) {
-        if (disposition instanceof ProvisionDisposition.Dispatched && admissionDeferred.compareAndSet(true, false)) {
+    private void resumeAdmission() {
+        inventoryWaitRef.set(null);
+        if (admissionDeferred.compareAndSet(true, false)) {
             org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                                   warningSink.get(),
                                                                   org.pragmatica.utility.warning.OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
@@ -963,6 +967,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
+        inventoryWaitRef.set(null);
         recordProvisioningFailure(cause);
         if (admissionDeferred.compareAndSet(false, true)) {
             org.pragmatica.utility.warning.OperatorWarnings.raise(log,
@@ -978,16 +983,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final int INVENTORY_WAIT_LOG_EVERY = 10;
 
     /// A complete inventory that is not available yet (a provider that is not ready at boot, a configuration not committed yet) is a
-    /// transient wait, not a provider failure: it is counted ([#inventoryWaits]), recorded as the last provisioning failure and logged at a
-    /// bounded rate, but it never counts toward the provisioning circuit, which would suspend provisioning for waiting.
+    /// transient wait, not a provider failure: it is counted ([#inventoryWaits]), held as the current wait ([#inventoryWait], cleared when an
+    /// admission gets past the inventory) and logged at a bounded rate, but it is not the last provisioning FAILURE and never counts
+    /// toward the provisioning circuit, which would suspend provisioning for waiting.
     @Contract
     private void recordInventoryWait(Cause cause) {
         var waits = inventoryWaitCount.incrementAndGet();
 
-        lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
+        inventoryWaitRef.set(new LastProvisionFailure(cause.message(), nowMs()));
         if (waits % INVENTORY_WAIT_LOG_EVERY == 1) {
             log.warn("CTM: provisioning waits for a complete inventory ({} waits so far): {}", waits, cause.message());
         }
+    }
+
+    @Override
+    public Option<LastProvisionFailure> inventoryWait() {
+        return Option.option(inventoryWaitRef.get());
     }
 
     @Override

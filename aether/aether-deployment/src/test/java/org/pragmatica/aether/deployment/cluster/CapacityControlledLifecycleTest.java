@@ -43,6 +43,7 @@ class CapacityControlledLifecycleTest {
     private final AtomicInteger listings = new AtomicInteger();
     private final java.util.Set<String> queryFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private Option<Promise<InstanceInfo>> createOutcome = Option.none();
+    private Runnable onListing = () -> {};
     private java.util.function.Function<SourceName, String> bindingOf = _ -> "binding";
     /// What the provider's listing answers while a fleet inventory is being initialized; a test holds it pending to keep the initialization in flight.
     private final java.util.concurrent.atomic.AtomicReference<Promise<List<InstanceInfo>>> listing = new java.util.concurrent.atomic.AtomicReference<>(Promise.success(List.of()));
@@ -74,6 +75,7 @@ class CapacityControlledLifecycleTest {
         }
         @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) {
             listings.incrementAndGet();
+            onListing.run();
             if (failingSources.contains(source.value())) {
                 return Causes.<List<InstanceInfo>>cause(source.value() + " credentials rejected").promise();
             }
@@ -916,9 +918,23 @@ class CapacityControlledLifecycleTest {
 
     /// Another node leads from term 2 on, with a lifecycle of its own over the same store.
     private CapacityControlledLifecycle successor(java.util.List<String> events) {
+        return successor(events, commands -> Promise.success(store.process(store.createBatch(commands))));
+    }
+
+    private static final long GRACE_MS = 1_000L;
+    private final java.util.concurrent.atomic.AtomicLong now = new java.util.concurrent.atomic.AtomicLong(1_000_000L);
+
+    /// A lifecycle with a stepped clock and a one-second create ceiling, which is also the grace an earlier-term allocation is given.
+    private CapacityControlledLifecycle clocked(NodeId self, java.util.function.BooleanSupplier leading,
+                                                java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply) {
+        return CapacityControlledLifecycle.capacityControlledLifecycle(provider, self, store, apply, leading, () -> 1,
+            org.pragmatica.lang.io.TimeSpan.timeSpan(GRACE_MS).millis(), now::get);
+    }
+
+    private CapacityControlledLifecycle successor(java.util.List<String> events,
+                                                  java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply) {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SUCCESSOR, 2)));
-        var next = CapacityControlledLifecycle.capacityControlledLifecycle(provider, SUCCESSOR, store,
-            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 1);
+        var next = clocked(SUCCESSOR, () -> true, apply);
         next.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
         return next;
     }
@@ -928,10 +944,11 @@ class CapacityControlledLifecycleTest {
                     .unwrap().phase();
     }
 
-    /// An allocation dispatched under an earlier term is not released by the first pass that fails to see its instance: the new leader
-    /// needs consecutive misses. The third releases it, with the no-create evidence and an operator event.
+    /// An allocation dispatched before this leader gained leadership is not released by the first pass that fails to see its instance:
+    /// the new leader needs three consecutive misses AND the grace since it first found the allocation unmatched (a slow cloud boot is
+    /// never released mid-boot). Then it releases it, with the no-create evidence and an operator event.
     @Test
-    void dispatchOfAnEarlierTerm_isReleasedByAnotherLeaderOnlyAfterConsecutiveMisses() {
+    void dispatchOfAnEarlierTerm_isReleasedByAnotherLeaderOnlyAfterConsecutiveMissesAndTheGrace() {
         initialize(0);
         var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
         var abandoned = losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
@@ -945,6 +962,9 @@ class CapacityControlledLifecycleTest {
             assertThat(phaseOf("first")).as("pass %d: still uncertain", pass).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
             assertThat(ledger().allocated()).isEqualTo(1);
         }
+        next.reconcileInventory().await().unwrap();
+        assertThat(phaseOf("first")).as("three misses inside the grace: a slow boot is not released").isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        now.addAndGet(GRACE_MS + 1);
         next.reconcileInventory().await().unwrap();
 
         assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
@@ -1006,6 +1026,95 @@ class CapacityControlledLifecycleTest {
 
         assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
         assertThat(lookups.get()).as("no lookup while west is uninventoried").isZero();
+    }
+
+    /// A same-leader re-commit advances the view sequence while the node keeps leading: its own in-flight create is not an earlier term's.
+    @Test
+    void sameLeaderRecommit_doesNotMakeItsOwnInFlightCreateEarlierTerm() {
+        initialize(0);
+        var own = clocked(CORE, () -> true, commands -> Promise.success(store.process(store.createBatch(commands))));
+        own.provisionNode(spec("first", "east")).await();
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 2)));
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 3)));
+
+        for (int pass = 0; pass < 2 * CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            now.addAndGet(2 * GRACE_MS);
+            own.reconcileInventory().await().unwrap();
+        }
+
+        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        assertThat(ledger().allocated()).isEqualTo(1);
+    }
+
+    /// Leadership lost and regained (A -> B -> A): what the node dispatched before is now an earlier leadership's, and goes through the
+    /// confirmation.
+    @Test
+    void leadershipRegained_makesWhatItDispatchedBeforeAnEarlierTermsDispatch() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var again = clocked(CORE, leading::get, commands -> Promise.success(store.process(store.createBatch(commands))));
+        again.provisionNode(spec("first", "east")).await();
+        leading.set(false);
+        again.reconcileInventory().await().unwrap();
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 3)));
+        leading.set(true);
+
+        for (int pass = 1; pass < CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            now.addAndGet(2 * GRACE_MS);
+            again.reconcileInventory().await().unwrap();
+            assertThat(phaseOf("first")).as("pass %d", pass).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        }
+        now.addAndGet(2 * GRACE_MS);
+        again.reconcileInventory().await().unwrap();
+
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+    }
+
+    /// "Consecutive": a sighting between misses restarts the count, even when the adoption commit of that sighting is refused.
+    @Test
+    void earlierTermMisses_mustBeConsecutive_aSightingRestartsTheCount() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
+        var refuseAdoption = new java.util.concurrent.atomic.AtomicBoolean();
+        var next = successor(new java.util.concurrent.CopyOnWriteArrayList<>(),
+            commands -> refuseAdoption.get() && commands.stream().anyMatch(this::reservesCapacity)
+                        ? Promise.success(List.<Object>of())
+                        : Promise.success(store.process(store.createBatch(commands))));
+
+        now.addAndGet(2 * GRACE_MS);
+        next.reconcileInventory().await().unwrap();
+        inventory.set(List.of(observedCore("first")));
+        refuseAdoption.set(true);
+        now.addAndGet(2 * GRACE_MS);
+        next.reconcileInventory().await().unwrap();
+        refuseAdoption.set(false);
+        inventory.set(List.of());
+        for (int pass = 1; pass < CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            now.addAndGet(2 * GRACE_MS);
+            next.reconcileInventory().await().unwrap();
+            assertThat(phaseOf("first")).as("miss %d since the sighting", pass).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+        }
+        now.addAndGet(2 * GRACE_MS);
+        next.reconcileInventory().await().unwrap();
+
+        assertThat(store.get(new AetherKey.CapacityReservationKey(new NodeId("first"))).isEmpty()).isTrue();
+    }
+
+    /// Fail-safe: a configuration that cannot be read does not count as every source inventoried, so nothing earlier is examined.
+    @Test
+    void dispatchOfAnEarlierTerm_isNotExaminedWhileTheConfigurationIsUnreadable() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
+        var next = successor(new java.util.concurrent.CopyOnWriteArrayList<>());
+        onListing = () -> replaceEastConfig("this is [not valid toml");
+
+        now.addAndGet(2 * GRACE_MS);
+        next.reconcileInventory().await().unwrap();
+
+        assertThat(lookups.get()).as("no lookup against a configuration that cannot be read").isZero();
+        assertThat(phaseOf("first")).isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
     }
 
     /// The release step is fenced by leadership: losing it between the no-create evidence and the release leaves the evidence in place,

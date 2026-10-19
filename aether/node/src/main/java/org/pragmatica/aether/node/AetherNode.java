@@ -3032,7 +3032,9 @@ public interface AetherNode extends ManageableNode {
             private ProvisioningDiagnostics assembleProvisioningDiagnostics(LeaderReconciler.ProvisioningDecisionSnapshot decision) {
                 return new ProvisioningDiagnostics(decision,
                                                    clusterTopologyManagerInstance.circuitBreakerState(),
-                                                   clusterTopologyManagerInstance.lastProvisionFailure());
+                                                   clusterTopologyManagerInstance.lastProvisionFailure(),
+                                                   clusterTopologyManagerInstance.inventoryWait(),
+                                                   clusterTopologyManagerInstance.inventoryWaits());
             }
 
             @Override

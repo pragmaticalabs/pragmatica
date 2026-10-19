@@ -503,10 +503,10 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(events).containsExactly("provision-admission-deferred", "provision-admission-resumed");
     }
 
-    /// A complete inventory that is not available yet is a transient wait: visible (counted, recorded as the last failure) but never
-    /// counted toward the provider-failure circuit, however many passes it takes.
+    /// A complete inventory that is not available yet is a transient wait: visible (counted, held as the current wait) but not a failure
+    /// and never counted toward the provider-failure circuit, however many passes it takes. It ends when an admission gets past the inventory.
     @Test
-    void inventoryUnavailable_isVisibleButNeverTripsTheProviderFailureCircuit() {
+    void inventoryUnavailable_isAWaitNotAFailure_andNeverTripsTheCircuit() {
         ctm.activate();
         lifecycleManager.deferProvision = true;
         lifecycleManager.deferCause = CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE;
@@ -518,9 +518,33 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
         assertThat(ctm.circuitBreakerState().tripped()).isFalse();
         assertThat(ctm.inventoryWaits()).isEqualTo(5);
-        assertThat(ctm.lastProvisionFailure().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
+        assertThat(ctm.lastProvisionFailure().isPresent()).as("a wait is not the last provisioning failure").isFalse();
+        assertThat(ctm.inventoryWait().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
                 .isEqualTo(CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE.message());
         assertThat(lifecycleManager.provisionCount.get()).as("every pass still reached admission").isEqualTo(5);
+
+        lifecycleManager.deferCause = CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE;
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(ctm.inventoryWait().isPresent()).as("an admission past the inventory ends the wait").isFalse();
+
+        lifecycleManager.deferCause = CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE;
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(ctm.inventoryWait().isPresent()).isTrue();
+        lifecycleManager.deferProvision = false;
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(ctm.inventoryWait().isPresent()).as("a dispatched provision ends the wait").isFalse();
+        assertThat(ctm.inventoryWaits()).isEqualTo(6);
+    }
+
+    /// The operator events of the lifecycle (the release of an abandoned dispatch) reach the sink the node gives the manager: the manager
+    /// hands its sink on to the lifecycle it owns.
+    @Test
+    void setOperatorWarningSink_isHandedOnToTheLifecycle() {
+        var sink = org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(_ -> {});
+
+        ctm.setOperatorWarningSink(sink);
+
+        assertThat(lifecycleManager.warningSink).isSameAs(sink);
     }
 
     /// Control: another caller's inventory initialization in progress never counted, and still does not.
@@ -2701,6 +2725,12 @@ class ClusterTopologyManagerActuatorTest {
         private final java.util.concurrent.atomic.AtomicBoolean failProvision = new java.util.concurrent.atomic.AtomicBoolean(false);
         private boolean deferProvision;
         private org.pragmatica.lang.Cause deferCause = CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE;
+        private volatile org.pragmatica.utility.warning.OperatorWarningSink warningSink;
+
+        @Override public Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+            warningSink = sink;
+            return Unit.unit();
+        }
         /// #1050 R4 — the labelled provider inventory the activation replay lists. `terminateNode` removes from it.
         private final ConcurrentHashMap<NodeId, InstanceInfo> inventory = new ConcurrentHashMap<>();
         final AtomicInteger listCalls = new AtomicInteger();
