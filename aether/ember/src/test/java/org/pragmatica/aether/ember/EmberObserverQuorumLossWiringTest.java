@@ -15,6 +15,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.AfterEach;
@@ -30,7 +31,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// Five voters plus one node outside the voter roster (an observer, as an auto-heal replacement is while it joins).
 ///   - The observer is told it went passive: it publishes the WARNING `observer-consensus-lagging`, never `QUORUM_LOST`;
 ///     told it observes again, it publishes the INFO recovery `observer-consensus-resumed`.
-///   - A lagging observer that is then promoted (ACTIVE) closes the warning with the same recovery.
+///   - A lagging observer that is then promoted (ACTIVE) or shut down (`SelfShutdown`) closes the warning with the same recovery.
 ///   - Two voters are killed: a voter majority remains, so a commit still succeeds (the observer in the cluster does
 ///     not turn a surviving majority into a loss); a killed voter's own shutdown is still published as CRITICAL
 ///     `QUORUM_LOST` (a node wired as an observer would publish the warning instead), and no survivor raises one.
@@ -91,6 +92,15 @@ class EmberObserverQuorumLossWiringTest {
         awaitCondition(() -> "observer-consensus-resumed on promotion (ACTIVE) for " + observerId + "; events: " + codesSeenBy(observer),
                        60_000L,
                        () -> countWarnings(observer, "observer-consensus-resumed", observerId) >= 2);
+
+        observer.route(ClusterStateNotification.passive());
+        awaitCondition(() -> "third observer-consensus-lagging for " + observerId + "; events: " + codesSeenBy(observer),
+                       60_000L,
+                       () -> countWarnings(observer, "observer-consensus-lagging", observerId) >= 3);
+        observer.route(TransportObservation.selfShutdown(observer.self(), TransportObservation.ObservationSource.SWIM));
+        awaitCondition(() -> "observer-consensus-resumed on shutdown for " + observerId + "; events: " + codesSeenBy(observer),
+                       60_000L,
+                       () -> countWarnings(observer, "observer-consensus-resumed", observerId) >= 3);
 
         var leaderId = cluster.currentLeader().unwrap();
         var killed = voterIds.stream().filter(id -> !id.equals(leaderId)).limit(2).toList();
