@@ -48,6 +48,7 @@ public class TerraJsonBodyTest {
         public Promise<T> create(TerraContext context) { return Promise.success(value); }
     }
     record Routes<T>(Class<T> sliceType, List<Route<?>> routes) implements SliceRouterFactory<T> {
+        public int routeSecurityContract() { return ROUTE_SECURITY_CONTRACT; }
         public SliceRouter create(T slice) { return create(slice, JsonMapper.defaultJsonMapper()); }
         public SliceRouter create(T slice, JsonMapper mapper) { return create(slice, mapper, RouteMountMode.pathMode()); }
         public SliceRouter create(T slice, JsonMapper mapper, RouteMountMode mode) { return router(routes, mapper, mode); }
@@ -55,6 +56,7 @@ public class TerraJsonBodyTest {
     /// Found by `TerraHttpServer.start`'s own discovery (test `META-INF/services`), so the server picks the mapper.
     public static final class VoRoutes implements SliceRouterFactory<VoSlice> {
         public Class<VoSlice> sliceType() { return VoSlice.class; }
+        public int routeSecurityContract() { return ROUTE_SECURITY_CONTRACT; }
         public SliceRouter create(VoSlice slice) { return create(slice, JsonMapper.defaultJsonMapper()); }
         public SliceRouter create(VoSlice slice, JsonMapper mapper) { return create(slice, mapper, RouteMountMode.pathMode()); }
         public SliceRouter create(VoSlice slice, JsonMapper mapper, RouteMountMode mode) {
