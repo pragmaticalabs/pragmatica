@@ -164,6 +164,31 @@ public interface SliceCodec extends Serializer, Deserializer {
         return value;
     }
 
+    // --- Field tag checks for generated record readers ---
+    /// Consumes the single-byte type tag a generated record writer put in front of a primitive or string field and
+    /// refuses a frame whose tag is not the one the reader's shape expects (#1459).
+    ///
+    /// @throws TagMismatchException naming `subject` (`Type.field`), the expected tag and the tag found
+    static void expectTag(ByteBuf buf, int expected, String subject) {
+        var actual = buf.readByte();
+
+        if (actual != expected) {
+            throw new TagMismatchException(subject, expected, actual);
+        }
+    }
+
+    /// Consumes the varint codec tag a generated record writer put in front of a codec-typed field and refuses a
+    /// frame carrying any other codec's tag (#1459).
+    ///
+    /// @throws TagMismatchException naming `subject` (`Type.field`), the expected tag and the tag found
+    static void expectCompactTag(ByteBuf buf, int expected, String subject) {
+        var actual = readCompact(buf);
+
+        if (actual != expected) {
+            throw new TagMismatchException(subject, expected, actual);
+        }
+    }
+
     // --- Tag computation ---
     /// The wire tag for `className`: its hand-assigned [SystemTags] entry when it has one, otherwise a
     /// hash-derived tag in the USER range.
