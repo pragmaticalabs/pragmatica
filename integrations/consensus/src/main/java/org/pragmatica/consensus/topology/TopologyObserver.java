@@ -867,11 +867,12 @@ public interface TopologyObserver extends TopologyManager {
                 return (peers + 1) >= quorum;
             }
 
-            /// #2306: once a voter configuration is installed, the quorum numerator counts INSTALLED VOTERS only. The view lists
-            /// every admitted core member, an observer outside the roster included (an auto-heal replacement still joining),
-            /// and that member cannot vote: counting it would show two surviving voters of five as a quorum, so the engine
-            /// could not commit while the node neither paused nor reported the loss. Before voters are installed the view
-            /// count stands. The smaller of the view's healthy count and its on-duty voters is used, so neither can inflate.
+            /// #2306, defence in depth: once a voter configuration is installed, the quorum numerator counts INSTALLED VOTERS only,
+            /// so the edge no longer relies on its feed being pre-filtered. In the Aether runtime the feed already is (AetherNode
+            /// filters the view to the installed voters); a feed that listed a member outside the roster, such as a replacement still
+            /// joining, would otherwise make two surviving voters of five look like a quorum while the engine cannot commit. Before
+            /// voters are installed the view count stands. The smaller of the view's healthy count and its on-duty voters is used, so
+            /// neither can inflate.
             private int healthyVoterCount(MembershipView view) {
                 return installedVoters.get()
                                       .map(voters -> Math.min(view.healthyOnDutyCount(),

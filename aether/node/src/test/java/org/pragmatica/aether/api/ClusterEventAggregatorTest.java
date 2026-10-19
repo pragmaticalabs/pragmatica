@@ -1457,6 +1457,22 @@ class ClusterEventAggregatorTest {
         return OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED, subject, "repaired " + subject);
     }
 
+    /// #2306 -- the NodeDecommissioned arm of the self-leaves close; removing it leaves the lag warning open when the lagging node is
+    /// decommissioned. Another node's decommission does not close it.
+    @Test
+    void lagWarning_isClosed_whenTheNodeItselfIsDecommissioned_notWhenAnotherIs() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(new NodeId("another"), List.of(), 1L, h.hlc().now()));
+        assertThat(codes(h).stream().filter(code -> code != null).toList()).as("control: another node's decommission leaves the warning open")
+            .containsExactly("observer-consensus-lagging");
+
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(SELF, List.of(), 2L, h.hlc().now()));
+
+        assertThat(codes(h).stream().filter(code -> code != null).toList()).containsExactly("observer-consensus-lagging", "observer-consensus-resumed");
+    }
+
     private List<String> codes(Harness h) {
         return h.events().stream().map(event -> event.details().get("code")).toList();
     }
