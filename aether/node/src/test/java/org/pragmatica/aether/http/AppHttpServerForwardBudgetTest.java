@@ -346,7 +346,7 @@ class AppHttpServerForwardBudgetTest {
         @Override
         public org.pragmatica.lang.Result<Unit> validateOutboundMessage(ProtocolMessage message) {
             return message instanceof HttpForwardResponse response && response.payload().length > rejectPayloadsOver
-                   ? org.pragmatica.consensus.net.OutboundMessageLimit.Error.TOO_LARGE.result()
+                   ? org.pragmatica.consensus.net.OutboundMessageLimit.TooLarge.FACTORY.apply(response.payload().length).result()
                    : org.pragmatica.lang.Result.unitResult();
         }
 

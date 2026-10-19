@@ -72,9 +72,10 @@ public sealed interface ForwardError extends HttpError {
         }
     }
 
-    /// The encoded request does not fit one cluster frame, so no node could receive it. Nothing was sent.
-    record TooLargeToForward(int requestBytes, String message) implements ForwardError, Cause.Terminal {
-        static final Fn1<TooLargeToForward, Integer> FACTORY = Causes.forOneValue("Request too large to forward to the node serving this route (%d bytes encoded)",
+    /// The encoded request does not fit one cluster frame, so no node could receive it. Nothing was sent. `frameBytes`
+    /// is the size of the refused frame, the quantity the limit bounds.
+    record TooLargeToForward(int frameBytes, String message) implements ForwardError, Cause.Terminal {
+        static final Fn1<TooLargeToForward, Integer> FACTORY = Causes.forOneValue("Request too large to forward to the node serving this route (it encodes to a %d-byte frame)",
                                                                                   TooLargeToForward::new);
 
         @Override

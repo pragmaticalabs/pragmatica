@@ -29,6 +29,7 @@ import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.OutboundMessageLimit;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -1248,6 +1249,15 @@ public interface HttpForwarder {
                        : ForwardError.NotSent.FACTORY.apply(origin);
             }
 
+            /// F8(c): a frame over the cluster limit answers 413 with the size of the FRAME, which is what the limit
+            /// bounds, never the size of the payload inside it. A frame that could not even be encoded was never sent,
+            /// so it answers as unsent, not as too large.
+            private static ForwardError unforwardable(Cause cause) {
+                return cause instanceof OutboundMessageLimit.TooLarge tooLarge
+                       ? ForwardError.TooLargeToForward.FACTORY.apply(tooLarge.frameBytes())
+                       : ForwardError.NotSent.FACTORY.apply(cause);
+            }
+
             private static boolean mayHaveBeenDelivered(Cause failure) {
                 return ! (failure instanceof Undelivered);
             }
@@ -1305,10 +1315,8 @@ public interface HttpForwarder {
                 var bounded = clusterNetwork.validateOutboundMessage(forwardRequest);
 
                 if (bounded.isFailure()) {
-                    log.warn("Request [{}] encodes to {} bytes, over the cluster frame limit; not forwarding it",
-                             requestId,
-                             requestData.length);
-                    resultPromise.fail(ForwardError.TooLargeToForward.FACTORY.apply(requestData.length));
+                    bounded.onFailure(cause -> log.warn("Request [{}] not forwarded: {}", requestId, cause.message()))
+                           .onFailure(cause -> resultPromise.fail(unforwardable(cause)));
 
                     return;
                 }

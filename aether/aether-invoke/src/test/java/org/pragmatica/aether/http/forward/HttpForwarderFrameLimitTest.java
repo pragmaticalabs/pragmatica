@@ -42,8 +42,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// A3/I12: a request whose encoded forward exceeds the cluster frame limit is never sent (the receiver would close
 /// the FORWARD lane to that peer, see `OversizedLaneFrameTest` in the consensus module) and fails terminally with a
 /// 413 saying it is too large to forward; it is not retried on another node. A request within the limit is sent.
-/// The stub network applies the transport's own rule (`requestData` against `MAX_TRANSFER_BYTES`).
+/// The stub network applies the transport's own rule ([OutboundMessageLimit#validate]) to a frame [#FRAME_OVERHEAD]
+/// bytes larger than the request payload it carries, as a real frame is.
 class HttpForwarderFrameLimitTest {
+    private static final int FRAME_OVERHEAD = 77;
+
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId A = nodeId("node-a").unwrap();
     private static final NodeId B = nodeId("node-b").unwrap();
@@ -61,6 +64,35 @@ class HttpForwarderFrameLimitTest {
         assertThat(failure).isInstanceOf(ForwardError.TooLargeToForward.class);
         assertThat(((ForwardError) failure).status()).isEqualTo(HttpStatus.REQUEST_ENTITY_TOO_LARGE);
         assertThat(HttpError.clientMessage(failure)).contains("too large to forward");
+    }
+
+    /// F8(c): the 413 reports the size of the refused frame, the quantity the limit bounds, not the payload's.
+    @Test
+    void forward_overTheFrameLimit_reportsTheFrameSize() {
+        var payloadBytes = OutboundMessageLimit.MAX_TRANSFER_BYTES + 1;
+        var frameBytes = payloadBytes + FRAME_OVERHEAD;
+        var result = forwarder(new LimitedClusterNetwork(), payloadBytes)
+            .forward(context(), "PUT", PREFIX, "too-large-size")
+            .await(timeSpan(5).seconds());
+
+        var failure = result.fold(cause -> cause, value -> (Cause) null);
+        assertThat(((ForwardError.TooLargeToForward) failure).frameBytes()).isEqualTo(frameBytes);
+        assertThat(HttpError.clientMessage(failure)).contains(frameBytes + "-byte frame")
+                                                    .doesNotContain(String.valueOf(payloadBytes));
+    }
+
+    /// A forward frame that cannot be encoded was never sent: it answers as unsent (503), never as too large.
+    @Test
+    void forward_whoseFrameCannotBeEncoded_isNotSent_andNotReportedTooLarge() {
+        var network = new LimitedClusterNetwork(true);
+        var result = forwarder(network, 1024)
+            .forward(context(), "PUT", PREFIX, "unencodable")
+            .await(timeSpan(5).seconds());
+
+        assertThat(network.sends.get()).isZero();
+        var failure = result.fold(cause -> cause, value -> (Cause) null);
+        assertThat(failure).isInstanceOf(ForwardError.NotSent.class);
+        assertThat(((ForwardError) failure).status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
     @Test
@@ -106,11 +138,20 @@ class HttpForwarderFrameLimitTest {
 
     private static final class LimitedClusterNetwork implements ClusterNetwork {
         private final AtomicInteger sends = new AtomicInteger();
+        private final boolean frameUnencodable;
+
+        LimitedClusterNetwork() {
+            this(false);
+        }
+
+        LimitedClusterNetwork(boolean frameUnencodable) {
+            this.frameUnencodable = frameUnencodable;
+        }
 
         @Override public Result<Unit> validateOutboundMessage(ProtocolMessage message) {
-            return ((HttpForwardRequest) message).requestData().length <= OutboundMessageLimit.MAX_TRANSFER_BYTES
-                   ? Result.unitResult()
-                   : OutboundMessageLimit.Error.TOO_LARGE.result();
+            var frameBytes = ((HttpForwardRequest) message).requestData().length + FRAME_OVERHEAD;
+
+            return OutboundMessageLimit.validate(new FrameSerializer(frameBytes, frameUnencodable), message);
         }
 
         @Override public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message, TimeSpan offlineTtl) {
@@ -130,6 +171,17 @@ class HttpForwarderFrameLimitTest {
         @Override public int connectedNodeCount() {return 2;}
         @Override public Set<NodeId> connectedPeers() {return Set.of(A, B);}
         @Override public Option<Server> server() {return Option.none();}
+    }
+
+    /// Encodes a frame of the given size, or throws as an encoder failing on the frame would.
+    private record FrameSerializer(int size, boolean fails) implements Serializer {
+        @Override public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+        @Override public <T> byte[] encode(T value) {
+            if (fails) {
+                throw new IllegalStateException("frame cannot be encoded");
+            }
+            return new byte[size];
+        }
     }
 
     private record SizedSerializer(int size) implements Serializer {
