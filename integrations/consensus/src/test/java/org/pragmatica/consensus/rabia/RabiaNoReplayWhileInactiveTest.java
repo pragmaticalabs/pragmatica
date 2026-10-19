@@ -321,7 +321,9 @@ class RabiaNoReplayWhileInactiveTest {
     }
 
     private static ProtocolConfig refusingConfig(GateMarker marker) {
-        return ProtocolConfig.testConfig(Option.some(marker));
+        // A 60 s sync retry (the test config's 100 ms would do): `doSynchronize` has no guard for `Paused`, so a retry
+        // tick queued before the pause would run after it and turn the engine back into `Syncing` mid-test, under load.
+        return ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds(), Option.some(marker));
     }
 
     /// A participation marker whose record is refused until `allow` is set: `activate()` fails closed meanwhile.
