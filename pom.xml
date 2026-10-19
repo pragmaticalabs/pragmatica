@@ -551,6 +551,10 @@
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
                         <argLine>${vthread.argLine}</argLine>
+                        <!-- #1473: tests never write /var/lib/aether volume sentinels. -->
+                        <systemPropertyVariables>
+                            <aether.state.dir>${project.build.directory}/aether-state</aether.state.dir>
+                        </systemPropertyVariables>
                         <excludes>
                             <exclude>**/*IT.java</exclude>
                         </excludes>
@@ -562,6 +566,9 @@
                     <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
                         <argLine>${vthread.argLine}</argLine>
+                        <systemPropertyVariables>
+                            <aether.state.dir>${project.build.directory}/aether-state</aether.state.dir>
+                        </systemPropertyVariables>
                         <includes>
                             <include>**/*IT.java</include>
                         </includes>

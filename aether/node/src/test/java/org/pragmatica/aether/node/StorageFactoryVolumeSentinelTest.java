@@ -17,6 +17,15 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageTier;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,31 +33,35 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 
 /// #1473: `StorageFactory` is where the intent is known -- whether the disk tier ARMED or degraded
 /// to memory + DHT -- so it is the layer that hands the snapshot manager its volume sentinel. An
-/// armed tier gets one under the node's data root (`.volume-sentinels`); a degraded tier gets none and
+/// armed tier gets one in the node state directory (`volume-sentinels`); a degraded tier gets none and
 /// still boots on a first boot, which keeps the ordinary "`/data` is not writable" boot (CI, laptops)
 /// working -- but a degraded tier whose snapshot directory has a sentinel is the unmounted volume and
 /// refuses.
 class StorageFactoryVolumeSentinelTest {
     private static final String INSTANCE = "sentinel-vault";
-    private static final String ROOT_PROPERTY = StorageConfig.DEFAULT_ROOT_PROPERTY;
+    private static final String ROOT_PROPERTY = "aether.state.dir";
 
     @TempDir
     Path tempDir;
 
     private String previousRoot;
+    private WarnCapture appender;
 
     @BeforeEach
-    void pointTheDataRootAtTheTestDirectory() {
+    void pointTheStateDirAtTheTestDirectory() {
         previousRoot = System.getProperty(ROOT_PROPERTY);
-        System.setProperty(ROOT_PROPERTY, dataRoot().toString());
+        System.setProperty(ROOT_PROPERTY, stateDir().toString());
+        appender = WarnCapture.attachTo(StorageFactory.class.getName());
     }
 
     @AfterEach
-    void restoreDataRoot() {
+    void restoreStateDir() {
+        appender.detach();
         if (previousRoot == null) {
             System.clearProperty(ROOT_PROPERTY);
         } else {
@@ -56,12 +69,12 @@ class StorageFactoryVolumeSentinelTest {
         }
     }
 
-    private Path dataRoot() {
-        return tempDir.resolve("data-root");
+    private Path stateDir() {
+        return tempDir.resolve("state");
     }
 
     private Path sentinelDir() {
-        return dataRoot().resolve(".volume-sentinels");
+        return stateDir().resolve("volume-sentinels");
     }
 
     private Path snapshotDir() {
@@ -214,6 +227,58 @@ class StorageFactoryVolumeSentinelTest {
     }
 
     @Test
+    void createAll_refusesToBoot_whenTheWholeVolumeIsGoneAndTheSentinelRemains() throws IOException {
+        boot(armedConfig()).unwrap().get(INSTANCE).snapshotManager().forceSnapshot();
+        deleteChildren(snapshotDir());
+        Files.delete(snapshotDir());
+        deleteChildren(tempDir.resolve("volume").resolve("blocks"));
+
+        boot(armedConfig()).onSuccess(_ -> fail("the volume directory is gone and the sentinel remains: not a first boot"))
+                           .onFailure(cause -> assertThat(cause.message()).contains(snapshotDir().toString()));
+    }
+
+    @Test
+    void createAll_warnsOnce_whenTheStateDirSharesAFilesystemWithTheGuardedVolume() {
+        boot(armedConfig());
+
+        var warns = appender.warnsMentioning(snapshotDir().toString());
+
+        assertThat(warns).hasSize(1);
+        assertThat(warns.getFirst()).contains("INACTIVE").contains(stateDir().toString());
+    }
+
+    @Test
+    void createAll_doesNotWarn_whenTheStateDirIsOnAnotherFilesystem() throws IOException {
+        var elsewhere = Path.of("/dev/shm");
+
+        assumeTrue(Files.isDirectory(elsewhere) && !StorageFactory.onSameFilesystem(elsewhere, tempDir),
+                   "needs a second filesystem (Linux /dev/shm)");
+        var otherState = Files.createTempDirectory(elsewhere, "aether-state-1473");
+
+        try {
+            System.setProperty(ROOT_PROPERTY, otherState.toString());
+            boot(armedConfig());
+
+            assertThat(appender.warnsMentioning(snapshotDir().toString())).isEmpty();
+        } finally {
+            deleteTree(otherState);
+        }
+    }
+
+    @Test
+    void onSameFilesystem_isTrue_withinOneTreeEvenBeforeTheDirectoryExists() {
+        assertThat(StorageFactory.onSameFilesystem(tempDir, tempDir.resolve("not").resolve("yet"))).isTrue();
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        try (Stream<Path> walk = Files.walk(root)) {
+            for (var path : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                Files.delete(path);
+            }
+        }
+    }
+
+    @Test
     void sentinelFor_isDistinct_forPathsThatDifferOnlyBySeparatorVersusUnderscore() {
         var underscore = StorageFactory.sentinelFor(Path.of("/data/a_b")).unwrap();
         var nested = StorageFactory.sentinelFor(Path.of("/data/a/b")).unwrap();
@@ -234,6 +299,51 @@ class StorageFactoryVolumeSentinelTest {
             return sentinelPath();
         } catch (IOException e) {
             throw new AssertionError("the first boot's snapshot must have written a sentinel", e);
+        }
+    }
+
+    private static final class WarnCapture extends AbstractAppender {
+        private final java.util.List<String> warns = new java.util.concurrent.CopyOnWriteArrayList<>();
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        private WarnCapture() {
+            super("StorageFactoryWarnCapture", (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
+        }
+
+        static WarnCapture attachTo(String logger) {
+            var capture = new WarnCapture();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            var existing = ctx.getConfiguration().getLoggerConfig(logger);
+
+            capture.start();
+            capture.loggerConfig = existing.getName().equals(logger) ? existing : new LoggerConfig(logger, Level.ALL, true);
+            ctx.getConfiguration().addLogger(logger, capture.loggerConfig);
+            capture.originalLevel = capture.loggerConfig.getLevel();
+            capture.loggerConfig.addAppender(capture, Level.ALL, null);
+            capture.loggerConfig.setLevel(Level.ALL);
+            ctx.updateLoggers();
+            return capture;
+        }
+
+        void detach() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig.removeAppender(getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            stop();
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel() == Level.WARN) {
+                warns.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        java.util.List<String> warnsMentioning(String fragment) {
+            return warns.stream().filter(w -> w.contains(fragment)).toList();
         }
     }
 }

@@ -57,6 +57,9 @@ public sealed interface SystemdUnitTemplate {
     /// `EnvironmentFile=-` (leading dash) tolerates an absent file rather than refusing to start, so a
     /// unit that is started before the env file is written fails visibly at the node's own startup
     /// rather than as a systemd load error an operator has to decode.
+    /// `StateDirectory=aether` makes systemd create `/var/lib/aether` owned by `User=`: the node state
+    /// directory (#1473) that holds the volume sentinels, which must be on the boot filesystem and outlive the
+    /// data volume.
     static String generate(String execStart, String environmentFile, String user, String group) {
         var sb = new StringBuilder();
 
@@ -69,6 +72,7 @@ public sealed interface SystemdUnitTemplate {
         sb.append("Type=simple\n");
         sb.append("User=").append(user).append('\n');
         sb.append("Group=").append(group).append('\n');
+        sb.append("StateDirectory=aether\n");
         sb.append("EnvironmentFile=-").append(environmentFile).append('\n');
         sb.append("ExecStart=").append(execStart).append('\n');
         sb.append(RESTART_POLICY).append('\n');

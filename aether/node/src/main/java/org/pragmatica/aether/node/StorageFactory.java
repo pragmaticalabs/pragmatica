@@ -110,8 +110,13 @@ public final class StorageFactory {
     /// #1052: the stop signal for callers that own no node lifecycle (tests, [#verifyDhtMarker]'s
     /// two-argument entry point). `AetherNode` passes its `PeriodicTasks` cancellation instead.
     private static final BooleanSupplier NEVER_STOPPED = () -> false;
-    /// #1473: where volume sentinels live under the node's data root.
-    private static final String SENTINEL_DIR = ".volume-sentinels";
+    /// #1473: the node state directory holds the volume sentinels. It must be on the BOOT filesystem and
+    /// outlive the guarded volume; the image provisions the default (Dockerfile `mkdir` + `chown`, systemd
+    /// `StateDirectory=aether`).
+    private static final String STATE_DIR_PROPERTY = "aether.state.dir";
+    private static final String STATE_DIR_ENV = "AETHER_STATE_DIR";
+    static final String DEFAULT_STATE_DIR = "/var/lib/aether";
+    private static final String SENTINEL_DIR = "volume-sentinels";
 
     private StorageFactory() {}
 
@@ -1014,7 +1019,7 @@ public final class StorageFactory {
                         .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}",
                                                      cause.message()));
 
-        return refuseIfVolumeWasWritten(tiers, snapshotDir).flatMap(_ -> restoreAndSignalReady(STREAMS_NAME,
+        return guardVolume(tiers, snapshotDir).flatMap(_ -> restoreAndSignalReady(STREAMS_NAME,
                                                                                                snapshotManager,
                                                                                                metadataStore,
                                                                                                readinessGate))
@@ -1441,7 +1446,7 @@ public final class StorageFactory {
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
-        return refuseIfVolumeWasWritten(tiers,
+        return guardVolume(tiers,
                                         Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
                                                                                                            snapshotManager,
                                                                                                            metadataStore,
@@ -1464,16 +1469,22 @@ public final class StorageFactory {
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED
-    /// (a [TierLevel#LOCAL_DISK] tier is in `tiers`). It lives under the node's data root
-    /// ([StorageConfig#defaultRoot], `/data/aether` unless `aether.storage.defaultRoot` names another) in
-    /// `.volume-sentinels`: the directory the node already owns and writes, which the shipped image
-    /// provisions (`/data` is the `aether` user's). It protects a volume mounted BELOW the data root (a
-    /// `disk_path` / `snapshot_path` mount); a volume mounted AT or above the root holds the sentinel too,
-    /// so an unmounted one loses it and reads as a first boot, as before this change.
+    /// (a [TierLevel#LOCAL_DISK] tier is in `tiers`). It lives in the node state directory
+    /// ([#stateDir]: `-Daether.state.dir`, else `AETHER_STATE_DIR`, else `/var/lib/aether`), which is on the
+    /// boot filesystem and provisioned by the image -- not under the data root, because the data root can
+    /// sit ON the guarded volume (the docker deployment mounts `/data`). It guards only while the state
+    /// directory outlives the volume: a separate small volume or bind mount survives container recreation,
+    /// the container layer covers restarts only. [#warnIfGuardInactive] says so when both share a filesystem.
     static Option<Path> volumeSentinel(List<StorageTier> tiers, Path snapshotPath) {
         return hasLocalDisk(tiers)
                ? sentinelFor(snapshotPath).option()
                : Option.none();
+    }
+
+    static Path stateDir() {
+        return Path.of(Option.option(System.getProperty(STATE_DIR_PROPERTY))
+                             .orElse(() -> Option.option(System.getenv(STATE_DIR_ENV)))
+                             .or(DEFAULT_STATE_DIR));
     }
 
     private static boolean hasLocalDisk(List<StorageTier> tiers) {
@@ -1491,11 +1502,9 @@ public final class StorageFactory {
     static Result<Path> sentinelFor(Path snapshotPath) {
         var canonical = snapshotPath.toAbsolutePath().normalize();
 
-        return BlockId.blockId(canonical.toString().getBytes(StandardCharsets.UTF_8)).map(id -> Path.of(StorageConfig.defaultRoot())
-                                                                                                    .resolve(SENTINEL_DIR)
-                                                                                                    .resolve(id.hexString()
-                                                                                                            + "-" + readableSuffix(canonical)
-                                                                                                            + ".id"));
+        return BlockId.blockId(canonical.toString().getBytes(StandardCharsets.UTF_8))
+                      .map(id -> stateDir().resolve(SENTINEL_DIR)
+                                          .resolve(id.hexString() + "-" + readableSuffix(canonical) + ".id"));
     }
 
     private static String readableSuffix(Path canonical) {
@@ -1508,10 +1517,40 @@ public final class StorageFactory {
     /// #1473: a degraded disk tier is the ordinary state wherever `/data` is not writable, and a first boot
     /// on it is fine -- but a sentinel for the same snapshot directory says a volume was written here
     /// before, so the tier missing now is the unmounted volume and the node must not boot empty.
-    private static Result<Unit> refuseIfVolumeWasWritten(List<StorageTier> tiers, Path snapshotPath) {
+    private static Result<Unit> guardVolume(List<StorageTier> tiers, Path snapshotPath) {
         return hasLocalDisk(tiers)
-               ? Result.unitResult()
+               ? Result.unitResult().onSuccessRun(() -> warnIfGuardInactive(snapshotPath))
                : sentinelFor(snapshotPath).flatMap(sentinel -> refuseIfPresent(sentinel, snapshotPath));
+    }
+
+    /// #1473: a sentinel on the guarded volume's own filesystem is lost with the volume, so the guard cannot
+    /// fire. Said once per guarded volume, at boot, naming both paths.
+    private static void warnIfGuardInactive(Path snapshotPath) {
+        var stateDir = stateDir();
+
+        if (onSameFilesystem(stateDir, snapshotPath)) {
+            log.warn("Unmounted-volume guard is INACTIVE for {}: the state dir {} is on the same filesystem, so the "
+                    + "sentinel is lost with the volume. Put the state dir (-Daether.state.dir / AETHER_STATE_DIR) on "
+                    + "the boot filesystem or a separate small volume",
+                     snapshotPath,
+                     stateDir);
+        }
+    }
+
+    /// Device ids of the nearest existing ancestors; the file stores when the platform has no `unix:dev`.
+    static boolean onSameFilesystem(Path first, Path second) {
+        return Result.all(deviceOf(first), deviceOf(second))
+                     .map(Object::equals)
+                     .or(false);
+    }
+
+    private static Result<Object> deviceOf(Path path) {
+        return nearestExisting(path.toAbsolutePath()).toResult(Causes.cause("No existing ancestor of " + path))
+                                                      .flatMap(existing -> Result.lift(Causes::fromThrowable,
+                                                                                       () -> Files.getAttribute(existing,
+                                                                                                                "unix:dev"))
+                                                                                  .orElse(() -> Result.lift(Causes::fromThrowable,
+                                                                                                            () -> (Object) Files.getFileStore(existing))));
     }
 
     private static Result<Unit> refuseIfPresent(Path sentinel, Path snapshotPath) {
