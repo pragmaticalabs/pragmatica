@@ -3,11 +3,12 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
-import io.netty.buffer.ByteBuf;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
 import org.pragmatica.serialization.SliceCodec.TypeReader;
 import org.pragmatica.serialization.SliceCodec.TypeWriter;
+
+import io.netty.buffer.ByteBuf;
 
 
 /// The wire shape of [AetherValue.ScheduledTaskStateValue] before it gained `boundHolder` (#1155): twelve components, under
@@ -76,26 +77,37 @@ public record LegacyScheduledTaskStateValue(long lastExecutionAt,
     static AetherValue.ScheduledTaskStateValue readBody(SliceCodec codec, ByteBuf buf) {
         SliceCodec.expectTag(buf, SliceCodec.TAG_LONG, "ScheduledTaskStateValue.lastExecutionAt");
         var lastExecutionAt = buf.readLong();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_LONG, "ScheduledTaskStateValue.nextFireAt");
         var nextFireAt = buf.readLong();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_INT, "ScheduledTaskStateValue.consecutiveFailures");
         var consecutiveFailures = buf.readInt();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_INT, "ScheduledTaskStateValue.totalExecutions");
         var totalExecutions = buf.readInt();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_STRING, "ScheduledTaskStateValue.lastFailureMessage");
         var lastFailureMessage = SliceCodec.readString(buf);
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_LONG, "ScheduledTaskStateValue.updatedAt");
         var updatedAt = buf.readLong();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_INT, "ScheduledTaskStateValue.skippedOverlaps");
         var skippedOverlaps = buf.readInt();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_STRING, "ScheduledTaskStateValue.lastOutcome");
         var lastOutcome = SliceCodec.readString(buf);
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_INT, "ScheduledTaskStateValue.fireSeq");
         var fireSeq = buf.readInt();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_LONG, "ScheduledTaskStateValue.newestFireAt");
         var newestFireAt = buf.readLong();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_INT, "ScheduledTaskStateValue.completionTimeouts");
         var completionTimeouts = buf.readInt();
+
         SliceCodec.expectTag(buf, SliceCodec.TAG_INT, "ScheduledTaskStateValue.lateResolutions");
         var lateResolutions = buf.readInt();
 
