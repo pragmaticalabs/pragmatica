@@ -6841,13 +6841,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     .apiKeys());
 
                                                       if (!mgmtSecurityEnabled) {
-                                                      LOG.warn("Management API on port {} is FULLY OPEN: its security mode is \"none\" ([management] security_mode, or inherited from"
-                                                              + " [app-http] security_mode when that is absent), which disables authentication and"
-                                                              + " authorization on the management plane, so ANY caller that can reach the port can run every"
-                                                              + " operation, including cluster changes and artifact pushes. Use it only on a loopback or"
-                                                              + " otherwise isolated listener; set [management] security_mode = \"api-key\" to protect this plane (#1121).",
-                                                               config.managementPort());
-                                                  }
+                                                          LOG.warn("Management API on port {} is FULLY OPEN: its security mode is \"none\" ([management] security_mode, or inherited from"
+                                                                  + " [app-http] security_mode when that is absent), which disables authentication and"
+                                                                  + " authorization on the management plane, so ANY caller that can reach the port can run every"
+                                                                  + " operation, including cluster changes and artifact pushes. Use it only on a loopback or"
+                                                                  + " otherwise isolated listener; set [management] security_mode = \"api-key\" to protect this plane (#1121).",
+                                                                   config.managementPort());
+                                                      }
                                                       // The OTHER credential-less shape, and until now it had no voice at all. Above is
                                                       // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
                                                       // the published image now boots with, since `docker/aether-node/aether.toml` no longer
@@ -6862,14 +6862,14 @@ public interface AetherNode extends ManageableNode {
                                                       if (mgmtSecurityEnabled && config.appHttp()
                                                                                        .apiKeys()
                                                                                        .isEmpty()) {
-                                                      LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
-                                                              + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
-                                                              + " The cluster bootstrap admin key (printed once at formation, derived from the"
-                                                              + " cluster secret) is the only credential this node will accept; it is enumerable and"
-                                                              + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
-                                                              + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
-                                                               config.managementPort());
-                                                  }
+                                                          LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
+                                                                  + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
+                                                                  + " The cluster bootstrap admin key (printed once at formation, derived from the"
+                                                                  + " cluster secret) is the only credential this node will accept; it is enumerable and"
+                                                                  + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
+                                                                  + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
+                                                                   config.managementPort());
+                                                      }
 
                                                       var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
                                                                                                                           () -> node.kvStore());
