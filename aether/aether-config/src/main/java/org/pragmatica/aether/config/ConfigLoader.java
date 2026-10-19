@@ -40,26 +40,25 @@ public final class ConfigLoader {
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
-        return TomlParser.parseFile(path)
-                         .flatMap(doc -> loadDocument(doc, Map.of(), System::getenv));
+        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv));
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
-        return TomlParser.parse(content)
-                         .flatMap(doc -> loadDocument(doc, Map.of(), System::getenv));
+        return TomlParser.parse(content).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv));
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
-        return TomlParser.parseFile(path)
-                         .flatMap(doc -> loadDocument(doc, overrides, System::getenv));
+        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, overrides, System::getenv));
     }
 
     /// THE node load path, shared by every entry point and by cluster bootstrap's pre-flight ([#checkNodeDocument]):
     /// parse the document into a config, then run the configuration and storage-encryption validators. One function, so
     /// pre-flight and boot cannot drift apart; only the environment differs.
-    private static Result<AetherConfig> loadDocument(TomlDocument doc, Map<String, String> overrides, Fn1<String, String> env) {
+    private static Result<AetherConfig> loadDocument(TomlDocument doc,
+                                                     Map<String, String> overrides,
+                                                     Fn1<String, String> env) {
         return fromDocumentWithOverrides(doc, overrides, env).flatMap(ConfigValidator::validate)
-                                                             .flatMap(StorageEncryptionConfigValidator::validate);
+                                        .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static AetherConfig aetherConfig(Environment env) {
