@@ -7,7 +7,10 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
@@ -48,6 +51,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// everything, in both directions.
 class MainConfigStampReachabilityTest {
     private static final String MAIN_CLASS = "org/pragmatica/aether/Main.class";
+    private static final String MAIN_INTERNAL_NAME = "org/pragmatica/aether/Main";
     private static final String RUN_METHOD = "run";
 
     /// THE pin, and the one whose absence reintroduces #980.
@@ -104,24 +108,52 @@ class MainConfigStampReachabilityTest {
                    + "Consequence if it is genuinely gone: " + consequence);
     }
 
-    /// Every method name invoked from the body of `Main.run()`. Names rather than full descriptors
-    /// deliberately: an overload or a parameter change should not silently turn this green or red for
-    /// the wrong reason — the question is whether the stamp is applied at all.
+    /// Every method name invoked from `Main.run()`, following calls `Main` makes to its OWN methods (run -> nodeConfig -> ...), so
+    /// a stamp or the builder chain that `run` delegates to a helper of the same class (#962 moved the builder chain into
+    /// `Main.nodeConfig` so its resolvers could be tested) is still seen as reached FROM `run`. The closure starts at `run` and only
+    /// expands through methods `run` actually reaches, so a helper nothing calls stays invisible, which is the property the
+    /// class-level note requires. Names rather than full descriptors deliberately: an overload or a parameter change should not
+    /// silently turn this green or red for the wrong reason, so overloads of one name are followed together.
     private static Set<String> callsMadeFromRun() {
+        var callsByMethod = callsByMethodOfMain();
+        var seen = new HashSet<String>();
         var names = new HashSet<String>();
+        var pending = new ArrayDeque<String>();
+
+        pending.add(RUN_METHOD);
+
+        while (!pending.isEmpty()) {
+            var method = pending.poll();
+
+            if (seen.add(method)) {
+                callsByMethod.getOrDefault(method, Set.of())
+                             .forEach(call -> {
+                                 names.add(call.name());
+                                 if (MAIN_INTERNAL_NAME.equals(call.owner())) {
+                                     pending.add(call.name());
+                                 }
+                             });
+            }
+        }
+
+        return names;
+    }
+
+    private record Call(String owner, String name) {}
+
+    private static Map<String, Set<Call>> callsByMethodOfMain() {
+        var callsByMethod = new HashMap<String, Set<Call>>();
         var visitor = new ClassVisitor(Opcodes.ASM9) {
             @Override
             public MethodVisitor visitMethod(int access, String name, String descriptor,
                                              String signature, String[] exceptions) {
-                if (!RUN_METHOD.equals(name)) {
-                    return null;
-                }
+                var calls = callsByMethod.computeIfAbsent(name, _ -> new HashSet<>());
 
                 return new MethodVisitor(Opcodes.ASM9) {
                     @Override
                     public void visitMethodInsn(int opcode, String owner, String target,
                                                 String targetDescriptor, boolean isInterface) {
-                        names.add(target);
+                        calls.add(new Call(owner, target));
                     }
                 };
             }
@@ -129,7 +161,7 @@ class MainConfigStampReachabilityTest {
 
         new ClassReader(mainClassBytes()).accept(visitor, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
 
-        return names;
+        return callsByMethod;
     }
 
     /// Reads compiled PRODUCTION output, never this JVM's classpath — the same discipline
