@@ -71,13 +71,6 @@ public record S3Config(String endpoint,
                : virtualHostedBase();
     }
 
-    /// Extracts the host portion for signing.
-    public String signingHost() {
-        return pathStyle
-               ? extractHost(endpoint)
-               : bucket + "." + extractHost(endpoint);
-    }
-
     /// Converts to AwsConfig for SigV4 signing.
     public AwsConfig toAwsConfig() {
         return AwsConfig.awsConfig(accessKeyId, secretAccessKey, region);
