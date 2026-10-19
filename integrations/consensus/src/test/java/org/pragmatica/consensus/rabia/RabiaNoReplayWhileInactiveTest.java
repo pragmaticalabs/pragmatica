@@ -344,6 +344,58 @@ class RabiaNoReplayWhileInactiveTest {
         }
     }
 
+    /// A listener that throws is logged and skipped: the activation tail (start promise, buffered decisions, first phase)
+    /// has already run or still runs, `start()` resolves, and the listeners registered after it still run.
+    @Test
+    void aThrowingListener_doesNotWedgeStart_andTheOtherListenersStillRun() {
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks);
+        var startPromise = engine.start();
+        var after = new AtomicInteger();
+
+        engine.onStateRestored(() -> {
+            throw new IllegalStateException("listener failure");
+        });
+        engine.onStateRestored(after::incrementAndGet);
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(engine::isActive)).isTrue();
+        assertThat(awaitCondition(startPromise::isResolved)).as("start() resolves although a listener threw").isTrue();
+        assertThat(awaitCondition(() -> after.get() == 1)).as("the listener registered after the failing one still ran").isTrue();
+        assertThat(hooks.get()).as("and the one registered before it").isEqualTo(1);
+        assertThat(machine.replays.get()).isEqualTo(1);
+    }
+
+    /// The announce follows the activation event: a consumer sees `ConsensusActive` first (the deployment manager drops
+    /// replayed puts while it still considers the node dormant), then the replay, then the listeners.
+    @Test
+    void theAnnounceFollowsTheConsensusActiveEvent_replayBeforeListeners() {
+        var machine = new CountingStateMachine();
+        var sequence = machine.order;
+        var network = new TestClusterNetwork();
+        var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, 3),
+                                       network,
+                                       machine,
+                                       ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
+                                       ConsensusMetrics.noop(),
+                                       false,
+                                       emptyDisk(false),
+                                       timeSpan(50).millis(),
+                                       event -> sequence.add(event.getClass().getSimpleName()));
+
+        engines.add(engine);
+        engine.onStateRestored(() -> sequence.add("listener"));
+        engine.clusterState(ClusterStateNotification.active());
+        assertThat(awaitCondition(() -> network.getMessages().stream().anyMatch(SyncRequest.class::isInstance))).isTrue();
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> sequence.contains("listener"))).isTrue();
+        assertThat(sequence.indexOf("ConsensusActive")).as("%s", sequence).isGreaterThanOrEqualTo(0);
+        assertThat(sequence.indexOf("ConsensusActive")).as("%s", sequence).isLessThan(sequence.indexOf("replay"));
+        assertThat(sequence.indexOf("replay")).as("%s", sequence).isLessThan(sequence.indexOf("listener"));
+    }
+
     /// An observer is not ACTIVE in the voting sense but does serve the restored state, so its restore must still
     /// replay and run the hooks: the guard is "left Syncing", not "is a voter".
     @Test

@@ -67,19 +67,40 @@ class EngineServingWritePathTest {
     }
 
     @Test
-    void theAnnounceIsCalledFromTheTwoHelpersOnly_andTheHelpersHaveTheExpectedCallSites() {
+    void theAnnounceIsCalledOnlyAtTheTailOfAServingTransition_afterTheEventIsPublished() {
         var code = engineCode();
 
-        assertThat(count(code, "announceRestoreIfPending()")).as("declaration plus the two helper calls").isEqualTo(3);
         assertThat(count(code, "enterServing(")).as("declaration plus seven call sites").isEqualTo(8);
         assertThat(count(code, "enterServingIf(")).as("declaration plus two call sites").isEqualTo(3);
-        assertThat(between(code, "privateEngineStateenterServing(", "privatebooleanenterServingIf(")).contains("announceRestoreIfPending();");
-        assertThat(between(code, "privatebooleanenterServingIf(", "privatevoidannounceRestoreIfPending(")).contains("announceRestoreIfPending();");
+        assertThat(between(code, "privateEngineStateenterServing(", "privatebooleanenterServingIf(")).as("the write path does not announce")
+                                                                                                    .doesNotContain("announceRestoreIfPending");
+        assertThat(between(code, "privatebooleanenterServingIf(", "privatevoidannounceRestoreIfPending(")).as("nor does the compare-and-set").doesNotContain("announceRestoreIfPending");
+
+        var announces = 0;
+        var from = code.indexOf("announceRestoreIfPending();");
+
+        while (from >= 0) {
+            announces++;
+            var prefix = code.substring(0, from);
+            var write = prefix.lastIndexOf("enterServing(");
+
+            assertThat(write).as("a serving write precedes the announce at %d", from).isGreaterThanOrEqualTo(0);
+            assertThat(prefix.substring(write)).as("the serving event is published before the announce at %d", from)
+                                               .contains("notifyConsensusStateTransition();");
+            from = code.indexOf("announceRestoreIfPending();", from + 1);
+        }
+
+        assertThat(announces).as("promotion, resume, activation, observer activation, added voter, observer advance").isEqualTo(6);
+        assertThat(count(code, "announceRestoreIfPending()")).as("declaration plus the six tail calls").isEqualTo(7);
+        var activation = "varoldState=enterServing(newEngineState.Idle());exitState(oldState);armCleanupTask();";
+
+        assertThat(between(code, activation, "announceRestoreIfPending();")).as("on activation the start promise is resolved before the announce")
+                                                                            .contains("startPromise.get().succeed(Unit.unit());");
     }
 
     private static String between(String code, String from, String to) {
         var start = code.indexOf(from);
-        var end = code.indexOf(to);
+        var end = code.indexOf(to, start);
 
         assertThat(start).as("%s present", from).isGreaterThanOrEqualTo(0);
         assertThat(end).as("%s follows", to).isGreaterThan(start);

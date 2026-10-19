@@ -1105,6 +1105,7 @@ public class RabiaEngine<C extends Command> {
         exitState(oldState);
         notifyConsensusStateTransition();
         log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
+        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
@@ -1244,6 +1245,7 @@ public class RabiaEngine<C extends Command> {
         // Replay through the live ordering guard. A remaining gap starts synchronization;
         // only a decision at the applied frontier can mutate the state machine.
         drainBufferedDecisions();
+        announceRestoreIfPending();
         if (!pendingBatches.isEmpty() || requestedConfiguration.isPresent()) {
             safeExecute(this::startPhase);
         }
@@ -2587,27 +2589,20 @@ public class RabiaEngine<C extends Command> {
                   cause);
     }
 
-    /// The ONE write path for the serving states `Idle`, `InPhase` and `Observing` (#1516): the state write and the
-    /// announce of an unannounced restore are a single step, so a transition into a serving state, by whatever path,
-    /// cannot forget it. Returns the state that was replaced. `EngineServingWritePathTest` fails if any other write
-    /// of a serving state appears in this class.
+    /// The ONE write path for the serving states `Idle`, `InPhase` and `Observing` (#1516). A restore that is waiting to be
+    /// announced (`restoreAnnouncePending`) becomes DUE the moment a serving state is written; it is announced at the
+    /// transition's tail by [#announceRestoreIfPending], after the state change has been published (`ConsensusActive`)
+    /// and the start promise resolved, so consumers see the serving event before the replay and an exception in a
+    /// listener cannot cut the activation short. Returns the state that was replaced. `EngineServingWritePathTest` fails
+    /// if any other write of a serving state appears in this class, or if the announce is called from anywhere but the
+    /// tail of a serving transition.
     private EngineState enterServing(EngineState serving) {
-        var oldState = engineState.getAndSet(serving);
-
-        announceRestoreIfPending();
-
-        return oldState;
+        return engineState.getAndSet(serving);
     }
 
-    /// [#enterServing] as a compare-and-set; announces only if the write took effect.
+    /// [#enterServing] as a compare-and-set.
     private boolean enterServingIf(EngineState expected, EngineState serving) {
-        if (!engineState.compareAndSet(expected, serving)) {
-            return false;
-        }
-
-        announceRestoreIfPending();
-
-        return true;
+        return engineState.compareAndSet(expected, serving);
     }
 
     /// A restore installs the state silently and marks it unannounced; the restore's observable effects, the
@@ -2618,15 +2613,24 @@ public class RabiaEngine<C extends Command> {
     /// per round from a node that was not serving. Dropping the effects instead would lose them: the node can reach
     /// `Idle`/`Observing` without a second restore (`Syncing` -> `Paused` -> [#doResumeFromPause], or a promotion), and a
     /// consumer that never saw the replay would serve a world it was never told about, with derived views that the
-    /// listeners invalidate left stale. So it is called from [#enterServing] and [#enterServingIf] only; with the mark clear it is a
+    /// listeners invalidate left stale. So it is called at the tail of every transition that writes a serving state through [#enterServing] (after the
+    /// state is published and the start promise resolved, before the first phase is started); with the mark clear it is a
     /// no-op, and with the mark set it announces exactly once, whatever the path, and the burst reads the LATEST
     /// installed state (two restores while inactive produce one announce). A node that is fenced for good never
     /// reaches a serving state and so never announces.
     private void announceRestoreIfPending() {
         if (restoreAnnouncePending.compareAndSet(true, false)) {
-            replayStateNotifications();
+            runIsolated("notification replay", this::replayStateNotifications);
             notifyStateRestored();
         }
+    }
+
+    /// An announce step that throws is logged with its cause and does not stop the next step or the activation that
+    /// is running it. Containment, not recovery: the failed listener is not retried (the restore is announced once).
+    @Contract
+    private void runIsolated(String what, Runnable step) {
+        Result.lift(Causes::fromThrowable, step::run)
+              .onFailure(cause -> log.error("Node {} {} failed and was skipped: {}", self, what, cause.message()));
     }
 
     /// Fire the state machine's deferred notification burst (cluster-topology-overhaul §5.8,
@@ -2715,7 +2719,7 @@ public class RabiaEngine<C extends Command> {
     /// Invoke the post-restore listeners in registration order. Runs on the consensus apply thread.
     @Contract
     private void notifyStateRestored() {
-        onStateRestored.forEach(Runnable::run);
+        onStateRestored.forEach(listener -> runIsolated("post-restore listener", listener));
     }
 
     /// A snapshot that skips local slots may already include any old pending request.
@@ -2838,6 +2842,7 @@ public class RabiaEngine<C extends Command> {
         // Must happen AFTER engineState=Idle so that `handleDecision`'s state guard accepts
         // re-applied Decisions, and AFTER the Idle-restore so phase-filter math is correct.
         drainBufferedDecisions();
+        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
@@ -2854,6 +2859,7 @@ public class RabiaEngine<C extends Command> {
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
         drainBufferedDecisions();
+        announceRestoreIfPending();
     }
 
     /// Cancels any timers owned by the old state during a transition.
@@ -4065,6 +4071,7 @@ public class RabiaEngine<C extends Command> {
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());
+        announceRestoreIfPending();
         safeExecute(this::openSlotAfterChange);
     }
 
@@ -4074,6 +4081,7 @@ public class RabiaEngine<C extends Command> {
         exitState(oldState);
         notifyConsensusStateTransition();
         log.trace("Node {} (observer) advancing to phase {}", self, nextPhase);
+        announceRestoreIfPending();
     }
 
     /// Gets or creates phase data for a specific phase. Data for a current or future slot created under
