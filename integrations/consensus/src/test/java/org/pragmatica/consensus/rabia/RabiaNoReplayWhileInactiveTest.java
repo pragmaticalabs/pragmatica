@@ -51,6 +51,7 @@ class RabiaNoReplayWhileInactiveTest {
     private static final Cause DISK_FULL = Causes.cause("no space left on device");
     private static final long TIMEOUT_MILLIS = 5_000;
     private static final int ROUNDS = 4;
+    private static final long SETTLE_MILLIS = 300;
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
 
@@ -63,7 +64,7 @@ class RabiaNoReplayWhileInactiveTest {
     void failedRepersist_repeatedSyncRounds_replayNothingAndRunNoHook() {
         var machine = new CountingStateMachine();
         var hooks = new AtomicInteger();
-        var engine = coldStarted(machine, emptyDisk(true, new AtomicInteger()), hooks);
+        var engine = coldStarted(machine, emptyDisk(true), hooks);
 
         for (var round = 1; round <= ROUNDS; round++) {
             engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
@@ -72,44 +73,37 @@ class RabiaNoReplayWhileInactiveTest {
             assertThat(awaitCondition(() -> machine.restores.get() >= expected)).as("precondition: round %d restored the snapshot", round).isTrue();
         }
 
-        assertThat(engine.voterReconfigurationStatus().failure().contains(DISK_FULL.message())).as("precondition: the re-persist failed, so activation is refused").isTrue();
+        assertThat(failureRecorded(engine)).as("precondition: the re-persist failed, so activation is refused").isTrue();
         assertThat(engine.isActive()).isFalse();
-        assertThat(machine.replays.get()).as("no notification replay from a node that is not ACTIVE").isZero();
-        assertThat(hooks.get()).as("no post-restore hook from a node that is not ACTIVE").isZero();
+        assertThat(effectsWithin(machine, hooks)).as("no notification replay and no post-restore hook from a node that is not ACTIVE").isFalse();
+        assertThat(machine.replays.get()).isZero();
+        assertThat(hooks.get()).isZero();
     }
 
     @Test
     void failedRepersist_emptySnapshotAnswer_replaysNothingAndRunsNoHook() {
         var machine = new CountingStateMachine();
         var hooks = new AtomicInteger();
-        var saves = new AtomicInteger();
-        var engine = coldStarted(machine, emptyDisk(true, saves), hooks);
+        var engine = coldStarted(machine, emptyDisk(true), hooks);
 
         engine.processSyncResponse(cold(PEER_PHASE, new byte[0]));
-        assertThat(awaitCondition(() -> saves.get() >= 1)).as("precondition: the empty-snapshot branch re-persisted").isTrue();
-        engine.processSyncResponse(cold(PEER_PHASE, new byte[0]));
-        assertThat(awaitCondition(() -> saves.get() >= 2)).as("a second round ran, so the first round's tail has completed").isTrue();
-        assertThat(engine.voterReconfigurationStatus().failure()).as("precondition: the re-persist failed").contains(DISK_FULL.message());
+
+        assertThat(awaitCondition(() -> failureRecorded(engine))).as("precondition: the empty-snapshot branch re-persisted and failed").isTrue();
         assertThat(engine.isActive()).isFalse();
-        assertThat(machine.replays.get()).isZero();
-        assertThat(hooks.get()).isZero();
+        assertThat(effectsWithin(machine, hooks)).as("no replay and no hook, however long the tail of the restore takes").isFalse();
     }
 
     @Test
     void failedRepersist_ownSnapshotRestore_replaysNothingAndRunsNoHook() {
         var machine = new CountingStateMachine();
         var hooks = new AtomicInteger();
-        var saves = new AtomicInteger();
-        var engine = coldStarted(machine, failingSaveAt(OWN_PHASE, OWN_SNAPSHOT, saves), hooks);
+        var engine = coldStarted(machine, failingSaveAt(OWN_PHASE, OWN_SNAPSHOT), hooks);
 
         engine.processSyncResponse(cold(Phase.phase(4), PEER_SNAPSHOT));
-        assertThat(awaitCondition(() -> saves.get() >= 1)).as("precondition: the own restore re-persisted").isTrue();
-        engine.processSyncResponse(cold(Phase.phase(4), PEER_SNAPSHOT));
-        assertThat(awaitCondition(() -> saves.get() >= 2)).as("a second round ran, so the first round's tail has completed").isTrue();
-        assertThat(engine.voterReconfigurationStatus().failure()).as("precondition: the re-persist failed").contains(DISK_FULL.message());
+
+        assertThat(awaitCondition(() -> failureRecorded(engine))).as("precondition: the own restore ran and its re-persist failed").isTrue();
         assertThat(engine.isActive()).isFalse();
-        assertThat(machine.replays.get()).isZero();
-        assertThat(hooks.get()).isZero();
+        assertThat(effectsWithin(machine, hooks)).isFalse();
     }
 
     @Test
@@ -117,7 +111,7 @@ class RabiaNoReplayWhileInactiveTest {
         var machine = new CountingStateMachine();
         var hooks = new AtomicInteger();
         var activeAtHook = new AtomicInteger();
-        var engine = coldStarted(machine, emptyDisk(false, new AtomicInteger()), hooks);
+        var engine = coldStarted(machine, emptyDisk(false), hooks);
 
         engine.onStateRestored(() -> activeAtHook.addAndGet(engine.isActive() ? 1 : 0));
         engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
@@ -151,6 +145,26 @@ class RabiaNoReplayWhileInactiveTest {
 
     private static SyncResponse<TestCommand> cold(Phase phase, byte[] snapshot) {
         return new SyncResponse<>(NODE_2, SavedState.savedState(snapshot, phase, List.of()), ResponderState.COLD);
+    }
+
+    private static boolean failureRecorded(RabiaEngine<TestCommand> engine) {
+        return engine.voterReconfigurationStatus().failure().contains(DISK_FULL.message());
+    }
+
+    /// True if a replay or a hook shows up within the settle window. A bounded negative wait: on the unfixed engine the
+    /// replay follows the failed activation within microseconds, so a quiet window of this length is not a race.
+    private static boolean effectsWithin(CountingStateMachine machine, AtomicInteger hooks) {
+        var deadline = System.nanoTime() + MILLISECONDS.toNanos(SETTLE_MILLIS);
+
+        while (System.nanoTime() < deadline) {
+            if (machine.replays.get() > 0 || hooks.get() > 0) {
+                return true;
+            }
+
+            Thread.onSpinWait();
+        }
+
+        return machine.replays.get() > 0 || hooks.get() > 0;
     }
 
     private static boolean awaitCondition(BooleanSupplier condition) {
@@ -188,14 +202,12 @@ class RabiaNoReplayWhileInactiveTest {
     }
 
     /// No own history; `save` fails when `failSave` is set, so the first save is the re-persist of the restore.
-    private static RabiaPersistence<TestCommand> emptyDisk(boolean failSave, AtomicInteger saves) {
-        record emptyDisk(boolean failSave, AtomicInteger saves) implements RabiaPersistence<TestCommand> {
+    private static RabiaPersistence<TestCommand> emptyDisk(boolean failSave) {
+        record emptyDisk(boolean failSave) implements RabiaPersistence<TestCommand> {
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,
                                      Collection<StateMachine.Batch<TestCommand>> pendingBatches) {
-                saves.incrementAndGet();
-
                 return failSave
                        ? DISK_FULL.result()
                        : Result.success(Unit.unit());
@@ -207,18 +219,16 @@ class RabiaNoReplayWhileInactiveTest {
             }
         }
 
-        return new emptyDisk(failSave, saves);
+        return new emptyDisk(failSave);
     }
 
     /// A durable snapshot whose every `save` fails: a node restarted from disk onto a backup path it cannot write.
-    private static RabiaPersistence<TestCommand> failingSaveAt(Phase phase, byte[] snapshot, AtomicInteger saves) {
-        record failingSave(Phase phase, byte[] snapshot, AtomicInteger saves) implements RabiaPersistence<TestCommand> {
+    private static RabiaPersistence<TestCommand> failingSaveAt(Phase phase, byte[] snapshot) {
+        record failingSave(Phase phase, byte[] snapshot) implements RabiaPersistence<TestCommand> {
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,
                                      Collection<StateMachine.Batch<TestCommand>> pendingBatches) {
-                saves.incrementAndGet();
-
                 return DISK_FULL.result();
             }
 
@@ -228,6 +238,6 @@ class RabiaNoReplayWhileInactiveTest {
             }
         }
 
-        return new failingSave(phase, snapshot, saves);
+        return new failingSave(phase, snapshot);
     }
 }
