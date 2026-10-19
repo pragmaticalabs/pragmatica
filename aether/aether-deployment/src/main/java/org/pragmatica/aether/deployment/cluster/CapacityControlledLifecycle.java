@@ -191,8 +191,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                          .flatMap(source -> delegate.sourceBinding(source)
                                                     .async()
                                                     .flatMap(binding -> listAndMark(inventory, source, binding).flatMap(instances -> confirmMissing(source,
-                                                                                                                                                  binding,
-                                                                                                                                                  instances))));
+                                                                                                                                                    binding,
+                                                                                                                                                    instances))));
     }
 
     private Promise<Unit> confirmMissing(SourceName source, String binding, List<InstanceInfo> instances) {
@@ -221,7 +221,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                              (node, cause) -> log.warn("Capacity absence confirmation for {} deferred: {}",
                                                                        node,
                                                                        cause.message()))
-                               .flatMap(_ -> confirmDispatches(source, binding, observed));
+                                  .flatMap(_ -> confirmDispatches(source, binding, observed));
     }
 
     /// Consecutive provider answers that must show no instance before an earlier term's DISPATCHED allocation is released.
@@ -233,13 +233,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// after [#ABSENCE_CONFIRMATIONS] consecutive pass-level misses, the same bounded lanes the OBSERVED absence confirmation uses.
     private Promise<Unit> confirmDispatches(SourceName source, String binding, Set<NodeId> observed) {
         return leader().filter(_ -> allSourcesInventoried())
-                       .fold(Promise::unitPromise,
-                             current -> confirmEarlierTermDispatches(source,
-                                                                     binding,
-                                                                     staleDispatches(source,
-                                                                                     binding,
-                                                                                     observed,
-                                                                                     current.viewSequence())));
+                     .fold(Promise::unitPromise,
+                           current -> confirmEarlierTermDispatches(source,
+                                                                   binding,
+                                                                   staleDispatches(source,
+                                                                                   binding,
+                                                                                   observed,
+                                                                                   current.viewSequence())));
     }
 
     private boolean allSourcesInventoried() {
@@ -258,7 +258,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                            .filter(entry -> entry.getValue()
                                                  .phase() == CapacityReservationPhase.DISPATCHED)
                            .filter(entry -> !observed.contains(entry.getKey()))
-                           .filter(entry -> dispatchTerms.getOrDefault(entry.getKey(), Long.MIN_VALUE) < term)
+                           .filter(entry -> dispatchTerms.getOrDefault(entry.getKey(),
+                                                                       Long.MIN_VALUE) < term)
                            .map(Map.Entry::getKey)
                            .sorted(Comparator.comparing(NodeId::id))
                            .toList();
@@ -276,19 +277,23 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     private Promise<Unit> confirmEarlierTermDispatch(NodeId node, SourceName source, String binding) {
         return instancesForNode(node, source, binding).flatMap(instances -> afterDispatchLookup(node,
-                                                                                               source,
-                                                                                               binding,
-                                                                                               instances));
+                                                                                                source,
+                                                                                                binding,
+                                                                                                instances));
     }
 
-    private Promise<Unit> afterDispatchLookup(NodeId node, SourceName source, String binding, List<InstanceInfo> instances) {
+    private Promise<Unit> afterDispatchLookup(NodeId node,
+                                              SourceName source,
+                                              String binding,
+                                              List<InstanceInfo> instances) {
         return instances.isEmpty()
                ? absentDispatch(node, source, binding)
                : Promise.<Unit> unitPromise().onSuccess(_ -> dispatchMisses.remove(node));
     }
 
     private Promise<Unit> absentDispatch(NodeId node, SourceName source, String binding) {
-        return dispatchMisses.computeIfAbsent(node, _ -> new AtomicInteger())
+        return dispatchMisses.computeIfAbsent(node,
+                                              _ -> new AtomicInteger())
                              .incrementAndGet() >= ABSENCE_CONFIRMATIONS
                ? releaseAbsentDispatch(node, source, binding)
                : Promise.unitPromise();
@@ -297,7 +302,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// Same release as a definitive provider refusal: the no-create evidence first, then the slot.
     private Promise<Unit> releaseAbsentDispatch(NodeId node, SourceName source, String binding) {
         return recordRefusal(node, source, binding).flatMap(_ -> releaseRefusal(node, source, binding))
-                                                   .onSuccess(_ -> announceAbsentDispatch(node, source));
+                            .onSuccess(_ -> announceAbsentDispatch(node, source));
     }
 
     @Contract

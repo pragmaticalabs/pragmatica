@@ -122,9 +122,18 @@ reconciler and is still counted as a provisioning failure (logged, last failure 
 after three consecutive), so a permanent refusal does not retry invisibly. Once a create might
 have been dispatched, its durable uncertainty cannot be downgraded to a pre-dispatch refusal.
 A create whose reservation committed but whose dispatch was abandoned before the provider call
-(leadership lost in between) provably did not happen: its DISPATCHED reservation is recorded as
-no-create evidence and released the next time the instance that abandoned it leads. If a different
-instance leads instead, it cannot know the create did not happen and keeps counting it.
+(leadership lost in between) provably did not happen: the instance that abandoned it records the no-create
+evidence and releases it the next time it leads. A different leader cannot know that, so it treats every
+DISPATCHED allocation it did not dispatch itself in its own term as an earlier term's: once it has inventoried
+every committed source, it looks the node up in the provider each pass, adopts the instance if one appears, and
+releases the allocation (no-create evidence first, then the slot) only after three consecutive passes that
+show no instance, with a WARN and the `capacity-dispatch-released` event. The term a dispatch ran under is
+remembered by the dispatching process only; an allocation a process does not remember dispatching counts as an
+earlier term's, which is what a restarted or newly elected leader is.
+
+Admission refusals that mean "no complete inventory yet" (a provider not ready at boot, no committed
+configuration yet) are waits: they are counted, recorded as the last provisioning failure and logged at a
+bounded rate, and never count toward the provisioning circuit.
 
 Both stalls are operator-attention events with recoveries. A core deficit held open by durable allocations
 for longer than the join grace raises `core-capacity-awaiting-durable` (once per run, by the leader) and
