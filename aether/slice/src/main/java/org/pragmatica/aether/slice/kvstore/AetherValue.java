@@ -3368,6 +3368,15 @@ public sealed interface AetherValue {
         public CommunityPlacementOperationValue withPhase(PlacementOperationPhase next,
                                                           org.pragmatica.cluster.state.kvstore.LeaderValue leader,
                                                           String reason) {
+            return withPhase(next, leader, reason, System.currentTimeMillis());
+        }
+
+        /// As above, stamping `phaseChangedAt` with the caller's clock (epoch milliseconds, #1535) so the
+        /// deadlines that compare against it read the same clock that wrote it.
+        public CommunityPlacementOperationValue withPhase(PlacementOperationPhase next,
+                                                          org.pragmatica.cluster.state.kvstore.LeaderValue leader,
+                                                          String reason,
+                                                          long changedAt) {
             return new CommunityPlacementOperationValue(operationId,
                                                         communityId,
                                                         targetNode,
@@ -3379,7 +3388,7 @@ public sealed interface AetherValue {
                                                         next,
                                                         leader,
                                                         startedAt,
-                                                        System.currentTimeMillis(),
+                                                        changedAt,
                                                         reason);
         }
 

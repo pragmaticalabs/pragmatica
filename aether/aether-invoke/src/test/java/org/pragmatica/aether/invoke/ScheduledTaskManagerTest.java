@@ -463,6 +463,164 @@ class ScheduledTaskManagerTest {
         }
     }
 
+    /// #1469: `activeTimerCount()` is one scalar that reads 0 for every cause below, so a scheduler that is not firing
+    /// looked identical to a cluster with nothing scheduled. The reason is now asked of the manager.
+    @Nested
+    class IneligibilityReasons {
+        @Test
+        void neverGivenQuorum_isSchedulerDormant() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+
+            assertThat(manager.schedulerPhase()).isEqualTo(ScheduledTaskManager.SchedulerPhase.DORMANT);
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.SCHEDULER_DORMANT));
+            assertThat(manager.activeTimerCount()).isZero();
+        }
+
+        @Test
+        void singleModeOnAFollower_isNotLeader() {
+            putTask("cleanup", artifact, method, self, "30s", ExecutionMode.SINGLE);
+            leaderManager.setLeader(false);
+            establishQuorum();
+
+            assertThat(manager.schedulerPhase()).isEqualTo(ScheduledTaskManager.SchedulerPhase.FOLLOWING);
+            assertThat(manager.activeTimerCount()).isZero();
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.NOT_LEADER));
+        }
+
+        @Test
+        void allModeOnANodeThatDoesNotHostTheSlice_isNotHosting() {
+            stubInvoker.setHosted(artifact, false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).isZero();
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.NOT_HOSTING));
+        }
+
+        @Test
+        void allModeOnADrainingNode_isDraining() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            manager.onDrainInitiated();
+
+            assertThat(manager.activeTimerCount()).isZero();
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.DRAINING));
+        }
+
+        @Test
+        void aPausedTask_isPaused() {
+            putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.PAUSED));
+        }
+
+        @Test
+        void anUnreadableExecutionMode_isUnknownMode() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.UNKNOWN);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).isZero();
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.UNKNOWN_MODE));
+        }
+
+        @Test
+        void aFiringTask_hasNoReason() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            assertThat(reasonOf()).isEqualTo(Option.none());
+            assertThat(manager.schedulerPhase()).isEqualTo(ScheduledTaskManager.SchedulerPhase.FOLLOWING);
+        }
+
+        @Test
+        void aLeaderRunningASingleModeTask_hasNoReason_andPhaseIsLeading() {
+            putTask("cleanup", artifact, method, self, "30s", ExecutionMode.SINGLE);
+            becomeLeader();
+            establishQuorum();
+
+            assertThat(reasonOf()).isEqualTo(Option.none());
+            assertThat(manager.schedulerPhase()).isEqualTo(ScheduledTaskManager.SchedulerPhase.LEADING);
+        }
+
+        @Test
+        void lostQuorum_returnsToSchedulerDormant() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            loseQuorum();
+
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.SCHEDULER_DORMANT));
+        }
+
+        @Test
+        void aStoppedScheduler_isSchedulerStopped() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            manager.stop();
+
+            assertThat(manager.schedulerPhase()).isEqualTo(ScheduledTaskManager.SchedulerPhase.STOPPED);
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.SCHEDULER_STOPPED));
+        }
+
+        /// Eligible in every respect but no timer is armed: a registered task whose key has lost its timer.
+        @Test
+        void eligibleButNoTimerArmed_isTimerArmFailed() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            ((ScheduledTaskManagerAdapter) manager).ctx().activeTimers.values().forEach(future -> future.cancel(false));
+            ((ScheduledTaskManagerAdapter) manager).ctx().activeTimers.clear();
+
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.TIMER_ARM_FAILED));
+        }
+
+        /// A Dormant scheduler used to log nothing on any path. Losing quorum now says so, from the state and from the
+        /// notification handler (a stale or non-ACTIVE notification is the other way to sit in Dormant unannounced).
+        @Test
+        void losingQuorum_announcesDormant_andTheNoQuorumNotification() throws Exception {
+            var dormant = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var notifications = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var detachDormant = LogCapture.warningsOf(Class.forName("org.pragmatica.aether.invoke.ScheduledTaskManager$Dormant"), dormant);
+            var detachAdapter = LogCapture.warningsOf(ScheduledTaskManagerAdapter.class, notifications);
+
+            try {
+                establishQuorum();
+                loseQuorum();
+
+                assertThat(dormant).singleElement().asString().contains("Dormant").contains("no scheduled task fires");
+                assertThat(notifications).singleElement().asString().contains("no quorum");
+            } finally {
+                detachDormant.run();
+                detachAdapter.run();
+            }
+        }
+
+        /// The initial state's `onEntry` is not run by the state machine, so a booting scheduler was Dormant without a word.
+        @Test
+        void construction_announcesDormant() throws Exception {
+            var dormant = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var detach = LogCapture.warningsOf(Class.forName("org.pragmatica.aether.invoke.ScheduledTaskManager$Dormant"), dormant);
+
+            try {
+                var fresh = ScheduledTaskManager.scheduledTaskManager(ScheduledTaskRegistry.scheduledTaskRegistry(),
+                                                                      stubInvoker,
+                                                                      self,
+                                                                      _ -> {},
+                                                                      _ -> Option.none(),
+                                                                      leaderManager);
+
+                assertThat(dormant).singleElement().asString().contains("Dormant");
+                fresh.stop();
+            } finally {
+                detach.run();
+            }
+        }
+
+        private Option<ScheduledTaskManager.Ineligibility> reasonOf() {
+            return manager.ineligibilityOf(registry.allTasks().getFirst());
+        }
+    }
+
     @Nested
     class PauseResume {
         @Test

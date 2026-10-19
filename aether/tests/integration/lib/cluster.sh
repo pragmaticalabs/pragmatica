@@ -894,6 +894,36 @@ is_cluster_ready() {
     _cluster_is_ready
 }
 
+# _operator_reference_url — prints the reference endpoint used to judge the OPERATOR HOST's own link, empty when none applies.
+# OPERATOR_REFERENCE_URL overrides. Default: cloud runs use the Hetzner API (${HCLOUD_API}, the knob common.sh defines), which
+# answers an unauthenticated GET with an HTTP status [verified 2026-10-18: GET https://api.hetzner.cloud/v1 -> 404]. Every
+# other environment has NO default: docker on the operator's own host or LAN does not put the link in question, but `remote`
+# (ssh) and docker with a remote TARGET_HOST do, and #2192 stays unfixed there unless OPERATOR_REFERENCE_URL (an HTTP URL) is
+# set [guess: a TARGET_HOST:22 reachability probe would cover them; not built, it needs an owner call on a non-HTTP probe].
+_operator_reference_url() {
+    local ref="${OPERATOR_REFERENCE_URL:-}"
+    if [ -z "$ref" ] && [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+        ref="${HCLOUD_API:-https://api.hetzner.cloud/v1}"
+    fi
+    printf '%s' "$ref"
+}
+
+# _operator_network_down — 0 when the operator host's own network is down, judged by the reference endpoint (not part of the
+# cluster); 1 otherwise, including when no reference applies. #2192: a core sweep that finds nothing cannot tell a dead
+# cluster from an operator host that lost its link (a ~30 s receive blackout was reported as a dead cluster, against a cluster
+# that stayed healthy). Any HTTP answer from the reference proves the link; only a curl transport failure is "down".
+# The probe is bounded by OPERATOR_REFERENCE_TIMEOUT_S (default 3), because an unbounded probe would hang through exactly
+# the blackout this exists for.
+_operator_network_down() {
+    local ref
+    ref=$(_operator_reference_url)
+    [ -n "$ref" ] || return 1
+    if curl -s -o /dev/null -m "${OPERATOR_REFERENCE_TIMEOUT_S:-3}" "$ref" 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
 # wait_for_cluster_ready [timeout] [expected_count] — canonical "cluster is ready" gate.
 # Composite: generation members ≥ expected, leader elected, active cores ≥ expected-1.
 # See aether/docs/specs/test-readiness-contract.md §1.
@@ -923,6 +953,23 @@ wait_for_cluster_ready() {
     # different port (5156+/5166+). Without this, subsequent suites probe the dead pin
     # and fast-fail even though the cluster is operationally healthy.
     if ! _refresh_mgmt_entry_point; then
+        # #2192: when the operator host's own link is down, "no core answers" says nothing about the cluster. Do not call it
+        # dead; fall through to the normal bounded wait, which passes once the link is back and times out if it never is.
+        if _operator_network_down; then
+            log_warn "no core answered /health/live, but the reference endpoint is unreachable too: operator network unavailable, NOT fast-failing the cluster as down; waiting up to ${timeout}s"
+            wait_for "cluster ready (${expected}+ members, canonical §1.1)" "_cluster_is_ready ${expected}" "$timeout"
+            return $?
+        fi
+        # The link can come back between the sweep (~12 s) and the probe, or during it: the reference then answers although the
+        # sweep ran blind. One more sweep before calling the cluster dead; only when a reference was consulted (without one the
+        # extra sweep would just slow a genuinely dead cluster's fast-fail).
+        # Limit [stated, not handled]: this closes the race for a link that recovers once. A link that FLAPS (reference answers, the
+        # second sweep misses, or the reverse) can still fast-fail a healthy cluster; handling it would need N consecutive good probes.
+        if [ -n "$(_operator_reference_url)" ] && _refresh_mgmt_entry_point; then
+            log_warn "first sweep found no core, but the reference answers and a second sweep found one: the operator link recovered mid-check, NOT fast-failing; waiting up to ${timeout}s"
+            wait_for "cluster ready (${expected}+ members, canonical §1.1)" "_cluster_is_ready ${expected}" "$timeout"
+            return $?
+        fi
         # Describe the probed address space accurately per env: docker/remote scan
         # the fixed seed host-port range on TARGET_HOST; cloud scans the per-VM
         # public IPs at the uniform CLOUD_MGMT_PORT (_resolve_live_endpoint handles
@@ -4467,6 +4514,14 @@ _restore_slices_gate() {
     local body report missing failed starved failed_streak=0
     while :; do
         body=$(api_get "/api/v1/slices" 2>/dev/null) || body=""
+        # #1972: the management API serialises with NON_EMPTY (JsonCodecAdapter), so "no slices deployed" is the body `{}`, not
+        # `{"slices":[]}`. A suite that deleted its own blueprint leaves exactly that, and there is no slice left to gate on:
+        # it is vacuously at baseline. ONLY the empty object counts; an empty body, an error body or anything else stays the
+        # failure below (an unreadable /api/v1/slices is never a pass).
+        if printf '%s' "$body" | tr -d '[:space:]' | grep -qx '{}'; then
+            log_info "restore_cluster_baseline: /api/v1/slices is {} (no blueprint deployed), so there is no slice to gate on"
+            return 0
+        fi
         if printf '%s' "$body" | grep -q '"slices"'; then
             report=$(printf '%s' "$body" | _slices_by_artifact)
             missing=$(_slices_missing_active "$report")

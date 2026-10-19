@@ -31,20 +31,20 @@ public interface PgNotificationConfigParser {
                                   var result = new LinkedHashMap<String, PgNotificationConfig>();
 
                                   for (var sectionName : doc.sectionNames()) {
-                                  if (isPgNotificationSection(sectionName)) {
-                                  var name = sectionName.substring(PREFIX.length());
+                                      if (isPgNotificationSection(sectionName)) {
+                                          var name = sectionName.substring(PREFIX.length());
 
-                                  if (!name.contains(".")) {
-                                  var datasource = doc.getString(sectionName, "datasource")
-                                                      .or("database");
-                                  var channels = doc.getStringList(sectionName, "channels")
-                                                    .or(List.of());
+                                          if (!name.contains(".")) {
+                                              var datasource = doc.getString(sectionName, "datasource")
+                                                                  .or("database");
+                                              var channels = doc.getStringList(sectionName, "channels")
+                                                                .or(List.of());
 
-                                  result.put(name,
-                                             PgNotificationConfig.pgNotificationConfig(datasource, channels));
-                              }
-                              }
-                              }
+                                              result.put(name,
+                                                         PgNotificationConfig.pgNotificationConfig(datasource, channels));
+                                          }
+                                      }
+                                  }
 
                                   return Map.copyOf(result);
                               });

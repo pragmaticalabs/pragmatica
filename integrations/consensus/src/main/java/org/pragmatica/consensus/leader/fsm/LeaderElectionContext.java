@@ -175,10 +175,13 @@ public final class LeaderElectionContext {
                        .toList();
     }
 
+    /// Before voters install, eligibility follows the configured cluster (#1535): a node outside it is not
+    /// electable in that window. With no configured cluster there is nothing to compare against, so every
+    /// node stays eligible until the voter set arrives.
     public boolean isEligible(NodeId node) {
         return installedVoters.get()
                               .map(voters -> voters.contains(node))
-                              .or(true);
+                              .or(expectedCluster.isEmpty() || expectedCluster.contains(node));
     }
 
     private final MessageRouter router;

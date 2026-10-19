@@ -47,6 +47,33 @@ class LayerClassifierTest {
             assertEquals(Option.some(Layer.BOOTSTRAP), conventions.layerOf("com.example.bootstrap"));
         }
 
+        /// #1568 item 3: the book lays a project out as domain/usecase/adapter/config, so the wiring package is bootstrap.
+        @Test
+        void layerOf_configSegment_isBootstrap() {
+            assertEquals(Option.some(Layer.BOOTSTRAP), conventions.layerOf("com.example.config"));
+        }
+
+        /// Ruling: only the TOP-LEVEL `config` is bootstrap; a nested one stays in its own layer.
+        @Test
+        void layerOf_configUnderAdapter_staysAdapter() {
+            assertEquals(Option.some(Layer.ADAPTER), conventions.layerOf("com.example.adapter.config"));
+        }
+
+        @Test
+        void layerOf_configUnderDomain_staysDomain() {
+            assertEquals(Option.some(Layer.DOMAIN), conventions.layerOf("com.example.domain.config"));
+        }
+
+        @Test
+        void layerOf_configUnderUsecase_staysApplication() {
+            assertEquals(Option.some(Layer.APPLICATION), conventions.layerOf("com.example.usecase.config"));
+        }
+
+        @Test
+        void layerOf_layerSegmentBelowTopLevelConfig_deepestSegmentWins() {
+            assertEquals(Option.some(Layer.ADAPTER), conventions.layerOf("com.example.config.adapter"));
+        }
+
         @Test
         void layerOf_deepestSegmentWins_sliceDomainReadsAsDomain() {
             assertEquals(Option.some(Layer.DOMAIN),

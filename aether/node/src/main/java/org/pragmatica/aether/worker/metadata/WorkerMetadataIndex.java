@@ -208,8 +208,8 @@ public final class WorkerMetadataIndex {
                                    if (key instanceof AetherKey.NodeArtifactKey endpoint
                                        && value instanceof AetherValue.NodeArtifactValue state
                                        && state.state() == SliceState.ACTIVE) {
-                                   peers.add(endpoint.nodeId());
-                               }
+                                       peers.add(endpoint.nodeId());
+                                   }
                                });
             }
         }

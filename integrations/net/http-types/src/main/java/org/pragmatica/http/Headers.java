@@ -37,8 +37,7 @@ public interface Headers {
             @Override
             public Option<String> get(String name) {
                 return Option.option(normalized.get(name.toLowerCase()))
-                             .filter(values -> !values.isEmpty())
-                             .map(List::getFirst);
+                             .flatMap(values -> Option.from(values.stream().findFirst()));
             }
 
             @Override

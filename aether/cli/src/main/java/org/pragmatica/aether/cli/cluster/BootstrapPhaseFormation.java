@@ -355,8 +355,7 @@ sealed interface BootstrapPhaseFormation {
                                  .stream()
                                  .flatMap(source -> source.nodeConfig()
                                                           .flatMap(doc -> doc.getStringList("app-http", "api_keys"))
-                                                          .filter(keys -> !keys.isEmpty())
-                                                          .map(java.util.List::getFirst)
+                                                          .flatMap(keys -> Option.from(keys.stream().findFirst()))
                                                           .stream())
                                  .findFirst());
     }

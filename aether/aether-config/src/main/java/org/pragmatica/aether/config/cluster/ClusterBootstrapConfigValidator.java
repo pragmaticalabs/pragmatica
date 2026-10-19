@@ -422,6 +422,7 @@ public final class ClusterBootstrapConfigValidator {
                                               int managementPort,
                                               List<String> errors) {
         checkIngressProviderSupport(name, source, errors);
+        checkSecurityModesAreSupported(name, source, errors);
         checkPublicManagementWithoutAuth(name, source, managementPort, errors);
         checkJwtWithoutJwks(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
@@ -450,9 +451,11 @@ public final class ClusterBootstrapConfigValidator {
     /// Either half alone is a defensible operator choice; the PAIR is not, so it is an error rather
     /// than a warning.
     ///
-    /// `security_mode` lives in the per-source `node_config` overlay (`[app-http] security_mode`),
-    /// which is the same place the documented cloud example sets `"NONE"` to get past bootstrap's own
-    /// config write — so this combination is reachable by following the docs, not only by mistake.
+    /// `security_mode` lives in the per-source `node_config` overlay (`[app-http] security_mode`, and
+    /// since #962 the management plane's own `[management] security_mode`, which wins when present), which
+    /// is the same place the documented cloud example sets `"NONE"` to get past bootstrap's own config
+    /// write — so this combination is reachable by following the docs, not only by mistake. The check
+    /// judges the EFFECTIVE management mode, never the app plane's mode alone.
     private static void checkPublicManagementWithoutAuth(String name,
                                                          SourceProfile source,
                                                          int managementPort,
@@ -461,17 +464,29 @@ public final class ClusterBootstrapConfigValidator {
                                  .stream()
                                  .anyMatch(rule -> rule.port() == managementPort && ANY_CIDR.equals(rule.sourceCidr()));
 
-        if (!publiclyOpen || !securityDisabled(source)) {
+        if (!publiclyOpen || !managementPlaneOpen(source)) {
             return;
         }
 
         errors.add("PF-24: Source '" + name
                   + "' opens the management port " + managementPort
                   + " to " + ANY_CIDR
-                  + " while [app-http] security_mode = \"none\". That is an"
+                  + " while the management plane's security_mode is \"none\" ([management] security_mode, or"
+                  + " inherited from [app-http] security_mode when that is absent). That is an"
                   + " unauthenticated management API on the public internet — anyone who can reach it"
                   + " can deploy, scale and reconfigure the cluster. Scope source_cidr to your operator"
                   + " network, or enable authentication.");
+    }
+
+    /// PF-24 — a `security_mode` no node can honour (`[management]` `jwt`, or an unrecognised value in either section) is refused by the
+    /// node at boot, which is after the cloud servers exist and bill. Caught here instead, with the loader's own parse
+    /// ([ConfigLoader#refuseUnsupportedSecurityModes]) on the COMPOSED document a node loads, so key, value and allowed values read exactly
+    /// as the node would report them and the two cannot disagree.
+    private static void checkSecurityModesAreSupported(String name, SourceProfile source, List<String> errors) {
+        composedAppHttp(source).onPresent(doc -> ConfigLoader.refuseUnsupportedSecurityModes(doc).onFailure(cause -> errors.add("PF-24: Source '" + name
+                                                                                                                               + "': " + cause.message()
+                                                                                                                               + " Every node would refuse to start on it;"
+                                                                                                                               + " fix the node_config before provisioning.")));
     }
 
     /// PF-34 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
@@ -520,11 +535,32 @@ public final class ClusterBootstrapConfigValidator {
                                                          _ -> Option.empty()));
     }
 
-    private static boolean securityDisabled(SourceProfile source) {
+    private static boolean managementPlaneOpen(SourceProfile source) {
         return source.nodeConfig()
-                     .flatMap(doc -> doc.getString("app-http", "security_mode"))
-                     .map(mode -> "none".equalsIgnoreCase(mode.trim()))
+                     .map(ClusterBootstrapConfigValidator::effectiveManagementModeIsNone)
                      .or(false);
+    }
+
+    /// The management plane's EFFECTIVE mode, resolved as a booting node resolves it (#962): an explicit
+    /// `[management] security_mode` decides on its own, and only `none` opens the plane; with the key absent
+    /// the plane inherits `[app-http] security_mode`. Both reads use [SecurityMode#securityMode], the node's
+    /// parser, so the check and the node cannot disagree about a padded or odd-cased value.
+    private static boolean effectiveManagementModeIsNone(TomlDocument doc) {
+        return doc.getString("management", "security_mode")
+                  .map(ClusterBootstrapConfigValidator::isNone)
+                  .or(() -> appHttpModeIsNone(doc));
+    }
+
+    private static boolean appHttpModeIsNone(TomlDocument doc) {
+        return doc.getString("app-http", "security_mode")
+                  .map(ClusterBootstrapConfigValidator::isNone)
+                  .or(false);
+    }
+
+    private static boolean isNone(String raw) {
+        return SecurityMode.securityMode(raw)
+                           .map(mode -> mode == SecurityMode.NONE)
+                           .or(false);
     }
 
     private static final String ANY_CIDR = "0.0.0.0/0";
