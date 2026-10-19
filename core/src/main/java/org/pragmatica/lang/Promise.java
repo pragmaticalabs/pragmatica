@@ -1906,7 +1906,7 @@ public sealed interface Promise<T> permits PromiseImpl {
 
     @Contract
     private static <T> void watchAny(Promise<T> anySuccess, List<Promise<T>> inputs) {
-        var collector = resultCollector(inputs.size(), results -> anySuccess.resolve(allFailed(results)));
+        var collector = resultCollector(inputs.size(), results -> resolveAllFailed(anySuccess, results));
 
         IntStream.range(0,
                         inputs.size())
@@ -1917,8 +1917,14 @@ public sealed interface Promise<T> permits PromiseImpl {
                                                                                                                 result))));
     }
 
-    // Reached only after every input has resolved; a success has already resolved the output by then
-    // (it is delivered before its event is registered), making this resolution a no-op in that case.
+    // Runs only after every input has resolved. A success resolves the output before its event is registered,
+    // so a resolved output here means a winner exists and the composite would be discarded: build nothing.
+    private static <T> Promise<T> resolveAllFailed(Promise<T> output, Object[] results) {
+        return output.isResolved()
+               ? output
+               : output.resolve(allFailed(results));
+    }
+
     private static <T> Result<T> allFailed(Object[] results) {
         return Causes.composite(Stream.of(results).map(result -> (Result<?>) result).toArray(Result<?>[]::new)).result();
     }

@@ -188,6 +188,58 @@ public class PromiseAnyTest {
     }
 
     @Nested
+    class ExplicitFailureResultSingleInput {
+        @Test
+        void any_succeeds_explicitFailureResultVarargs_singleInput() {
+            Promise.any(THIRD.<String>result(), Promise.success("only"))
+                   .await()
+                   .onFailure(_ -> fail("Expected success"))
+                   .onSuccess(value -> assertEquals("only", value));
+        }
+
+        @Test
+        void any_succeeds_explicitFailureResultList_singleInput() {
+            Promise.any(THIRD.<String>result(), List.of(Promise.success("only")))
+                   .await()
+                   .onFailure(_ -> fail("Expected success"))
+                   .onSuccess(value -> assertEquals("only", value));
+        }
+
+        @Test
+        void any_failsWithProvidedResult_explicitFailureResultVarargs_singleInput() {
+            Promise.any(THIRD.<String>result(), FIRST.<String>promise())
+                   .await()
+                   .onSuccess(_ -> fail("Expected failure"))
+                   .onFailure(cause -> assertSame(THIRD, cause));
+        }
+
+        @Test
+        void any_failsWithProvidedResult_explicitFailureResultList_singleInput() {
+            Promise.any(THIRD.<String>result(), List.of(FIRST.<String>promise()))
+                   .await()
+                   .onSuccess(_ -> fail("Expected failure"))
+                   .onFailure(cause -> assertSame(THIRD, cause));
+        }
+    }
+
+    @Nested
+    class LateFailureAfterSuccess {
+        @Test
+        void any_keepsSuccess_whenLastInputFailsAfterWinner() {
+            var winner = Promise.<String>promise();
+            var late = Promise.<String>promise();
+            var any = Promise.any(winner, late);
+
+            winner.succeed("winner");
+            resolveOnOtherThread(late, FIRST);
+
+            any.await()
+               .onFailure(_ -> fail("Expected success"))
+               .onSuccess(value -> assertEquals("winner", value));
+        }
+    }
+
+    @Nested
     class EmptyInput {
         // An empty input can never produce a success or an event, so it resolves at once instead of hanging.
         @Test
