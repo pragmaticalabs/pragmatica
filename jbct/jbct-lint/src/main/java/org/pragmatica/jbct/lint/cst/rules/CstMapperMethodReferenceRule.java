@@ -80,9 +80,16 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         var seen = new HashSet<Integer>();
 
         // methods, and field declarations too: `static final X = opt.map(List::getFirst)` has no method around it
-        var members = Stream.concat(findAllMethods(root).stream(), findAll(root, CstNodes::isFieldDecl).stream());
+        var members = Stream.concat(findAllMethods(root).stream(), findAll(root, CstMapperMethodReferenceRule::isFieldMember).stream());
 
         return members.flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, seen, ctx));
+    }
+
+    /// A member that declares a field: the member node (the one `findAllMethods` yields for a method) holding a field declaration.
+    private static boolean isFieldMember(Cursor node) {
+        return isMemberDecl(node) && (hasChildOfRule(node, RuleKind.FIELD_DECL)
+                                      || hasChildOfRule(node, RuleKind.INTERFACE_FIELD_DECL)
+                                      || hasChildOfRule(node, RuleKind.RECORD_STATIC_FIELD));
     }
 
     /// Declared name → CST index for every type in the file (used to resolve an `X::m` receiver).

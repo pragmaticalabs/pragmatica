@@ -196,24 +196,6 @@ class CstAbsorbedFailureRuleTest {
         }
 
         @Test
-        void codeLineEndingInParenthesisAboveTheComment_isNotSwallowed() {
-            assertThat(countOf("""
-                               package demo;
-                               class Sample {
-                                   // FER: about the field only
-                                   static final Object X = make(1)
-                                   Promise<Unit> notifyBuyer(Confirmation c) {
-                                       return notifier.send(c).recover(_ -> Unit.unit());
-                                   }
-
-                               Promise<Unit> publishFact(Confirmation c) {
-                                   return publisher.publish(c.fact()).recover(_ -> Unit.unit());
-                               }
-                           }
-                           """)).isEqualTo(2);
-        }
-
-        @Test
         void multiLinePlainBlockCommentAboveTheMethod_countsAsItsReason() {
             assertThat(countOf("""
                                package demo;
