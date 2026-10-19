@@ -984,6 +984,31 @@ public interface AetherNode extends ManageableNode {
                                                        GitBackupRepository.DEFAULT_TIMEOUT);
     }
 
+    /// A6: the repair plane's current protocol — stamp digests and paged pulls — and the freshness-gated verified read
+    /// of content-addressed keys, answered with a Get- or ExistsResponse. The legacy DHT routes stay beside these for
+    /// peers still on the previous version during a rolling upgrade. Without the verified-read route every remote
+    /// verified read waits out its phase deadline before falling back to the quorum read.
+    @Contract
+    static void routeDhtRepairPlane(List<MessageRouter.Entry<?>> allEntries,
+                                    DHTNode dhtNode,
+                                    DHTNetwork dhtNetwork,
+                                    DHTAntiEntropy dhtAntiEntropy) {
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.StampDigestRequest.class,
+                                                 request -> dhtNode.handleStampDigestRequest(request,
+                                                                                             response -> dhtNetwork.send(request.sender(),
+                                                                                                                         response))));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageRequest.class,
+                                                 request -> dhtNode.handleMigrationPageRequest(request,
+                                                                                               response -> dhtNetwork.send(request.sender(),
+                                                                                                                           response))));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageResponse.class,
+                                                 dhtAntiEntropy::onMigrationPageResponse));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.VerifiedReadRequest.class,
+                                                 request -> dhtNode.handleVerifiedReadRequest(request,
+                                                                                              response -> dhtNetwork.send(request.sender(),
+                                                                                                                          response))));
+    }
+
     @SuppressWarnings("unchecked")
     private static void routeKvBackup(List<MessageRouter.Entry<?>> allEntries, KvBackupService service) {
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
@@ -4209,23 +4234,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
-        // A6: the repair plane's current protocol — stamp digests and paged pulls; the legacy routes above stay for
-        // peers still on the previous version during a rolling upgrade
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.StampDigestRequest.class,
-                                                    request -> dhtNode.handleStampDigestRequest(request,
-                                                                                                response -> dhtNetwork.send(request.sender(),
-                                                                                                                            response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageRequest.class,
-                                                    request -> dhtNode.handleMigrationPageRequest(request,
-                                                                                                  response -> dhtNetwork.send(request.sender(),
-                                                                                                                              response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageResponse.class,
-                                                    dhtAntiEntropy::onMigrationPageResponse));
-        // A6: the freshness-gated verified read of content-addressed keys; answered with a Get- or ExistsResponse
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.VerifiedReadRequest.class,
-                                                    request -> dhtNode.handleVerifiedReadRequest(request,
-                                                                                                 response -> dhtNetwork.send(request.sender(),
-                                                                                                                             response))));
+        routeDhtRepairPlane(aetherEntries, dhtNode, dhtNetwork, dhtAntiEntropy);
         // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
         // drain can confirm the chunk reached a surviving replica before halting.
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
