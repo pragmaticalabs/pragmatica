@@ -72,4 +72,41 @@ class ConfigLoaderPreflightTest {
                     .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("an inline keyring entry must be refused"))
                     .onFailure(cause -> assertThat(cause.message()).contains("storage.encryption.keys.k1"));
     }
+
+    /// Child JVM entry point: exit 0 when the pre-flight check accepts the document, 1 when it refuses; with the argument
+    /// `node`, the node's own load (which reads the process environment) is judged instead.
+    public static final class Probe {
+        public static void main(String[] args) {
+            var verdict = args.length > 0 && args[0].equals("node")
+                          ? ConfigLoader.loadFromString(BACKUP_ENABLED).isSuccess()
+                          : ConfigLoader.checkNodeDocument(TomlParser.parse(BACKUP_ENABLED).unwrap()).isSuccess();
+
+            System.exit(verdict
+                        ? 0
+                        : 1);
+        }
+    }
+
+    /// The operator's PROCESS environment (here `AETHER_BACKUP_ENABLED=yes`) must not change the pre-flight verdict. The
+    /// JVM environment cannot be changed in-process, so the check runs in a child JVM that has the variable; the node's own
+    /// load in the same child is the control that proves the variable reaches the loader.
+    @Test
+    void checkNodeDocument_ignoresTheOperatorProcessEnvironment() throws Exception {
+        assertThat(childExit("preflight")).describedAs("pre-flight with AETHER_BACKUP_ENABLED=yes in the process environment").isZero();
+        assertThat(childExit("node")).describedAs("control: the node's own load sees that variable and refuses").isEqualTo(1);
+    }
+
+    private static int childExit(String mode) throws Exception {
+        var java = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        var builder = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"), Probe.class.getName(), mode);
+
+        builder.environment().put("AETHER_BACKUP_ENABLED", "yes");
+        builder.redirectErrorStream(true);
+
+        var process = builder.start();
+
+        process.getInputStream().readAllBytes();
+
+        return process.waitFor();
+    }
 }
