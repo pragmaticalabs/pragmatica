@@ -23,7 +23,6 @@ import org.pragmatica.aether.http.security.HttpAuthenticator;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
-import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RequestContext;
@@ -161,8 +160,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
 
                                                                                                  return secure(route,
                                                                                                                config.defaultPolicy(),
-                                                                                                               authenticator,
-                                                                                                               mapper);
+                                                                                                               authenticator);
                                                                                              });
 
                                                     return new Bound(router,
@@ -172,14 +170,12 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
 
     private static <T> Route<T> secure(Route<T> route,
                                        SecurityPolicy defaultPolicy,
-                                       HttpAuthenticator authenticator,
-                                       JsonMapper mapper) {
+                                       HttpAuthenticator authenticator) {
         return Route.route(route.method(),
                            route.path(),
                            context -> authenticate(route, context, defaultPolicy, authenticator).flatMap(security -> invoke(route,
                                                                                                                             context,
-                                                                                                                            security,
-                                                                                                                            mapper)),
+                                                                                                                            security)),
                            route.contentType(),
                            route.spacers(),
                            route.name(),
@@ -210,11 +206,13 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                            : HttpStatus.FORBIDDEN.with("Route policy denied access").promise());
     }
 
+    // The rebuilt context keeps the router's codec (the generated one where the slice has it), so a request body is
+    // read in the wire form the router writes responses in: one form across Terra and Aether (#2229 F1).
     private static <T> Promise<T> invoke(Route<T> route,
                                          RequestContext context,
-                                         SecurityContext security,
-                                         JsonMapper mapper) {
-        var request = ((SliceRequestContext) context).original().withSecurity(security);
+                                         SecurityContext security) {
+        var routed = (SliceRequestContext) context;
+        var request = routed.original().withSecurity(security);
 
         return Result.lift(Causes::fromThrowable,
                            () -> ScopedValue.where(SecurityContextHolder.scopedValue(),
@@ -222,7 +220,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                             .call(() -> Objects.requireNonNull(route.handler()
                                                                                     .handle(SliceRequestContext.sliceRequestContext(request,
                                                                                                                                     route,
-                                                                                                                                    JsonCodecAdapter.forMapper(mapper))),
+                                                                                                                                    routed.jsonCodec())),
                                                                                "HTTP handler returned null Promise")))
                      .fold(Promise::failure, promise -> promise);
     }

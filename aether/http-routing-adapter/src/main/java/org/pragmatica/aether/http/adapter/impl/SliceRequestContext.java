@@ -56,6 +56,12 @@ public final class SliceRequestContext implements RequestContext {
         return httpContext;
     }
 
+    /// The codec the router decodes this request's body with, so a context rebuilt around the same request (Terra's,
+    /// after authentication) reads the body in the same wire form the router writes responses in.
+    public JsonCodec jsonCodec() {
+        return jsonCodec;
+    }
+
     public SecurityContext security() {
         return httpContext.security();
     }
