@@ -8,7 +8,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -18,18 +17,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,31 +45,16 @@ class CacheTierPartialWriteTest {
     @TempDir
     Path tempDir;
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("PartialWriteCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.ALL);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(STORAGE_LOGGER, Level.ALL, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     /// B-1 with a tier double that stores half the block and then fails — the ENOSPC shape.
@@ -312,9 +287,9 @@ class CacheTierPartialWriteTest {
             instance.put(block(64 + i)).await().onFailure(cause -> fail("puts must succeed: " + cause.message()));
         }
 
-        assertThat(appender.warnsMentioning("Cache promotion to LOCAL_DISK FAILED")).as("first failure at WARN, then DEBUG")
+        assertThat(warnsMentioning("Cache promotion to LOCAL_DISK FAILED")).as("first failure at WARN, then DEBUG")
                   .hasSize(1);
-        assertThat(appender.debugsMentioning("Cache promotion to LOCAL_DISK failed")).hasSize(4);
+        assertThat(debugsMentioning("Cache promotion to LOCAL_DISK failed")).hasSize(4);
         var full = MemoryTier.memoryTier(32);
         var fullInstance = StorageInstance.storageInstance("full",
                                                            List.of(full,
@@ -323,7 +298,7 @@ class CacheTierPartialWriteTest {
         fullInstance.put(block(64))
                     .await()
                     .onFailure(cause -> fail("a full cache tier must not fail the put: " + cause.message()));
-        assertThat(appender.warnsMentioning("Cache promotion to MEMORY")).as("TierFull is steady state, never WARN")
+        assertThat(warnsMentioning("Cache promotion to MEMORY")).as("TierFull is steady state, never WARN")
                   .isEmpty();
     }
 
@@ -492,51 +467,17 @@ class CacheTierPartialWriteTest {
         }
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(STORAGE_LOGGER);
-
-        if (STORAGE_LOGGER.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(STORAGE_LOGGER, Level.ALL, false);
-
-        configuration.addLogger(STORAGE_LOGGER, fresh);
-
-        return fresh;
+    private List<String> warnsMentioning(String fragment) {
+        return capture.messages(Level.WARN)
+                      .stream()
+                      .filter(message -> message.contains(fragment))
+                      .toList();
     }
 
-    record Captured(Level level, String message) {}
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<Captured> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(new Captured(event.getLevel(),
-                                    event.getMessage().getFormattedMessage()));
-        }
-
-        List<Captured> warnsMentioning(String fragment) {
-            return events.stream()
-                         .filter(e -> e.level() == Level.WARN && e.message()
-                                                                  .contains(fragment))
-                         .toList();
-        }
-
-        List<Captured> debugsMentioning(String fragment) {
-            return events.stream()
-                         .filter(e -> e.level() == Level.DEBUG && e.message()
-                                                                   .contains(fragment))
-                         .toList();
-        }
+    private List<String> debugsMentioning(String fragment) {
+        return capture.messages(Level.DEBUG)
+                      .stream()
+                      .filter(message -> message.contains(fragment))
+                      .toList();
     }
 }

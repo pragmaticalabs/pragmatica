@@ -22,18 +22,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -993,51 +984,34 @@ class ProjectionTest {
         /// late finalize or release emits. Removing the WARN reddens both tests.
         @Nested
         class StaleSettlementWarn {
-            private static final String LOGGER_NAME = Projection.class.getName();
-
-            private CapturingAppender appender;
-            private LoggerConfig loggerConfig;
-            private Level originalLevel;
+            private LogCapture capture;
 
             @BeforeEach
             void captureWarns() {
-                var context = (LoggerContext) LogManager.getContext(false);
-
-                appender = CapturingAppender.create("ProjectionStaleWarnCapture");
-                appender.start();
-                loggerConfig = loggerConfigFor(context.getConfiguration());
-                originalLevel = loggerConfig.getLevel();
-                loggerConfig.addAppender(appender, Level.WARN, null);
-                loggerConfig.setLevel(Level.WARN);
-                context.updateLoggers();
+                capture = LogCapture.capture(Projection.class, Level.WARN, false);
             }
 
             @AfterEach
             void releaseCapture() {
-                var context = (LoggerContext) LogManager.getContext(false);
-
-                loggerConfig.removeAppender(appender.getName());
-                loggerConfig.setLevel(originalLevel);
-                context.updateLoggers();
-                appender.stop();
+                capture.close();
             }
 
             @Test
             void expiredHolder_lateFinalize_isLoggedAsStaleAtWarn() {
                 runExpiredHolder(gate -> gate.succeed(Unit.unit()));
 
-                assertThat(appender.warns()).describedAs("the expired holder's refused finalize must be visible at WARN")
-                                            .anyMatch(line -> line.contains("was stale on finalize")
-                                                              && line.contains("msg-1"));
+                assertThat(capture.messages()).describedAs("the expired holder's refused finalize must be visible at WARN")
+                                              .anyMatch(line -> line.contains("was stale on finalize")
+                                                                && line.contains("msg-1"));
             }
 
             @Test
             void expiredHolder_lateRelease_isLoggedAsStaleAtWarn() {
                 runExpiredHolder(gate -> gate.fail(WRITE_FAILED));
 
-                assertThat(appender.warns()).describedAs("the expired holder's refused release must be visible at WARN")
-                                            .anyMatch(line -> line.contains("was stale on release")
-                                                              && line.contains("msg-1"));
+                assertThat(capture.messages()).describedAs("the expired holder's refused release must be visible at WARN")
+                                              .anyMatch(line -> line.contains("was stale on release")
+                                                                && line.contains("msg-1"));
             }
 
             /// A's fold is held past its lease, B reclaims, then `settle` completes A's fold.
@@ -1055,20 +1029,6 @@ class ProjectionTest {
                 claimToken(claims, CLAIM_KEY);
                 settle.accept(gate);
                 holder.await();
-            }
-
-            private static LoggerConfig loggerConfigFor(Configuration configuration) {
-                var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-                if (LOGGER_NAME.equals(existing.getName())) {
-                    return existing;
-                }
-
-                var fresh = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-
-                configuration.addLogger(LOGGER_NAME, fresh);
-
-                return fresh;
             }
         }
 
@@ -1153,30 +1113,6 @@ class ProjectionTest {
             settlement[0] = Settlement.APPLIED;
 
             return next;
-        }
-    }
-
-    /// In-memory log4j2 appender keeping WARN-and-above messages for assertions.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> warns() {
-            return List.copyOf(messages);
         }
     }
 

@@ -14,7 +14,7 @@ import java.lang.annotation.Target;
 /// of silently resolving to [Option#none()] or a component's `DEFAULT`.
 ///
 /// Scoped to exactly the keys the annotated record binds: a nested sub-section (for example
-/// `[topics.orders.consumers.x]`, owned by a different, dashed-by-convention parser) is never
+/// `[topics.orders.consumers.x]`, owned by a different parser) is never
 /// inspected by this check, however it is spelled.
 ///
 /// Classes without this annotation bind exactly as before — this is opt-in per config class, not a

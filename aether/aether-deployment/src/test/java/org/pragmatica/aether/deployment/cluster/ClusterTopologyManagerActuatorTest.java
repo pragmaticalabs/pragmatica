@@ -44,8 +44,8 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
+import org.pragmatica.testlogging.LogCapture;
 
-import java.io.Serializable;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -61,16 +61,6 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -796,44 +786,16 @@ class ClusterTopologyManagerActuatorTest {
     class ProvisionedInstanceRecording {
         private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
 
-        private CapturingAppender appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture appender;
 
         @BeforeEach
         void attachAppender() {
-            appender = CapturingAppender.create("CtmProvisionRecordCapture");
-            appender.start();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.WARN, null);
-            loggerConfig.setLevel(Level.WARN);
-            ctx.updateLoggers();
+            appender = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
         }
 
         @AfterEach
         void detachAppender() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            appender.stop();
-        }
-
-        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-            var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-            if (LOGGER_NAME.equals(existing.getName())) {
-                return existing;
-            }
-
-            var created = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-
-            configuration.addLogger(LOGGER_NAME, created);
-
-            return created;
+            appender.close();
         }
 
         /// The stub provisioner mints `stub-1` as the provider instance id; that id, the new node id and
@@ -851,7 +813,7 @@ class ClusterTopologyManagerActuatorTest {
                             .await();
 
             assertThat(result.isSuccess()).as("the stub provisioner succeeds: %s", result).isTrue();
-            assertThat(appender.capturedWarns())
+            assertThat(appender.messages())
                     .as("the provider instance id of a billable auto-heal VM must reach the leader's journal")
                     .anyMatch(msg -> msg.contains("instanceId=stub-1")
                                      && msg.contains("nodeId=" + newNodeId.id())
@@ -872,7 +834,7 @@ class ClusterTopologyManagerActuatorTest {
                             .await();
 
             assertThat(result.isFailure()).as("the stub was told to fail: %s", result).isTrue();
-            assertThat(appender.capturedWarns())
+            assertThat(appender.messages())
                     .as("a failed provision created no server, so it must claim no instance id")
                     .noneMatch(msg -> msg.contains("instanceId="));
         }
@@ -1968,41 +1930,17 @@ class ClusterTopologyManagerActuatorTest {
         /// Every CTM a test activates is deactivated afterwards: a refused-reap chain outlives its test otherwise and
         /// logs into the next test's appender, which reads the shared logger.
         private final List<ClusterTopologyManager> activated = new CopyOnWriteArrayList<>();
-        private CapturingAppender appender;
-        private LoggerConfig loggerConfig;
-        private Level originalLevel;
+        private LogCapture appender;
 
         @BeforeEach
         void attachAppender() {
-            appender = CapturingAppender.create("CtmRefusedReapCapture");
-            appender.start();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var existing = ctx.getConfiguration().getLoggerConfig(LOGGER_NAME);
-
-            loggerConfig = LOGGER_NAME.equals(existing.getName()) ? existing : createLoggerConfig(ctx.getConfiguration());
-            originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, Level.WARN, null);
-            loggerConfig.setLevel(Level.WARN);
-            ctx.updateLoggers();
+            appender = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
         }
 
         @AfterEach
         void detachAppender() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
             activated.forEach(ClusterTopologyManager::deactivate);
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            appender.stop();
-        }
-
-        private static LoggerConfig createLoggerConfig(Configuration configuration) {
-            var created = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-
-            configuration.addLogger(LOGGER_NAME, created);
-
-            return created;
+            appender.close();
         }
 
         private ClusterTopologyManager voterAwareCtm(TimeSpan grace) {
@@ -2052,7 +1990,7 @@ class ClusterTopologyManagerActuatorTest {
             manager.activate();
             removed(manager, DEAD);
 
-            assertThat(appender.capturedWarns()).as("the refusal names the node, that it was refused, and why")
+            assertThat(appender.messages()).as("the refusal names the node, that it was refused, and why")
                                                 .anyMatch(msg -> msg.contains(DEAD.id())
                                                                  && msg.contains("REFUSED")
                                                                  && msg.contains("still an installed voter"));
@@ -2068,7 +2006,7 @@ class ClusterTopologyManagerActuatorTest {
             removed(manager, DEAD);
             settleFor(Duration.ofMillis(900));
 
-            assertThat(appender.capturedWarns()).as("arming: the retries ran and re-read the verdict")
+            assertThat(appender.messages()).as("arming: the retries ran and re-read the verdict")
                                                 .anyMatch(msg -> msg.contains("still REFUSED"));
             assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
         }
@@ -2084,7 +2022,7 @@ class ClusterTopologyManagerActuatorTest {
             removed(manager, DEAD);
             swimAliveNodes.set(Set.of(DEAD));
             await().atMost(Duration.ofSeconds(5))
-                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("stopped")));
+                   .until(() -> appender.messages().stream().anyMatch(msg -> msg.contains("stopped")));
             voters.set(Set.of());
             settleFor(Duration.ofMillis(450));
 
@@ -2101,7 +2039,7 @@ class ClusterTopologyManagerActuatorTest {
             manager.activate();
             removed(manager, DEAD);
             await().atMost(Duration.ofSeconds(10))
-                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("instance-termination-unconfirmed") && msg.contains("refused:")));
+                   .until(() -> appender.messages().stream().anyMatch(msg -> msg.contains("instance-termination-unconfirmed") && msg.contains("refused:")));
             voters.set(Set.of());
             settleFor(Duration.ofMillis(300));
 
@@ -2129,7 +2067,7 @@ class ClusterTopologyManagerActuatorTest {
             removed(manager, DEAD);
             protect.run();
             await().atMost(Duration.ofSeconds(5))
-                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("stopped")));
+                   .until(() -> appender.messages().stream().anyMatch(msg -> msg.contains("stopped")));
             voters.set(Set.of());
             settleFor(Duration.ofMillis(450));
 
@@ -2182,7 +2120,7 @@ class ClusterTopologyManagerActuatorTest {
             removed(manager, DEAD);
             settleFor(Duration.ofMillis(650));
 
-            var ticks = appender.capturedWarns().stream()
+            var ticks = appender.messages().stream()
                                 .filter(msg -> msg.contains("still REFUSED"))
                                 .toList();
 
@@ -2199,7 +2137,7 @@ class ClusterTopologyManagerActuatorTest {
             manager.activate();
             removed(manager, DEAD);
 
-            assertThat(appender.capturedWarns()).anyMatch(msg -> msg.contains(DEAD.id())
+            assertThat(appender.messages()).anyMatch(msg -> msg.contains(DEAD.id())
                                                                  && msg.contains("not confirmed")
                                                                  && msg.contains("retries left")
                                                                  && msg.contains("stub provider refused terminate"));
@@ -2216,7 +2154,7 @@ class ClusterTopologyManagerActuatorTest {
 
             voterAwareCtm(GRACE).activate();
             await().atMost(Duration.ofSeconds(5))
-                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("REFUSED")));
+                   .until(() -> appender.messages().stream().anyMatch(msg -> msg.contains("REFUSED")));
 
             assertThat(lifecycleManager.terminatedNodeIds()).as("arming: refused while it is a voter")
                                                             .isEmpty();
@@ -2226,31 +2164,6 @@ class ClusterTopologyManagerActuatorTest {
                    .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
 
             assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
-        }
-    }
-
-    /// Collects WARN messages so a test can assert on what production actually emitted. Mirrors the
-    /// appender in `ClusterTopologyManagerCasLossLoggingTest`.
-    static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Filter filter, Layout<? extends Serializable> layout) {
-            super(name, filter, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, null, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedWarns() {
-            return List.copyOf(messages);
         }
     }
 

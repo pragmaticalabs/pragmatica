@@ -13,7 +13,7 @@
 #     guaranteed to hold an acked record; #1555's promotion gate catches the new owner up from the
 #     highest-head survivor, which is what makes CF < RF lossless (#411, #1564).
 #   - retention  = count     -> count-based eviction (never time-based) so a slow
-#     consumer is never evicted mid-test; retention-value is far larger than any
+#     consumer is never evicted mid-test; retention_value is far larger than any
 #     test event count, so nothing is ever dropped (no spurious CursorExpired).
 
 [streams.repl-failover-events]
@@ -21,5 +21,5 @@ partitions = 1
 replication_factor = 3
 confirmation_factor = 2
 retention = "count"
-retention-value = "100000"
-max-event-size = "64KB"
+retention_value = "100000"
+max_event_size = "64KB"

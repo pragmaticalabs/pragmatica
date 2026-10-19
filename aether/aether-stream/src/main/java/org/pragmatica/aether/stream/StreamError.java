@@ -434,7 +434,7 @@ public sealed interface StreamError extends Cause {
     record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
         @Override
         public String message() {
-            return "Stream '%s' retention max-count %d exceeds the indexable ring capacity %d".formatted(streamName,
+            return "Stream '%s' retention max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
                                                                                                          maxCount,
                                                                                                          maxCapacity);
         }
@@ -443,7 +443,7 @@ public sealed interface StreamError extends Cause {
     /// A retention bound below 1 (#1549): a count of 0 divided by zero and a negative count requested a
     /// negative allocation — both threw out of stream creation — and a byte or age bound of 0 creates a
     /// stream that refuses or immediately evicts every event. Rejected PRE-COMMIT on create; a fatal config
-    /// error, never retried. `bound` is `max-count`, `max-bytes` or `max-age`.
+    /// error, never retried. `bound` is `max_count`, `max_bytes` or `max_age`.
     record RetentionBoundInvalid(String streamName, String bound, long value) implements StreamError {
         @Override
         public String message() {

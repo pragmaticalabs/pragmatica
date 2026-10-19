@@ -29,8 +29,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// backend's codec calls THROW — `SliceCodec.read` on an unknown type tag (a stale entry written by
 /// a codec that no longer knows the type), `write` on an unregistered class — and a throw inside a
 /// promise mapper is neither a miss nor a failure: with a synchronous client it escaped
-/// `intercept(...)` raw, with the real client it hung. Because distributed entries never expire,
-/// a stale-codec entry made that permanent. The codec calls are now lifted, so the interceptor
+/// `intercept(...)` raw, with the real client it hung. A stale-codec entry stays a miss until it
+/// expires or is overwritten. The codec calls are now lifted, so the interceptor
 /// treats them like any backend failure: the method runs, its value is returned.
 class DHTCacheBackendCodecFailureTest {
     private static final Fn1<Object, ?> IDENTITY = Fn1.id();
@@ -40,11 +40,12 @@ class DHTCacheBackendCodecFailureTest {
     void cacheAside_staleEntryTheCodecCannotRead_isAMiss_andTheMethodRuns() {
         var storage = new ConcurrentHashMap<String, byte[]>();
 
-        storage.put("ns:k", "written-by-an-older-codec".getBytes(UTF_8));
+        storage.put("ns:k", DHTCacheBackend.envelope(Long.MAX_VALUE, "written-by-an-older-codec".getBytes(UTF_8)));
         var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(storage),
                                                       new ThrowingCodec(),
                                                       new ThrowingCodec(),
-                                                      "ns");
+                                                      "ns",
+                                                      60);
         var calls = new AtomicInteger();
         var intercepted = new CacheMethodInterceptor(backend, CacheStrategy.CACHE_ASIDE, IDENTITY).intercept((String request) -> Promise.success(computed(calls,
                                                                                                                                                           request)));
@@ -62,7 +63,8 @@ class DHTCacheBackendCodecFailureTest {
         var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(new ConcurrentHashMap<>()),
                                                       new ThrowingCodec(),
                                                       new ThrowingCodec(),
-                                                      "ns");
+                                                      "ns",
+                                                      60);
         var calls = new AtomicInteger();
         var intercepted = new CacheMethodInterceptor(backend, CacheStrategy.WRITE_THROUGH, IDENTITY).intercept((String request) -> Promise.success(computed(calls,
                                                                                                                                                             request)));
@@ -80,11 +82,12 @@ class DHTCacheBackendCodecFailureTest {
     void backend_codecThrow_isAFailedPromise_notAThrow() {
         var storage = new ConcurrentHashMap<String, byte[]>();
 
-        storage.put("ns:k", "stale".getBytes(UTF_8));
+        storage.put("ns:k", DHTCacheBackend.envelope(Long.MAX_VALUE, "stale".getBytes(UTF_8)));
         var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(storage),
                                                       new ThrowingCodec(),
                                                       new ThrowingCodec(),
-                                                      "ns");
+                                                      "ns",
+                                                      60);
 
         backend.get("k").await(TIMEOUT).onSuccess(_ -> fail("decode threw; the promise must fail"));
         backend.put("k", "v").await(TIMEOUT).onSuccess(_ -> fail("encode threw; the promise must fail"));

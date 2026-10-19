@@ -30,6 +30,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Functions.*;
 import org.pragmatica.lang.Tuple.*;
@@ -75,7 +76,7 @@ import static org.pragmatica.lang.utils.ResultCollector.resultCollector;
 /// | Construct | `success(value)`, `cause.promise()` (preferred over failure factories), `resolved(result)`, `promise(consumer)` (manual resolution), `lift(errorMapper, supplier)` (exception boundary) |
 /// | Transform (dependent) | `map(fn)`, `flatMap(fn)` (+ `Supplier` forms), `mapToUnit()` |
 /// | Context-preserving stages | `mapWith(op, factory)` / `flatMapWith(op, factory)` / `ensureWith(op)` + field-scoped getter forms — `ensureWith` AWAITS the operation and gates the chain on its success, unlike `onSuccess`. See `core/docs/knowledge-gathering-pipelines.md` |
-/// | Aggregate | static `all(p1..pN)` (fail-fast), `allOrCancel(...)` (cancels remaining on failure), `allOf(list)`, `allOfOrCancel(list)`, `any(...)` (first success); instance `all(fn1..fnN)` / `allOrCancel(...)` → `MapperN` (multi-projection) |
+/// | Aggregate | static `all(p1..pN)` (waits for every input, collects all failures), `allOrCancel(...)` (fail-fast: first failure, cancels the rest), `allOf(list)`, `allOfOrCancel(list)`, `any(...)` (first success; when every input fails, a composite of all their causes); instance `all(fn1..fnN)` / `allOrCancel(...)` → `MapperN` (multi-projection) |
 /// | Side effects (independent) | `onSuccess`/`onFailure`/`onResult` families — started on resolution, NOT awaited, cannot gate the chain |
 /// | Time | `timeout(timeSpan)` and the async scheduling entry points |
 /// | Terminal | `await()` — blocking; allowed in tests, requires `@TerminalOperation` elsewhere |
@@ -1833,26 +1834,34 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with the provided `failureResult`.
     ///
+    /// With no inputs the created instance is resolved at once with `failureResult`.
+    ///
     /// @param failureResult Result in case if no instances were resolved with success
     /// @param promises      Input promises
     ///
     /// @return Created instance
     @SafeVarargs
     static <T> Promise<T> any(Result<T> failureResult, Promise<T>... promises) {
-        return Promise.promise(anySuccess -> threshold(promises.length, () -> anySuccess.resolve(failureResult)).apply(at -> List.of(promises).forEach(promise -> promise.withResult(result -> result.onSuccess(anySuccess::succeed)
-                                                                                                                                                                                                     .onSuccessRun(() -> cancelAll(promises))
-                                                                                                                                                                                                     .onResultRun(at::registerEvent)))));
+        return any(failureResult, List.of(promises));
     }
 
     /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with the provided `failureResult`.
     ///
+    /// With no inputs the created instance is resolved at once with `failureResult`.
+    ///
     /// @param failureResult Result in case if no instances were resolved with success
     /// @param promises      Input promises
     ///
     /// @return Created instance
     static <T> Promise<T> any(Result<T> failureResult, List<Promise<T>> promises) {
+        return promises.isEmpty()
+               ? Promise.resolved(failureResult)
+               : anyWithFailure(failureResult, promises);
+    }
+
+    private static <T> Promise<T> anyWithFailure(Result<T> failureResult, List<Promise<T>> promises) {
         return Promise.promise(anySuccess -> threshold(promises.size(), () -> anySuccess.resolve(failureResult)).apply(at -> promises.forEach(promise -> promise.withResult(result -> result.onSuccess(anySuccess::succeed)
                                                                                                                                                                                             .onSuccessRun(() -> cancelAll(promises))
                                                                                                                                                                                             .onResultRun(at::registerEvent)))));
@@ -1860,27 +1869,58 @@ public sealed interface Promise<T> permits PromiseImpl {
 
     /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
-    /// are resolved with success, then the created instance will be resolved with [CoreError.Cancelled].
+    /// are resolved with success, then the created instance will be resolved with a [Causes.CompositeCause] holding the cause of every input,
+    /// in input order (not completion order), once the last input has failed.
+    ///
+    /// With no inputs the returned promise is resolved at once with [CoreError#emptyAny()].
     ///
     /// @param promises Input promises
     ///
     /// @return Created instance
-    @SuppressWarnings("unchecked")
     @SafeVarargs
     static <T> Promise<T> any(Promise<T>... promises) {
-        return any((Result<T>) OTHER_SUCCEEDED, promises);
+        return anyOrComposite(List.of(promises));
     }
 
     /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
-    /// are resolved with success, then the created instance will be resolved with [CoreError.Cancelled].
+    /// are resolved with success, then the created instance will be resolved with a [Causes.CompositeCause] holding the cause of every input,
+    /// in input order (not completion order), once the last input has failed.
+    ///
+    /// With no inputs the returned promise is resolved at once with [CoreError#emptyAny()].
     ///
     /// @param promises Input promises
     ///
     /// @return Created instance
-    @SuppressWarnings("unchecked")
     static <T> Promise<T> any(List<Promise<T>> promises) {
-        return any((Result<T>) OTHER_SUCCEEDED, promises);
+        return anyOrComposite(promises);
+    }
+
+    private static <T> Promise<T> anyOrComposite(List<Promise<T>> promises) {
+        var inputs = List.copyOf(promises);
+
+        return inputs.isEmpty()
+               ? CoreError.emptyAny().promise()
+               : Promise.promise(anySuccess -> watchAny(anySuccess, inputs));
+    }
+
+    @Contract
+    private static <T> void watchAny(Promise<T> anySuccess, List<Promise<T>> inputs) {
+        var collector = resultCollector(inputs.size(), results -> anySuccess.resolve(allFailed(results)));
+
+        IntStream.range(0,
+                        inputs.size())
+                 .forEach(index -> inputs.get(index)
+                                         .withResult(result -> result.onSuccess(anySuccess::succeed)
+                                                                     .onSuccessRun(() -> cancelAll(inputs))
+                                                                     .onResultRun(() -> collector.registerEvent(index,
+                                                                                                                result))));
+    }
+
+    // Reached only after every input has resolved; a success has already resolved the output by then
+    // (it is delivered before its event is registered), making this resolution a no-op in that case.
+    private static <T> Result<T> allFailed(Object[] results) {
+        return Causes.composite(Stream.of(results).map(result -> (Result<?>) result).toArray(Result<?>[]::new)).result();
     }
 
     /// **[Resolution]**
@@ -2910,8 +2950,6 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     Promise<Unit> UNIT = Promise.resolved(unitResult());
-
-    Result<?> OTHER_SUCCEEDED = new CoreError.Cancelled("Cancelled because other Promise instance succeeded").result();
 
     CoreError.Cancelled PROMISE_CANCELLED = new CoreError.Cancelled("Promise cancelled");
 

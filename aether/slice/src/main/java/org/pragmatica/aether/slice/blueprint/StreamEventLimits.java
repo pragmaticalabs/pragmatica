@@ -6,7 +6,7 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.consensus.net.OutboundMessageLimit;
 
 
-/// The largest `max-event-size` a stream may declare (#1937): one event must fit ONE transport frame, because replication
+/// The largest `max_event_size` a stream may declare (#1937): one event must fit ONE transport frame, because replication
 /// and catch-up both ship a single oversized event alone in its own message (a chunk never splits an event).
 ///
 /// The ceiling is [OutboundMessageLimit#MAX_TRANSFER_BYTES] (the 32 MiB frame less its reserve, the bound every whole
@@ -18,6 +18,6 @@ public interface StreamEventLimits {
     /// a `ReplicateEvents` envelope is 324 bytes and a `CatchupResponse` 306 bytes plus 72 per history entry, for a stream
     /// name of 192 characters and a node id of 65.
     long EVENT_ENVELOPE_RESERVE_BYTES = 4096L;
-    /// The ceiling a declared `max-event-size` may not exceed.
+    /// The ceiling a declared `max_event_size` may not exceed.
     long MAX_EVENT_SIZE_BYTES = OutboundMessageLimit.MAX_TRANSFER_BYTES - EVENT_ENVELOPE_RESERVE_BYTES;
 }

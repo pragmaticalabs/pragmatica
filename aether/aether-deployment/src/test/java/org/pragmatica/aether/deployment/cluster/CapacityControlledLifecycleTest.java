@@ -37,13 +37,18 @@ class CapacityControlledLifecycleTest {
         @Override public <T> T read(ByteBuf buffer) { return null; }
     });
     private final AtomicInteger creates = new AtomicInteger();
+    private final AtomicInteger listings = new AtomicInteger();
     /// What the provider's listing answers while a fleet inventory is being initialized; a test holds it pending to keep the initialization in flight.
     private final java.util.concurrent.atomic.AtomicReference<Promise<List<InstanceInfo>>> listing = new java.util.concurrent.atomic.AtomicReference<>(Promise.success(List.of()));
+    /// What the provider lists for a source that has instances of its own; a source absent here answers with `listing`.
+    /// Sources whose provider listing fails.
+    private final java.util.Set<String> failingSources = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Map<String, List<InstanceInfo>> sourceInstances = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.concurrent.atomic.AtomicReference<List<InstanceInfo>> inventory = new java.util.concurrent.atomic.AtomicReference<>(List.of());
     private final NodeLifecycleManager provider = new NodeLifecycleManager() {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             creates.incrementAndGet();
-            assertThat(ledger().allocated()).isEqualTo(1);
+            assertThat(ledger().allocated()).isGreaterThanOrEqualTo(creates.get());
             return Causes.cause("Provider timed out after accepting request").promise();
         }
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec, String binding) { return provisionNode(spec); }
@@ -55,7 +60,13 @@ class CapacityControlledLifecycleTest {
         @Override public boolean isCloudManaged() { return true; }
         @Override public Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source) { return Promise.success(inventory.get()); }
         @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) { return listing.get(); }
-        @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) { return listing.get(); }
+        @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) {
+            listings.incrementAndGet();
+            if (failingSources.contains(source.value())) {
+                return Causes.<List<InstanceInfo>>cause(source.value() + " credentials rejected").promise();
+            }
+            return Option.option(sourceInstances.get(source.value())).fold(listing::get, Promise::success);
+        }
     };
     private final NodeLifecycleManager lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
         commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 1);
@@ -180,6 +191,187 @@ class CapacityControlledLifecycleTest {
 
         assertThat(ledger().inventoryComplete()).isTrue();
         third.onFailure(cause -> assertThat(cause).isNotInstanceOf(FleetInventoryInitializing.class));
+    }
+
+    private static String operatorConfig(String source) {
+        return """
+            config_version = "1.0.0"
+            [cluster]
+            name = "test"
+            version = "1.0.0"
+            [source.%s]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "token"
+            region = "region"
+            [source.%s.core]
+            count = 3
+            instance_type = "small"
+            """.formatted(source, source);
+    }
+
+    private long configVersion = 2L;
+
+    private void commitOperatorConfig() {
+        commitOperatorConfig("east");
+    }
+
+    private void commitOperatorConfig(String source) {
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+                                 new AetherValue.ClusterConfigValue(Option.some(operatorConfig(source)), "test", "1.0.0", List.of(), 3, 3, "", configVersion++, 0L)));
+    }
+
+    /// #2142: the seed completes the inventory for the one implicit local source. An operator configuration committed afterwards names a source
+    /// whose pre-existing labelled instance was never listed; admitting on that source before listing it under-counts the fleet and buys a
+    /// paid instance past the limit. The source must be inventoried before the ledger admits on it, so the existing instance fills the last slot.
+    @Test
+    void sourceCommittedAfterTheSeed_isInventoriedBeforeTheLedgerAdmitsOnIt() {
+        var twoSlots = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 2);
+
+        commitSourceConfig();
+        twoSlots.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        assertThat(ledger().inventoryComplete()).as("the seed completed the inventory").isTrue();
+        assertThat(ledger().allocated()).isEqualTo(1);
+
+        sourceInstances.put("east", List.of(observedCore("preexisting")));
+        commitOperatorConfig();
+        var refusal = twoSlots.provisionNode(spec("second", "east")).await();
+
+        assertThat(creates.get()).as("no create was dispatched past the limit").isEqualTo(1);
+        assertThat(ledger().allocated()).as("the pre-existing instance was counted").isEqualTo(2);
+        refusal.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("admitted past the limit"))
+               .onFailure(cause -> assertThat(cause).isEqualTo(CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE));
+    }
+
+    /// Positive control for the test above, and the cost bound of the fix: once a source is inventoried it is not listed again on later
+    /// admissions, so the fix adds one listing per source, not one per provision.
+    @Test
+    void inventoriedSource_isNotListedAgainOnLaterAdmissions() {
+        var twoSlots = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 5);
+
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        commitOperatorConfig();
+        twoSlots.provisionNode(spec("first", "east")).await();
+        var afterFirst = listings.get();
+        twoSlots.provisionNode(spec("second", "east")).await();
+
+        assertThat(afterFirst).as("the committed source was listed on first admission").isEqualTo(1);
+        assertThat(listings.get()).as("and not again on the second").isEqualTo(afterFirst);
+        assertThat(creates.get()).isEqualTo(2);
+    }
+
+    /// Leader loss: a source listed while this instance is not the active leader is returned unobserved, so it must NOT
+    /// be marked inventoried; once leadership is back the source is listed and counted before admission.
+    @Test
+    void sourceListedWithoutLeadership_isInventoriedAgainOnceLeaderAndNeverAdmittedUncounted() {
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var twoSlots = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), leading::get, () -> 2);
+
+        commitSourceConfig();
+        twoSlots.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        sourceInstances.put("east", List.of(observedCore("preexisting")));
+        commitOperatorConfig();
+        leading.set(false);
+        var offLeader = twoSlots.provisionNode(spec("second", "east")).await();
+        leading.set(true);
+        var refusal = twoSlots.provisionNode(spec("third", "east")).await();
+
+        assertThat(offLeader.isFailure()).as("nothing is admitted while not the leader").isTrue();
+        assertThat(creates.get()).as("no create was dispatched past the limit").isEqualTo(1);
+        assertThat(ledger().allocated()).as("the pre-existing instance was counted once leader again").isEqualTo(2);
+        assertThat(refusal.isFailure()).isTrue();
+    }
+
+    /// Even a source with nothing on it is not "inventoried" by a listing taken while not the active leader: nothing was
+    /// observed under a term, so the source is listed again when leadership returns.
+    @Test
+    void emptySourceListedWithoutLeadership_isListedAgainOnceLeader() {
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var twoSlots = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), leading::get, () -> 2);
+
+        commitSourceConfig();
+        twoSlots.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        commitOperatorConfig();
+        var before = listings.get();
+        leading.set(false);
+        twoSlots.provisionNode(spec("second", "east")).await();
+        leading.set(true);
+        twoSlots.provisionNode(spec("third", "east")).await();
+
+        assertThat(listings.get() - before).as("east listed once off-leader and once again as leader").isEqualTo(2);
+    }
+
+    /// Termination must not depend on listing an unrelated, newly committed source.
+    @Test
+    void terminate_succeeds_whenANewlyCommittedSourceCannotBeListed() {
+        commitSourceConfig();
+        lifecycle.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        commitOperatorConfig();
+        failingSources.add("east");
+        var node = new NodeId("seeded");
+
+        var terminated = lifecycle.terminateNode(node, SourceName.DEFAULT).await();
+
+        assertThat(terminated.isSuccess()).as("terminate: %s", terminated).isTrue();
+        assertThat(listings.get()).as("east was never listed for a termination").isEqualTo(1);
+    }
+
+    /// The binding-checked overload carries the same contract: it must not list an unrelated, newly committed source.
+    @Test
+    void terminateWithBinding_succeeds_whenANewlyCommittedSourceCannotBeListed() {
+        commitSourceConfig();
+        lifecycle.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        commitOperatorConfig();
+        failingSources.add("east");
+        var node = new NodeId("seeded");
+
+        var terminated = lifecycle.terminateNode(node, SourceName.DEFAULT, "binding").await();
+
+        assertThat(terminated.isSuccess()).as("terminate with binding: %s", terminated).isTrue();
+        assertThat(listings.get()).as("east was never listed for a termination").isEqualTo(1);
+    }
+
+    /// A source removed from the configuration and later committed again is listed again: instances created on it in
+    /// between were never counted.
+    @Test
+    void sourceRemovedAndReAdded_isListedAgain() {
+        var tenSlots = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 10);
+
+        commitSourceConfig();
+        tenSlots.provisionNode(spec("seeded", SourceName.DEFAULT.value())).await();
+        commitOperatorConfig("east");
+        tenSlots.provisionNode(spec("e1", "east")).await();
+        commitOperatorConfig("west");
+        tenSlots.provisionNode(spec("w1", "west")).await();
+        sourceInstances.put("east", List.of(observedCore("created-while-east-was-absent")));
+        commitOperatorConfig("east");
+        tenSlots.provisionNode(spec("e2", "east")).await();
+
+        assertThat(ledger().allocated()).as("seeded, e1, w1, the late instance, e2").isEqualTo(5);
+    }
+
+    /// The inventory mark can be lost after every source was listed (the commit is refused). The retry must still reach
+    /// the mark: sources all seen is not the same as the ledger being complete.
+    @Test
+    void lostCompletionMark_isRetriedEvenWhenEverySourceWasAlreadyListed() {
+        var refuseNext = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var flaky = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> refuseNext.getAndSet(false)
+                        ? Promise.success(List.<Object>of())
+                        : Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 2);
+
+        commitSourceConfig();
+        var first = flaky.provisionNode(spec("first", SourceName.DEFAULT.value())).await();
+        var second = flaky.provisionNode(spec("second", SourceName.DEFAULT.value())).await();
+
+        assertThat(first.isFailure()).as("the first attempt lost the completion mark").isTrue();
+        assertThat(ledger().inventoryComplete()).as("the retry completed it: %s", second).isTrue();
+        assertThat(creates.get()).as("and the retry was admitted").isEqualTo(1);
     }
 
     private static InstanceInfo observedCore(String node) {

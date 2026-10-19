@@ -24,7 +24,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 | Surface | Exposes | CLI |
 |---------|---------|-----|
-| `GET /api/v1/events` | The `ClusterEvent` stream — `NODE_FAILED` (CRITICAL), `NODE_LEFT` (WARNING), `LEADER_LOST` / `LEADER_ELECTED`, `QUORUM_LOST` (CRITICAL) / `QUORUM_ESTABLISHED`, `SELF_DRAIN_INITIATED` (WARNING), `DEPARTURE_PUSH_INCOMPLETE`, `SCALE_CAPPED`, `STREAM_MEMORY_EXCEEDED`, `OPERATOR_WARNING` (identified by `details.code`) (`ClusterEvent.java`, 35 sealed variants) | `aether events` |
+| `GET /api/v1/events` | The `ClusterEvent` stream — `NODE_FAILED` (CRITICAL), `NODE_LEFT` (WARNING), `LEADER_LOST` / `LEADER_ELECTED`, `QUORUM_LOST` (CRITICAL, voters only; an observer that goes passive raises the `observer-consensus-lagging` `OPERATOR_WARNING` and, once observing again, `observer-consensus-resumed`) / `QUORUM_ESTABLISHED`, `SELF_DRAIN_INITIATED` (WARNING), `DEPARTURE_PUSH_INCOMPLETE`, `SCALE_CAPPED`, `STREAM_MEMORY_EXCEEDED`, `OPERATOR_WARNING` (identified by `details.code`) (`ClusterEvent.java`, 35 sealed variants) | `aether events` |
 | `GET /api/v1/health` | `status` (healthy / degraded / unhealthy), `quorum` (true/false), `nodeCount`, `sliceCount` | `aether health`, `aether nodes health` |
 | `GET /api/v1/nodes/lifecycle/<id>` | Per-node lifecycle state (ON_DUTY, DRAINING, DECOMMISSIONED, …) | `aether nodes lifecycle` |
 | `aether cluster membership` | Per-peer SWIM FSM state + the quorum-loss self-drain signal | (CLI) |
@@ -79,7 +79,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Quorum loss / minority partition (self-drain)
 
 - **Symptom:** nodes on the minority side reject writes and then exit; `/api/v1/health` reports `quorum:false` on that side.
-- **Detection surface:** `/api/v1/events` emits `QUORUM_LOST` (CRITICAL) and `SELF_DRAIN_INITIATED` (WARNING, `reason` ∈ `sustained-below-quorum` | `quorum-disappeared` | `rabia-paused`); the minority JVMs exit with **code 2** (distinguishes self-drain from clean=0 / SIGKILL=137); `aether cluster membership` carries the self-drain signal.
+- **Detection surface:** `/api/v1/events` emits `QUORUM_LOST` (CRITICAL, raised by voters; a non-voter raises `observer-consensus-lagging` instead) and `SELF_DRAIN_INITIATED` (WARNING, `reason` ∈ `sustained-below-quorum` | `quorum-disappeared` | `rabia-paused`); the minority JVMs exit with **code 2** (distinguishes self-drain from clean=0 / SIGKILL=137); `aether cluster membership` carries the self-drain signal.
 - **Automatic response:** a node that cannot reach `core/2 + 1` peers self-terminates via `Runtime.halt(2)` once the split timeout has elapsed below the threshold; a majority, if one exists, continues serving. A drained node never returns under its NodeId; replacing it needs a committed quorum. If no group holds a majority, every core halts: see the [no-majority runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted).
 - **Budget:** self-drain exit ≤45 s with the harness's configured 8 s window (8 s threshold + 30 s grace + 7 s headroom; wall-clock ~38 s cloud-proven) (C12); with the default 15 s split timeout the drain begins 18-19 s after a total cut `[measured: five-node Ember probe]`. The harness (C16) restarts the same five containers and expects N healthy cores within 60 s (Docker; cloud after a full drain: reap plus fresh bootstrap, ~10 min budget, #1051); that is not the supported operator recovery. The self-drain state machine is a `[CONTRACT-GAP]` (code-only; the drain procedure's single-shot and grace behaviour is unit-tested in `DrainProcedureTest`).
 - **Degraded / at risk:** the minority is unavailable **by design** (consistency over availability). Acked data on the majority is safe; the minority's in-flight uncommitted writes are rejected, not lost-then-served.
@@ -253,7 +253,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Core network partition
 
 - **Symptom:** the minority side loses quorum and self-drains; the majority continues.
-- **Detection surface:** `/api/v1/events` `QUORUM_LOST`; `aether cluster membership`.
+- **Detection surface:** `/api/v1/events` `QUORUM_LOST` (raised by voters only; a non-voter raises the WARNING `observer-consensus-lagging`); `aether cluster membership`.
 - **Automatic response:** identical to quorum-loss self-drain; on heal, CTM re-provisions to N.
 - **Budget:** prompt eviction ~3 s on a dual-signal partition; heal to N ON_DUTY ≤30 s (12-network C10); post-event convergence window 180 s. **SWIM's 15 s faulty-detection budget is a `[CONTRACT-GAP]`** — demoted to a warning, accepted in the [16 s, 60 s] band.
 - **Degraded / at risk:** minority unavailable (by design); majority serves.

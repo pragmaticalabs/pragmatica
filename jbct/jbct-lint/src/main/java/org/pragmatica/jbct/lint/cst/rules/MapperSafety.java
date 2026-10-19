@@ -70,6 +70,37 @@ public sealed interface MapperSafety permits MapperSafety.unused {
                                          + "|\\.orElseThrow\\s*\\("
                                          + "|\\.iterator\\s*\\(\\s*\\)\\s*\\.next\\s*\\(\\s*\\)");
 
+    /// Container partial accessors that take no argument, so a method REFERENCE to them (`List::getFirst`) is as partial as the
+    /// lambda `xs -> xs.getFirst()`. Shared by JBCT-TOT-02 (flags the reference by name) and JBCT-STY-05 (must not suggest
+    /// rewriting a lambda that TOT-01 catches into a reference TOT-01 cannot see). Bare `get` is deliberately absent, for the
+    /// reason given on [#PARTIAL_OP].
+    Set<String> PARTIAL_ACCESSOR_NAMES = Set.of("getFirst", "getLast");
+
+    /// JDK receivers whose `getFirst` / `getLast` throw `NoSuchElementException` on an empty container (the `SequencedCollection`
+    /// family and the `Deque`s). A receiver outside this set is not guessed at: a user type's `getFirst` is often a total
+    /// accessor.
+    Set<String> PARTIAL_ACCESSOR_RECEIVERS = Set.of("List",
+                                                    "ArrayList",
+                                                    "LinkedList",
+                                                    "CopyOnWriteArrayList",
+                                                    "Deque",
+                                                    "ArrayDeque",
+                                                    "BlockingDeque",
+                                                    "Vector",
+                                                    "ConcurrentSkipListSet",
+                                                    "LinkedBlockingDeque",
+                                                    "ConcurrentLinkedDeque",
+                                                    "SequencedCollection",
+                                                    "SequencedSet",
+                                                    "LinkedHashSet",
+                                                    "SortedSet",
+                                                    "NavigableSet",
+                                                    "TreeSet");
+
+    /// Receivers whose `next` throws on exhaustion: `Iterator`, `ListIterator` and the three `PrimitiveIterator` nestings, whose
+    /// simple names (`PrimitiveIterator.OfInt::next` reads as `OfInt`) are what the reference match sees.
+    Set<String> ITERATOR_RECEIVERS = Set.of("Iterator", "ListIterator", "OfInt", "OfLong", "OfDouble");
+
     /// Java single-line and text-block string literals — masked before op-scanning so a partial-op
     /// pattern never matches inside a literal, and so a string argument (`get("key")`) is never
     /// seen as empty / integer parens.
@@ -88,6 +119,9 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// Line (`//`) and block (`/* */`) comments — blanked before scanning so a marker or guard
     /// mentioned only in a comment is never mistaken for code.
     Pattern COMMENT = Pattern.compile("//[^\\n]*|/\\*.*?\\*/", Pattern.DOTALL);
+
+    /// A string literal or a comment, whichever starts first: lets one scan tell the two apart.
+    Pattern STRING_OR_COMMENT = Pattern.compile(STRING_LITERAL.pattern() + "|" + COMMENT.pattern(), Pattern.DOTALL);
 
     /// True when the given code fragment contains a partial operation.
     ///
@@ -179,6 +213,28 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// argument rather than empty parens.
     static String maskForOps(String code) {
         return blankComments(fillMatches(code, STRING_LITERAL.matcher(code), '#'));
+    }
+
+    /// Comment-only view of `code`: everything except comment text becomes a space (newlines preserved). Strings and comments
+    /// are found in ONE left-to-right pass, so a `//` inside a literal is not read as a comment, a tag spelled only in a literal
+    /// is not found, and a quote inside a comment (`// "FER": degrade`) stays part of that comment.
+    static String commentsOnly(String code) {
+        var sb = new StringBuilder(code);
+        var tokens = STRING_OR_COMMENT.matcher(code);
+
+        for (var i = 0; i < sb.length(); i++) {
+            if (sb.charAt(i) != '\n' && sb.charAt(i) != '\r') {
+                sb.setCharAt(i, ' ');
+            }
+        }
+
+        while (tokens.find()) {
+            if (tokens.group().startsWith("//") || tokens.group().startsWith("/*")) {
+                sb.replace(tokens.start(), tokens.end(), tokens.group());
+            }
+        }
+
+        return sb.toString();
     }
 
     /// Replaces every string-literal character with a space (newlines preserved).

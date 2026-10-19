@@ -229,9 +229,8 @@ public interface SliceRouter {
             }
 
             private Option<String> headerValue(HttpRequestContext request) {
-                return Option.option(request.headers().get(mountMode.headerName().toLowerCase()))
-                             .filter(values -> !values.isEmpty())
-                             .map(List::getFirst);
+                return Option.option(request.headers().get(mountMode.headerName().toLowerCase())).flatMap(values -> Option.from(values.stream()
+                                                                                                                                      .findFirst()));
             }
 
             private HttpResponseData versionError(Cause cause, HttpRequestContext request) {

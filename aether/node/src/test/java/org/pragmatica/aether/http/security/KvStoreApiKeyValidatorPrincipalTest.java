@@ -91,6 +91,50 @@ class KvStoreApiKeyValidatorPrincipalTest {
         }
     }
 
+    /// Only the FIRST value of the API-key header is the credential, whichever spelling of the header carries it.
+    @Nested
+    class HeaderValueSelection {
+        @Test
+        void validate_accepts_firstValueIsTheKey() {
+            assertThat(authenticates(Map.of("X-API-Key", List.of(PLAINTEXT, "other")))).isTrue();
+        }
+
+        @Test
+        void validate_rejects_keyInSecondValue_exactCase() {
+            assertThat(authenticates(Map.of("X-API-Key", List.of("bad", PLAINTEXT)))).isFalse();
+        }
+
+        @Test
+        void validate_rejects_keyInSecondValue_caseInsensitive() {
+            assertThat(authenticates(Map.of("x-api-key", List.of("bad", PLAINTEXT)))).isFalse();
+        }
+
+        @Test
+        void validate_rejects_emptyValueList() {
+            assertThat(authenticates(Map.of("X-API-Key", List.of()))).isFalse();
+        }
+
+        @Test
+        void validate_accepts_emptyListThenKeyUnderAnotherCase() {
+            var headers = new java.util.LinkedHashMap<String, List<String>>();
+
+            headers.put("x-api-key", List.of());
+            headers.put("X-API-KEY", List.of(PLAINTEXT));
+            assertThat(authenticates(headers)).isTrue();
+        }
+
+        private boolean authenticates(Map<String, List<String>> headers) {
+            registerKey(AuthorizationRole.VIEWER);
+
+            var holder = new boolean[1];
+
+            validator().validate(HttpRequestContext.httpRequestContext("/api/v1/whoami", "GET", Map.<String, List<String>> of(), headers, "req-2293"),
+                                 SecurityPolicy.apiKeyRequired())
+                       .onSuccess(context -> holder[0] = true);
+            return holder[0];
+        }
+    }
+
     private void registerKey(AuthorizationRole authorizationRole) {
         var keyValue = ApiKeyValue.apiKeyValue(KEY_ID,
                                                KvStoreApiKeyValidator.hashKey(PLAINTEXT),

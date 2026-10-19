@@ -37,7 +37,7 @@ That's it. No Spring annotations, no dependency injection framework, no HTTP cli
 - **No service discovery** — the runtime tracks where every slice instance lives
 - **No retry logic** — built-in retry with exponential backoff and node failover
 - **No circuit breakers** — the reliability fabric handles failure automatically
-- **No serialization code** — request/response types are serialized transparently (Fury binary serialization for inter-node, JSON for HTTP)
+- **No serialization code** — request/response types are serialized transparently (generated binary codecs for inter-node, JSON for HTTP)
 
 ### Slice Lifecycle
 

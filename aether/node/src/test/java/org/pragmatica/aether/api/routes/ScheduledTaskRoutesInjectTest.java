@@ -245,6 +245,52 @@ class ScheduledTaskRoutesInjectTest {
         }
     }
 
+    /// #1155: /inject takes the claim a scheduled fire takes. When a fire (or another manual run) holds it, the inject is
+    /// refused with a conflict and the task is not invoked; when it is free, it is held for the invocation and released after.
+    @Nested
+    class Claim {
+        @Test
+        void inject_whileTheTaskClaimIsHeld_isRefused_andInvokesNothing() {
+            registry.addTask(SECTION, ARTIFACT, METHOD, ExecutionMode.SINGLE);
+            var held = new ClaimManager(false);
+            var routes = ScheduledTaskRoutes.scheduledTaskRoutes(registry, held, () -> node.asManageableNode(), invoker.asSliceInvoker(), stateRegistry, () -> true);
+
+            var result = invokeInject(routes, new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure(), () -> "an inject over a held claim must be refused: " + result);
+            assertTrue(invoker.invocations.isEmpty(), () -> "nothing may be invoked: " + invoker.invocations);
+        }
+
+        @Test
+        void inject_whenTheClaimIsFree_holdsItForTheRun_andReleasesIt() {
+            registry.addTask(SECTION, ARTIFACT, METHOD, ExecutionMode.SINGLE);
+            var free = new ClaimManager(true);
+            var routes = ScheduledTaskRoutes.scheduledTaskRoutes(registry, free, () -> node.asManageableNode(), invoker.asSliceInvoker(), stateRegistry, () -> true);
+
+            var result = invokeInject(routes, new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isSuccess(), () -> "free claim: the inject runs: " + result);
+            assertTrue(free.claimed.get() == 1 && free.released.get() == 1, () -> "claimed " + free.claimed + ", released " + free.released);
+        }
+    }
+
+    private static final class ClaimManager implements ScheduledTaskManager {
+        final boolean free;
+        final java.util.concurrent.atomic.AtomicInteger claimed = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger released = new java.util.concurrent.atomic.AtomicInteger();
+
+        ClaimManager(boolean free) {
+            this.free = free;
+        }
+
+        @Override public void onLeaderChange(LeaderChange leaderChange) {}
+        @Override public void onQuorumStateChange(ClusterStateNotification notification) {}
+        @Override public int activeTimerCount() { return 0; }
+        @Override public void stop() {}
+        @Override public boolean tryClaim(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { return free && claimed.incrementAndGet() > 0; }
+        @Override public void release(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { released.incrementAndGet(); }
+    }
+
     @Nested
     class DevModeGate {
 

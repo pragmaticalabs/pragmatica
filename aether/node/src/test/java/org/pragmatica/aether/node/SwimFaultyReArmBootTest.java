@@ -9,19 +9,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Stream;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,6 +43,7 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
+import org.pragmatica.testlogging.LogCapture;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,27 +93,14 @@ class SwimFaultyReArmBootTest {
     private int selfPort;
     private SwimTransport gossipTransport;
     private InetSocketAddress gossipAddress;
-    private CapturingAppender appender;
-    private final List<LoggerConfig> loggerConfigs = new CopyOnWriteArrayList<>();
-    private final List<Level> originalLevels = new CopyOnWriteArrayList<>();
+    private LogCapture ctmCapture;
+    private LogCapture swimCapture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("SwimFaultyReArmBootCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        for (var name : List.of(CTM_LOGGER, SWIM_LOGGER)) {
-            var loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration(), name);
-
-            loggerConfigs.add(loggerConfig);
-            originalLevels.add(loggerConfig.getLevel());
-            // The SWIM-side control (tombstone at the FAULTY edge) is logged at DEBUG.
-            loggerConfig.addAppender(appender, Level.DEBUG, null);
-            loggerConfig.setLevel(Level.DEBUG);
-        }
-
-        ctx.updateLoggers();
+        ctmCapture = LogCapture.capture(CTM_LOGGER, Level.DEBUG, false);
+        // The SWIM-side control (tombstone at the FAULTY edge) is logged at DEBUG.
+        swimCapture = LogCapture.capture(SWIM_LOGGER, Level.DEBUG, false);
     }
 
     @AfterEach
@@ -139,17 +117,8 @@ class SwimFaultyReArmBootTest {
                 .onFailure(cause -> {});
         }
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        for (var i = 0; i < loggerConfigs.size(); i++) {
-            loggerConfigs.get(i)
-                         .removeAppender(appender.getName());
-            loggerConfigs.get(i)
-                         .setLevel(originalLevels.get(i));
-        }
-
-        ctx.updateLoggers();
-        appender.stop();
+        swimCapture.close();
+        ctmCapture.close();
         ConfigService.clear();
         ResourceProvider.clear();
     }
@@ -165,7 +134,7 @@ class SwimFaultyReArmBootTest {
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
 
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("control: SWIM is running and the capture sees its lines, or the assertions below examine nothing")
                    .anyMatch(line -> line.contains(SWIM_STARTED)));
 
@@ -177,7 +146,7 @@ class SwimFaultyReArmBootTest {
 
         ctm.activate();
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("control: the CTM is active and the capture sees its lines")
                    .anyMatch(line -> line.contains(CTM_ACTIVATED)));
 
@@ -203,20 +172,20 @@ class SwimFaultyReArmBootTest {
         // Step 2: the reap defers on SWIM life and runs out of re-checks — parked.
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PHANTOM, List.of(node.self())));
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("arming: the reap was abandoned on SWIM life, so a later re-arm can only come from the FAULTY edge")
                    .anyMatch(line -> line.contains(ABANDONED)));
-        assertThat(appender.messages()).as("nothing re-armed before the FAULTY edge").noneMatch(line -> line.contains(RE_ARMED));
+        assertThat(messages()).as("nothing re-armed before the FAULTY edge").noneMatch(line -> line.contains(RE_ARMED));
 
         // Step 3: a second-hand FAULTY at a higher incarnation. SWIM's own tombstone line shows the edge fired
         // inside SwimProtocol; the CTM's line shows it arrived through the registered listener.
         gossip(MemberState.FAULTY, 2L);
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("SWIM-side control: the FAULTY edge fired inside SwimProtocol")
                    .anyMatch(line -> line.contains(TOMBSTONED)));
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("the FAULTY edge reached ClusterTopologyManager.onSwimFaulty and re-armed the parked reap")
                    .anyMatch(line -> line.contains(RE_ARMED)));
     }
@@ -285,39 +254,7 @@ class SwimFaultyReArmBootTest {
                                 .build();
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration, String loggerName) {
-        var existing = configuration.getLoggerConfig(loggerName);
-
-        if (loggerName.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(loggerName, Level.DEBUG, false);
-
-        configuration.addLogger(loggerName, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing every message the bound loggers emit.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> messages() {
-            return List.copyOf(messages);
-        }
+    private List<String> messages() {
+        return Stream.concat(ctmCapture.messages().stream(), swimCapture.messages().stream()).toList();
     }
 }

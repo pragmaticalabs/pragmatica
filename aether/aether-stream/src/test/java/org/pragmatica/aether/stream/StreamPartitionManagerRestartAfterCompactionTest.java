@@ -6,12 +6,6 @@
 package org.pragmatica.aether.stream;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -30,6 +24,7 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.SnapshotConfig;
 import org.pragmatica.storage.SnapshotManager;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -129,8 +124,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
 
         var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
-        var warnings = new CopyOnWriteArrayList<String>();
-        var capture = capturingWarnings(warnings);
+        var capture = LogCapture.capture(StreamPartitionManager.class, Level.WARN, true);
         var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), new SegmentIndex()::lastSealedOffset);
 
         try {
@@ -143,9 +137,9 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                                                                                                                                              + sealedThrough
                                                                                                                                              + "] are LOST")));
             assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).isEqualTo(1);
-            assertThat(warnings).as("refused, not WARNed as reclaimed history").isEmpty();
+            assertThat(capture.messages(Level.WARN)).as("refused, not WARNed as reclaimed history").isEmpty();
         } finally {
-            capture.run();
+            capture.close();
             recovered.close();
         }
     }
@@ -211,17 +205,16 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         assertThat(rebuilt.lastSealedOffset(STREAM, PARTITION)).as("the floor anchors the rebuild").isEqualTo(sealedThrough);
 
         var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
-        var warnings = new CopyOnWriteArrayList<String>();
-        var capture = capturingWarnings(warnings);
+        var capture = LogCapture.capture(StreamPartitionManager.class, Level.WARN, true);
         var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), rebuilt::lastSealedOffset);
 
         try {
             createStream(recovered).onFailure(cause -> fail("reclaimed history must be accepted: " + cause.message()));
             assertSurvivorsAtStoredOffsets(recovered, sealedThrough + 1);
             assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).isZero();
-            assertThat(warnings).as("reclaimed history is not a warning").isEmpty();
+            assertThat(capture.messages(Level.WARN)).as("reclaimed history is not a warning").isEmpty();
         } finally {
-            capture.run();
+            capture.close();
             recovered.close();
         }
     }
@@ -259,8 +252,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                                              Option.some(walDir),
                                              index::lastSealedOffset,
                                              () -> stuck.get() ? LastSealedOffsetSource.none() : index::lastSealedOffset);
-        var warnings = new CopyOnWriteArrayList<String>();
-        var capture = capturingWarnings(warnings);
+        var capture = LogCapture.capture(StreamPartitionManager.class, Level.WARN, true);
 
         try {
             createStream(manager).onFailure(cause -> fail(cause.message()));
@@ -272,11 +264,11 @@ class StreamPartitionManagerRestartAfterCompactionTest {
             assertThat(manager.walReclamationHeldBackTicks()).as("tick 1 only records the bound").isZero();
             manager.truncateWalsToSealed();
             assertThat(manager.walReclamationHeldBackTicks()).as("tick 2: held back, inside the grace").isEqualTo(1L);
-            assertThat(warnings).as("no WARN inside the grace").isEmpty();
+            assertThat(capture.messages(Level.WARN)).as("no WARN inside the grace").isEmpty();
             manager.truncateWalsToSealed();
             assertThat(manager.walReclamationHeldBackTicks()).isEqualTo(2L);
-            assertThat(warnings).as("first WARN at the second consecutive held-back tick").hasSize(1);
-            assertThat(warnings.getFirst()).contains("WAL reclamation held back for 2 consecutive tick(s) on 1 partition(s)")
+            assertThat(capture.messages(Level.WARN)).as("first WARN at the second consecutive held-back tick").hasSize(1);
+            assertThat(capture.messages(Level.WARN).getFirst()).contains("WAL reclamation held back for 2 consecutive tick(s) on 1 partition(s)")
                                            .contains(STREAM + "/" + PARTITION + " durable=-1 live=" + index.lastSealedOffset(STREAM, PARTITION))
                                            .contains("walBytes=" + walSizeBytes(manager));
 
@@ -284,7 +276,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
             manager.truncateWalsToSealed();
             assertThat(manager.walReclamationHeldBackTicks()).as("snapshot caught up: counter resets").isZero();
         } finally {
-            capture.run();
+            capture.close();
             manager.close();
         }
     }
@@ -344,8 +336,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     /// second.
     @Test
     void fromLatestSnapshot_snapshotOnDiskUnreadable_warnsTheTruncationTick() {
-        var warnings = new CopyOnWriteArrayList<String>();
-        var capture = capturingWarnings(warnings, DurableSealedOffsetSource.class.getName());
+        var capture = LogCapture.capture(DurableSealedOffsetSource.class, Level.WARN, true);
 
         try {
             var store = MetadataStore.inMemoryMetadataStore("streams");
@@ -357,7 +348,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
             snapshots.forceSnapshot();
             durable.current();
 
-            assertThat(warnings).as("control: a tick whose snapshot restores warns nothing").isEmpty();
+            assertThat(capture.messages(Level.WARN)).as("control: a tick whose snapshot restores warns nothing").isEmpty();
 
             var latest = snapshotDir.resolve(FileOps.readString(snapshotDir.resolve("LATEST")).unwrap().trim());
             var bytes = FileOps.readBytes(latest).unwrap();
@@ -365,10 +356,10 @@ class StreamPartitionManagerRestartAfterCompactionTest {
             FileOps.writeBytes(latest, Arrays.copyOf(bytes, bytes.length / 2)).unwrap();
             durable.current();
 
-            assertThat(warnings).as("a tick that cannot read the snapshot says so").hasSize(1);
-            assertThat(warnings.getFirst()).contains("Keeping the WAL; nothing is truncated.");
+            assertThat(capture.messages(Level.WARN)).as("a tick that cannot read the snapshot says so").hasSize(1);
+            assertThat(capture.messages(Level.WARN).getFirst()).contains("Keeping the WAL; nothing is truncated.");
         } finally {
-            capture.run();
+            capture.close();
         }
     }
 
@@ -411,40 +402,6 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                       .wal()
                       .map(AppendLog.WalStats::sizeBytes)
                       .or(-1L);
-    }
-
-    /// Capture WARN lines of the manager's logger; the returned runnable detaches the appender. The manager has no
-    /// dedicated logger config, so the appender lands on the root config and sees every logger — the filter on
-    /// the logger NAME is what keeps another test's background sealer retry out of the assertions.
-    private static Runnable capturingWarnings(List<String> sink) {
-        return capturingWarnings(sink, StreamPartitionManager.class.getName());
-    }
-
-    /// Same capture, for a named logger: #1013 round 2 pins a WARN raised by
-    /// [DurableSealedOffsetSource], not by the manager, and the logger-name filter is exactly what keeps the
-    /// two apart.
-    private static Runnable capturingWarnings(List<String> sink, String loggerName) {
-        var context = (LoggerContext) LogManager.getContext(false);
-        var config = context.getConfiguration();
-        var loggerConfig = config.getLoggerConfig(loggerName);
-        var appender = new AbstractAppender("held-back-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && loggerName.equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
     }
 
     private static Promise<Unit> recordSeal(List<SealedSegment> sealed, SealedSegment segment) {

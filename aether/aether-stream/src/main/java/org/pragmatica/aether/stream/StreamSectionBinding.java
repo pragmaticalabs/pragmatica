@@ -24,7 +24,7 @@ import org.slf4j.LoggerFactory;
 /// slice activation is parsed by [StreamConfigParser#parseStreamConfig], the parse deploy validation runs
 /// over the same declaration. Before #1549 the generic record binder read snake_case component names and
 /// resolved every key it did not find from `StreamConfig.DEFAULT`, so the documented dashed keys
-/// (`min-sync-replicas`, `max-event-size`, `retention*`, `auto-offset-reset`, `encryption-key-id`) never
+/// (`confirmation_factor`, `max_event_size`, `retention*`, `auto_offset_reset`, `encryption_key_id`) never
 /// reached the runtime.
 public sealed interface StreamSectionBinding {
     Logger LOG = LoggerFactory.getLogger(StreamSectionBinding.class);

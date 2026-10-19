@@ -27,6 +27,37 @@ class CstArchDirectionRuleTest {
         linter = CstLinter.cstLinter(LintContext.defaultContext());
     }
 
+    /// Ruling: only the top-level `config` package is bootstrap; a `config` nested in a layer is that layer's own settings.
+    @Nested
+    class ConfigPackages {
+        @Test
+        void allows_adapterImportingItsOwnConfigSubpackage() {
+            assertFalse(hasRule("""
+                    package com.example.adapter.persistence;
+                    import com.example.adapter.config.Settings;
+                    class Repo {}
+                    """));
+        }
+
+        @Test
+        void allows_domainImportingItsOwnConfigSubpackage() {
+            assertFalse(hasRule("""
+                    package com.example.domain.user;
+                    import com.example.domain.config.Limits;
+                    class User {}
+                    """));
+        }
+
+        @Test
+        void detects_domainImportingTopLevelConfig() {
+            assertTrue(hasRule("""
+                    package com.example.domain.user;
+                    import com.example.config.Wiring;
+                    class User {}
+                    """));
+        }
+    }
+
     @Nested
     class Violations {
         @Test
