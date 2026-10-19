@@ -291,7 +291,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                            .filter(entry -> entry.getValue()
                                                  .phase() == CapacityReservationPhase.DISPATCHED)
                            .filter(entry -> !observed.contains(entry.getKey()))
-                           .filter(entry -> isUnmatchedDispatch(entry.getKey(), generation, now))
+                           .filter(entry -> isUnmatchedDispatch(entry.getKey(),
+                                                                generation,
+                                                                now))
                            .map(Map.Entry::getKey)
                            .sorted(Comparator.comparing(NodeId::id))
                            .toList();
@@ -305,9 +307,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// that never resolved, an uncertain failure, an interlude of another leader this instance never observed) all enter the absence
     /// confirmation.
     private boolean isUnmatchedDispatch(NodeId node, long generation, long now) {
-        return Option.option(dispatchStamps.get(node))
-                     .fold(() -> true,
-                           stamp -> stamp.generation() < generation || now - stamp.at() >= ceiling.millis());
+        return Option.option(dispatchStamps.get(node)).fold(() -> true,
+                                                            stamp -> stamp.generation() < generation || now - stamp.at() >= ceiling.millis());
     }
 
     private Promise<Unit> confirmEarlierTermDispatches(SourceName source, String binding, List<NodeId> stale) {
@@ -362,11 +363,14 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private void announceAbsentDispatch(NodeId node, SourceName source) {
         dispatchMisses.remove(node);
         unmatchedSince.remove(node);
+        log.warn("Capacity allocation of {} on source {} released: no instance of its uncertain create was found",
+                 node.id(),
+                 source.value());
         OperatorWarnings.raise(log,
                                warningSink.get(),
                                OperatorWarningCode.CAPACITY_DISPATCH_RELEASED,
                                node.id(),
-                               "The create of {} on source {} was dispatched before this leader gained leadership and no provider listing or lookup showed an instance in {} consecutive passes over the create ceiling: its allocation was released",
+                               "The uncertain create of {} on source {} was not confirmed: no provider listing or lookup showed an instance in {} consecutive passes over the create ceiling, so its allocation was released",
                                node.id(),
                                source.value(),
                                ABSENCE_CONFIRMATIONS);
@@ -475,7 +479,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// DISPATCHED allocation treats it as earlier, which is what a restarted or newly elected leader is. The generation advances only when
     /// this node GAINS leadership; a same-leader re-commit (new view sequence, no lost leadership) does not advance it.
     private Promise<InstanceInfo> dispatchUnder(NodeId node, ProvisionSpec spec, LeaderValue current) {
-        dispatchStamps.put(node, new DispatchStamp(leadershipGeneration.get(), clock.getAsLong()));
+        dispatchStamps.put(node,
+                           new DispatchStamp(leadershipGeneration.get(), clock.getAsLong()));
 
         return store.getTyped(new AetherKey.CapacityReservationKey(node),
                               CapacityReservationValue.class)
