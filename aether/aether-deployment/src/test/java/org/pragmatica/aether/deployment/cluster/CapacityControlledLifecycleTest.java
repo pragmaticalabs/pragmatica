@@ -974,8 +974,7 @@ class CapacityControlledLifecycleTest {
         assertThat(events).isEmpty();
     }
 
-    /// The misses do not accumulate across an appearance: an instance seen once resets the count, so a later disappearance starts over.
-    /// Here the instance appears after two misses and the allocation, now OBSERVED, is not touched by the dispatch rule at all.
+    /// A create this leader dispatched itself, in its own term, is in flight: it is never confirmed absent, however many passes run.
     @Test
     void dispatchOfTheCurrentTerm_isNeverConfirmedAbsent() {
         initialize(0);
