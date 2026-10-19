@@ -461,19 +461,26 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
-    /// #148 — runaway-provisioning cap. After MAX consecutive provision failures the circuit
-    /// trips and further `provisionReplacement` calls are suppressed (no new `provisionNode`),
-    /// preventing the crash-loop container storm. The cap is 3 (MAX_CONSECUTIVE_PROVISIONING_FAILURES).
+    /// A source-admission refusal stays visible: it is a deferral for the reconciler, but it is counted, recorded as the last provisioning
+    /// failure and trips the circuit after the cap (3), as every refused provision did before admission became a typed refusal. A permanent
+    /// refusal (fleet limit reached) must not retry invisibly for ever.
     @Test
-    void sourceAdmissionDeferralDoesNotTripTheProviderFailureCircuit() {
+    void sourceAdmissionDeferral_isCounted_recordedAndTripsTheCircuitAfterThree() {
         ctm.activate();
         lifecycleManager.deferProvision = true;
-        for (int attempt = 0; attempt < 5; attempt++) {
+        for (int attempt = 0; attempt < 3; attempt++) {
             var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await().unwrap();
             assertThat(disposition).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION));
         }
-        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
-        assertThat(ctm.circuitBreakerState().tripped()).isFalse();
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isEqualTo(3);
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+        assertThat(ctm.lastProvisionFailure().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
+                .isEqualTo(CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE.message());
+
+        var suppressed = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await().unwrap();
+
+        assertThat(suppressed).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
+        assertThat(lifecycleManager.provisionCount.get()).as("the open circuit stops reaching admission").isEqualTo(3);
     }
 
     private static AetherValue.CommunityPlacementOperationValue placementOperation() {
@@ -2289,6 +2296,27 @@ class ClusterTopologyManagerActuatorTest {
             settleFor(Duration.ofMillis(600));
 
             assertThat(lifecycleManager.terminatedNodeIds()).as("voted out, retried, but auto-heal is disabled").isEmpty();
+        }
+
+        /// The hold is not a drop: the retry that finds auto-heal disabled parks the reap, and the next SWIM FAULTY for the node re-arms it once
+        /// auto-heal is back. Without the parking, the FAULTY edge finds nothing to re-arm and the node is deleted only by the periodic sweep.
+        @Test
+        void parkedRefusedReap_heldByDisabledAutoHeal_isRearmedByTheNextSwimFaulty() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(250));
+            manager.setAutoHealEnabled(false, "operator hold").await().unwrap();
+            voters.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("held")));
+            manager.setAutoHealEnabled(true, "operator resume").await().unwrap();
+            manager.onSwimFaulty(DEAD);
+
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
         }
 
         @Test

@@ -18,8 +18,11 @@ package org.pragmatica.aether.deployment.cluster;
 /// - [`Deferred`] — NO boot happened (the provisioning circuit is open, or no healthy peers were
 ///   visible to seed PEERS). Nothing is coming, so the reconciler must REMOVE the placeholder to
 ///   keep the raw deficit visible — otherwise a phantom placeholder masks the deficit and wedges
-///   auto-heal until an operator intervenes. A deferral is NOT a failure: the breaker is already
-///   open (or will re-arm on its own), so no new provisioning failure is recorded.
+///   auto-heal until an operator intervenes. A circuit-open or no-peers deferral is NOT a failure:
+///   the breaker is already open (or will re-arm on its own), so no new provisioning failure is
+///   recorded. A refused source admission ([DeferralReason#CAPACITY_ADMISSION]) is also a deferral
+///   to the reconciler, but it was refused by the capacity authority, so `provisionReplacement`
+///   still counts and logs it as a provisioning failure.
 ///
 /// A genuine boot FAILURE is NOT modeled here — it stays in the `Promise` failure channel so the
 /// existing `onFailure(recordProvisioningFailure)` (breaker trip after 3) and the reconciler's

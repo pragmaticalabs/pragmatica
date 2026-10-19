@@ -408,16 +408,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                var updated = current.withDesiredCount(sourceName, role, count);
 
                                if (count < 0 || role.equals(NodeRole.CORE.value()) && (updated.coreCount() < MINIMUM_CLUSTER_SIZE || updated.coreCount() > ConsensusTierBounds.MAXIMUM_CORE_NODES || updated.coreCount() % 2 == 0)) {
-                               return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11; source counts cannot be negative").promise();
-                           }
+                                   return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11; source counts cannot be negative").promise();
+                               }
                                // #1564 (B1): a core scale changes the desired core count, which bounds the
                                // cluster-events confirmation factor; an inadmissible result is refused, typed.
                                var admissible = ClusterReplication.admissible(updated);
 
                                if (admissible.isFailure()) {
-                               return admissible.async()
-                                                .mapToUnit();
-                           }
+                                   return admissible.async()
+                                                    .mapToUnit();
+                               }
 
                                return writer.put(ClusterConfigKey.CURRENT,
                                                  Option.some(current),
@@ -914,16 +914,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     .onFailure(this::recordProvisioningFailure);
     }
 
-    /// A refusal before any provider effect (source admission, incomplete inventory) is a deferral, not a provider failure: it never
-    /// reaches the provisioning circuit ([#recordProvisioningFailure]), whatever the number of passes it takes to be admitted.
+    /// A refusal before any provider effect (source admission, incomplete inventory) is a deferral for the reconciler: nothing was
+    /// provisioned and the placeholder is removed. It is still a refused provision, so it is counted and logged through
+    /// [#recordProvisioningFailure] (WARN, last failure, circuit after 3): a permanent refusal (fleet limit reached) must not retry
+    /// invisibly on every reconcile tick for ever.
     private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result) {
         return result.fold(this::provisionRefused, Promise::success);
     }
 
     private Promise<ProvisionDisposition> provisionRefused(Cause cause) {
         return cause instanceof CapacityControlledLifecycle.AdmissionFailure
-               ? Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION))
+               ? deferAdmission(cause)
                : cause.promise();
+    }
+
+    private Promise<ProvisionDisposition> deferAdmission(Cause cause) {
+        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION)).onSuccess(_ -> recordProvisioningFailure(cause));
     }
 
     /// #1022 — the leader has just created a BILLABLE server, and until this line it dropped the
@@ -1955,17 +1961,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return lifecycleManager.instancesForNode(node, source)
                                .flatMap(listed -> {
                                             if (!sameIncarnation(node, generation)) {
-                                            return Causes.cause("reap of " + node.id()
-                                                               + " abandoned: the node joined again while it was listing").<Unit> promise();
-                                        }
+                                                return Causes.cause("reap of " + node.id()
+                                                                   + " abandoned: the node joined again while it was listing").<Unit> promise();
+                                            }
 
                                             if (!listed.isEmpty()) {
-                                            seenInstances.add(node);
-                                            knownInstanceIds.put(node,
-                                                                 instanceIds(listed));
-                                        } else if (!seen) {
-                                            listedAbsent.add(node);
-                                        }
+                                                seenInstances.add(node);
+                                                knownInstanceIds.put(node,
+                                                                     instanceIds(listed));
+                                            } else if (!seen) {
+                                                listedAbsent.add(node);
+                                            }
 
                                             return allTerminated(listed)
                                                    ? confirmedAbsent(node, listed, seen)
@@ -2931,12 +2937,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                       .forEach((nodeId, mark) -> {
                                    unconfirmedReaps.add(nodeId);
                                    if (mark.seen()) {
-                                   seenInstances.add(nodeId);
-                               }
+                                       seenInstances.add(nodeId);
+                                   }
 
                                    if (mark.absent()) {
-                                   listedAbsent.add(nodeId);
-                               }
+                                       listedAbsent.add(nodeId);
+                                   }
                                });
         SharedScheduler.schedule(() -> recheckUnconfirmed(epoch),
                                  TimeSpan.timeSpan(1).millis());

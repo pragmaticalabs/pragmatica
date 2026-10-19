@@ -13,6 +13,7 @@
 #   G9  an UNDEPLOYED artifact (no SliceTarget: version "") with one lingering UNLOADING row -> passes;
 #       the same row on a DEPLOYED artifact fails (G1)
 #   G8  echo LOADING forever                      -> fails after the budget (a stuck LOADING is not ACTIVE)
+#   G12-G15 (#1972) `{}` (no blueprint deployed) passes; an error body, even one containing `{}`, still fails; the serialiser premise is pinned
 #   W1  restore_cluster_baseline itself fails on G1's body (the gate is wired in)
 #   ARTIFACT_UNDER... LIB_UNDER_TEST selects an alternate lib copy (mutation probes).
 set -uo pipefail
@@ -144,6 +145,28 @@ else fail "G10 rc=$(cat "$WORK/grc.g10") literal=${#LITERAL} bytes: $(head -c 20
 run_gate g11 "$(printf '%s' "$LITERAL" | sed 's/"state":"ACTIVE"/"state":"UNLOADING"/g')"
 if [ "$(cat "$WORK/grc.g11")" = "1" ]; then ok "G11 the literal body with every instance UNLOADING fails the gate"
 else fail "G11 rc=$(cat "$WORK/grc.g11") $(head -c 200 "$WORK/g.g11")"; fi
+
+# #1972: a suite that deleted its own blueprint leaves /api/v1/slices answering `{}` (the API serialises NON_EMPTY, so an
+# empty list is omitted), and there is no slice left to gate on. ONLY the empty object is that state.
+run_gate g12 '{}'
+if [ "$(cat "$WORK/grc.g12")" = "0" ] && grep -q 'no blueprint deployed' "$WORK/g.g12"; then ok "G12 a {} body (no blueprint deployed) passes: nothing to gate on"
+else fail "G12 rc=$(cat "$WORK/grc.g12") $(head -c 200 "$WORK/g.g12")"; fi
+run_gate g12b "$(printf '{\n  }\n')"
+if [ "$(cat "$WORK/grc.g12b")" = "0" ]; then ok "G12b the same empty object with whitespace passes"; else fail "G12b rc=$(cat "$WORK/grc.g12b")"; fi
+run_gate g13 '{"detail":"service unavailable","status":503}'
+if [ "$(cat "$WORK/grc.g13")" = "1" ] && grep -q 'unreadable' "$WORK/g.g13"; then ok "G13 an error body is still unreadable and fails (only the empty object means nothing deployed)"
+else fail "G13 rc=$(cat "$WORK/grc.g13") $(head -c 200 "$WORK/g.g13")"; fi
+# G13b pins the ANCHORING of the `{}` match: a body that merely CONTAINS an empty object is not the empty object.
+run_gate g13b '{"error":"x","details":{}}'
+if [ "$(cat "$WORK/grc.g13b")" = "1" ] && grep -q 'unreadable' "$WORK/g.g13b"; then ok "G13b an error body containing {} (not exactly {}) is still unreadable and fails"
+else fail "G13b rc=$(cat "$WORK/grc.g13b") $(head -c 200 "$WORK/g.g13b")"; fi
+run_gate g14 '{"slices":[]}'
+if [ "$(cat "$WORK/grc.g14")" = "0" ]; then ok "G14 an explicit empty slices list still passes (nothing deployed either way)"; else fail "G14 rc=$(cat "$WORK/grc.g14") $(head -c 200 "$WORK/g.g14")"; fi
+# G15 tripwire: `{}` is only the right reading while the serialiser omits empty collections. If that changes, the gate's
+# premise (and G12) must be revisited, so the assertion is on the serialiser's source, not on a body typed here.
+ADAPTER_SRC="${REPO_ROOT}/integrations/http-routing/src/main/java/org/pragmatica/http/routing/JsonCodecAdapter.java"
+if grep -q 'withValueInclusion(JsonInclude.Include.NON_EMPTY)' "$ADAPTER_SRC"; then ok "G15 the management API serialiser omits empty collections (JsonCodecAdapter NON_EMPTY), so an empty slice list is {}"
+else fail "G15 JsonCodecAdapter no longer sets NON_EMPTY: revisit the {} reading in _restore_slices_gate"; fi
 
 # ---- E3: a slice held by a FAILED schema migration fails the gate FAST, naming the datasource ---------------
 # Fixture built from the real record, like the slices ones: SchemaRoutes.SchemaStatusResponse(datasource,

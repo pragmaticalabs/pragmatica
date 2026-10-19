@@ -35,6 +35,7 @@ import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -297,6 +298,98 @@ class RabiaEnginePauseResumeTest {
                 .as("Engine must remain Paused after rejection — state is preserved")
                 .isTrue();
         }
+    }
+
+    // #1799: a demoted voter (observerMode) that loses and regains quorum must resume to Observing,
+    // not Idle -- otherwise it reports itself active and the bridge publishes ACTIVE for a non-voter.
+    // The resume decision is `observerMode || !isVoter(self)`; a demotion makes BOTH operands true, so
+    // the two tests after this one each make exactly one operand true (kills the single-operand and
+    // `&&` variants).
+    @Test
+    void demotedObserverStaysObservingAfterResume() {
+        var routed = new CopyOnWriteArrayList<ClusterStateNotification>();
+
+        startActiveVoter(routed);
+
+        var removal = ReconfigurationCommand.reconfigurationCommand(0, new ClusterConfig(List.of(NODE_2, NODE_3, nodeId("node-4").unwrap())));
+
+        engine.processDecision(new Decision<>(NODE_2, 0, Phase.phase(0), StateValue.V1, Batch.emptyBatch(), Option.some(removal)));
+        settle();
+        assertThat(engine.isObserving()).as("control: removal demotes to Observing").isTrue();
+
+        assertResumesAsObserver(routed);
+    }
+
+    // Only `observerMode` is true: the node is still in the installed roster.
+    @Test
+    void observerModeInRoster_staysObservingAfterResume() {
+        var routed = new CopyOnWriteArrayList<ClusterStateNotification>();
+
+        startActiveVoter(routed);
+        engine.authorizeObservation();
+
+        assertResumesAsObserver(routed);
+    }
+
+    // Only `!isVoter(self)` is true: the roster was installed without this node and observerMode was never set.
+    // Such a node cannot activate, so it is paused while still Syncing; it must not resume as a voter (Idle).
+    // (That it resumes to Observing without a participation record is a separate, pre-existing question.)
+    @Test
+    void nonVoterWithoutObserverMode_staysObservingAfterResume() {
+        var routed = new CopyOnWriteArrayList<ClusterStateNotification>();
+
+        newEngine(routed, List.of(NODE_2, NODE_3, nodeId("node-4").unwrap()));
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        assertThat(engine.isActive()).as("control: a node outside the roster never activates as a voter").isFalse();
+
+        assertResumesAsObserver(routed);
+    }
+
+    private void startActiveVoter(List<ClusterStateNotification> routed) {
+        newEngine(routed, List.of(NODE_1, NODE_2, NODE_3));
+        engine.clusterState(ClusterStateNotification.active());
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        settle();
+        assertThat(engine.isActive()).as("control: voter is active").isTrue();
+    }
+
+    private void newEngine(List<ClusterStateNotification> routed, List<NodeId> roster) {
+        var router = MessageRouter.mutable();
+
+        router.addRoute(ClusterStateNotification.class, routed::add);
+        engine.stop().await();
+        engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, 5), network, stateMachine,
+                                   ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
+                                   ConsensusMetrics.noop(), false, RabiaPersistence.inMemory(),
+                                   RabiaEngine.DEFAULT_PHASE_STALL_CHECK, ConsensusBridge.consensusBridge(router));
+        engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(roster)));
+    }
+
+    private void assertResumesAsObserver(List<ClusterStateNotification> routed) {
+        engine.clusterState(ClusterStateNotification.passive());
+        settle();
+        assertThat(engine.isPaused()).as("control: quorum loss pauses the engine").isTrue();
+
+        var publishedBeforeResume = routed.size();
+
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+
+        assertThat(engine.isObserving()).as("resume must restore Observing for a non-voter").isTrue();
+        assertThat(engine.isActive()).as("a non-voter must not report itself active").isFalse();
+        assertThat(routed.subList(publishedBeforeResume, routed.size())).as("no ACTIVE may be published by the resume")
+            .noneMatch(RabiaEnginePauseResumeTest::isActive);
+    }
+
+    private static boolean isActive(ClusterStateNotification notification) {
+        return notification.state() == ClusterStateNotification.State.ACTIVE;
+    }
+
+    private void settle() {
+        engine.settleForTesting().await();
+        engine.settleForTesting().await();
     }
 
     // ==================== Stub Implementations ====================

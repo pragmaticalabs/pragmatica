@@ -639,53 +639,111 @@ public final class MembershipFsm {
                                   long bootToken,
                                   MemberDescriptor admittedDescriptor,
                                   long observedAgoMs) {
-        if (community.isBlank() || governorTerm < 0 || bootToken == 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
+        if (community.isBlank() || governorTerm < 0 || bootToken == 0 || !isWorkerRole(admittedDescriptor)) {
+            log.warn("MembershipFsm ignored a malformed governor report for {} (community='{}', term={}, role='{}', bootToken set={})",
+                     id,
+                     community,
+                     governorTerm,
+                     admittedDescriptor.role(),
+                     bootToken != 0);
+
             return;
         }
 
         withMember(id,
-                   tracking -> tracking.inTransition(() -> {
-                       tracking.updateDescriptor(admittedDescriptor);
-                       if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
-                                                                                                                                                     observedAgoMs)))) {
-                       return;
-                   }
+                   tracking -> tracking.inTransition(() -> applyGovernorEvidence(id,
+                                                                                 tracking,
+                                                                                 new GovernorReport(community,
+                                                                                                    governor,
+                                                                                                    governorTerm,
+                                                                                                    bootToken,
+                                                                                                    admittedDescriptor,
+                                                                                                    observedAgoMs))));
+    }
 
-                       if (tracking.descriptor()
-                                   .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "governor report")) {
-                       return;
-                   }
+    private record GovernorReport(String community,
+                                  NodeId governor,
+                                  long governorTerm,
+                                  long bootToken,
+                                  MemberDescriptor descriptor,
+                                  long observedAgoMs) {}
 
-                       tracking.dispatch(new MembershipEvent.GovernorHealthy(bootToken,
-                                                                             community,
-                                                                             governor,
-                                                                             governorTerm));
-                       if (tracking.bumpHealthyStreakReachedThreshold()) {
-                       tracking.dispatch(new UpHysteresisMet());
-                   }
-                   }));
+    private static boolean isWorkerRole(MemberDescriptor descriptor) {
+        return "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role());
+    }
+
+    /// Every refusal below leaves the member's descriptor untouched (#1535): the descriptor is merged only
+    /// once the report is admitted, so evidence that is refused, stale or aimed at a core cannot rewrite it.
+    @Contract
+    private void applyGovernorEvidence(NodeId id, MemberTracking tracking, GovernorReport report) {
+        if (tracking.descriptor().isCore()) {
+            log.debug("MembershipFsm ignored a governor report for core member {}", id);
+
+            return;
+        }
+
+        if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                                                                                                                                      report.observedAgoMs())))) {
+            log.debug("MembershipFsm ignored a governor report for {}: the evidence is not newer than the armed death signal",
+                      id);
+
+            return;
+        }
+
+        if (!admitsProcessEvidence(id, tracking, report.bootToken(), "governor report")) {
+            return;
+        }
+
+        tracking.updateDescriptor(report.descriptor());
+        tracking.dispatch(new MembershipEvent.GovernorHealthy(report.bootToken(),
+                                                              report.community(),
+                                                              report.governor(),
+                                                              report.governorTerm()));
+        dispatchUpHysteresisIfMet(tracking);
+    }
+
+    @Contract
+    private static void dispatchUpHysteresisIfMet(MemberTracking tracking) {
+        if (tracking.bumpHealthyStreakReachedThreshold()) {
+            tracking.dispatch(new UpHysteresisMet());
+        }
     }
 
     /// Admission evidence is explicitly distinct from SWIM and committed-governor reports.
     @Contract
     public void onWorkerAdmissionHealthy(NodeId id, long bootToken, MemberDescriptor descriptor) {
-        if (bootToken == 0 || !("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))) {
+        if (bootToken == 0 || !isWorkerRole(descriptor)) {
+            log.warn("MembershipFsm ignored a malformed worker admission for {} (role='{}', bootToken set={})",
+                     id,
+                     descriptor.role(),
+                     bootToken != 0);
+
             return;
         }
 
         withMember(id,
-                   tracking -> tracking.inTransition(() -> {
-                       tracking.updateDescriptor(descriptor);
-                       if (tracking.descriptor()
-                                   .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "worker admission")) {
-                       return;
-                   }
+                   tracking -> tracking.inTransition(() -> applyAdmissionEvidence(id, tracking, bootToken, descriptor)));
+    }
 
-                       tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(bootToken));
-                       if (tracking.bumpHealthyStreakReachedThreshold()) {
-                       tracking.dispatch(new UpHysteresisMet());
-                   }
-                   }));
+    /// As [#applyGovernorEvidence]: the descriptor is merged only after the admission is accepted.
+    @Contract
+    private void applyAdmissionEvidence(NodeId id,
+                                        MemberTracking tracking,
+                                        long bootToken,
+                                        MemberDescriptor descriptor) {
+        if (tracking.descriptor().isCore()) {
+            log.debug("MembershipFsm ignored a worker admission for core member {}", id);
+
+            return;
+        }
+
+        if (!admitsProcessEvidence(id, tracking, bootToken, "worker admission")) {
+            return;
+        }
+
+        tracking.updateDescriptor(descriptor);
+        tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(bootToken));
+        dispatchUpHysteresisIfMet(tracking);
     }
 
     /// Boot-token gate for process evidence (owner ruling, session 28). DEAD and DEPARTING refuse it

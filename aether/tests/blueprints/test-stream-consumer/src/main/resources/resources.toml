@@ -8,13 +8,13 @@
 #   - partitions = 1        -> exactly ONE node owns the partition. This is the discriminator for
 #     partition-ownership gating: with N nodes all running the slice, a correctly gated consumer
 #     delivers each event ONCE cluster-wide, while an ungated one would deliver it N times.
-#   - retention  = count    -> count-based eviction (never time-based), with a retention-value far
+#   - retention  = count    -> count-based eviction (never time-based), with a retention_value far
 #     above any test event count, so nothing is evicted mid-test.
 [streams.consumer-events]
 partitions = 1
 retention = "count"
-retention-value = "100000"
-max-event-size = "64KB"
+retention_value = "100000"
+max_event_size = "64KB"
 
 # The APPLICATION-TYPED stream (#526). Same shape as consumer-events on purpose — the only variable
 # under test is the event TYPE. It carries `OrderPlaced`, a record only the slice's own codec knows,
@@ -22,8 +22,8 @@ max-event-size = "64KB"
 [streams.order-events]
 partitions = 1
 retention = "count"
-retention-value = "100000"
-max-event-size = "64KB"
+retention_value = "100000"
+max_event_size = "64KB"
 
 # The MULTI-PARTITION stream (#535). Its whole purpose is the pigeonhole: with 5 partitions and a
 # deployment restricted to 1 instance, the single slice-bearing node can own AT MOST one of them, so
@@ -37,5 +37,5 @@ max-event-size = "64KB"
 [streams.spread-events]
 partitions = 5
 retention = "count"
-retention-value = "100000"
-max-event-size = "64KB"
+retention_value = "100000"
+max_event_size = "64KB"

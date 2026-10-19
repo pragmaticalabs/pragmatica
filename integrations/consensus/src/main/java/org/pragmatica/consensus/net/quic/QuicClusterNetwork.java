@@ -44,6 +44,7 @@ import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.ConnectionError;
+import org.pragmatica.consensus.net.InboundMessageAuthority;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
@@ -189,17 +190,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// window has long since passed.
     private final Map<NodeId, Long> firstObservedMissingMs = new ConcurrentHashMap<>();
     private volatile LongSupplier wallClockMs = System::currentTimeMillis;
+    private volatile LongSupplier reconcileTickOffsetMs = QuicClusterNetwork::drawReconcileTickOffsetMs;
 
     /// Periodic missing-peer reconciler tunables. The reconciler runs every
     /// `RECONCILE_TICK` and, for any configured peer whose `PeerState.phase()` is
     /// not CONNECTED, dispatches a `connectPeer(...)` call gated by a per-peer
-    /// jittered exponential backoff (initial 5s, cap 60s — matches Theme I patterns).
+    /// jittered exponential backoff (initial 5s, cap 60s — matches Theme I patterns); while the
+    /// raw-SWIM liveness gate reports the peer alive the cap is the initial 5s (one dial per tick).
     /// Closes the asymmetric-recreation gap: when a node container is recreated
     /// mid-cluster it may handshake with most peers but permanently miss one, leaving
     /// no traffic to clear the sticky SUSPECTED snapshot state.
     private static final TimeSpan RECONCILE_TICK = TimeSpan.timeSpan(5L).seconds();
     private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
+
+    /// Minimum spacing between reconciler dials to a peer SWIM reports alive: the lower jitter bound of the
+    /// initial delay (4 s). With SWIM alive the backoff cap equals its initial value; a peer SWIM does not see
+    /// alive keeps the 60 s cap. The spacing sits below the smallest gap between two jittered ticks
+    /// (`RECONCILE_TICK` - `RECONCILE_TICK_JITTER_MS` = 4.2 s), so every tick may dial.
+    private static final long RECONCILE_ALIVE_SPACING_MS = Math.round(RECONCILE_BACKOFF_INITIAL_MS * JitterUtil.LIGHT_MIN_FACTOR);
+
+    /// Each fixed-rate tick runs a random `[0, RECONCILE_TICK_JITTER_MS)` after its slot, drawn per node and per
+    /// tick, so nodes that all see a healed peer (same start time, same tick phase) do not dial it in lockstep.
+    /// The jitter acts on the dial instant itself; a jitter on the spacing gate alone cannot, because the dial
+    /// only ever happens on a tick.
+    private static final long RECONCILE_TICK_JITTER_MS = 800L;
     /// Multiple of the QUIC hello/handshake timeout after which a peer pinned in CONNECTING is
     /// treated as a hung dial and force-evicted by the reconciler so a fresh re-dial can proceed.
     /// A dial that neither completes (`onPeerConnected`) nor fails (`onConnectFailed`) — e.g. a
@@ -219,9 +234,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// window and can no longer handshake, so an authenticated Hello arriving AFTER that window is
     /// a false-DEAD survivor, not a drained ghost — accept it (the authenticated Hello is itself
     /// proof-of-life). Below the floor the original DENY stands (covers the deliberate-drain
-    /// window). Mirrors the aether drain grace-terminate = `MembershipConfig.DEFAULT_SPLIT_TIMEOUT
-    /// (15s) × 2 = 30s` (aether/aether-deployment `MembershipConfig`); the consensus layer cannot
-    /// depend on that module, so the value is mirrored here and kept in sync by this reference.
+    /// window). A copy of the aether drain grace-terminate assumption `MembershipConfig.DEFAULT_SPLIT_TIMEOUT
+    /// (15s) × 2 = 30s` (aether/aether-deployment `MembershipConfig`): the consensus layer cannot depend on that
+    /// module, so the value is duplicated here and nothing keeps it in sync. The aether side reaps after the
+    /// operator-configurable `autoHealConfig.provisioningTimeout()` and the split timeout is configurable too, so
+    /// the authority for the real window is that module's, not this constant.
     private static final long TOMBSTONE_READMIT_GRACE_FLOOR_MS = 30_000L;
     /// Multiple of the transport keepalive interval (= ClusterSync `pingInterval`) after which a
     /// CONNECTED peer that has received NO inbound frame on ANY lane is treated as a silent zombie
@@ -759,7 +776,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// task via `CancellableTask.set` which cancels the old future first.
     @Contract
     private void startMissingPeerReconciler() {
-        var future = SharedScheduler.scheduleAtFixedRate(this::reconcileMissingPeersTick, RECONCILE_TICK, RECONCILE_TICK);
+        var future = SharedScheduler.scheduleAtFixedRate(this::scheduleJitteredReconcileTick,
+                                                         RECONCILE_TICK,
+                                                         RECONCILE_TICK);
 
         reconcilerTask.set(future);
         log.debug("Missing-peer reconciler scheduled (tick={}ms, backoff initial={}ms, cap={}ms)",
@@ -892,7 +911,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // duplicate ADD. Terminal removal of a *confirmed-dead* peer is a separate concern
         // handled by `departurePermanent` (the leader's co-confirmed-death verdict /
         // DECOMMISSIONED / SWIM DepartedObserved), which drives the peer to REMOVED. Because
-        // restart is disabled cluster-wide, a same-NodeId never returns; the only paths from
+        // restart is disabled cluster-wide, a restarted process (new boot token) is refused; only the same process the
+        // cluster wrongly declared dead can come back, through `readmit`; the only paths from
         // EVICTED to REMOVED are `departurePermanent` and shutdown — `disconnect` itself never
         // makes the transition terminal.
         //
@@ -1164,7 +1184,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Rotate TLS certificates by restarting the QUIC server with new SSL contexts.
-    /// Existing connections drain naturally; peers reconnect automatically.
+    /// Connections this node accepted close with the old server and their dialers reconnect; connections it dialed
+    /// are not drained and keep the old certificate until they end.
     @SuppressWarnings("JBCT-PAT-01")  // Lifecycle: stop old server, update contexts, start new
     public Promise<Unit> rotateCertificate(QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
         return boundPort().async(QuicTransportError.CertificateRotationFailed.FACTORY.apply("Server not running"))
@@ -1260,17 +1281,49 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         quicMetrics.onMessageReceived();
-        if (message instanceof Message.Wired wired && org.pragmatica.consensus.net.InboundMessageAuthority.isBound(sender,
-                                                                                                                   wired,
-                                                                                                                   proposalRelayMembership) && inboundMessagePolicy.test(sender,
-                                                                                                                                                                         wired) && inboundFaultFilter.test(sender,
-                                                                                                                                                                                                           wired)) {
-            router.route(wired);
+        if (message instanceof Message.Wired wired) {
+            routeWired(sender, wired);
         } else {
             log.trace("Non-routable message from {}: {}",
                       sender,
                       option(message).map(Object::getClass).map(Class::getSimpleName));
         }
+    }
+
+    /// Routes a wired message past the three inbound refusal gates, in order: origin binding, the
+    /// installed policy, the fault filter. Each refusal is counted on its own counter (#1535).
+    @Contract
+    private void routeWired(NodeId sender, Message.Wired wired) {
+        if (!InboundMessageAuthority.isBound(sender, wired, proposalRelayMembership)) {
+            refuse("claimed origin is not the authenticated peer", sender, wired, quicMetrics.onUnboundDrop());
+        } else if (!inboundMessagePolicy.test(sender, wired)) {
+            refuse("inbound message policy", sender, wired, quicMetrics.onPolicyDrop());
+        } else if (!inboundFaultFilter.test(sender, wired)) {
+            log.trace("Inbound fault filter dropped {} from {}",
+                      wired.getClass().getSimpleName(),
+                      sender);
+            quicMetrics.onFaultFilterDrop();
+        } else {
+            router.route(wired);
+        }
+    }
+
+    /// Operator-visible refusal: WARN on the first and then on every power-of-two occurrence, so a peer
+    /// that keeps sending refused traffic cannot flood the log. The counter carries the exact total.
+    @Contract
+    private void refuse(String gate, NodeId sender, Message.Wired wired, long total) {
+        if (isLoggedRefusal(total)) {
+            log.warn("Refused inbound {} from {} ({}); {} refused by this gate so far",
+                     wired.getClass().getSimpleName(),
+                     sender,
+                     gate,
+                     total);
+        }
+    }
+
+    /// The first refusal and every power-of-two occurrence after it (1, 2, 4, 8, ...) is logged.
+    static boolean isLoggedRefusal(long total) {
+        return Long.bitCount(total) == 1;
     }
 
     /// Consensus defence in depth (terminal removal): traffic from a retired NodeId — whether the
@@ -2483,7 +2536,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// A peer driven to terminal REMOVED by `departurePermanent` (restart disabled — a dead
-    /// NodeId never returns under the same id) must not be written to or retried. Distinct from
+    /// NodeId never returns as a new process under the same id) must not be written to or retried. Distinct from
     /// EVICTED (transient live-flap), which keeps buffering via `offerOutbound` and drains on
     /// reconnect — only REMOVED short-circuits here.
     private boolean isPeerRemoved(NodeId peerId) {
@@ -2495,7 +2548,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// One write attempt against the captured lane stream. Re-validated every attempt:
     /// if the channel went inactive or is still backpressured this fails (a `Cause`, never a
     /// throw) and the enclosing Retry either reschedules or gives up. A peer disconnecting
-    /// mid-retry therefore fails cleanly — the offline buffer handles reconnect delivery.
+    /// mid-retry therefore fails cleanly, but nothing re-buffers the frame: when the retries run
+    /// out the only action is a DEBUG line, the frame was already reported `Sent`, and recovery
+    /// is the layer above's (Rabia retransmit, the DHT quorum collector, caller deadlines).
     /// This is the atomic unit the Retry re-invokes, so it performs NO retry itself.
     private Promise<Unit> rawBackpressuredWrite(QuicStreamChannel ch,
                                                 byte[] bytes,
@@ -2697,6 +2752,25 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var factor = BACKOFF_JITTER_MIN + (BACKOFF_JITTER_MAX - BACKOFF_JITTER_MIN) * ThreadLocalRandom.current().nextDouble();
 
         return Math.max(1L, (long)(delayMs * factor));
+    }
+
+    /// Fixed-rate entry of the reconciler: defers the tick by a random offset below `RECONCILE_TICK_JITTER_MS`.
+    /// The deferred tick re-checks `isRunning`, so a tick pending at `stop()` is a no-op.
+    @Contract
+    void scheduleJitteredReconcileTick() {
+        var _ = SharedScheduler.schedule(this::reconcileMissingPeersTick,
+                                         TimeSpan.timeSpan(reconcileTickOffsetMs.getAsLong()).millis());
+    }
+
+    /// Test seam — replaces the random tick offset with a fixed one.
+    @Contract
+    void overrideReconcileTickOffsetForTests(LongSupplier offsetMs) {
+        this.reconcileTickOffsetMs = offsetMs;
+    }
+
+    /// Random offset in `[0, RECONCILE_TICK_JITTER_MS)`; package-private so a test can bound its spread.
+    static long drawReconcileTickOffsetMs() {
+        return ThreadLocalRandom.current().nextLong(RECONCILE_TICK_JITTER_MS);
     }
 
     /// Periodic missing-peer reconciler tick. For every configured non-passive peer that is
@@ -3009,10 +3083,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     ? getOrCreatePeer(peerId)
                     : existing;
 
-        if (!state.reconcileBackoffAllows(nowMs,
-                                          RECONCILE_BACKOFF_INITIAL_MS,
-                                          RECONCILE_BACKOFF_CAP_MS,
-                                          this::reconcileJitter)) {
+        if (!reconcileBackoffAllows(state, nowMs)) {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
 
             return;
@@ -3072,16 +3143,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     ? getOrCreatePeer(peerId)
                     : existing;
 
-        if (!state.reconcileBackoffAllows(nowMs,
-                                          RECONCILE_BACKOFF_INITIAL_MS,
-                                          RECONCILE_BACKOFF_CAP_MS,
-                                          this::reconcileJitter)) {
+        if (!reconcileBackoffAllows(state, nowMs)) {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
 
             return;
         }
 
         reconcileDialPeer(nodeInfo, forceInitiate);
+    }
+
+    /// Per-peer reconcile backoff, capped at 60 s for a peer SWIM does not see alive and at the initial 5 s
+    /// while the raw-SWIM liveness gate reports it HEALTHY or SUSPECTED (an unwired gate reads as not alive).
+    /// Re-read at every tick, so the cap follows the gate: a peer reported alive after a long outage dials on
+    /// the next tick instead of waiting out the attempt time earned at the 60 s cap.
+    private boolean reconcileBackoffAllows(PeerState state, long nowMs) {
+        return swimLivenessAllows(state.peerId())
+               ? state.reconcileBackoffAllowsWhileAlive(nowMs, RECONCILE_BACKOFF_INITIAL_MS, RECONCILE_ALIVE_SPACING_MS)
+               : state.reconcileBackoffAllows(nowMs,
+                                              RECONCILE_BACKOFF_INITIAL_MS,
+                                              RECONCILE_BACKOFF_CAP_MS,
+                                              this::reconcileJitter);
     }
 
     /// Default jitter for the missing-peer reconciler. Light bands (0.8x–1.2x) — peers

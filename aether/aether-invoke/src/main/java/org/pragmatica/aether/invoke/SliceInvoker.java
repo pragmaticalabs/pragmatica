@@ -901,7 +901,7 @@ class SliceInvokerImpl implements SliceInvoker {
             return;
         }
 
-        var delayMs = BASE_RETRY_DELAY_MS * (1L<< (newCtx.attemptCount() - 1));
+        var delayMs = BASE_RETRY_DELAY_MS * (1L << (newCtx.attemptCount() - 1));
 
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",

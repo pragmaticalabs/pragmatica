@@ -276,12 +276,12 @@ public final class ApiKeyRoutes implements RouteSource {
                          ApiKeyValue.class,
                          (key, v) -> {
                              if (!v.isActive()) {
-                             return;
-                         }
+                                 return;
+                             }
 
                              if (v.expiresAt() <= 0 || v.expiresAt() > now) {
-                             return;
-                         }
+                                 return;
+                             }
 
                              var expired = v.withExpired();
 

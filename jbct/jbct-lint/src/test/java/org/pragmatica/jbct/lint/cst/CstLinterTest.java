@@ -2068,6 +2068,26 @@ class CstLinterTest {
             assertHasRule(diagnostics, "JBCT-STY-05");
         }
 
+        /// #1568 item 1: STY-05 used to suggest `List::getFirst` for `xs -> xs.getFirst()`, steering a violation JBCT-TOT-01
+        /// catches into one nothing could see. A lambda whose body is a partial accessor is left to TOT-01.
+        @Test
+        void skipsLambdaWhoseBodyIsAPartialAccessor() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                import java.util.List;
+                public class Test {
+                    public Result<String> first(Result<List<String>> input) {
+                        return input.map(xs -> xs.getFirst());
+                    }
+                    public Result<String> last(Result<List<String>> input) {
+                        return input.map(xs -> xs.getLast());
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-STY-05");
+        }
+
         @Test
         void detectsInstanceMethodLambda() {
             var diagnostics = lint("""

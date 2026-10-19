@@ -96,7 +96,22 @@ class CommunityPlacementReconcilerTest {
             return Promise.success(oldExists);
         }
     };
+    private final List<String> wallClockStamps = new ArrayList<>();
     private final CommunityPlacementReconciler reconciler = controller(10, 60_000);
+
+    /// The clock the reconciler reads. A subclass swaps in a clock far from the wall clock, which reruns every
+    /// scenario here and fails on any placement stamp that did not come from it (#1535 item 7).
+    java.util.function.LongSupplier clock() { return System::currentTimeMillis; }
+
+    /// True when [#clock] is not the wall clock, so the audit applies.
+    boolean injectedClock() { return false; }
+
+    @org.junit.jupiter.api.AfterEach
+    void everyStampComesFromTheInjectedClock() {
+        if (injectedClock() && !wallClockStamps.isEmpty()) {
+            org.junit.jupiter.api.Assertions.fail("stamps not read from the injected clock: " + wallClockStamps);
+        }
+    }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private void seed(KVCommand command) { store.process(store.createBatch(List.of(command))); }
@@ -106,14 +121,19 @@ class CommunityPlacementReconcilerTest {
     }
 
     private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout) {
+        return controller(self, limit, timeout, clock());
+    }
+
+    private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout, java.util.function.LongSupplier clock) {
         return CommunityPlacementReconciler.communityPlacementReconciler(self, store,
             commands -> {
+                wallClockStamps.addAll(PlacementStampAudit.wallClockStamps(commands));
                 var hook = beforeCommit;
                 beforeCommit = () -> {};
                 hook.run();
                 return Promise.success(store.process(store.createBatch(commands)));
             }, () -> true,
-            ready::contains, () -> Set.of(CORE, OLD), () -> limit, actuator, escalations::add, (node, cause) -> retirementRefusals.add(node), org.pragmatica.lang.io.TimeSpan.timeSpan(timeout).millis());
+            ready::contains, () -> Set.of(CORE, OLD), () -> limit, actuator, escalations::add, (node, cause) -> retirementRefusals.add(node), org.pragmatica.lang.io.TimeSpan.timeSpan(timeout).millis(), clock);
     }
 
     private void initialize() {
@@ -303,6 +323,75 @@ class CommunityPlacementReconcilerTest {
 
         assertThat(operation.flatMap(value -> value.previousNode()).map(NodeId::id).or("none"))
             .as("no member is removed while the third is a pairing's surge replacement").isEqualTo("none");
+    }
+
+    /// #1535 item 7 support: members beyond the target are reduced by a scale-down operation naming the first
+    /// unprotected member (no pairing is live, so nothing shields any of the three).
+    @Test
+    void excessMembers_areReducedByAScaleDownOperation() {
+        var sizeTwoInOldZone = CONFIG.replace("target_size = 1", "target_size = 2").replace("zone = \"new\"", "zone = \"old\"");
+
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(sizeTwoInOldZone), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+        for (var member : List.of(new NodeId("a-first"), new NodeId("b-second"), new NodeId("c-third"))) {
+            seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(member), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
+            seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(member), new AetherValue.NodePlacementValue("pool", Option.some("old"), member.id() + "-instance")));
+            ready.add(member);
+        }
+
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().detail()).isEqualTo("Scale down");
+        assertThat(current().previousNode().unwrap()).isEqualTo(new NodeId("a-first"));
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+    }
+
+    /// A community that starts empty has no previous node to drain: once the new member is ready the operation completes.
+    @Test
+    void firstMemberOfAnEmptyCommunity_completesWithoutADrain() {
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().previousNode().isEmpty()).isTrue();
+        reconciler.reconcile().await().unwrap();
+        replacementReady();
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(effects).containsExactly("create");
+    }
+
+    /// A create the capacity ledger cannot admit (no definitive refusal) returns the operation to RESERVED with the
+    /// reason and escalates once; no provider effect follows.
+    @Test
+    void capacityNotAdmitted_defersTheOperationBackToReserved() {
+        initialize();
+        createOutcome = CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE.promise();
+
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.RESERVED);
+        assertThat(current().detail()).isNotEmpty();
+        assertThat(escalations).hasSize(1);
+    }
+
+    /// The factory production wires (no clock argument) stamps with the wall clock.
+    @Test
+    void factoryWithoutAClock_stampsWithTheWallClock() {
+        var production = CommunityPlacementReconciler.communityPlacementReconciler(CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true,
+            ready::contains, () -> Set.of(CORE, OLD), () -> 10, actuator, escalations::add, (node, cause) -> {},
+            org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis());
+        var before = System.currentTimeMillis();
+
+        initialize();
+        production.reconcile().await().unwrap();
+
+        assertThat(current().startedAt()).isBetween(before, System.currentTimeMillis());
     }
 
     @Test
@@ -556,7 +645,7 @@ class CommunityPlacementReconcilerTest {
         var reserved = current();
         seed(new KVCommand.LeaderTransaction<>(new AetherKey.CommunityPlacementOperationKey("stable"), java.util.UUID.randomUUID().toString(), reserved.issuer(), List.of(),
             List.of(new KVCommand.Mutation<>(new AetherKey.CommunityPlacementOperationKey("stable"), Option.some(reserved),
-                Option.some(reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, reserved.issuer(), ""))))));
+                Option.some(reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, reserved.issuer(), "", clock().getAsLong()))))));
         controller(10, 60_000).reconcile().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.CREATE_UNCERTAIN);
         assertThat(effects).isEmpty();
@@ -612,6 +701,48 @@ class CommunityPlacementReconcilerTest {
         assertThat(effects).contains("terminate");
     }
 
+    /// #1535 item 7: the drain deadline reads the injected clock, not the wall clock, so it can be stepped exactly.
+    @Test
+    void drainDeadline_followsTheInjectedClock() {
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000_000L);
+        var clocked = controller(CORE, 10, 1_000, now::get);
+
+        initialize();
+        clocked.reconcile().await().unwrap();
+        clocked.reconcile().await().unwrap();
+        replacementReady();
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.DRAIN_REQUESTED);
+        now.addAndGet(900);
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).as("inside the 1000 ms drain window").isEqualTo(PlacementOperationPhase.DRAIN_REQUESTED);
+        now.addAndGet(200);
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).as("past the window by the injected clock alone").isEqualTo(PlacementOperationPhase.DRAIN_UNCERTAIN);
+    }
+
+    /// The retirement-safety delay reads the injected clock too: a readiness wait inside its window stays AWAITING_READY, and only the
+    /// injected clock passing the window delays it. Read from the wall clock, the first pass would already be far past the window.
+    @Test
+    void retirementDelay_followsTheInjectedClock() {
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000_000L);
+        var clocked = controller(CORE, 10, 1_000, now::get);
+
+        initialize();
+        clocked.reconcile().await().unwrap();
+        clocked.reconcile().await().unwrap();
+        replacementReady();
+        safeToRetire = false;
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).as("evacuation unproven, window not yet passed").isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        now.addAndGet(900);
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).as("inside the 1000 ms window").isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        now.addAndGet(200);
+        clocked.reconcile().await().unwrap();
+        assertThat(current().phase()).as("past the window by the injected clock alone").isEqualTo(PlacementOperationPhase.READINESS_DELAYED);
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.EnumSource(value = PlacementOperationPhase.class,
         names = {"RESERVED", "CREATE_REQUESTED", "CREATE_UNCERTAIN", "AWAITING_READY", "DRAIN_REQUESTED",
@@ -620,7 +751,7 @@ class CommunityPlacementReconcilerTest {
         initialize();
         reconciler.reconcile().await().unwrap();
         var reserved = current();
-        var interrupted = reserved.withPhase(phase, reserved.issuer(), "interrupted");
+        var interrupted = reserved.withPhase(phase, reserved.issuer(), "interrupted", clock().getAsLong());
         var key = new AetherKey.CommunityPlacementOperationKey("stable");
         seed(new KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), reserved.issuer(), List.of(),
             List.of(new KVCommand.Mutation<>(key, Option.some(reserved), Option.some(interrupted)))));

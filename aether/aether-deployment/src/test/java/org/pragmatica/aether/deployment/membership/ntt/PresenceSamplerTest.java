@@ -128,7 +128,7 @@ class PresenceSamplerTest {
             assertThat(reconcileInvocations.get()).isEqualTo(1);
 
             sampleTimes(sampler, 1); // K_DOWN-th consecutive absent → LEAVE
-            sampleTimes(sampler, 3); // further absent samples must NOT re-fire
+            sampleTimes(sampler, 3); // further absent samples must NOT trigger another reconcile
 
             assertThat(reconcileInvocations.get()).isEqualTo(2);
             assertThat(sampler.currentMembers()).containsExactly(SELF);
@@ -165,14 +165,14 @@ class PresenceSamplerTest {
         }
     }
 
-    /// DOWN-hysteresis crossing callback — the additive FSM-routing seam. Fires exactly at
-    /// the crossing edge (mirroring the presence-sensor `stableMembers.remove`), not on every
-    /// absent sample, and leaves the existing membership-removal + reconcile-trigger
-    /// behaviour unchanged.
+    /// DOWN-hysteresis crossing callback — the additive FSM-routing seam. Fires when the absent
+    /// streak reaches `K_DOWN`, once for an admitted peer and once per further `K_DOWN` absent samples for a
+    /// never-admitted one (never on every absent sample), and leaves the existing
+    /// membership-removal + reconcile-trigger behaviour unchanged.
     @Nested
     class DownHysteresisCrossingCallback {
         @Test
-        void advanceOne_downHysteresisCrossing_firesDownCrossingCallbackOnce() {
+        void advanceOne_downHysteresisCrossing_firesOnceInFirstWindow() {
             var crossings = new ArrayList<NodeId>();
             var sampler = sampler(crossings::add);
 
@@ -186,12 +186,86 @@ class PresenceSamplerTest {
             assertThat(crossings).isEmpty();
 
             sampleTimes(sampler, 1); // K_DOWN-th consecutive absent → DOWN crossing
-            sampleTimes(sampler, 3); // further absent samples must NOT re-fire
+            sampleTimes(sampler, K_DOWN - 1); // further absent samples inside the window must NOT re-fire
 
-            assertThat(crossings).containsExactly(A); // exactly once, with A's id
+            assertThat(crossings).containsExactly(A); // one crossing in the first window, with A's id
             // Existing presence-sensor removal + reconcile-trigger behaviour unchanged.
             assertThat(sampler.currentMembers()).containsExactly(SELF);
             assertThat(reconcileInvocations.get()).isEqualTo(2); // join + departure
+        }
+
+        /// R1: the FSM promotes on one healthy sample, the sampler admits on `K_UP`. A peer that dies
+        /// inside that window was never in `stableMembers`, yet the FSM still needs the crossing to
+        /// move it Suspect to Departing.
+        @Test
+        void advanceOne_neverAdmittedPeer_firesDownCrossing() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(C);
+            sampleTimes(sampler, K_UP - 1); // below K_UP: C is never admitted
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
+
+            absent(C);
+            sampleTimes(sampler, K_DOWN - 1);
+            assertThat(crossings).isEmpty();
+
+            sampleTimes(sampler, 1); // K_DOWN-th consecutive absent sample
+
+            assertThat(crossings).containsExactly(C);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
+            assertThat(reconcileInvocations.get()).isZero(); // never-admitted C adds no reconcile trigger
+        }
+
+        /// A single edge is lost when the FSM is still Member as it fires (Member ignores the event),
+        /// so a never-admitted peer's continuing absence re-delivers once per `K_DOWN` window, not on
+        /// every sample.
+        @Test
+        void advanceOne_neverAdmittedSustainedAbsence_refiresOncePerDownWindow() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(C);
+            sampleTimes(sampler, K_UP - 1);
+            absent(C);
+
+            sampleTimes(sampler, K_DOWN * 3);
+
+            assertThat(crossings).containsExactly(C, C, C);
+        }
+
+        /// A stable member's death timing is unchanged: one crossing at its removal edge, never
+        /// re-fired, however long the absence lasts (re-firing would depart a killed owner before SWIM
+        /// marks it faulty).
+        @Test
+        void advanceOne_stableMemberSustainedAbsence_firesOnlyAtTheRemovalEdge() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(A);
+            sampleTimes(sampler, K_UP);
+            absent(A);
+
+            sampleTimes(sampler, K_DOWN * 4);
+
+            assertThat(crossings).containsExactly(A);
+        }
+
+        @Test
+        void advanceOne_presentSampleInsideWindow_resetsRefireCadence() {
+            var crossings = new ArrayList<NodeId>();
+            var sampler = sampler(crossings::add);
+
+            healthy(C);
+            sampleTimes(sampler, 1);
+            absent(C);
+            sampleTimes(sampler, K_DOWN - 1);
+            healthy(C);
+            sampleTimes(sampler, 1); // direction flip resets the streak
+            absent(C);
+            sampleTimes(sampler, K_DOWN - 1);
+
+            assertThat(crossings).isEmpty();
         }
     }
 

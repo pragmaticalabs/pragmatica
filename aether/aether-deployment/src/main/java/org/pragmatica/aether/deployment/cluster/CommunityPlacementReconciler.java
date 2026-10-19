@@ -87,6 +87,36 @@ public interface CommunityPlacementReconciler {
                                                                      Consumer<CommunityPlacementOperationValue> escalation,
                                                                      java.util.function.BiConsumer<NodeId, org.pragmatica.lang.Cause> retirementRefusal,
                                                                      org.pragmatica.lang.io.TimeSpan drainTimeout) {
+        return communityPlacementReconciler(self,
+                                            store,
+                                            apply,
+                                            activeLeader,
+                                            ready,
+                                            admittedNodes,
+                                            fleetLimit,
+                                            actuator,
+                                            escalation,
+                                            retirementRefusal,
+                                            drainTimeout,
+                                            System::currentTimeMillis);
+    }
+
+    /// As above, with the wall clock injected (#1535): the drain deadline, the readiness timeout and the
+    /// availability retry read `clock` (epoch milliseconds), so a test can step them deterministically.
+    /// Wall-clock, not monotonic, on purpose: the stamps are written to the replicated KV and compared by
+    /// whichever leader reads them next.
+    static CommunityPlacementReconciler communityPlacementReconciler(NodeId self,
+                                                                     KVStore<AetherKey, AetherValue> store,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
+                                                                     BooleanSupplier activeLeader,
+                                                                     Predicate<NodeId> ready,
+                                                                     Supplier<java.util.Set<NodeId>> admittedNodes,
+                                                                     IntSupplier fleetLimit,
+                                                                     Actuator actuator,
+                                                                     Consumer<CommunityPlacementOperationValue> escalation,
+                                                                     java.util.function.BiConsumer<NodeId, org.pragmatica.lang.Cause> retirementRefusal,
+                                                                     org.pragmatica.lang.io.TimeSpan drainTimeout,
+                                                                     java.util.function.LongSupplier clock) {
         return new PlacementReconciler(self,
                                        store,
                                        apply,
@@ -101,7 +131,8 @@ public interface CommunityPlacementReconciler {
                                        drainTimeout,
                                        new AtomicBoolean(),
                                        new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
-                                       new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of));
+                                       new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
+                                       clock);
     }
 }
 
@@ -119,7 +150,8 @@ record PlacementReconciler(NodeId self,
                            org.pragmatica.lang.io.TimeSpan drainTimeout,
                            AtomicBoolean running,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> protectedNodes,
-                           java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes) implements CommunityPlacementReconciler {
+                           java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes,
+                           java.util.function.LongSupplier clock) implements CommunityPlacementReconciler {
     @Override
     public java.util.Set<NodeId> protectedView() {
         return protectedNodes.get()
@@ -251,8 +283,8 @@ record PlacementReconciler(NodeId self,
                                                          placement.sourceName(),
                                                          PlacementOperationPhase.AWAITING_READY,
                                                          leader,
-                                                         System.currentTimeMillis(),
-                                                         System.currentTimeMillis(),
+                                                         clock.getAsLong(),
+                                                         clock.getAsLong(),
                                                          "Implicit source capacity reduction");
         var guards = new ArrayList<>(reservationGuardsFromSnapshot(snapshot));
         var directiveKey = new AetherKey.ActivationDirectiveKey(node);
@@ -310,8 +342,8 @@ record PlacementReconciler(NodeId self,
         return currentLeader().fold(Promise::unitPromise,
                                     leader -> alignCommunity(policy, leader, snapshot).flatMap(accepted -> {
                                         if (!accepted) {
-                                        return Promise.unitPromise();
-                                    }
+                                            return Promise.unitPromise();
+                                        }
 
                                         return operation(policy.id()).filter(CommunityPlacementOperationValue::active)
                                                         .fold(() -> reserve(config, policy, leader, snapshot),
@@ -417,7 +449,7 @@ record PlacementReconciler(NodeId self,
                                                  PlacementOperationPhase.READINESS_DELAYED,
                                                  "Reserved replacement did not become ready; reservation retained")
                                      : Promise.unitPromise();
-            case DRAIN_REQUESTED -> System.currentTimeMillis() - operation.phaseChangedAt() > drainTimeout.millis()
+            case DRAIN_REQUESTED -> clock.getAsLong() - operation.phaseChangedAt() > drainTimeout.millis()
                                     ? uncertain(operation,
                                                 leader,
                                                 PlacementOperationPhase.DRAIN_UNCERTAIN,
@@ -460,7 +492,7 @@ record PlacementReconciler(NodeId self,
                             .or(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)
                             .millis();
 
-        return System.currentTimeMillis() - operation.phaseChangedAt() > timeout;
+        return clock.getAsLong() - operation.phaseChangedAt() > timeout;
     }
 
     private Promise<Unit> beginCreate(ClusterBootstrapConfig config,
@@ -475,7 +507,10 @@ record PlacementReconciler(NodeId self,
                                "Reserved identity observed in a different location");
         }
 
-        var requested = operation.withPhase(PlacementOperationPhase.CREATE_REQUESTED, leader, operation.detail());
+        var requested = operation.withPhase(PlacementOperationPhase.CREATE_REQUESTED,
+                                            leader,
+                                            operation.detail(),
+                                            clock.getAsLong());
 
         return transition(operation, requested).flatMap(accepted -> accepted && currentLeader().filter(leader::equals)
                                                                                              .isPresent()
@@ -551,11 +586,11 @@ record PlacementReconciler(NodeId self,
                            .isPresent();
     }
 
-    private static boolean probeDue(CommunityPlacement policy,
-                                    CommunityPlacement.Location location,
-                                    Option<String> binding,
-                                    Map<AetherKey, AetherValue> snapshot) {
-        return availability(policy, location, snapshot).filter(value -> System.currentTimeMillis() - value.refusedAt() >= CommunityPlacementAvailability.retryDelay(value.attempts()).millis())
+    private boolean probeDue(CommunityPlacement policy,
+                             CommunityPlacement.Location location,
+                             Option<String> binding,
+                             Map<AetherKey, AetherValue> snapshot) {
+        return availability(policy, location, snapshot).filter(value -> clock.getAsLong() - value.refusedAt() >= CommunityPlacementAvailability.retryDelay(value.attempts()).millis())
                            .filter(value -> binding.filter(value.sourceBinding()::equals)
                                                    .isPresent())
                            .filter(value -> releasedRefusal(value,
@@ -596,11 +631,12 @@ record PlacementReconciler(NodeId self,
         var refused = new AetherValue.CommunityPlacementAvailabilityValue(identity,
                                                                           operation.sourceBinding(),
                                                                           operation.targetNode(),
-                                                                          System.currentTimeMillis(),
+                                                                          clock.getAsLong(),
                                                                           attempts);
         var completed = operation.withPhase(PlacementOperationPhase.COMPLETE,
                                             leader,
-                                            "Provider definitively refused capacity; eligible discretionary capacity may fall back");
+                                            "Provider definitively refused capacity; eligible discretionary capacity may fall back",
+                                            clock.getAsLong());
 
         return commitAvailability(operation,
                                   completed,
@@ -625,7 +661,7 @@ record PlacementReconciler(NodeId self,
         var before = Option.option(snapshot.get(key))
                            .filter(AetherValue.CommunityPlacementAvailabilityValue.class::isInstance)
                            .map(AetherValue.CommunityPlacementAvailabilityValue.class::cast);
-        var next = operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "");
+        var next = operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "", clock.getAsLong());
 
         if (before.isEmpty()) return transition(operation, next).mapToUnit();
 
@@ -669,20 +705,21 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> deferCapacity(CommunityPlacementOperationValue operation, LeaderValue leader, String detail) {
-        var deferred = operation.withPhase(PlacementOperationPhase.RESERVED, leader, detail);
+        var deferred = operation.withPhase(PlacementOperationPhase.RESERVED, leader, detail, clock.getAsLong());
 
         return transition(operation, deferred).onSuccess(accepted -> {
                                                              if (accepted && !operation.detail()
                                                                                        .equals(detail)) {
-                                                             escalation.accept(deferred);
-                                                         }
+                                                                 escalation.accept(deferred);
+                                                             }
                                                          })
                          .mapToUnit();
     }
 
     private Promise<Unit> beginDrain(CommunityPlacementOperationValue operation, LeaderValue leader) {
         if (operation.previousNode().isEmpty()) {
-            return transition(operation, operation.withPhase(PlacementOperationPhase.COMPLETE, leader, "")).mapToUnit();
+            return transition(operation,
+                              operation.withPhase(PlacementOperationPhase.COMPLETE, leader, "", clock.getAsLong())).mapToUnit();
         }
 
         if (operation.previousNode()
@@ -707,7 +744,7 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> retirementDelayed(CommunityPlacementOperationValue operation, LeaderValue leader) {
-        return System.currentTimeMillis() - operation.phaseChangedAt() > drainTimeout.millis()
+        return clock.getAsLong() - operation.phaseChangedAt() > drainTimeout.millis()
                ? uncertain(operation,
                            leader,
                            PlacementOperationPhase.READINESS_DELAYED,
@@ -716,7 +753,7 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> commitDrain(CommunityPlacementOperationValue operation, LeaderValue leader) {
-        var draining = operation.withPhase(PlacementOperationPhase.DRAIN_REQUESTED, leader, "");
+        var draining = operation.withPhase(PlacementOperationPhase.DRAIN_REQUESTED, leader, "", clock.getAsLong());
 
         return transition(operation, draining).flatMap(accepted -> accepted && targetReady(operation) && currentLeader().filter(leader::equals)
                                                                                                                       .isPresent()
@@ -725,7 +762,7 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> beginTerminate(CommunityPlacementOperationValue operation, LeaderValue leader) {
-        var terminating = operation.withPhase(PlacementOperationPhase.TERMINATING, leader, "");
+        var terminating = operation.withPhase(PlacementOperationPhase.TERMINATING, leader, "", clock.getAsLong());
 
         return transition(operation, terminating).flatMap(accepted -> accepted && currentLeader().filter(leader::equals)
                                                                                                .isPresent()
@@ -738,13 +775,16 @@ record PlacementReconciler(NodeId self,
                        .flatMap(exists -> {
                                     if (currentLeader().filter(leader::equals)
                                                      .isEmpty()) {
-                                    return Promise.unitPromise();
-                                }
+                                        return Promise.unitPromise();
+                                    }
 
                                     return exists
                                            ? terminateIfSafe(operation, leader)
                                            : transition(operation,
-                                                        operation.withPhase(PlacementOperationPhase.COMPLETE, leader, "")).mapToUnit();
+                                                        operation.withPhase(PlacementOperationPhase.COMPLETE,
+                                                                            leader,
+                                                                            "",
+                                                                            clock.getAsLong())).mapToUnit();
                                 });
     }
 
@@ -766,12 +806,12 @@ record PlacementReconciler(NodeId self,
                                     String reason) {
         if (operation.phase() == phase && operation.detail().equals(reason)) return Promise.unitPromise();
 
-        var uncertain = operation.withPhase(phase, leader, reason);
+        var uncertain = operation.withPhase(phase, leader, reason, clock.getAsLong());
 
         return transition(operation, uncertain).onSuccess(accepted -> {
                              if (accepted) {
-                             escalation.accept(uncertain);
-                         }
+                                 escalation.accept(uncertain);
+                             }
                          })
                          .mapToUnit();
     }
@@ -808,13 +848,14 @@ record PlacementReconciler(NodeId self,
         return currentLeader().fold(() -> Promise.success(false),
                                     leader -> matchingDrain(sender, operationId).fold(() -> Promise.success(false),
                                                                                       operation -> switch (operation.phase()) {
-            case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
-            case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
-                                                                operation.withPhase(PlacementOperationPhase.DRAINED,
-                                                                                    leader,
-                                                                                    ""));
-            default -> Promise.success(false);
-        }));
+                                                                                          case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
+                                                                                          case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
+                                                                                                                                              operation.withPhase(PlacementOperationPhase.DRAINED,
+                                                                                                                                                                  leader,
+                                                                                                                                                                  "",
+                                                                                                                                                                  clock.getAsLong()));
+                                                                                          default -> Promise.success(false);
+                                                                                      }));
     }
 
     private Option<CommunityPlacementOperationValue> matchingDrain(NodeId sender, String operationId) {
@@ -996,8 +1037,8 @@ record PlacementReconciler(NodeId self,
                                                                                   source.value(),
                                                                                   PlacementOperationPhase.AWAITING_READY,
                                                                                   leader,
-                                                                                  System.currentTimeMillis(),
-                                                                                  System.currentTimeMillis(),
+                                                                                  clock.getAsLong(),
+                                                                                  clock.getAsLong(),
                                                                                   "Community retirement");
 
                                  return commit(value,
@@ -1019,7 +1060,7 @@ record PlacementReconciler(NodeId self,
                                                                          0,
                                                                          org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED,
                                                                          before.createdAt(),
-                                                                         Option.some(System.currentTimeMillis()));
+                                                                         Option.some(clock.getAsLong()));
                               var id = UUID.randomUUID().toString();
                               var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
                                                                                                     id,
@@ -1091,8 +1132,8 @@ record PlacementReconciler(NodeId self,
                                                                                   previous.getValue().sourceName(),
                                                                                   PlacementOperationPhase.AWAITING_READY,
                                                                                   leader,
-                                                                                  System.currentTimeMillis(),
-                                                                                  System.currentTimeMillis(),
+                                                                                  clock.getAsLong(),
+                                                                                  clock.getAsLong(),
                                                                                   "Scale down");
 
                                  return commit(value,
@@ -1121,8 +1162,8 @@ record PlacementReconciler(NodeId self,
                                                                                     .sourceName()).or(""),
                                                          PlacementOperationPhase.RESERVED,
                                                          leader,
-                                                         System.currentTimeMillis(),
-                                                         System.currentTimeMillis(),
+                                                         clock.getAsLong(),
+                                                         clock.getAsLong(),
                                                          "");
         var guards = reservationGuards(config, snapshot);
 

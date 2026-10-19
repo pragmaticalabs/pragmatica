@@ -94,6 +94,20 @@ public sealed interface DiffAction {
         }
     }
 
+    /// #1966: the content of a runtime profile (`[runtime.<name>]`: type, image, jvm_args, jar_url) differs between the
+    /// committed and the desired config. `fields` names the changed keys, comma-separated.
+    record RuntimeProfileChange(String profileName, String fields) implements DiffAction {
+        @Override
+        public String symbol() {
+            return "~";
+        }
+
+        @Override
+        public String description() {
+            return "runtime." + profileName + "  " + fields + " changed";
+        }
+    }
+
     record SourceFieldChange(SourceName sourceName, String field) implements DiffAction {
         @Override
         public String symbol() {

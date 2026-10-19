@@ -22,7 +22,22 @@ X-API-Key: your-api-key
 - `401 Unauthorized` — Missing `X-API-Key` header. Response includes `WWW-Authenticate: ApiKey realm="Aether"`.
 - `403 Forbidden` — Invalid API key provided.
 
-When no API keys are configured, all endpoints are accessible without authentication (backward compatible).
+With no key configured, `security_mode = "api-key"` (the default) is fail-closed: every non-public route is refused until a credential exists, and the cluster bootstrap admin key is the only one accepted (see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)). Only an explicit `security_mode = "none"` serves the management plane without authentication, and then it is **fully open**: no validator is consulted on any path (local, forwarded, websocket feeds, artifact push), so any caller that can reach the port can run every operation. Use `none` only on an isolated listener.
+
+### Management security mode and the shared keys
+
+The Management API has an optional security setting of its own, `[management] security_mode`, taking `"api-key"` or `"none"`. When it is **absent** the management plane inherits `[app-http] security_mode`, so a configuration written before the key existed behaves as it did, with one exception: an unrecognised `[app-http] security_mode` (a typo, which used to read as the default `api-key`) is now refused at load and the node exits 65. When it is **set** it is independent of the application plane: `"api-key"` protects the management plane while the application plane is `none`, and `"none"` opens the management plane while the application plane authenticates. A value the plane cannot honour is **refused at load**, never rewritten: `jwt` (the management plane has no JWT mode) and any unrecognised value fail the config with a message naming the key, the value and the allowed values (`none`, `api-key`); an unrecognised `[app-http] security_mode` is refused the same way (`none`, `api-key`, `jwt`). The `[app-http.api-keys.*]` tables, and the cluster bootstrap admin key, are shared by both planes whichever mode each runs: a node whose application plane runs `security_mode = "jwt"` still authenticates this plane with API keys.
+
+The two planes then authorize on **different axes** of the same key:
+
+| Plane | What is checked | Key field |
+|-------|-----------------|-----------|
+| Application HTTP (slice routes) | the route's `role:<name>` policy against the key's role set | `roles` |
+| Management API | the endpoint's minimum role against the key's hierarchical role | `authorization_role` (`ADMIN` > `OPERATOR` > `VIEWER`) |
+
+A key can pass on one plane and fail on the other. Example: a key with `roles = ["admin"]` and no `authorization_role` satisfies a slice route declared `role:admin`, but its `authorization_role` is `VIEWER`, so `PUT /repository/...` on the management plane is refused with `403` (it requires `OPERATOR`).
+
+A refusal names the plane and, for an authorization refusal, the axis, for example `Management API authorization refused (authorization_role axis: ...): Access denied: role VIEWER cannot access OPERATOR endpoint`.
 
 ## Authorization (RBAC)
 
@@ -93,7 +108,7 @@ roles = ["service"]
 authorization_role = "VIEWER"
 ```
 
-**Default behavior:** When `authorization_role` is omitted, the key defaults to `ADMIN` for full backward compatibility. Existing configurations with no `authorization_role` field continue to work unchanged.
+**Default behavior:** When `authorization_role` is omitted, the key defaults to `VIEWER` (`ApiKeyEntry.DEFAULT_ROLE`). Grant `OPERATOR` or `ADMIN` explicitly.
 
 **Simple key format:** Keys defined using the simple string list (`api_keys = ["key1", "key2"]`) always receive ADMIN authorization.
 
@@ -101,10 +116,11 @@ authorization_role = "VIEWER"
 
 When an authenticated user lacks the required role for an endpoint, the server returns:
 
-- **`403 Forbidden`** with body:
+- **`403 Forbidden`** with a `application/problem+json` body whose `detail` names the plane and the axis:
 ```json
 {
-  "error": "Forbidden: VIEWER role insufficient for this operation (requires OPERATOR)"
+  "status": 403,
+  "detail": "Management API authorization refused (authorization_role axis: ADMIN > OPERATOR > VIEWER, set per key as authorization_role; the roles that gate app-HTTP routes are a separate axis and do not apply here): Access denied: role VIEWER cannot access OPERATOR endpoint"
 }
 ```
 
@@ -1424,6 +1440,10 @@ that belongs to a different (dead or retired) process:
   evidence and QUIC Hello together);
 - `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
   sender is a retired NodeId;
+- `quic_inbound_unbound_drops_total`, `quic_inbound_policy_drops_total` and `quic_inbound_fault_filter_drops_total` —
+  inbound messages refused after they were counted in `quic_messages_received_total`: the claimed origin is not
+  the authenticated peer, the installed inbound message policy refused it, or the fault filter dropped it. The
+  first two also log a WARN on the first and every power-of-two occurrence. These three are on this endpoint only, not on the Prometheus transport surface;
 - `quic_superseded_closes_total` and `quic_superseded_lane_streams_at_risk_total` — connections closed at once
   because a fresh handshake superseded them, and the lane streams (writes not yet accepted by quiche, or
   written within the last 2 s) that close put at risk of discarding writes; unacked writes themselves are not
@@ -4181,7 +4201,7 @@ When API keys are configured, WebSocket connections require first-message authen
 
 If not authenticated within 5 seconds, the connection is closed.
 
-When no API keys are configured, WebSocket connections are immediately authorized.
+With `security_mode = "api-key"` (the default) and no key configured, the feeds are fail-closed: only the cluster bootstrap admin key authenticates. Connections are authorized immediately only under an explicit `security_mode = "none"`, which leaves the whole management plane open.
 
 ---
 
@@ -4767,12 +4787,30 @@ List all registered scheduled tasks with active timer count and execution state.
       "lastOutcome": "SUCCESS",
       "completionTimeouts": 0,
       "lateResolutions": 0,
-      "skippedOverlaps": 0
+      "skippedOverlaps": 0,
+      "eligibleHere": true,
+      "ineligibleReason": ""
     }
   ],
-  "activeTimers": 1
+  "activeTimers": 1,
+  "schedulerState": "LEADING"
 }
 ```
+
+`activeTimers` is one scalar, and `0` there can mean several different things. `schedulerState` (this node's scheduler state machine: `DORMANT`, `FOLLOWING`, `LEADING` or `STOPPED`) and each task's `eligibleHere` / `ineligibleReason` tell them apart. Both describe the node that answers the request, not the cluster. `ineligibleReason` is empty when the task is eligible here and its timer is armed, otherwise the first of:
+
+| `ineligibleReason` | Meaning |
+|---|---|
+| `SCHEDULER_DORMANT` | No quorum has been reported (or it was lost); nothing fires on this node. |
+| `SCHEDULER_STOPPED` | The scheduler on this node was stopped. |
+| `PAUSED` | The task is paused. |
+| `UNKNOWN_MODE` | The task's execution mode could not be read; it runs nowhere. |
+| `NOT_LEADER` | A `single`-mode task, and this node is not the leader. |
+| `NOT_HOSTING` | An `all`-mode task, and this node does not host the slice. |
+| `DRAINING` | An `all`-mode task, and this node is draining. |
+| `TIMER_ARM_FAILED` | Eligible in every other respect, but no timer is armed. |
+
+A scheduler that enters `DORMANT` logs a WARN naming it, as does every quorum notification that is not `ACTIVE`.
 
 For an `execution_mode = "all"` task, `lastExecutionAt`/`nextFireAt`/`consecutiveFailures`/`totalExecutions` are aggregated across every node's own execution row rather than read from a single shared entry (`totalExecutions` summed, `consecutiveFailures`/`lastExecutionAt` max, `nextFireAt` min). A `single`-mode task's fields still come from the one node that ever executes it
 [mechanism: `ScheduledTaskRoutes.toSummary` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`, the same per-node scan `executions-by-node` uses; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#ListSummary` — component-level against a real `KVStore`, not a live multi-node run].
@@ -4785,7 +4823,8 @@ Get scheduled tasks filtered by config section.
 ```json
 {
   "tasks": [...],
-  "configSection": "scheduling.cleanup"
+  "configSection": "scheduling.cleanup",
+  "schedulerState": "LEADING"
 }
 ```
 
@@ -6392,6 +6431,8 @@ The app HTTP server (serving slice-generated endpoints) supports configurable au
 | `jwt` | `Authorization: Bearer <token>` | JWT with JWKS validation (RS256/ES256) |
 | `none` | -- | No authentication — must be set explicitly; dev/eval only, never for anything reachable over an untrusted network |
 
+**This setting is the default for the Management API.** Unless `[management] security_mode` is set, whatever mode is chosen here arms (or, for `none`, opens) the management plane too, and the two planes authorize on different axes (`roles` here, `authorization_role` there). See [Management security mode and the shared keys](#management-security-mode-and-the-shared-keys).
+
 ### Health Endpoint Bypass
 
 Health endpoints always bypass authentication regardless of security mode:
@@ -6465,9 +6506,9 @@ jwks_cache_ttl_seconds = 3600
 
 #### Mode: None
 
-No authentication -- all requests are allowed with a system principal. Must be set explicitly
-(`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev
-instance, never for anything reachable over an untrusted network -- see the
+On the application plane, `none` serves routes whose policy is unspecified or `public`, and refuses auth-requiring routes outright with `401 NO_VALIDATOR_CONFIGURED`; there is no system principal for a request to assume.
+
+**`none` also opens the Management API completely unless `[management] security_mode` says otherwise.** With `[management] security_mode` absent the management plane inherits this mode (see [Management security mode and the shared keys](#management-security-mode-and-the-shared-keys)), so under `none` no validator is consulted on any management path: every operation (cluster changes, node shutdown, config, blueprint deploy), the websocket feeds, and `PUT /repository/...` artifact pushes (code the cluster will load) are served to any caller that can reach the management port. Setting `none` for a local app-HTTP development setup therefore opens cluster operations too, unless you also set `[management] security_mode = "api-key"`. Must be set explicitly (`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev instance, never for anything reachable over an untrusted network -- see the
 [Bootstrap Config Reference](bootstrap-config.md#a-security_mode--none--why-deveval-bootstrap-needs-it)
 for why the dev/eval bootstrap path uses it and what it gives up.
 
