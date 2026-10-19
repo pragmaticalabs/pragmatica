@@ -55,7 +55,12 @@ public final class ConfigLoader {
 
     /// THE node load path, shared by every entry point and by cluster bootstrap's pre-flight ([#checkNodeDocument]):
     /// parse the document into a config, then run the configuration and storage-encryption validators. One function, so
-    /// pre-flight and boot cannot drift apart; only the environment differs.
+    /// pre-flight and boot cannot drift apart; only the environment and the filesystem differ.
+    ///
+    /// ASSUMPTION (guarded by `ConfigLoaderPreflightTest#preflightVerdict_doesNotDependOnTheValuesTheEnvironmentSupplies`): the
+    /// three values the environment feeds into the built config (the TLS cluster secret, the API keys, `${env:...}`
+    /// placeholders of the cloud section) are read by NO validator, so an empty environment cannot change a verdict. A
+    /// validator that starts reading one of them turns that test red, and has to decide what pre-flight does about it.
     private static Result<AetherConfig> loadDocument(TomlDocument doc,
                                                      Map<String, String> overrides,
                                                      Fn1<String, String> env,

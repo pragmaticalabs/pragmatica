@@ -148,6 +148,69 @@ class ConfigLoaderPreflightTest {
                     .onFailure(cause -> assertThat(cause.message()).contains("Certificate file not found"));
     }
 
+    /// A validator rule that does not involve the filesystem must also be applied by each node entry point: a cluster
+    /// of two nodes is below the structural floor.
+    @Test
+    void everyNodeLoadEntryPoint_appliesTheConfigValidator(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var toml = "[cluster]\nenvironment = \"docker\"\nnodes = 2\n";
+        var file = java.nio.file.Files.writeString(dir.resolve("two.toml"), toml);
+
+        ConfigLoader.load(file).onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("load(Path) must apply ConfigValidator"));
+        ConfigLoader.loadWithOverrides(file, Map.of()).onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("loadWithOverrides must apply ConfigValidator"));
+        ConfigLoader.loadFromString(toml).onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("loadFromString must apply ConfigValidator"));
+        assertThat(ConfigLoader.load(file).isFailure()).isTrue();
+        assertThat(ConfigLoader.checkNodeDocument(TomlParser.parse(toml).unwrap()).isFailure()).describedAs("pre-flight applies it too").isTrue();
+    }
+
+    /// The assumption stated on `loadDocument`: the values the environment supplies (TLS cluster secret, API keys, `${env:}`
+    /// placeholders of the cloud section) reach no validator, so the verdict is the same with and without them. A validator
+    /// that starts reading one makes this test red.
+    @Test
+    void preflightVerdict_doesNotDependOnTheValuesTheEnvironmentSupplies() {
+        var withValues = Map.of("AETHER_CLUSTER_SECRET", "s3cret",
+                                "AETHER_API_KEYS", "key-1:ops:ADMIN",
+                                "HCLOUD_TOKEN", "token",
+                                "REGION", "fsn1");
+        var docs = java.util.List.of("""
+                                     [cluster]
+                                     environment = "docker"
+                                     nodes = 3
+                                     tls = true
+
+                                     [tls]
+                                     auto_generate = true
+                                     """,
+                                     """
+                                     [cluster]
+                                     environment = "docker"
+                                     nodes = 3
+
+                                     [app-http]
+                                     enabled = true
+                                     """,
+                                     """
+                                     [cluster]
+                                     environment = "docker"
+                                     nodes = 3
+
+                                     [cloud]
+                                     provider = "hetzner"
+
+                                     [cloud.credentials]
+                                     token = "${env:HCLOUD_TOKEN}"
+
+                                     [cloud.compute]
+                                     region = "${env:REGION}"
+                                     """);
+
+        for (var toml : docs) {
+            var empty = ConfigLoader.checkNodeDocument(TomlParser.parse(toml).unwrap()).isSuccess();
+            var supplied = ConfigLoader.checkNodeDocument(TomlParser.parse(toml).unwrap(), withValues::get, ConfigLoader.PREFLIGHT_FILESYSTEM).isSuccess();
+
+            assertThat(supplied).describedAs("verdict with the environment supplying its values, for:%n%s", toml).isEqualTo(empty);
+        }
+    }
+
     @Test
     void preflightFilesystem_findsEveryFile() {
         assertThat(ConfigLoader.PREFLIGHT_FILESYSTEM.test(java.nio.file.Path.of("/definitely/not/here.pem"))).isTrue();
