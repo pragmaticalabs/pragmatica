@@ -1751,7 +1751,7 @@ final class FlowPrinter {
         int alignColumn = startColumn;
         // Identify a link by its head node; a merged link's head is its `.name` op.
         var methodCallSet = new HashSet<Cursor>(methodCallLinks.stream()
-                                                               .map(List::getFirst)
+                                                               .flatMap(link -> link.stream().limit(1))
                                                                .toList());
 
         if (primary != null) {
