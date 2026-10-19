@@ -982,11 +982,11 @@ The diff operates at `(source, role)` granularity. Changes are classified, order
 
 **REQ-9.3.2**: Immutable fields (cluster name) MUST be rejected. The diff MUST report these as errors, not actionable changes.
 
-**REQ-9.3.3**: A wave failure (any node failing to come up or drain within its timeout) **halts in place**. `apply` does not auto-rollback and does not auto-continue. The operator must explicitly re-invoke `apply --resume` to retry the remaining waves, or `apply --rollback` to unwind the changes already applied and return the cluster to its pre-apply state.
+**REQ-9.3.3**: A wave failure (any node failing to come up or drain within its timeout) **halts in place**. `apply` does not auto-rollback and does not auto-continue. The operator must explicitly re-invoke `apply --resume` to retry the remaining waves. Unwinding the changes already applied (`apply --rollback`) is **not implemented (#686)**: the flag fails with a non-zero exit and changes nothing; the intended behaviour is described under REQ-9.3.5.
 
 **REQ-9.3.4**: Runtime changes that alter the wire protocol between Aether versions cannot use rolling restart — they require a full-cluster replacement via source-level change. The diff engine flags cross-major-version runtime upgrades and forces the replace-before-retire path.
 
-**REQ-9.3.5**: `apply --resume` reads the last wave state and continues from the first unfinished wave, re-running pre-flight before each resumption. `apply --rollback` reverses completed waves in LIFO order: re-provision drained nodes, re-join cluster, destroy nodes that were added, restore prior firewall rules.
+**REQ-9.3.5**: `apply --resume` reads the last wave state and continues from the first unfinished wave, re-running pre-flight before each resumption. `apply --rollback` is **not implemented (#686)**: it prints that and exits non-zero, before reading the file or contacting the cluster. The intended behaviour, to be rebuilt with the server-side wave design, was to reverse completed waves in LIFO order: re-provision drained nodes, re-join cluster, destroy nodes that were added, restore prior firewall rules.
 
 > **Superseded by #1543 (2026-10-09):** the runtime-change and source-level rolling restarts described in this section (drain and destroy a node, then start another in its place, the SSH branch under the same id) are no longer executed: `apply` refuses a runtime change with an error naming the supported ways. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, `POST /api/v1/nodes/replace/{id}`). There is no supported way today to change a source role's runtime profile on a running cluster.
 
@@ -1026,7 +1026,7 @@ Apply these changes? [y/N]
 | `aether cluster apply --config <file> --dry-run` | Show diff plan only |
 | `aether cluster apply --config <file> --yes` | Apply without confirmation prompt |
 | `aether cluster apply --resume` | Resume a halted-in-place apply from the first unfinished wave |
-| `aether cluster apply --rollback` | Unwind completed waves and return to pre-apply state |
+| `aether cluster apply --rollback` | Not implemented (#686): fails with a non-zero exit |
 | `aether cluster destroy [--yes]` | Full cluster teardown |
 
 ### 10.2 Operational Commands
@@ -1173,7 +1173,7 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | PF-21  | Cloud sub-tables: `runtime` must be `"container"` or `"jvm"`         | Cloud       | Error    |
 | PF-22  | SSH sub-tables: `runtime` must be `"container"` (the only runtime launched over SSH — #1090) | SSH | Error |
 | PF-23  | Provider implements ingress management when `allow_ingress` declared  | Cloud       | Error    |
-| PF-24  | Management port not open to `0.0.0.0/0` while `security_mode = "none"` | Cloud       | Error    |
+| PF-24  | Management port not open to `0.0.0.0/0` while the management plane's effective `security_mode` is `"none"` (its own `[management] security_mode`, else inherited from `[app-http]`) ; also refuses a `security_mode` no node can honour (`[management]` `jwt`, or an unrecognised value in either section) | Cloud       | Error    |
 | PF-27  | A host is declared by at most one SSH source (PF-09 is intra-source)   | SSH         | Error    |
 
 ### 12.2 Cluster-Level Checks

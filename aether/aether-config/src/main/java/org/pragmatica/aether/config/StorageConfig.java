@@ -30,10 +30,17 @@ public record StorageConfig(long memoryMaxBytes,
     public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
     private static final String DEFAULT_ROOT = "/data/aether";
 
+    /// The node's data root: `aether.storage.defaultRoot` when set, else `/data/aether`. The defaults of
+    /// `disk_path` / `snapshot_path` live under it, and so does the volume sentinel (#1473), which is why it
+    /// is a method and not only the default of [#storageConfig()].
+    public static String defaultRoot() {
+        return Option.option(System.getProperty(DEFAULT_ROOT_PROPERTY))
+                     .filter(Verify.Is::notBlank)
+                     .or(DEFAULT_ROOT);
+    }
+
     public static StorageConfig storageConfig() {
-        var root = Option.option(System.getProperty(DEFAULT_ROOT_PROPERTY))
-                         .filter(Verify.Is::notBlank)
-                         .or(DEFAULT_ROOT);
+        var root = defaultRoot();
 
         return new StorageConfig(256 * 1024 * 1024,
                                  10L * 1024 * 1024 * 1024,

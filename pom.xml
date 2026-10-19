@@ -51,6 +51,7 @@
         <module>jbct</module>
         <module>aether</module>
         <module>examples</module>
+        <module>terra</module>
         <!--
             Runs this repository's operator-facing shell scripts against constructed conditions and
             asserts they cannot report success without having looked (#865, #952). Depends on no
@@ -206,11 +207,6 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>tcp</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>dns</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -555,10 +551,6 @@
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
                         <argLine>${vthread.argLine}</argLine>
-                        <!-- #1473: tests never write the boot filesystem's /var/lib/aether volume sentinels. -->
-                        <systemPropertyVariables>
-                            <aether.state.dir>${project.build.directory}/aether-state</aether.state.dir>
-                        </systemPropertyVariables>
                         <excludes>
                             <exclude>**/*IT.java</exclude>
                         </excludes>
@@ -570,9 +562,6 @@
                     <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
                         <argLine>${vthread.argLine}</argLine>
-                        <systemPropertyVariables>
-                            <aether.state.dir>${project.build.directory}/aether-state</aether.state.dir>
-                        </systemPropertyVariables>
                         <includes>
                             <include>**/*IT.java</include>
                         </includes>

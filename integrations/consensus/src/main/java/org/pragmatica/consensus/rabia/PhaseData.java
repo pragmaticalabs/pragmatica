@@ -298,7 +298,7 @@ final class PhaseData<C extends Command> {
                                          .values()
                                          .stream()
                                          .filter(values -> values.size() >= quorumSize)
-                                         .map(List::getFirst)
+                                         .flatMap(List::stream)
                                          .findFirst());
     }
 

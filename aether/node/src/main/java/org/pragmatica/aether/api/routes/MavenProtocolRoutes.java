@@ -101,8 +101,9 @@ public final class MavenProtocolRoutes implements RouteHandler {
         this.appHttpSecurityEnabled = appHttpSecurityEnabled;
     }
 
-    /// Production factory. `appHttpSecurityEnabled` MUST be the node's EFFECTIVE app-HTTP security
-    /// posture — `AppHttpConfig.securityEnabled()`, i.e. `security_mode != NONE` — which is the very
+    /// Production factory. `appHttpSecurityEnabled` MUST be the node's EFFECTIVE management security
+    /// posture — `AppHttpConfig.managementSecurityEnabled()`, i.e. the management `security_mode != NONE`
+    /// (its own `[management] security_mode`, else inherited from `[app-http]`; #962) — which is the very
     /// value `ManagementServer` gates its own management auth on (`AetherNode` derives both from
     /// `config.appHttp()`). Supplied rather than re-read from the environment or re-parsed from TOML
     /// so the route and the server can never disagree about the node's posture.

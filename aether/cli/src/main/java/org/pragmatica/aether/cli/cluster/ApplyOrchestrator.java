@@ -47,26 +47,19 @@ public final class ApplyOrchestrator {
     public static Result<ApplyResult> resume(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
         var clusterName = desired.cluster().name();
 
-        return loadRequiredState(clusterName, "resume").flatMap(state -> validateResumeState(state, desired))
+        return loadRequiredState(clusterName).flatMap(state -> validateResumeState(state, desired))
                                 .flatMap(_ -> computeValidPlan(desired, currentStored))
                                 .flatMap(plan -> executeWithState(plan, currentStored, desired));
     }
 
-    public static Result<ApplyResult> rollback(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
-        var clusterName = desired.cluster().name();
-
-        return loadRequiredState(clusterName, "rollback").flatMap(state -> executeRollback(state, currentStored, desired));
-    }
-
-    /// Absent state is "nothing to <verb>"; a state that is present but refused (see
+    /// Absent state is "nothing to resume"; a state that is present but refused (see
     /// [ApplyState#read]) fails naming the refusal, so the operator is told why rather than that
     /// there was nothing.
-    private static Result<ApplyState> loadRequiredState(ClusterName clusterName, String verb) {
+    private static Result<ApplyState> loadRequiredState(ClusterName clusterName) {
         return ApplyState.read(clusterName)
                          .mapError(cause -> unreadableState(clusterName, cause))
                          .flatMap(state -> state.toResult(new ApplyAborted("No apply state found for cluster '" + clusterName
-                                                                          + "'. Nothing to " + verb
-                                                                          + ".")));
+                                                                          + "'. Nothing to resume.")));
     }
 
     private static Cause unreadableState(ClusterName clusterName, Cause cause) {
@@ -221,40 +214,6 @@ public final class ApplyOrchestrator {
         }
 
         return success(state);
-    }
-
-    private static Result<ApplyResult> executeRollback(ApplyState state,
-                                                       ClusterBootstrapConfig stored,
-                                                       ClusterBootstrapConfig desired) {
-        logRollback(state);
-        var clusterName = state.clusterName();
-        var destroyedCount = state.destroyedNodeIds().size();
-        var createdCount = state.createdResources().size();
-
-        if (destroyedCount == 0 && createdCount == 0) {
-            ApplyState.delete(clusterName);
-
-            return success(applyResult(ClusterBootstrapConfigDiff.diff(stored, desired), 0, 0, 0));
-        }
-
-        destroyCreatedResources(state);
-        ApplyState.delete(clusterName);
-
-        return success(applyResult(ClusterBootstrapConfigDiff.diff(stored, desired), 0, createdCount, 0));
-    }
-
-    @Contract
-    private static void logRollback(ApplyState state) {
-        System.out.println("Rolling back apply for cluster '" + state.clusterName() + "'");
-        System.out.println("  Created resources to destroy: " + state.createdResources().size());
-        System.out.println("  Destroyed nodes to note: " + state.destroyedNodeIds().size());
-    }
-
-    @Contract
-    private static void destroyCreatedResources(ApplyState state) {
-        for (var resource : state.createdResources()) {
-            System.out.println("  Rollback: destroying " + resource.description());
-        }
     }
 
     public record ApplyAborted(String detail) implements Cause {

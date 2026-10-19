@@ -28,30 +28,40 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /// #1473: `StorageFactory` is where the intent is known -- whether the disk tier ARMED or degraded
 /// to memory + DHT -- so it is the layer that hands the snapshot manager its volume sentinel. An
-/// armed tier gets one under the node's state directory; a degraded tier gets none, which is what
-/// keeps the ordinary "`/data` is not writable" boot (CI, laptops) booting on empty metadata.
+/// armed tier gets one under the node's data root (`.volume-sentinels`); a degraded tier gets none and
+/// still boots on a first boot, which keeps the ordinary "`/data` is not writable" boot (CI, laptops)
+/// working -- but a degraded tier whose snapshot directory has a sentinel is the unmounted volume and
+/// refuses.
 class StorageFactoryVolumeSentinelTest {
     private static final String INSTANCE = "sentinel-vault";
-    private static final String STATE_DIR_PROPERTY = "aether.state.dir";
+    private static final String ROOT_PROPERTY = StorageConfig.DEFAULT_ROOT_PROPERTY;
 
     @TempDir
     Path tempDir;
 
-    private String previousStateDir;
+    private String previousRoot;
 
     @BeforeEach
-    void pointStateDirAtTheTestDirectory() {
-        previousStateDir = System.getProperty(STATE_DIR_PROPERTY);
-        System.setProperty(STATE_DIR_PROPERTY, tempDir.resolve("state").toString());
+    void pointTheDataRootAtTheTestDirectory() {
+        previousRoot = System.getProperty(ROOT_PROPERTY);
+        System.setProperty(ROOT_PROPERTY, dataRoot().toString());
     }
 
     @AfterEach
-    void restoreStateDir() {
-        if (previousStateDir == null) {
-            System.clearProperty(STATE_DIR_PROPERTY);
+    void restoreDataRoot() {
+        if (previousRoot == null) {
+            System.clearProperty(ROOT_PROPERTY);
         } else {
-            System.setProperty(STATE_DIR_PROPERTY, previousStateDir);
+            System.setProperty(ROOT_PROPERTY, previousRoot);
         }
+    }
+
+    private Path dataRoot() {
+        return tempDir.resolve("data-root");
+    }
+
+    private Path sentinelDir() {
+        return dataRoot().resolve(".volume-sentinels");
     }
 
     private Path snapshotDir() {
@@ -59,10 +69,14 @@ class StorageFactoryVolumeSentinelTest {
     }
 
     private StorageConfig armedConfig() {
+        return armedConfigAt(tempDir.resolve("volume"));
+    }
+
+    private StorageConfig armedConfigAt(Path volume) {
         return StorageConfig.storageConfig(8L * 1024 * 1024,
                                            64L * 1024 * 1024,
-                                           tempDir.resolve("volume").resolve("blocks").toString(),
-                                           snapshotDir().toString(),
+                                           volume.resolve("blocks").toString(),
+                                           volume.resolve("metadata-snapshots").toString(),
                                            1000,
                                            "60s",
                                            5,
@@ -79,7 +93,7 @@ class StorageFactoryVolumeSentinelTest {
     }
 
     private Path sentinelPath() throws IOException {
-        try (Stream<Path> files = Files.list(tempDir.resolve("state").resolve("volume-sentinels"))) {
+        try (Stream<Path> files = Files.list(sentinelDir())) {
             return files.findFirst().orElseThrow();
         }
     }
@@ -155,8 +169,57 @@ class StorageFactoryVolumeSentinelTest {
                                                    false);
 
         boot(degraded).onFailure(cause -> fail("a degraded tier has no volume to lose: " + cause.message()));
-        assertThat(Files.exists(tempDir.resolve("state"))).as("a degraded tier writes no sentinel")
-                                                          .isFalse();
+        assertThat(Files.exists(sentinelDir())).as("a degraded tier writes no sentinel")
+                                                .isFalse();
+    }
+
+    @Test
+    void createAll_refusesToBoot_whenTheDiskTierDegradedAfterTheVolumeWasWritten() throws IOException {
+        boot(armedConfig()).unwrap().get(INSTANCE).snapshotManager().forceSnapshot();
+        var blocker = tempDir.resolve("not-a-directory");
+
+        Files.writeString(blocker, "no directory can be created beneath a regular file");
+
+        var degradedOverTheSameSnapshots = StorageConfig.storageConfig(8L * 1024 * 1024,
+                                                                       64L * 1024 * 1024,
+                                                                       blocker.resolve("blocks").toString(),
+                                                                       snapshotDir().toString(),
+                                                                       1000,
+                                                                       "60s",
+                                                                       5,
+                                                                       "",
+                                                                       false);
+
+        boot(degradedOverTheSameSnapshots).onSuccess(_ -> fail("a sentinel with no disk tier is an unmounted volume, not a first boot"))
+                                          .onFailure(cause -> assertThat(cause.message()).contains(snapshotDir().toString())
+                                                                                        .contains(sentinelPathOrFail().toString()));
+    }
+
+    @Test
+    void createAll_keepsTwoVolumesApart_whenTheirPathsDifferOnlyBySeparatorVersusUnderscore() throws IOException {
+        var underscore = armedConfigAt(tempDir.resolve("vol").resolve("a_b"));
+        var nested = armedConfigAt(tempDir.resolve("vol").resolve("a").resolve("b"));
+
+        boot(underscore).unwrap().get(INSTANCE).snapshotManager().forceSnapshot();
+        boot(nested).unwrap().get(INSTANCE).snapshotManager().forceSnapshot();
+
+        try (Stream<Path> sentinels = Files.list(sentinelDir())) {
+            assertThat(sentinels.count()).as("one sentinel per volume").isEqualTo(2);
+        }
+
+        deleteChildren(tempDir.resolve("vol").resolve("a").resolve("b").resolve("metadata-snapshots"));
+
+        boot(nested).onSuccess(_ -> fail("the unmounted nested volume must refuse"));
+        boot(underscore).onFailure(cause -> fail("the other volume is mounted and must boot: " + cause.message()));
+    }
+
+    @Test
+    void sentinelFor_isDistinct_forPathsThatDifferOnlyBySeparatorVersusUnderscore() {
+        var underscore = StorageFactory.sentinelFor(Path.of("/data/a_b")).unwrap();
+        var nested = StorageFactory.sentinelFor(Path.of("/data/a/b")).unwrap();
+
+        assertThat(underscore).isNotEqualTo(nested);
+        assertThat(underscore.getFileName().toString()).endsWith("-a_b.id");
     }
 
     @Test

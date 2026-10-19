@@ -223,7 +223,6 @@ Explore comprehensive examples in the [examples](../examples) directory:
 | **Metrics**       | [micrometer](../integrations/metrics/micrometer) | Micrometer observability          | [README](../integrations/metrics/micrometer/README.md) |
 | **Network**       | [http-client](../integrations/net/http-client)   | Promise-based HTTP client         | [README](../integrations/net/http-client/README.md)    |
 |                   | [tcp](../integrations/net/tcp)                   | TCP networking utilities          | [README](../integrations/net/tcp/README.md)            |
-|                   | [dns](../integrations/net/dns)                   | DNS client                        | [README](../integrations/net/dns/README.md)            |
 | **Serialization** | [serialization](../integrations/serialization)   | Binary serialization (Fury, Kryo) | [README](../integrations/serialization/README.md)      |
 
 ## Integrations

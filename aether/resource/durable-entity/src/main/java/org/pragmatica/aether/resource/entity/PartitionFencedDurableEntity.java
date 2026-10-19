@@ -593,7 +593,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// Package-private so the schedule is pinned as a RULE rather than inferred from tick counts.
     static long retryDelayMillis(long failures) {
         return Math.min(READINESS_RETRY_CAP_MILLIS,
-                        READINESS_RETRY_BASE_MILLIS<< Math.min(failures - 1L, MAX_BACKOFF_DOUBLINGS));
+                        READINESS_RETRY_BASE_MILLIS << Math.min(failures - 1L, MAX_BACKOFF_DOUBLINGS));
     }
 
     /// Which consecutive-failure counts get a WARN rather than a DEBUG. The first always does — it may be

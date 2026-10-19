@@ -57,8 +57,7 @@ class UserDataTemplateJvmUrlTest {
         @Test
         void resolveJarUrl_returnsExplicitOverride_whenProfileSetsJarUrl() {
             var explicit = "https://internal.mirror/aether-node-1.0.0-rc1.jar";
-            var profile = RuntimeProfile.runtimeProfile("default",
-                                                        RuntimeType.JVM,
+            var profile = RuntimeProfile.runtimeProfile(RuntimeType.JVM,
                                                         Option.empty(),
                                                         Option.empty(),
                                                         Option.some(explicit));
@@ -69,8 +68,7 @@ class UserDataTemplateJvmUrlTest {
 
         @Test
         void resolveJarUrl_derivesPlainSemverUrl_whenNoOverride() {
-            var profile = RuntimeProfile.runtimeProfile("default",
-                                                        RuntimeType.JVM,
+            var profile = RuntimeProfile.runtimeProfile(RuntimeType.JVM,
                                                         Option.empty(),
                                                         Option.empty());
 
@@ -81,8 +79,7 @@ class UserDataTemplateJvmUrlTest {
 
         @Test
         void resolveJarUrl_derivesCandidateUrl_whenPrereleaseAndNoOverride() {
-            var profile = RuntimeProfile.runtimeProfile("default",
-                                                        RuntimeType.JVM,
+            var profile = RuntimeProfile.runtimeProfile(RuntimeType.JVM,
                                                         Option.empty(),
                                                         Option.empty());
 

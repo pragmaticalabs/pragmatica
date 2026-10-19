@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -31,6 +32,7 @@ import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.EncryptingStorageTier;
@@ -42,6 +44,7 @@ import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataSnapshot;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.SnapshotConfig;
+import org.pragmatica.storage.SnapshotError;
 import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
@@ -107,10 +110,8 @@ public final class StorageFactory {
     /// #1052: the stop signal for callers that own no node lifecycle (tests, [#verifyDhtMarker]'s
     /// two-argument entry point). `AetherNode` passes its `PeriodicTasks` cancellation instead.
     private static final BooleanSupplier NEVER_STOPPED = () -> false;
-    private static final String STATE_DIR_PROPERTY = "aether.state.dir";
-    private static final String STATE_DIR_ENV = "AETHER_STATE_DIR";
-    private static final String DEFAULT_STATE_DIR = "/var/lib/aether";
-    private static final String SENTINEL_DIR = "volume-sentinels";
+    /// #1473: where volume sentinels live under the node's data root.
+    private static final String SENTINEL_DIR = ".volume-sentinels";
 
     private StorageFactory() {}
 
@@ -121,7 +122,30 @@ public final class StorageFactory {
                                MetadataStore metadataStore,
                                DemotionManager demotionManager,
                                StorageGarbageCollector garbageCollector,
-                               Option<DhtMarkerCheck> dhtMarkerCheck) {
+                               Option<DhtMarkerCheck> dhtMarkerCheck,
+                               Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker) {
+        /// #1170: the disk marker [#createAll] committed for this instance, kept so a boot refused
+        /// AFTER formation (the DHT marker check, [#admitDhtMarkers]) can take back what it stamped.
+        /// Empty until [#createAll] commits, and for an instance with no encrypted disk tier.
+        public StorageSetup(String name,
+                            StorageInstance instance,
+                            SnapshotManager snapshotManager,
+                            StorageReadinessGate readinessGate,
+                            MetadataStore metadataStore,
+                            DemotionManager demotionManager,
+                            StorageGarbageCollector garbageCollector,
+                            Option<DhtMarkerCheck> dhtMarkerCheck) {
+            this(name,
+                 instance,
+                 snapshotManager,
+                 readinessGate,
+                 metadataStore,
+                 demotionManager,
+                 garbageCollector,
+                 dhtMarkerCheck,
+                 Option.empty());
+        }
+
         /// #858: pre-#858 call sites that build a `StorageSetup` with no DHT tier involved (e.g.
         /// `StorageRoutesTest`'s direct `new StorageSetup(...)`) keep compiling unchanged, delegating
         /// to the canonical constructor with an empty marker check.
@@ -184,6 +208,23 @@ public final class StorageFactory {
             return dhtMarkerCheck.map(check -> !check.readGate()
                                                      .isResolved())
                                  .or(false);
+        }
+
+        private Result<Unit> rollbackDiskMarker() {
+            return committedDiskMarker.map(EncryptingStorageTier.ArmedLocalDisk::rollbackMarker)
+                                      .or(Result.success(unit()));
+        }
+
+        private StorageSetup withCommittedDiskMarker(Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+            return new StorageSetup(name,
+                                    instance,
+                                    snapshotManager,
+                                    readinessGate,
+                                    metadataStore,
+                                    demotionManager,
+                                    garbageCollector,
+                                    dhtMarkerCheck,
+                                    armedDisk);
         }
     }
 
@@ -583,13 +624,17 @@ public final class StorageFactory {
     /// empty directories.
     private static Result<List<StorageSetup>> commitDiskMarkers(List<PendingSetup> pending) {
         return Result.allOf(pending.stream().map(PendingSetup::commitDiskMarker).toList()).map(_ -> pending.stream()
-                                                                                                           .map(PendingSetup::setup)
+                                                                                                           .map(PendingSetup::committed)
                                                                                                            .toList());
     }
 
     /// #852: a fully assembled [StorageSetup] plus the disk-marker write [#createAll] has not yet
     /// performed for it.
     private record PendingSetup(StorageSetup setup, Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+        private StorageSetup committed() {
+            return setup.withCommittedDiskMarker(armedDisk);
+        }
+
         private Result<Unit> commitDiskMarker() {
             return armedDisk.map(disk -> disk.commitMarker()
                                              .mapError(cause -> Causes.cause("Failed to create storage '" + setup.name()
@@ -969,7 +1014,10 @@ public final class StorageFactory {
                         .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}",
                                                      cause.message()));
 
-        return restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate).map(_ -> {
+        return refuseIfVolumeWasWritten(tiers, snapshotDir).flatMap(_ -> restoreAndSignalReady(STREAMS_NAME,
+                                                                                                snapshotManager,
+                                                                                                metadataStore,
+                                                                                                readinessGate)).map(_ -> {
             log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
 
             return StorageSetup.storageSetup(STREAMS_NAME,
@@ -1171,7 +1219,30 @@ public final class StorageFactory {
     /// cancelled sibling's output promise resolves at once, but its retry loop keeps attempting until
     /// `stopped` fires, because core `Retry` does not observe its output. On a refusal that happens
     /// immediately: `Main#exitWithError` in production, `abortStart`'s stop in Ember.
+    ///
+    /// #1170 round 2: two phases, the DHT counterpart of [#createAll]'s guard-then-commit. A check with no
+    /// keyring only READS the namespace marker and can refuse; a check with a keyring WRITES it. Written
+    /// alongside a sibling's refusal, the marker outlives the refused boot, and backing that instance out
+    /// to `encrypted = false` is then refused by it. So every refusing check runs first and the writes
+    /// follow only once all of them have admitted: design-out, nothing to take back. BOUND: a write that
+    /// itself fails terminally (the node stopping mid-way) can leave markers its earlier siblings wrote.
+    /// The writes' gates are resolved with the refusal, so a caller racing them fails with the real cause
+    /// instead of waiting out the admission timeout.
     static Promise<Unit> verifyDhtMarkers(DHTClient client, List<DhtMarkerCheck> checks, BooleanSupplier stopped) {
+        var writes = checks.stream().filter(StorageFactory::writesMarker).toList();
+        var guards = checks.stream().filter(check -> !writesMarker(check)).toList();
+
+        return verifyEach(client, guards, stopped).flatMap(_ -> verifyEach(client, writes, stopped))
+                         .onFailure(cause -> writes.forEach(check -> check.readGate()
+                                                                          .resolve(cause.result())));
+    }
+
+    private static boolean writesMarker(DhtMarkerCheck check) {
+        return check.effectiveKeyring()
+                    .isPresent();
+    }
+
+    private static Promise<Unit> verifyEach(DHTClient client, List<DhtMarkerCheck> checks, BooleanSupplier stopped) {
         if (checks.isEmpty()) {
             return Promise.UNIT;
         }
@@ -1186,6 +1257,31 @@ public final class StorageFactory {
 
         return Promise.allOfOrCancel(verifications).flatMap(results -> Result.firstFailureOf(results).fold(cause -> Promise.<Unit> failure(cause),
                                                                                                            _ -> Promise.UNIT));
+    }
+
+    /// #1170: [#verifyDhtMarkers] over every instance in `setups`, as `AetherNode.start()` runs it
+    /// post-formation, plus the compensation for what [#createAll] committed before it. The DHT check
+    /// cannot run before formation (#858), so it can refuse a boot whose disk markers are already
+    /// stamped; without the rollback the operator's back-out to `encrypted = false` trips the reverse
+    /// guard on a marker no ciphertext justified (#852's symptom, one boundary out). BER, see
+    /// [EncryptingStorageTier.ArmedLocalDisk#rollbackMarker] for what it removes and what it refuses
+    /// to. The failure itself is returned unchanged -- a rollback that fails is logged, never
+    /// substituted for the refusal the operator has to act on.
+    static Promise<Unit> admitDhtMarkers(DHTClient client, Map<String, StorageSetup> setups, BooleanSupplier stopped) {
+        return verifyDhtMarkers(client,
+                                setups.values()
+                                      .stream()
+                                      .map(StorageSetup::dhtMarkerCheck)
+                                      .flatMap(Option::stream)
+                                      .toList(),
+                                stopped).onFailure(_ -> rollbackDiskMarkers(setups.values()));
+    }
+
+    private static Result<Unit> rollbackDiskMarkers(Collection<StorageSetup> setups) {
+        return Result.allOf(setups.stream().map(StorageSetup::rollbackDiskMarker).toList())
+                     .mapToUnit()
+                     .onFailure(cause -> log.warn("Boot refused after formation; disk encryption marker rollback failed: {}",
+                                                  cause.message()));
     }
 
     /// #1052: succeeds once EVERY DHT-backed instance in `setups` has been admitted by its
@@ -1342,7 +1438,10 @@ public final class StorageFactory {
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
-        return restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate).map(_ -> {
+        return refuseIfVolumeWasWritten(tiers, Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
+                                                                                                                  snapshotManager,
+                                                                                                                  metadataStore,
+                                                                                                                  readinessGate)).map(_ -> {
             log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
 
             return StorageSetup.storageSetup(name,
@@ -1357,33 +1456,60 @@ public final class StorageFactory {
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED
-    /// (a [TierLevel#LOCAL_DISK] tier is in `tiers`). A degraded tier -- memory + DHT, the ordinary
-    /// state wherever `/data` is not writable -- has no durable volume to lose, so it gets none and
-    /// keeps booting on empty metadata. The sentinel lives under the node's state directory on the
-    /// boot filesystem (`-Daether.state.dir`, else `AETHER_STATE_DIR`, else `/var/lib/aether`), one
-    /// file per snapshot directory, named by that directory's path.
+    /// (a [TierLevel#LOCAL_DISK] tier is in `tiers`). It lives under the node's data root
+    /// ([StorageConfig#defaultRoot], `/data/aether` unless `aether.storage.defaultRoot` names another) in
+    /// `.volume-sentinels`: the directory the node already owns and writes, which the shipped image
+    /// provisions (`/data` is the `aether` user's). It protects a volume mounted BELOW the data root (a
+    /// `disk_path` / `snapshot_path` mount); a volume mounted AT or above the root holds the sentinel too,
+    /// so an unmounted one loses it and reads as a first boot, as before this change.
     static Option<Path> volumeSentinel(List<StorageTier> tiers, Path snapshotPath) {
-        return tiers.stream()
-                    .anyMatch(StorageFactory::isLocalDisk)
-               ? Option.some(stateDir().resolve(SENTINEL_DIR).resolve(sentinelName(snapshotPath)))
+        return hasLocalDisk(tiers)
+               ? sentinelFor(snapshotPath).option()
                : Option.none();
+    }
+
+    private static boolean hasLocalDisk(List<StorageTier> tiers) {
+        return tiers.stream()
+                    .anyMatch(StorageFactory::isLocalDisk);
     }
 
     private static boolean isLocalDisk(StorageTier tier) {
         return tier.level() == TierLevel.LOCAL_DISK;
     }
 
-    private static String sentinelName(Path snapshotPath) {
-        return snapshotPath.toAbsolutePath()
-                           .normalize()
-                           .toString()
-                           .replaceAll("[^A-Za-z0-9]", "_") + ".id";
+    /// One file per snapshot directory, named by the SHA-256 of its canonical path (so distinct
+    /// directories never share a sentinel, whatever characters their names hold) plus its last segment
+    /// for the operator's eye.
+    static Result<Path> sentinelFor(Path snapshotPath) {
+        var canonical = snapshotPath.toAbsolutePath()
+                                    .normalize();
+
+        return BlockId.blockId(canonical.toString().getBytes(StandardCharsets.UTF_8))
+                      .map(id -> Path.of(StorageConfig.defaultRoot())
+                                     .resolve(SENTINEL_DIR)
+                                     .resolve(id.hexString() + "-" + readableSuffix(canonical) + ".id"));
     }
 
-    private static Path stateDir() {
-        return Path.of(Option.option(System.getProperty(STATE_DIR_PROPERTY))
-                             .orElse(() -> Option.option(System.getenv(STATE_DIR_ENV)))
-                             .or(DEFAULT_STATE_DIR));
+    private static String readableSuffix(Path canonical) {
+        return Option.option(canonical.getFileName())
+                     .map(Path::toString)
+                     .or("root")
+                     .replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    /// #1473: a degraded disk tier is the ordinary state wherever `/data` is not writable, and a first boot
+    /// on it is fine -- but a sentinel for the same snapshot directory says a volume was written here
+    /// before, so the tier missing now is the unmounted volume and the node must not boot empty.
+    private static Result<Unit> refuseIfVolumeWasWritten(List<StorageTier> tiers, Path snapshotPath) {
+        return hasLocalDisk(tiers)
+               ? Result.unitResult()
+               : sentinelFor(snapshotPath).flatMap(sentinel -> refuseIfPresent(sentinel, snapshotPath));
+    }
+
+    private static Result<Unit> refuseIfPresent(Path sentinel, Path snapshotPath) {
+        return Files.exists(sentinel)
+               ? new SnapshotError.VolumeUnavailable(snapshotPath, sentinel).result()
+               : Result.unitResult();
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {

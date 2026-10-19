@@ -16,7 +16,7 @@
 #   - confirmation_factor = 2  -> owner + 1 peer per write, the durability #430 means to assert
 #     (#1564: also the cluster default, declared here so the fixture does not move with it).
 #   - retention  = count     -> count-based eviction (never time-based) so a slow consumer is
-#     never evicted mid-test; retention-value is far larger than any test event count, so
+#     never evicted mid-test; retention_value is far larger than any test event count, so
 #     nothing is ever dropped (no spurious CursorExpired).
 
 [streams.multipart-events]
@@ -24,5 +24,5 @@ partitions = 4
 replication_factor = 3
 confirmation_factor = 2
 retention = "count"
-retention-value = "100000"
-max-event-size = "64KB"
+retention_value = "100000"
+max_event_size = "64KB"

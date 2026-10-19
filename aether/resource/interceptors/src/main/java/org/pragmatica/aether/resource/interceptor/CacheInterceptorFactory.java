@@ -100,7 +100,8 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
         return Result.all(context.extension(CacheDhtClient.class).map(CacheDhtClient::client),
                           context.extension(Serializer.class),
                           context.extension(Deserializer.class),
-                          success(config.cacheName()))
+                          success(config.cacheName()),
+                          success(config.ttlSeconds()))
                      .map(DHTCacheBackend::dhtCacheBackend);
     }
 }

@@ -177,10 +177,10 @@ public class AetherCli implements Runnable {
     private static Duration resolveRequestTimeoutDuration(String[] args) {
         var seconds = extractRequestTimeoutArg(args).map(s -> {
                                                              try {
-                                                             return Integer.parseInt(s.trim());
-                                                         } catch (NumberFormatException e) {
-                                                             return 130;
-                                                         }
+                                                                 return Integer.parseInt(s.trim());
+                                                             } catch (NumberFormatException e) {
+                                                                 return 130;
+                                                             }
                                                          })
                                               .or(130);
 
