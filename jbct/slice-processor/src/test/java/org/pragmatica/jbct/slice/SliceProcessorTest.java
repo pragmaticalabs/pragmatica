@@ -572,6 +572,25 @@ class SliceProcessorTest {
         assertThat(diagnostics).doesNotContain("Add a record component");
     }
 
+    /// The same for a query parameter: the refusal is the only error.
+    @Test
+    void multipartRouteWithQueryParam_isRefusedWithOneClearError(@TempDir Path classes) throws IOException {
+        var multipartRequest = JavaFileObjects.forSourceString("org.pragmatica.http.routing.MultipartRequest",
+                                                               """
+            package org.pragmatica.http.routing;
+
+            public record MultipartRequest(java.util.Map<String, java.util.List<String>> fieldValues,
+                                           java.util.List<Object> files) {}
+            """);
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = { route = \"POST /forms?folder\", consumes = \"multipart/form-data\" }",
+                                            "Promise<String> upload(org.pragmatica.http.routing.MultipartRequest body);",
+                                            List.of(multipartRequest));
+
+        assertThat(diagnostics).contains("cannot carry them, so they would be dropped");
+        assertThat(diagnostics).doesNotContain("Add a record component");
+    }
+
     /// Positive control: a JSON request record that merges the parameter is still allowed.
     @Test
     void jsonRecordRouteWithPathParam_isAllowed(@TempDir Path classes) throws IOException {
