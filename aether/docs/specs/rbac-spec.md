@@ -244,7 +244,7 @@ Format: semicolon-separated entries, each entry is `keyValue:name:comma-separate
 [management]
 port = 8080
 # Optional (#962): "api-key" or "none". Absent, the management plane inherits [app-http] security_mode.
-# Any other value is read as "api-key". See management-api.md, "Management security mode and the shared keys".
+# Any other value (including "jwt") is refused at load. See management-api.md, "Management security mode and the shared keys".
 # security_mode = "api-key"
 ```
 

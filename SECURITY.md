@@ -164,7 +164,7 @@ single-node local/dev instance, never for anything reachable over an untrusted n
 
 The Management API can take its own mode (#962): an optional `[management] security_mode` (`"api-key"` or
 `"none"`) decides whether the management plane authenticates; when it is absent the plane inherits
-`[app-http] security_mode`. Any value other than `none` is read as `api-key`, so a typo cannot open the plane.
+`[app-http] security_mode`. A value the plane cannot honour (`jwt`, or any unrecognised value) is refused at load, naming the key, the value and the allowed values; it is never rewritten to another mode.
 
 The same default holds for the in-process config builders (`AppHttpConfig.appHttpConfig()` and
 friends) since #665: with no `SecurityMode` named they yield `API_KEY`, and with no key configured

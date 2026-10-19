@@ -12,13 +12,19 @@ import static org.assertj.core.api.Assertions.fail;
 
 /// #962: the Management API has its own OPTIONAL `[management] security_mode`. Absent, it inherits
 /// `[app-http] security_mode` (the behaviour before the key existed); set, it is independent of the app plane.
-/// A value that is not `none` is read as `api-key`, so a typo can only close the plane, never open it.
+/// A value the plane cannot honour (`jwt`, a typo) is refused by the loader, never rewritten.
 class ManagementSecurityModeTest {
     private static final String MINIMAL_CLUSTER = """
         [cluster]
         environment = "docker"
         nodes = 3
         """;
+
+    private static String refusal(String toml) {
+        return ConfigLoader.loadFromString(MINIMAL_CLUSTER + toml)
+                           .fold(cause -> cause.message(),
+                                 config -> fail("expected a refusal but the config loaded"));
+    }
 
     private static AppHttpConfig load(String toml) {
         return ConfigLoader.loadFromString(MINIMAL_CLUSTER + toml)
@@ -99,25 +105,11 @@ class ManagementSecurityModeTest {
         assertThat(appHttp.managementSecurityEnabled()).isFalse();
     }
 
+    /// The loader REFUSES a `security_mode` it cannot honour instead of rewriting it (#1455: refuses, never drops). `jwt` is not a
+    /// management mode, and a typo is not a mode at all; both used to read as `api-key` without a word.
     @Test
-    void unrecognisedValue_failsClosed_evenWhenTheAppPlaneIsNone() {
-        var appHttp = load("""
-
-            [app-http]
-            enabled = "true"
-            security_mode = "none"
-
-            [management]
-            security_mode = "nnone"
-            """);
-
-        assertThat(appHttp.managementSecurityMode().or(SecurityMode.NONE)).isEqualTo(SecurityMode.API_KEY);
-        assertThat(appHttp.managementSecurityEnabled()).isTrue();
-    }
-
-    @Test
-    void jwt_isNotAManagementMode_andReadsAsApiKey() {
-        var appHttp = load("""
+    void jwt_isRefused_asNotAManagementMode() {
+        var message = refusal("""
 
             [app-http]
             enabled = "true"
@@ -127,8 +119,56 @@ class ManagementSecurityModeTest {
             security_mode = "jwt"
             """);
 
-        assertThat(appHttp.managementSecurityMode().or(SecurityMode.NONE)).isEqualTo(SecurityMode.API_KEY);
-        assertThat(appHttp.managementSecurityEnabled()).isTrue();
+        assertThat(message).contains("[management] security_mode = \"jwt\"")
+                           .contains("the management plane has no JWT mode")
+                           .contains("Allowed values: none, api-key");
+    }
+
+    @Test
+    void unrecognisedValue_isRefused_namingKeyValueAndAllowedValues() {
+        var message = refusal("""
+
+            [app-http]
+            enabled = "true"
+            security_mode = "none"
+
+            [management]
+            security_mode = "nnone"
+            """);
+
+        assertThat(message).contains("[management] security_mode = \"nnone\"")
+                           .contains("is not a security mode")
+                           .contains("Allowed values: none, api-key");
+    }
+
+    @Test
+    void unrecognisedAppHttpValue_isRefused_insteadOfReadingAsTheDefault() {
+        var message = refusal("""
+
+            [app-http]
+            enabled = "true"
+            security_mode = "nnone"
+            """);
+
+        assertThat(message).contains("[app-http] security_mode = \"nnone\"")
+                           .contains("Allowed values: none, api-key, jwt");
+    }
+
+    /// Control: the spellings the parser accepts still load, so the refusals above are not a loader that refuses everything.
+    @Test
+    void acceptedSpellings_stillLoad() {
+        var appHttp = load("""
+
+            [app-http]
+            enabled = "true"
+            security_mode = "API_KEY"
+
+            [management]
+            security_mode = " None "
+            """);
+
+        assertThat(appHttp.securityMode()).isEqualTo(SecurityMode.API_KEY);
+        assertThat(appHttp.managementSecurityEnabled()).isFalse();
     }
 
     @Test
