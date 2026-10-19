@@ -1,0 +1,2 @@
+### Fixed (2026-10-19 — #2308: Promise class doc called static all() fail-fast)
+- **The `Promise` class doc described static `all(p1..pN)` as "(fail-fast)".** It waits for every input and collects all failures into a composite cause; `allOrCancel` is the fail-fast form. The "Aggregate" row now says so, and a comment in the slice-processor factory generator that repeated the claim is corrected. Documentation only. `[mechanism: Promise.all builds its failure through Causes.composite() over all collected results]`
