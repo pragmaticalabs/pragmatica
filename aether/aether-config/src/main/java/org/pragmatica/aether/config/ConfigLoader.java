@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.lang.Functions.Fn1;
@@ -20,6 +21,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
@@ -40,15 +42,15 @@ public final class ConfigLoader {
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
-        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv));
+        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
-        return TomlParser.parse(content).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv));
+        return TomlParser.parse(content).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
-        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, overrides, System::getenv));
+        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, overrides, System::getenv, FileOps::exists));
     }
 
     /// THE node load path, shared by every entry point and by cluster bootstrap's pre-flight ([#checkNodeDocument]):
@@ -56,8 +58,9 @@ public final class ConfigLoader {
     /// pre-flight and boot cannot drift apart; only the environment differs.
     private static Result<AetherConfig> loadDocument(TomlDocument doc,
                                                      Map<String, String> overrides,
-                                                     Fn1<String, String> env) {
-        return fromDocumentWithOverrides(doc, overrides, env).flatMap(ConfigValidator::validate)
+                                                     Fn1<String, String> env,
+                                                     Predicate<Path> fileExists) {
+        return fromDocumentWithOverrides(doc, overrides, env).flatMap(config -> ConfigValidator.validate(config, fileExists))
                                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
@@ -1289,6 +1292,11 @@ public final class ConfigLoader {
 
     /// The one parse of a boolean setting (`"true"`, any case, exact: no trimming), shared with cluster bootstrap's PF-34 so the bootstrap check
     /// and the node agree on whether `[app-http] enabled` is on.
+    /// The filesystem cluster bootstrap judges a node config against: every file exists. The certificate, key and CA paths
+    /// name files on the node (`/etc/aether/tls/*.pem`), not on the operator's machine, so the operator's filesystem must not
+    /// change the verdict either. Path syntax is still validated; the node's own load checks the real files.
+    public static final Predicate<Path> PREFLIGHT_FILESYSTEM = _ -> true;
+
     /// The environment cluster bootstrap judges a node config against: empty. The process environment of the operator's
     /// machine describes the operator, not the node that will boot (its environment arrives with its own user data), so it
     /// must not change the verdict.
@@ -1299,11 +1307,11 @@ public final class ConfigLoader {
     /// ([#PREFLIGHT_ENVIRONMENT]). Cluster bootstrap runs it per source so a fleet whose config the node would refuse at
     /// boot is refused before it is provisioned (PF-35). It cannot see what the node's own environment will add.
     public static Result<Unit> checkNodeDocument(TomlDocument doc) {
-        return checkNodeDocument(doc, PREFLIGHT_ENVIRONMENT);
+        return checkNodeDocument(doc, PREFLIGHT_ENVIRONMENT, PREFLIGHT_FILESYSTEM);
     }
 
-    static Result<Unit> checkNodeDocument(TomlDocument doc, Fn1<String, String> env) {
-        return loadDocument(doc, Map.of(), env).mapToUnit();
+    static Result<Unit> checkNodeDocument(TomlDocument doc, Fn1<String, String> env, Predicate<Path> fileExists) {
+        return loadDocument(doc, Map.of(), env, fileExists).mapToUnit();
     }
 
     public static boolean toBooleanValue(String s) {

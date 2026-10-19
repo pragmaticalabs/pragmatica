@@ -656,6 +656,16 @@ class ClusterBootstrapConfigValidatorTest {
         }
 
         @Test
+        void validate_nodeSideTlsPaths_areNotRefusedAgainstTheOperatorFilesystem() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
+                                                                                         "tls", Map.<String, Object>of("auto_generate", false,
+                                                                                                                       "cert_path", "/etc/aether/tls/node.pem",
+                                                                                                                       "key_path", "/etc/aether/tls/node-key.pem",
+                                                                                                                       "ca_path", "/etc/aether/tls/ca.pem"))))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-35").doesNotContain("not found"));
+        }
+
+        @Test
         void validate_nodeConfigTheNodeAccepts_isNotPf35() {
             validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
                                                                                          "app-http", Map.<String, Object>of("protocol", "h1", "enabled", "TRUE"))))

@@ -7,14 +7,15 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.Result.success;
 
@@ -60,6 +61,13 @@ public final class ConfigValidator {
     private ConfigValidator() {}
 
     public static Result<AetherConfig> validate(AetherConfig config) {
+        return validate(config, FileOps::exists);
+    }
+
+    /// Validation with the host filesystem supplied: the node passes the real one; cluster bootstrap's pre-flight passes
+    /// a probe that finds every file, because the certificate, key and CA paths name files on the NODE, not on the
+    /// operator's machine (#1455).
+    public static Result<AetherConfig> validate(AetherConfig config, Predicate<Path> fileExists) {
         var security = securityMisconfiguration(config.appHttp());
 
         if (security.isPresent()) {
@@ -83,7 +91,7 @@ public final class ConfigValidator {
                               errors);
         archiveRetentionErrors(config.slice(), errors);
         if (config.tlsEnabled()) {
-            config.tls().onPresent(tls -> tlsErrors(tls, errors));
+            config.tls().onPresent(tls -> tlsErrors(tls, fileExists, errors));
         }
 
         return toResult(config, errors);
@@ -318,17 +326,17 @@ public final class ConfigValidator {
         }
     }
 
-    private static void tlsErrors(TlsConfig tls, List<String> errors) {
+    private static void tlsErrors(TlsConfig tls, Predicate<Path> fileExists, List<String> errors) {
         if (!tls.autoGenerate()) {
-            tlsPathErrors(tls, errors);
+            tlsPathErrors(tls, fileExists, errors);
             tlsRequiredErrors(tls, errors);
         }
     }
 
-    private static void tlsPathErrors(TlsConfig tls, List<String> errors) {
-        tls.certFile().onPresent(path -> fileExistsError(path, "Certificate file", errors));
-        tls.keyFile().onPresent(path -> fileExistsError(path, "Private key file", errors));
-        tls.caFile().onPresent(path -> fileExistsError(path, "CA certificate file", errors));
+    private static void tlsPathErrors(TlsConfig tls, Predicate<Path> fileExists, List<String> errors) {
+        tls.certFile().onPresent(path -> fileExistsError(path, fileExists, "Certificate file", errors));
+        tls.keyFile().onPresent(path -> fileExistsError(path, fileExists, "Private key file", errors));
+        tls.caFile().onPresent(path -> fileExistsError(path, fileExists, "CA certificate file", errors));
     }
 
     private static void tlsRequiredErrors(TlsConfig tls, List<String> errors) {
@@ -348,8 +356,8 @@ public final class ConfigValidator {
                                     + " Set tls.auto_generate = true or provide tls.key_path"));
     }
 
-    private static void fileExistsError(Path path, String fileType, List<String> errors) {
-        if (!exists(path)) {
+    private static void fileExistsError(Path path, Predicate<Path> fileExists, String fileType, List<String> errors) {
+        if (!fileExists.test(path)) {
             errors.add(fileType + " not found: " + path);
         }
     }

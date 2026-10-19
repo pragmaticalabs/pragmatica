@@ -34,7 +34,7 @@ class ConfigLoaderPreflightTest {
         var doc = TomlParser.parse(BACKUP_ENABLED).unwrap();
 
         assertThat(ConfigLoader.checkNodeDocument(doc).isSuccess()).describedAs("no environment: accepted").isTrue();
-        assertThat(ConfigLoader.checkNodeDocument(TomlParser.parse(BACKUP_ENABLED).unwrap(), Map.of("AETHER_BACKUP_ENABLED", "yes")::get).isFailure())
+        assertThat(ConfigLoader.checkNodeDocument(TomlParser.parse(BACKUP_ENABLED).unwrap(), Map.of("AETHER_BACKUP_ENABLED", "yes")::get, ConfigLoader.PREFLIGHT_FILESYSTEM).isFailure())
             .describedAs("control: an environment that supplies a bad value DOES change a load judged against it")
             .isTrue();
     }
@@ -108,5 +108,36 @@ class ConfigLoaderPreflightTest {
         process.getInputStream().readAllBytes();
 
         return process.waitFor();
+    }
+
+    private static final String NODE_SIDE_CERTS = """
+        [cluster]
+        environment = "docker"
+        nodes = 3
+        tls = true
+
+        [tls]
+        auto_generate = false
+        cert_path = "/etc/aether/tls/node.pem"
+        key_path = "/etc/aether/tls/node-key.pem"
+        ca_path = "/etc/aether/tls/ca.pem"
+        """;
+
+    /// The certificate, key and CA paths name files on the NODE. The operator's filesystem must not decide the pre-flight
+    /// verdict, so the documented node-side paths pass it; the node's own load, which does see its files, still refuses a
+    /// missing one (the control that proves the file check is live).
+    @Test
+    void checkNodeDocument_acceptsNodeSideTlsPaths_theOperatorMachineDoesNotHave() {
+        assertThat(java.nio.file.Files.exists(java.nio.file.Path.of("/etc/aether/tls/node.pem"))).describedAs("precondition: not on this machine").isFalse();
+        assertThat(ConfigLoader.checkNodeDocument(TomlParser.parse(NODE_SIDE_CERTS).unwrap()).isSuccess()).isTrue();
+        ConfigLoader.loadFromString(NODE_SIDE_CERTS)
+                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("the node's own load must refuse a missing certificate file"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("Certificate file not found")
+                                                                   .contains("/etc/aether/tls/node.pem"));
+    }
+
+    @Test
+    void preflightFilesystem_findsEveryFile() {
+        assertThat(ConfigLoader.PREFLIGHT_FILESYSTEM.test(java.nio.file.Path.of("/definitely/not/here.pem"))).isTrue();
     }
 }
