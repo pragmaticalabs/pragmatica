@@ -54,6 +54,16 @@ class AetherNodeOperatorDrainClearTest {
     }
 
     @Test
+    void clearOperatorDrainOnDeath_keepsTheEntry_whenDepartingRecoversToMember() {
+        var registry = DrainCommandRegistry.drainCommandRegistry();
+
+        registry.requestDrain(DRAINED);
+        AetherNode.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Member"));
+
+        assertThat(registry.isDrainRequested(DRAINED)).as("the command is still in flight; the leader must keep delivering it").isTrue();
+    }
+
+    @Test
     void clearOperatorDrainOnDeath_clearsOnlyTheDeadNode() {
         var registry = DrainCommandRegistry.drainCommandRegistry();
 
@@ -129,10 +139,12 @@ class AetherNodeOperatorDrainClearTest {
             assertThat(registry.isDrainRequested(DRAINED)).isFalse();
         }
 
-        /// The drain is refuted: a strictly newer incarnation brings Departing back to Member without ever touching
-        /// DEAD, so only the Departing-to-Member edge can end the entry. The node is live and must not be re-drained.
+        /// The FSM's view refutes the drain (a strictly newer incarnation, as a live SWIM refutation produces) while the
+        /// command is still in flight: the target has not necessarily received it yet. The entry must survive, or the
+        /// leader stops pinging the DRAIN and the node never leaves (Ember `EmberPlannedDepartureAlertsTest`, the
+        /// incarnation-refutation case, failed exactly so when the entry was cleared on this edge).
         @Test
-        void drainedNode_recoveredByNewerIncarnation_dropsTheEntry() {
+        void drainedNode_recoveredByNewerIncarnation_keepsTheEntry() {
             var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
 
             promoteCore(fsm, DRAINED);
@@ -142,13 +154,14 @@ class AetherNodeOperatorDrainClearTest {
             fsm.onSwimHealthy(DRAINED, 2L);
 
             assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
-            assertThat(registry.isDrainRequested(DRAINED)).isFalse();
+            assertThat(registry.isDrainRequested(DRAINED)).isTrue();
         }
 
-        /// #1054: a drain that never reached its target and has no death evidence is withdrawn by the DEPARTING timeout,
-        /// back to Member, through the timer rather than through a SWIM event. Same edge shape, different driver.
+        /// #1054: a drain that never reached its target and has no death evidence is withdrawn from the membership view
+        /// by the DEPARTING timeout, back to Member, through the timer rather than through a SWIM event. The command was
+        /// never delivered, so the registry entry is exactly what lets the leader deliver it on a later ping.
         @Test
-        void drainedNode_withdrawnUndeliveredByTheTimeout_dropsTheEntry() {
+        void drainedNode_withdrawnUndeliveredByTheTimeout_keepsTheEntry() {
             var fsm = fsmWithDepartureTimeout(FIRING_TIMEOUT);
 
             promoteCore(fsm, DRAINED);
@@ -157,7 +170,7 @@ class AetherNodeOperatorDrainClearTest {
 
             await().atMost(2, TimeUnit.SECONDS)
                    .untilAsserted(() -> assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member"));
-            assertThat(registry.isDrainRequested(DRAINED)).isFalse();
+            assertThat(registry.isDrainRequested(DRAINED)).isTrue();
         }
 
         /// A drain commanded on a node that is already DEAD is ignored by the FSM, so no edge of its own ever ends it:
@@ -192,8 +205,9 @@ class AetherNodeOperatorDrainClearTest {
             drain(fsm, DRAINED);
             drain(fsm, OTHER);
 
-            fsm.onSwimHealthy(DRAINED, 2L);
+            fsm.onSwimDeparted(DRAINED, 2L);
 
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Dead");
             assertThat(registry.drainTargets()).containsExactly(OTHER);
         }
     }

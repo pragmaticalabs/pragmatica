@@ -1976,11 +1976,13 @@ public interface AetherNode extends ManageableNode {
 
     /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the
     /// drains the topology manager started itself had a removal path. A node that was drained, left and came back under the
-    /// SAME id (ids come from config) was then told to drain again by the same leader. The entry ends with the drain episode,
-    /// on any of three edges: into DEAD (the departure the drain was for), out of DEPARTING back to MEMBER (the drain was
-    /// refuted by a higher-incarnation `SwimHealthy`, or withdrawn undelivered, #1054: the node is staying), and out of DEAD
-    /// (a drain commanded on an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise
-    /// be inherited by the rejoin). A later rejoin therefore starts with no inherited command.
+    /// SAME id (ids come from config) was then told to drain again by the same leader. The entry ends with the node's
+    /// departure, on either of two edges: into DEAD (the departure the drain was for), and out of DEAD (a drain commanded on
+    /// an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise be inherited by the
+    /// rejoin). It deliberately does NOT end on DEPARTING back to MEMBER: that edge is the FSM's VIEW refuting or withdrawing
+    /// the drain (a higher-incarnation `SwimHealthy` from a live SWIM refutation, or the #1054 undelivered-drain withdrawal),
+    /// while the command is still in flight and the target is still to be told to drain. Clearing there stops the leader
+    /// pinging the DRAIN and the node never leaves.
     @Contract
     static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry,
                                           MembershipTransitionRecord record) {
@@ -1990,11 +1992,7 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static boolean isDrainEpisodeEnd(MembershipTransitionRecord record) {
-        return "Dead".equals(record.toState()) || "Dead".equals(record.fromState()) || isDepartingRecovery(record);
-    }
-
-    private static boolean isDepartingRecovery(MembershipTransitionRecord record) {
-        return "Departing".equals(record.fromState()) && "Member".equals(record.toState());
+        return "Dead".equals(record.toState()) || "Dead".equals(record.fromState());
     }
 
     @Contract
