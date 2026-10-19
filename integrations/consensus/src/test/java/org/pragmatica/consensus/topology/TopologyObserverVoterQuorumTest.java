@@ -57,12 +57,16 @@ class TopologyObserverVoterQuorumTest {
                                   List.of(info(SELF, 7000), info(A, 7001), info(B, 7002), info(C, 7003), info(D, 7004)));
     }
 
-    private record View(Set<NodeId> members) implements MembershipView {
+    private record View(Set<NodeId> members, int healthy) implements MembershipView {
+        View(Set<NodeId> members) {
+            this(members, members.size());
+        }
+
         @Override public Set<NodeId> coreMemberIds() { return members; }
 
         @Override public Set<NodeId> onDutyMemberIds() { return members; }
 
-        @Override public int healthyOnDutyCount() { return members.size(); }
+        @Override public int healthyOnDutyCount() { return healthy; }
 
         @Override public int desiredCoreSize() { return 5; }
     }
@@ -71,6 +75,8 @@ class TopologyObserverVoterQuorumTest {
         private final AtomicReference<Option<MembershipView>> view = new AtomicReference<>(Option.none());
 
         void show(Set<NodeId> members) { view.set(Option.some(new View(members))); }
+
+        void show(Set<NodeId> members, int healthy) { view.set(Option.some(new View(members, healthy))); }
 
         @Override public Option<MembershipView> currentMembershipView() { return view.get(); }
 
@@ -116,6 +122,16 @@ class TopologyObserverVoterQuorumTest {
 
         assertThat(observer.inQuorum().getAsBoolean()).as("3 installed voters in the view: quorum holds").isTrue();
         assertThat(notifications).extracting(ClusterStateNotification::state).containsExactly(ClusterStateNotification.State.ACTIVE);
+        observer.stop().await();
+    }
+
+    @Test
+    void allFiveVotersOnDuty_butOnlyTwoHealthy_areNotAQuorum() {
+        var observer = startedObserverWithFiveVotersAndAFullView();
+
+        source.show(Set.of(SELF, A, B, C, D), 2);
+
+        awaitTrue(() -> !observer.inQuorum().getAsBoolean(), "the view's healthy count still bounds the quorum: neither number may inflate it");
         observer.stop().await();
     }
 

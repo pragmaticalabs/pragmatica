@@ -116,12 +116,13 @@ class EmberObserverQuorumLossWiringTest {
         assertThat(committed.isSuccess()).as("3 of 5 voters alive plus the observer: consensus still commits; " + committed).isTrue();
     }
 
-    /// The mirror case (#2306): an observer must never count toward the voter quorum. Five voters plus an observer that the
-    /// survivors' membership view already counts (six); the leader and two more voters are killed at once, leaving two
-    /// voters of five plus the observer. The two survivors must detect the loss (their topology quorum bit drops, which
-    /// pauses the engine) and must NOT commit. The observer is retired by the leader a few seconds after it joins, so the
-    /// leader goes first and the kills follow the moment the observer is counted; if the observer is already gone the test
-    /// reports that precondition instead of passing vacuously.
+    /// The mirror case (#2306), end to end: five voters plus a live observer outside the roster; the leader and two more
+    /// voters are killed at once, leaving two voters of five plus the observer. The two survivors must detect the loss
+    /// (their topology quorum bit drops, which pauses the engine) and must NOT commit. The observer is retired by the
+    /// leader a few seconds after it joins, so the leader is killed first and the others follow at once; if the observer is
+    /// already gone the test reports that precondition instead of passing vacuously. The flows that decide it are pinned
+    /// deterministically by `TopologyObserverVoterQuorumTest` (the quorum numerator counts installed voters only);
+    /// this test is the system-level check that no wired path lets an observer stand in for a missing voter.
     @Test
     @Timeout(600)
     void twoVotersPlusAnObserver_detectTheLossAndPause_andDoNotCommit() {
@@ -135,12 +136,8 @@ class EmberObserverQuorumLossWiringTest {
         awaitCondition("leader", 90_000L, () -> cluster.getLeaderManagementPort().isPresent());
         var voterIds = cluster.allNodes().stream().map(n -> n.self().id()).toList();
         var leaderId = cluster.currentLeader().unwrap();
-        var leader = cluster.getNode(leaderId).unwrap();
         var observerId = cluster.addNode().await(START_BOUND).unwrap().id();
 
-        awaitCondition(() -> "the observer " + observerId + " is counted by the leader's membership view; count=" + reportedCount(leader),
-                       60_000L,
-                       () -> reportedCount(leader) == CLUSTER_SIZE + 1);
         var killed = new java.util.ArrayList<String>();
 
         killed.add(leaderId);
@@ -160,12 +157,6 @@ class EmberObserverQuorumLossWiringTest {
         var committed = survivingVoters.getFirst().<Object>apply(List.of(new KVCommand.Noop<AetherKey>(key))).await(TimeSpan.timeSpan(20).seconds());
 
         assertThat(committed.isSuccess()).as("2 voters of 5 plus an observer must not commit; " + committed).isFalse();
-    }
-
-    private static int reportedCount(AetherNode node) {
-        return node.topologyManager() instanceof TopologyObserver observer
-               ? observer.reportedActiveNodeCount()
-               : -1;
     }
 
     private static boolean inQuorum(AetherNode node) {
