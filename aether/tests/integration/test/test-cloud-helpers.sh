@@ -21,12 +21,15 @@ export CLOUD_SOURCE_NAME="hetzner-eu"
 # the jvm_unit_* tests (ssh stubbed) must not depend on the caller's environment (#1051).
 export AETHER_SSH_KEY="${AETHER_SSH_KEY:-/nonexistent/cloud-helpers-test-key}"
 
-# Stage the fixture under a throwaway cluster name to avoid clobbering real state.
+# Stage the fixture under a throwaway cluster name in a throwaway HOME (#2253): the real ~/.aether is never
+# written, so a killed run leaves nothing behind (the EXIT trap used to be the only cleanup).
+TEST_HOME=$(mktemp -d)
+export HOME="$TEST_HOME"
 TEST_CLUSTER="cloud-helpers-test-$$"
 TEST_DIR="${HOME}/.aether/clusters/${TEST_CLUSTER}"
 mkdir -p "$TEST_DIR"
 cp "$FIXTURE" "${TEST_DIR}/bootstrap-state.json"
-trap 'rm -rf "${TEST_DIR}"' EXIT
+trap 'rm -rf "${TEST_HOME}"' EXIT
 export BOOTSTRAP_CLUSTER_NAME="$TEST_CLUSTER"
 
 # shellcheck source=../lib/common.sh

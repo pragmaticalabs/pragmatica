@@ -57,21 +57,28 @@ public interface BlueprintParser {
         }
 
         var securityOverrides = parseSecurityOverrides(doc);
-
-        return BlueprintId.blueprintId(idOpt.unwrap()).flatMap(id -> parseSlices(doc).flatMap(slices -> Blueprint.blueprint(id,
-                                                                                                                            slices,
-                                                                                                                            parseDeploymentConfig(doc),
-                                                                                                                            securityOverrides)));
+        // #1455: the `[deployment]` typed reads answer Option and default a present-but-wrong-typed
+        // value; the document records those reads and the parse refuses here naming every one.
+        return BlueprintId.blueprintId(idOpt.unwrap())
+                          .flatMap(id -> parseSlices(doc).flatMap(slices -> Blueprint.blueprint(id,
+                                                                                                slices,
+                                                                                                parseDeploymentConfig(doc),
+                                                                                                securityOverrides)))
+                          .flatMap(blueprint -> doc.requireNoTypeMismatches()
+                                                   .map(_ -> blueprint));
     }
 
     private static Option<DeploymentConfig> parseDeploymentConfig(TomlDocument doc) {
-        var strategyOpt = doc.getString("deployment", "strategy");
+        var strategyOpt = doc.getParsed("deployment",
+                                        "strategy",
+                                        "one of: rolling, canary, blue-green",
+                                        BlueprintParser::parseStrategy);
 
         if (strategyOpt.isEmpty()) {
             return none();
         }
 
-        var strategy = parseStrategy(strategyOpt.unwrap());
+        var strategy = strategyOpt.unwrap();
         var maxErrorRate = doc.getDouble("deployment", "max_error_rate").or(0.01);
         var maxLatencyMs = doc.getLong("deployment", "max_latency_ms").or(500L);
         var drainTimeoutMs = doc.getLong("deployment", "drain_timeout_ms").or(300_000L);
@@ -86,11 +93,12 @@ public interface BlueprintParser {
                                                       schemaRequired));
     }
 
-    private static Strategy parseStrategy(String raw) {
+    private static Option<Strategy> parseStrategy(String raw) {
         return switch (raw.toLowerCase()) {
-            case "canary" -> Strategy.CANARY;
-            case "blue-green", "blue_green" -> Strategy.BLUE_GREEN;
-            default -> Strategy.ROLLING;
+            case "rolling" -> some(Strategy.ROLLING);
+            case "canary" -> some(Strategy.CANARY);
+            case "blue-green", "blue_green" -> some(Strategy.BLUE_GREEN);
+            default -> none();
         };
     }
 
@@ -220,8 +228,10 @@ public interface BlueprintParser {
     }
 
     private static SecurityOverrides parseSecurityOverrides(TomlDocument doc) {
-        var policy = doc.getString("security", "override_policy")
-                        .map(SecurityOverridePolicy::fromString)
+        var policy = doc.getParsed("security",
+                                   "override_policy",
+                                   "one of: strengthen_only, full, none",
+                                   SecurityOverridePolicy::securityOverridePolicy)
                         .or(SecurityOverridePolicy.STRENGTHEN_ONLY);
         var overrideMap = doc.getSection("security.overrides");
 

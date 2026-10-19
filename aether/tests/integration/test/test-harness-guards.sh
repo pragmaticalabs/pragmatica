@@ -196,6 +196,35 @@ else
     fail "G7 an unreaped (zombie) harness left its group running (${r}): $(tail -3 "$WORK/g7.out" | tr '\n' '|')"
 fi
 
+# G8 — home isolation (#2253). HOME is a throwaway directory standing in for the developer's real home.
+# G8a: a normal harness run leaves that home's .aether exactly as it was, and removes its own throwaway home (it used to leave
+# .aether/clusters/chaos-harness-test-<pid>, or the whole tree when the cleanup was skipped).
+# The stand-in home carries a pre-existing .aether (the normal developer machine), so an empty BEFORE snapshot in the harness
+# reads the pre-existing path as a leak and G8a goes red.
+mkdir -p "$WORK/rh-clean/.aether/clusters/existing"
+r=$(run_grouped 30 "$WORK/g8a.out" env -u CHAOS_HARNESS_ACTIVE -u CHAOS_HARNESS_REGROUPED HOME="$WORK/rh-clean" CHAOS_HARNESS_SELFTEST=guards-only bash "$HARNESS")
+if ceiling_hit G8a "$r"; then :
+elif [ "$(field "$r" rc)" = 0 ] && grep -qF "harness guards ok" "$WORK/g8a.out" && [ -d "$WORK/rh-clean/.aether/clusters/existing" ] \
+    && throwaway=$(sed -n 's/^  harness home \(.*\)$/\1/p' "$WORK/g8a.out") \
+    && [ -n "$throwaway" ] && [ "$throwaway" != "$WORK/rh-clean" ] && [ ! -e "$throwaway" ] \
+    && ! grep -qF "harness isolation" "$WORK/g8a.out"; then
+    ok "G8a a harness run writes nothing under the real home (${r})"
+else
+    fail "G8a the harness wrote under the real home (${r}): $(find "$WORK/rh-clean" 2>/dev/null | tr '\n' ' ') $(tail -3 "$WORK/g8a.out" | tr '\n' '|')"
+fi
+
+# G8b: the assertion itself. The home-leak hook writes into the real home; the harness must say so and exit 1.
+# Without this the G8a zero could be an assertion that cannot fire.
+mkdir -p "$WORK/rh-leak/.aether/clusters/existing"
+r=$(run_grouped 30 "$WORK/g8b.out" env -u CHAOS_HARNESS_ACTIVE -u CHAOS_HARNESS_REGROUPED HOME="$WORK/rh-leak" CHAOS_HARNESS_SELFTEST=home-leak bash "$HARNESS")
+if ceiling_hit G8b "$r"; then :
+elif [ "$(field "$r" rc)" = 1 ] && grep -qF "harness isolation: the self-test wrote under the real" "$WORK/g8b.out" \
+    && grep -qF "leaked-by-selftest" "$WORK/g8b.out" && ! grep -qF "clusters/existing" "$WORK/g8b.out" && [ -d "$WORK/rh-leak/.aether/clusters/leaked-by-selftest" ]; then
+    ok "G8b a write under the real home fails the self-test, naming the leaked path (${r})"
+else
+    fail "G8b a write under the real home was not caught (${r}): $(tail -3 "$WORK/g8b.out" | tr '\n' '|')"
+fi
+
 echo ""
 echo "  ----"
 echo "  passed: ${PASS}"

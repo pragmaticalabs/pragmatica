@@ -56,6 +56,18 @@ class PgNotificationConfigParserTest {
                   });
         }
 
+        /// #1455: `channels = "orders"` (a string) read as no channels and the section kept an empty list.
+        @Test
+        void parse_channelsNotAnArray_isRefusedNamingKeyAndValue() {
+            PgNotificationConfigParser.parse("""
+                [pg-notifications.order-events]
+                channels = "orders_changed"
+                """)
+                                      .onSuccess(configs -> org.junit.jupiter.api.Assertions.fail("must refuse, parsed " + configs))
+                                      .onFailure(cause -> assertThat(cause.message()).contains("channels")
+                                                                                     .contains("orders_changed"));
+        }
+
         @Test
         void defaultDatasource_whenMissing() {
             var toml = """

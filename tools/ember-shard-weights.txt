@@ -4,6 +4,7 @@
 # EmberVoterHealTest 116 (#2098): surefire class time on bigboy, 3 runs of f2098-2f21a633a: 116.4 s, 113.4 s, 112.4 s (maximum used).
 # TransportWiringTripwireEmberTest 10 (#2215): surefire class time 9.5 s locally at b04c9bcf13 (load ~6; 2 of 4 tests @Disabled, so re-measure when they are enabled).
 # EmberStopDeactivatesLeaderTogglesTest 17 (#2271): surefire class time 16.58 s and 16.65 s locally at 3fb41a2f9e + the test (3-node cluster, idle machine); rounded up.
+# EmberConfigMalformedValueTest 0 (#1455): surefire class time 0.006 s and 0.007 s on cloudbb-1 at b3055d534 and d123940b8 (2 tests, pure config parse, no cluster); rounded to 0 like EmberConfigBasePortTest.
 EmberAmnesiacRestartTest 162
 EmberBlackholedReplicaRecoveryTest 94
 EmberBootstrapAdminKeyAuthTest 10
@@ -18,6 +19,7 @@ EmberClusterSwimStartFailureTest 2
 EmberClusterTeardownWiringTest 1
 EmberColdStartSingleDialerTest 73
 EmberConfigBasePortTest 0
+EmberConfigMalformedValueTest 0
 EmberConfigStartTimeoutTest 0
 EmberDrainAcknowledgementWiringTest 24
 EmberDrainEvictionWiringTest 9
