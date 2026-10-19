@@ -23,6 +23,7 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
 
+import io.netty.handler.codec.http3.Http3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -90,7 +91,10 @@ public final class TlsRotation {
                  : Result.<Unit> success(unit());
 
         return h1.flatMap(_ -> includesH3
-                               ? QuicSslContextFactory.createServerFromBundle(bundle, ClientAuthPolicy.NOT_REQUESTED).mapToUnit()
+                               ? QuicSslContextFactory.createServerFromBundle(bundle,
+                                                                              ClientAuthPolicy.NOT_REQUESTED,
+                                                                              Http3.supportedApplicationProtocols())
+                                                      .mapToUnit()
                                : Result.<Unit> success(unit()));
     }
 

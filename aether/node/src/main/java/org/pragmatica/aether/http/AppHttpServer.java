@@ -88,6 +88,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.http3.Http3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -530,8 +531,11 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
-                         .or(QuicSslContextFactory.createSelfSignedServer());
+        // #2310: the h3 ALPN token, without which no HTTP/3 client completes the QUIC handshake
+        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg,
+                                                                        ClientAuthPolicy.NOT_REQUESTED,
+                                                                        Http3.supportedApplicationProtocols()))
+                         .or(QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()));
         // A QUIC context that cannot be built refuses the start (fail closed). A BIND failure of the HTTP/3 listener is
         // non-fatal only when HTTP/1.1 also serves (BOTH); with HTTP/3 as the only app protocol it would leave the node
         // running with no app listener at all, so it is propagated.
@@ -727,7 +731,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH3WithBundle(CertificateBundle newBundle) {
-        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle, ClientAuthPolicy.NOT_REQUESTED);
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle,
+                                                                   ClientAuthPolicy.NOT_REQUESTED,
+                                                                   Http3.supportedApplicationProtocols());
 
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
                                                     cause.message()))

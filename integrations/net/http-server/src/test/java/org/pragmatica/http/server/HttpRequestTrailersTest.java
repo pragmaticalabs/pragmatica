@@ -55,9 +55,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.lang.Option;
-import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
-import org.pragmatica.net.tcp.TlsConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -298,12 +296,10 @@ class HttpRequestTrailersTest {
             stream.writeAndFlush(new DefaultHttp3HeadersFrame(section)).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
         }
 
-        /// The server context offers the `h3` ALPN token: QUIC requires ALPN, and without it no HTTP/3 client completes
-        /// the handshake.
+        /// Built as the node's self-signed HTTP/3 listener builds it, `h3` ALPN token included: this test hands
+        /// [Http3Server] its context directly, so it must offer the token itself.
         private static QuicSslContext serverSsl() {
-            return QuicSslContextFactory.createServer(TlsConfig.selfSignedServer(),
-                                                      ClientAuthPolicy.NOT_REQUESTED,
-                                                      Http3.supportedApplicationProtocols())
+            return QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
                                         .unwrap();
         }
 
