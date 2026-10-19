@@ -356,10 +356,7 @@ public enum OperatorWarningCode {
     /// The recovery of [#OBSERVER_CONSENSUS_LAGGING], same subject (#2306): the observer is observing again and applies committed
     /// decisions. INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
-    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed",
-                               "consensus",
-                               WarningLevel.INFO,
-                               OBSERVER_CONSENSUS_LAGGING);
+    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

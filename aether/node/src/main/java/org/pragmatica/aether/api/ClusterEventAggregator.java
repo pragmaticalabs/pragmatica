@@ -1217,7 +1217,8 @@ public final class ClusterEventAggregator {
         LOG.info("Observer {} applies consensus decisions again", selfNode.id());
         onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
                                                           selfNode.id(),
-                                                          "Observer " + selfNode.id() + " applies consensus decisions again"));
+                                                          "Observer " + selfNode.id()
+                                                         + " applies consensus decisions again"));
     }
 
     /// #2306: a non-voter's PASSIVE is never a quorum loss. An observer leaves `Observing` for reasons that have nothing to do
