@@ -2602,9 +2602,7 @@ public class RabiaEngine<C extends Command> {
     /// installed state (two restores while inactive produce one announce). A node that is fenced for good never
     /// reaches a serving state and so never announces.
     private void announceRestoreIfPending() {
-        var current = engineState.get();
-
-        if ((current.isActive() || current.isObserving()) && restoreAnnouncePending.compareAndSet(true, false)) {
+        if (restoreAnnouncePending.compareAndSet(true, false)) {
             replayStateNotifications();
             notifyStateRestored();
         }
