@@ -83,6 +83,18 @@ public interface ManageableNode {
         return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
     }
 
+    /// Why this node's own persisted consensus history could not be restored, while that fences it from
+    /// activating (#1468). `OwnRestoreWatchdog` bounds the stop this causes.
+    default Option<org.pragmatica.lang.Cause> ownRestoreFailure() {
+        return Option.none();
+    }
+
+    /// Why the re-persist of a restored or adopted state failed, while that fences this node from activating
+    /// (#1516). `OwnRestoreWatchdog` bounds the stop this causes.
+    default Option<org.pragmatica.lang.Cause> restoredStateSaveFailure() {
+        return Option.none();
+    }
+
     /// Workers retain a scoped committed projection and must forward cluster-wide reads.
     default boolean hasCompleteClusterView() {
         return coreNodeIds().contains(self());

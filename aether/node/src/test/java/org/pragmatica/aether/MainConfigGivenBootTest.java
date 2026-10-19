@@ -76,6 +76,29 @@ class MainConfigGivenBootTest {
         assertPastConfigStage(boot(dir, "--config=" + write(dir, "jwt-jwks.toml", JWT_WITH_JWKS)));
     }
 
+    /// #962 / #1455: a `security_mode` the node cannot honour refuses the boot instead of being rewritten. The management plane has no
+    /// JWT mode, so `[management] security_mode = "jwt"` is refused naming the key and the value; a mistyped value too. Controls first.
+    @Test
+    void aGivenConfigWithAnUnsupportedSecurityMode_refusesToStart_namingKeyAndValue(@TempDir Path dir) throws Exception {
+        var mgmtJwt = VALID + "\n[management]\nsecurity_mode = \"jwt\"\n";
+        var mgmtNone = VALID + "\n[management]\nsecurity_mode = \"none\"\n";
+        var appGarbage = VALID + "\n[app-http]\nenabled = true\nsecurity_mode = \"nnone\"\n";
+
+        assertThat(ConfigLoader.loadFromString(mgmtNone).isSuccess()).as("CONTROL: [management] none loads").isTrue();
+        assertThat(ConfigLoader.loadFromString(mgmtJwt).isFailure()).as("CONTROL: [management] jwt does not").isTrue();
+        var jwtFile = write(dir, "mgmt-jwt.toml", mgmtJwt);
+        var jwtRun = boot(dir, "--config=" + jwtFile);
+
+        assertRefused(jwtRun, jwtFile.toString());
+        assertThat(jwtRun.err()).contains("[management] security_mode = \"jwt\"").contains("no JWT mode").contains("Allowed values: none, api-key");
+        var garbageFile = write(dir, "app-garbage.toml", appGarbage);
+        var garbageRun = boot(dir, "--config=" + garbageFile);
+
+        assertRefused(garbageRun, garbageFile.toString());
+        assertThat(garbageRun.err()).contains("[app-http] security_mode = \"nnone\"");
+        assertPastConfigStage(boot(dir, "--config=" + write(dir, "mgmt-none.toml", mgmtNone)));
+    }
+
     @Test
     void aGivenConfigThatDoesNotExist_refusesToStart_insteadOfBootingOnDefaults(@TempDir Path dir) throws Exception {
         var missing = dir.resolve("absent.toml");

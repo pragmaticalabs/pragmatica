@@ -22,6 +22,7 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -188,6 +189,51 @@ class JwtSecurityValidatorTest {
                          assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class);
                          assertThat(cause.message()).contains("Bearer");
                      });
+        }
+    }
+
+    /// Only the first Authorization value is the credential. A Bearer token in a later value must not be promoted, and an
+    /// empty value list must not shadow a usable header spelled with another case.
+    @Nested
+    class MultiValueAuthorizationTests {
+        @Test
+        void validate_rejects_bearerInSecondValue_caseInsensitiveHeader() {
+            var token = buildToken(Map.of("sub", TEST_SUBJECT, "exp", futureExp(), "role", "ADMIN"));
+            var request = HttpRequestContext.httpRequestContext("/test",
+                                                                "GET",
+                                                                Map.of(),
+                                                                Map.of("authorization", List.of("Basic abc", "Bearer " + token)),
+                                                                new byte[0],
+                                                                "rid");
+
+            validator.validate(request, SecurityPolicy.bearerTokenRequired())
+                     .onSuccess(ctx -> fail("second Authorization value was accepted"));
+        }
+
+        @Test
+        void validate_rejects_bearerInSecondValue_caseSensitiveHeader() {
+            var token = buildToken(Map.of("sub", TEST_SUBJECT, "exp", futureExp(), "role", "ADMIN"));
+            var request = HttpRequestContext.httpRequestContext("/test",
+                                                                "GET",
+                                                                Map.of(),
+                                                                Map.of("Authorization", List.of("Basic abc", "Bearer " + token)),
+                                                                new byte[0],
+                                                                "rid");
+
+            validator.validate(request, SecurityPolicy.bearerTokenRequired())
+                     .onSuccess(ctx -> fail("second Authorization value was accepted"));
+        }
+
+        @Test
+        void validate_succeeds_emptyListThenBearerUnderAnotherCase() {
+            var token = buildToken(Map.of("sub", TEST_SUBJECT, "exp", futureExp(), "role", "ADMIN"));
+            var headers = new LinkedHashMap<String, List<String>>();
+            headers.put("authorization", List.of());
+            headers.put("AUTHORIZATION", List.of("Bearer " + token));
+            var request = HttpRequestContext.httpRequestContext("/test", "GET", Map.of(), headers, new byte[0], "rid");
+
+            validator.validate(request, SecurityPolicy.bearerTokenRequired())
+                     .onFailure(cause -> fail("expected success: " + cause.message()));
         }
     }
 

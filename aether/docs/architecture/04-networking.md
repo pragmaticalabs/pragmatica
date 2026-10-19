@@ -1,6 +1,6 @@
 # Networking and Transport
 
-**Status:** Current
+**Status:** Current for the transport mechanics below. Open item: certificate rotation currently restarts the QUIC server rather than swapping the TLS context in place (see [Known Limitations](../reference/known-limitations.md#transport-certificate-rotation-restarts-the-quic-server)).
 
 This document describes the cluster transport layer, topology management, and message routing.
 
@@ -15,7 +15,7 @@ graph TB
             CLUSTER[":8090 Cluster"]
         end
 
-        CN["QuicClusterNetwork<br/>(Netty QUIC/H3)"]
+        CN["QuicClusterNetwork<br/>(Netty QUIC)"]
         TM["TopologyManager"]
         MR["MessageRouter"]
 
@@ -42,7 +42,9 @@ graph TB
 
 ## QuicClusterNetwork
 
-QUIC-based (HTTP/3) transport for all inter-node communication. Uses Netty's `netty-codec-http3` with TLS 1.3 built into the QUIC handshake — no separate TLS negotiation.
+Raw QUIC transport (not HTTP/3) for all inter-node cluster communication, built on Netty's QUIC codec with TLS 1.3 inside the QUIC handshake — no separate TLS negotiation. The ALPN protocol identifier is `aether-cluster/1`. It is the only cluster transport.
+
+Each message is one length-prefixed frame (4-byte length, at most 32 MiB) whose body is the binary encoding of the `Message.Wired` object through the generated codec registry: a numeric type tag followed by the record's fields. There is no envelope and no protocol-version field.
 
 ### Connection Management
 
@@ -52,28 +54,30 @@ sequenceDiagram
     participant B as Node B
 
     A->>B: QUIC connect to :8090/udp (TLS 1.3 handshake)
-    B-->>A: Connection established (0-RTT on reconnect)
+    B-->>A: Connection established
 
-    A->>B: Handshake (NodeId, capabilities)
-    B-->>A: Handshake response
+    A->>B: CONTROL stream: Hello (NodeId, address, labels, boot token, intended peer)
+    B-->>A: Hello response
 
-    Note over A,B: Multiplexed QUIC streams ready
+    Note over A,B: Dialer opens the seven data lanes, one stream each
 
-    loop Heartbeat
-        A->>B: Ping
-        B-->>A: Pong
+    loop Every ping interval
+        A->>B: KeepAlive (CONTROL lane, one-way, never answered)
+        B->>A: KeepAlive (CONTROL lane, one-way, never answered)
     end
 
     alt Connection lost
-        A->>A: Reconnect with backoff
-        Note over A: Exponential backoff<br/>with jitter<br/>0-RTT resumption
+        A->>A: Evict, re-dial
+        Note over A: Per-peer exponential backoff with jitter
     end
 ```
 
 - Peer list configured at startup (no external service registry)
-- Automatic reconnection with exponential backoff and 0-RTT resumption
-- Per-stream backpressure (bounded queue, 100 per peer per stream type)
-- Automatic certificate rotation (60% validity trigger, atomic SSL context swap)
+- Automatic reconnection: a link found dead is evicted and re-dialed with a short per-peer backoff, and a 5 s reconciler tick re-dials any configured peer that is not connected, with a per-peer exponential backoff and jitter. QUIC 0-RTT early data is not configured.
+- A peer's link is dead-detected by write failure or by the receipt sweep: the QUIC idle timeout is disabled, so a link that stays open but receives no frame on any lane for 8 ping intervals is evicted. The KeepAlive on CONTROL is what keeps a quiet healthy link from being evicted.
+- Backpressure is per lane stream. The CONSENSUS lane stream has a Netty write watermark of 256 KiB low and 1 MiB high; other lanes use Netty's default. A write to a stream that is not writable is refused on every lane except CONSENSUS and DHT; a CONSENSUS frame, and a DHT frame to a peer whose channel is still active, is retried up to 200 times at 25 ms and, if the retries run out, dropped with a debug log line. A write reported as sent means the transport accepted it locally: there is no acknowledgement, and delivery is earned by the layer above (Rabia retransmit, the DHT quorum collector, caller deadlines).
+- Frames for a peer that is not connected go to a per-peer offline buffer of at most 10,000 frames, each held at most the offline-buffer cap (30 s by default, taken from the cluster timeout configuration); when the buffer is full the oldest frame is dropped.
+- Automatic certificate rotation: renewal fires after 40% of the remaining validity has passed (40% of the lifetime elapsed for a fresh certificate, 60% remaining) and restarts the QUIC server with the new certificate
 - SWIM health detection on separate UDP port (cluster port + 100)
 
 ### Quorum Detection
@@ -86,11 +90,24 @@ graph TB
     Check -->|"No"| NoQuorum["QUORUM LOST<br/>Consensus paused,<br/>state persisted"]
 ```
 
-A 5-node cluster tolerates 2 simultaneous failures. When quorum is lost, consensus stops and the node persists its state. When quorum is restored, the node synchronizes and resumes.
+The transport does not decide quorum. `QuicClusterNetwork` counts its CONNECTED and EVICTED peers for log lines and for the connected-peer count the topology API reports; whether quorum is present is decided by the membership layer (`QuorumLossDetector`) and the Rabia engine. A 5-node cluster tolerates 2 simultaneous failures. When quorum is lost, the engine pauses and rejects writes with `QuorumPaused`, and a node on the minority side self-fences (`Runtime.halt(2)`) after the split timeout; consensus state is memory-only, with snapshot-only persistence. See [Guarantees](../reference/guarantees.md) section 3 and [Consensus](01-consensus.md).
 
 ## MessageRouter
 
-Multiplexes all inter-node messages over QUIC streams. Each message type is routed to its handler:
+Multiplexes all inter-node messages over QUIC streams. A connection carries eight long-lived lanes, one QUIC stream each, and a message's lane is declared by its type:
+
+| Lane | Index | Carries |
+|------|-------|---------|
+| CONSENSUS | 0 | Rabia proposals, votes, decisions, batches, `SyncRejected`; forwarded apply requests |
+| KV | 1 | Community placement, governor authority and community health messages; the KV-sync snapshot request and response |
+| METRICS | 2 | ClusterSync ping/pong, deployment and source metrics |
+| INVOKE | 3 | Cross-node slice invocation requests and responses |
+| FORWARD | 4 | HTTP, entity and stream forwards, replication |
+| DHT | 5 | DHT puts, gets, removes, digests, migration |
+| CONTROL | 6 | Hello, KeepAlive, node discovery, leader pre-vote, worker metadata manifests |
+| SYNC | 7 | Rabia `SyncRequest` and `SyncResponse`, worker metadata chunks |
+
+Each message type is routed to its handler:
 
 | Message Type | Handler | Description |
 |-------------|---------|-------------|
@@ -113,27 +130,25 @@ router.routeAsync(() -> new ReactionMessage(...));
 
 The MessageRouter is a targeted delivery system, not a broadcast bus. Each message specifies its destination node.
 
-## Envelope Format
+## Wire Format
 
-All inter-node messages are wrapped in an `Envelope`:
+There is no envelope. Each message is a frame on its lane's stream:
 
 ```mermaid
 graph LR
-    subgraph Envelope
-        Header["Header<br/>version, type,<br/>sender, correlationId"]
-        Payload["Payload<br/>(Fury-serialized message)"]
+    subgraph Frame
+        Len["Length<br/>(4 bytes, max 32 MiB)"]
+        Body["Body<br/>(type tag + generated codec fields)"]
     end
 ```
 
-| Field | Description |
-|-------|-------------|
-| `version` | Protocol version for compatibility |
-| `type` | Message type discriminator |
-| `sender` | Source NodeId |
-| `correlationId` | Request-response correlation |
-| `payload` | Fury-serialized message body |
+| Part | Description |
+|------|-------------|
+| length | Frame length prefix; a frame above 32 MiB is refused |
+| type tag | Numeric tag identifying the message record (framework tags in `SystemTags`, slice tags from the codec registries) |
+| fields | The record's fields, written by the compile-time generated `@Codec` codec (no reflection) |
 
-Envelope versioning allows protocol evolution without breaking existing nodes.
+Sender and correlation identifiers are fields of the messages that need them. The `Hello` handshake message carries no version field, so there is no version negotiation; see [Known Limitations](../reference/known-limitations.md).
 
 ## Topology Management
 

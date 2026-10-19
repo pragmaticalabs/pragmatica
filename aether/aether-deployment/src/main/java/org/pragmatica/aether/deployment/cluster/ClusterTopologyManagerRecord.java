@@ -402,16 +402,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                var updated = current.withDesiredCount(sourceName, role, count);
 
                                if (count < 0 || role.equals(NodeRole.CORE.value()) && (updated.coreCount() < MINIMUM_CLUSTER_SIZE || updated.coreCount() > ConsensusTierBounds.MAXIMUM_CORE_NODES || updated.coreCount() % 2 == 0)) {
-                               return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11; source counts cannot be negative").promise();
-                           }
+                                   return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11; source counts cannot be negative").promise();
+                               }
                                // #1564 (B1): a core scale changes the desired core count, which bounds the
                                // cluster-events confirmation factor; an inadmissible result is refused, typed.
                                var admissible = ClusterReplication.admissible(updated);
 
                                if (admissible.isFailure()) {
-                               return admissible.async()
-                                                .mapToUnit();
-                           }
+                                   return admissible.async()
+                                                    .mapToUnit();
+                               }
 
                                return writer.put(ClusterConfigKey.CURRENT,
                                                  Option.some(current),
@@ -1896,17 +1896,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return lifecycleManager.instancesForNode(node, source)
                                .flatMap(listed -> {
                                             if (!sameIncarnation(node, generation)) {
-                                            return Causes.cause("reap of " + node.id()
-                                                               + " abandoned: the node joined again while it was listing").<Unit> promise();
-                                        }
+                                                return Causes.cause("reap of " + node.id()
+                                                                   + " abandoned: the node joined again while it was listing").<Unit> promise();
+                                            }
 
                                             if (!listed.isEmpty()) {
-                                            seenInstances.add(node);
-                                            knownInstanceIds.put(node,
-                                                                 instanceIds(listed));
-                                        } else if (!seen) {
-                                            listedAbsent.add(node);
-                                        }
+                                                seenInstances.add(node);
+                                                knownInstanceIds.put(node,
+                                                                     instanceIds(listed));
+                                            } else if (!seen) {
+                                                listedAbsent.add(node);
+                                            }
 
                                             return allTerminated(listed)
                                                    ? confirmedAbsent(node, listed, seen)
@@ -2870,12 +2870,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                       .forEach((nodeId, mark) -> {
                                    unconfirmedReaps.add(nodeId);
                                    if (mark.seen()) {
-                                   seenInstances.add(nodeId);
-                               }
+                                       seenInstances.add(nodeId);
+                                   }
 
                                    if (mark.absent()) {
-                                   listedAbsent.add(nodeId);
-                               }
+                                       listedAbsent.add(nodeId);
+                                   }
                                });
         SharedScheduler.schedule(() -> recheckUnconfirmed(epoch),
                                  TimeSpan.timeSpan(1).millis());

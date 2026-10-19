@@ -29,13 +29,12 @@ class RabiaMetricsCollectorTest {
         collector.recordVoteRound1(NODE, PHASE, StateValue.V0);
         collector.recordVoteRound1(NODE, PHASE, StateValue.V1);
         collector.recordVoteRound2(NODE, PHASE, StateValue.V0);
-        collector.recordFastPath(NODE, PHASE, StateValue.V1);
 
         var snapshot = collector.snapshot();
 
         assertThat(snapshot.voteRound1Count()).isEqualTo(2);
         assertThat(snapshot.voteRound2Count()).isEqualTo(1);
-        assertThat(snapshot.fastPathCount()).isEqualTo(1);
+        assertThat(snapshot.fastPathCount()).as("no fast path since #1390").isZero();
     }
 
     /// `snapshot()` must not consume: a differencing consumer (the coordination-slope shape) reads
@@ -58,7 +57,6 @@ class RabiaMetricsCollectorTest {
 
         collector.recordVoteRound1(NODE, PHASE, StateValue.V0);
         collector.recordVoteRound2(NODE, PHASE, StateValue.V0);
-        collector.recordFastPath(NODE, PHASE, StateValue.V0);
 
         var first = collector.snapshotAndReset();
 
@@ -82,7 +80,6 @@ class RabiaMetricsCollectorTest {
         collector.recordDecision(NODE, PHASE, StateValue.V0, 1_000_000L);
         collector.recordVoteRound1(NODE, PHASE, StateValue.V0);
         collector.recordVoteRound2(NODE, PHASE, StateValue.V0);
-        collector.recordFastPath(NODE, PHASE, StateValue.V0);
         collector.recordSyncAttempt(NODE, true);
         collector.recordSyncAttempt(NODE, false);
         collector.updatePendingBatches(NODE, 3);

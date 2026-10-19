@@ -90,7 +90,8 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
         return Result.all(context.extension(DHTClient.class),
                           context.extension(Serializer.class),
                           context.extension(Deserializer.class),
-                          success(config.storeName()))
+                          success(config.storeName()),
+                          success(config.retentionSeconds()))
                      .map(DHTCacheBackend::dhtCacheBackend);
     }
 

@@ -1173,7 +1173,7 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | PF-21  | Cloud sub-tables: `runtime` must be `"container"` or `"jvm"`         | Cloud       | Error    |
 | PF-22  | SSH sub-tables: `runtime` must be `"container"` (the only runtime launched over SSH — #1090) | SSH | Error |
 | PF-23  | Provider implements ingress management when `allow_ingress` declared  | Cloud       | Error    |
-| PF-24  | Management port not open to `0.0.0.0/0` while `security_mode = "none"` | Cloud       | Error    |
+| PF-24  | Management port not open to `0.0.0.0/0` while the management plane's effective `security_mode` is `"none"` (its own `[management] security_mode`, else inherited from `[app-http]`) ; also refuses a `security_mode` no node can honour (`[management]` `jwt`, or an unrecognised value in either section) | Cloud       | Error    |
 | PF-27  | A host is declared by at most one SSH source (PF-09 is intra-source)   | SSH         | Error    |
 
 ### 12.2 Cluster-Level Checks

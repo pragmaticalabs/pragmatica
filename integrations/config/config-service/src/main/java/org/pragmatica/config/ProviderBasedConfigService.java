@@ -148,7 +148,7 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     /// Opt-in ([StrictKeys]) rejection of keys the annotated record does not declare. Scoped to
     /// exactly one path segment past the section prefix, so a nested sub-section (e.g. a consumer
-    /// group table owned by the dashed-by-convention stream parser) is never inspected here.
+    /// group table owned by the stream parser) is never inspected here.
     ///
     /// Scoped to [ConfigurationProvider#staticKeys()] rather than the full merged
     /// [ConfigurationProvider#keys()]: an environment variable, system property, or KV-overlay

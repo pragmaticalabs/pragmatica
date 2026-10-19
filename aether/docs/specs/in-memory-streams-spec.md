@@ -164,20 +164,20 @@ Streams are declared in the application blueprint alongside slices, scheduled ta
 [streams.order-events]
 partitions = 6
 retention = "time"               # "time", "count", or "size"
-retention-value = "5m"           # 5 minutes (for time-based)
-max-event-size = "64KB"          # default 1MB
+retention_value = "5m"           # 5 minutes (for time-based)
+max_event_size = "64KB"          # default 1MB
 replication = 2                  # replicas within governor group
 
 [streams.sensor-telemetry]
 partitions = 12
 retention = "count"
-retention-value = 100000         # keep last 100K events per partition
+retention_value = 100000         # keep last 100K events per partition
 replication = 1                  # no replication (best-effort)
 
 [streams.audit-log]
 partitions = 3
 retention = "size"
-retention-value = "512MB"        # per-partition memory cap
+retention_value = "512MB"        # per-partition memory cap
 replication = 2
 consistency = "strong"           # produce path goes through Rabia
 ```
@@ -188,7 +188,7 @@ Consumer groups can be declared in the blueprint (static) or created at runtime 
 
 > **⚠️ REFUSED BY BLUEPRINT VALIDATION (#576).** Neither key below is read at runtime, and both are
 > failed as inert configuration — but that refusal does not block the publish today
-> (`BlueprintService.streamBindings` discards it), so the blueprint deploys with empty stream bindings. `auto-offset-reset`
+> (`BlueprintService.streamBindings` discards it), so the blueprint deploys with empty stream bindings. `auto_offset_reset`
 > accepts only `"earliest"`, because a never-committed consumer always starts at offset 0 permanently
 > by the **#478 ruling**, so the `"latest"` shown here is the value that gets refused. Retained as a
 > post-GA design target (**#677** descoped the wiring from 1.0); see `streaming-spec.md` §3.2/§3.3 for
@@ -197,11 +197,11 @@ Consumer groups can be declared in the blueprint (static) or created at runtime 
 ```toml
 # DESIGN TARGET — refused as inert (#576, #677); that refusal does not block the publish today.
 [streams.order-events.consumer-groups.analytics]
-auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
+auto_offset_reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
 commit-interval = "1s"           # REJECTED as inert: not read at runtime
 
 [streams.order-events.consumer-groups.audit]
-auto-offset-reset = "earliest"   # the one accepted value
+auto_offset_reset = "earliest"   # the one accepted value
 commit-interval = "5s"           # REJECTED as inert
 ```
 
@@ -379,9 +379,9 @@ Ring Buffer (capacity = N events or T time or S bytes):
 
 | Mode | Configuration | Eviction Trigger | Behavior |
 |------|--------------|------------------|----------|
-| **Time** | `retention-value = "5m"` | Event age exceeds duration | Periodic sweep removes events older than `now - duration`. Check interval: `min(duration / 10, 1s)`. |
-| **Count** | `retention-value = 100000` | Buffer exceeds N events | Oldest event evicted on each new append beyond capacity. |
-| **Size** | `retention-value = "512MB"` | Total partition memory exceeds limit | Oldest events evicted until memory is under limit. Checked on each append. |
+| **Time** | `retention_value = "5m"` | Event age exceeds duration | Periodic sweep removes events older than `now - duration`. Check interval: `min(duration / 10, 1s)`. |
+| **Count** | `retention_value = 100000` | Buffer exceeds N events | Oldest event evicted on each new append beyond capacity. |
+| **Size** | `retention_value = "512MB"` | Total partition memory exceeds limit | Oldest events evicted until memory is under limit. Checked on each append. |
 
 ### 8.3 Compound Retention
 
@@ -391,7 +391,7 @@ This is a Phase 2 enhancement. Phase 1 supports a single retention mode per stre
 
 ### 8.4 Consumer Lag and Eviction
 
-If a consumer's cursor falls behind the tail offset (events have been evicted), the consumer receives a `CURSOR_EXPIRED` error on the next fetch. The consumer must reset to `tailOffset` (earliest available) or `headOffset` (latest). The consumer group's `auto-offset-reset` policy applies.
+If a consumer's cursor falls behind the tail offset (events have been evicted), the consumer receives a `CURSOR_EXPIRED` error on the next fetch. The consumer must reset to `tailOffset` (earliest available) or `headOffset` (latest). The consumer group's `auto_offset_reset` policy applies.
 
 ---
 
@@ -520,7 +520,7 @@ The governor selects replica workers using consistent hashing (same pattern as s
 
 Replicas may lag behind the governor by a small number of events (async replication). The governor tracks each replica's confirmed offset. Consumers reading from replicas see the replica's high-water mark, not the governor's.
 
-For consumers that need the latest data: read from the governor. For consumers that tolerate slight lag: read from any replica. The consumer's FetchRequest can specify `read-preference = "leader"` (governor) or `read-preference = "any"` (governor or replica).
+For consumers that need the latest data: read from the governor. For consumers that tolerate slight lag: read from any replica. The consumer's FetchRequest can specify `read_preference = "leader"` (governor) or `read_preference = "any"` (governor or replica).
 
 ---
 
@@ -1036,7 +1036,7 @@ The in-memory ring buffer is a deliberate Phase 1 scope constraint, not an archi
 [streams.order-events]
 partitions = 6
 retention = "time"
-retention-value = "7d"
+retention_value = "7d"
 storage = "persistent"                # ring buffer backed by AHSE
 storage-instance = "stream-events"    # AHSE instance name (references [storage.stream-events])
 buffer-size = 100000                  # in-memory read cache (ring buffer)

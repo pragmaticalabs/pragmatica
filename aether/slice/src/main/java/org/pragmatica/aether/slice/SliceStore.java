@@ -277,11 +277,11 @@ public interface SliceStore {
                                                                              .getClassLoader();
 
                                               if (sliceClassLoader instanceof SliceClassLoader scl) {
-                                              return createEntry(artifact,
-                                                                 resolved.slice(),
-                                                                 scl,
-                                                                 resolved.loadingContext());
-                                          }
+                                                  return createEntry(artifact,
+                                                                     resolved.slice(),
+                                                                     scl,
+                                                                     resolved.loadingContext());
+                                              }
 
                                               log.warn("Slice {} loaded with unexpected classloader type: {}. Resource access may be limited.",
                                                        artifact,
