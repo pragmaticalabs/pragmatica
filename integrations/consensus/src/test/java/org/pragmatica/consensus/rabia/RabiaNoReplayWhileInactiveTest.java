@@ -297,10 +297,10 @@ class RabiaNoReplayWhileInactiveTest {
         }
     }
 
-    /// The missed transition: a refused OBSERVER applies a Decision while Paused, and `advancePhaseAsObserver` writes
-    /// `Observing` from any state. That write is a transition into a serving state too, and must announce.
+    /// A refused OBSERVER applies a Decision while Paused: applying does not resume it (`advancePhaseAsObserver` keeps `Paused`), so nothing
+    /// is announced yet. The quorum ACTIVE resumes it to `Observing`, which is the transition into a serving state that must announce, once.
     @Test
-    void refusedObserver_pausedThenDecisionApplied_announcesOnceOnReachingObserving() {
+    void refusedObserver_pausedThenDecisionApplied_announcesOnceOnResumingToObserving() {
         var marker = new GateMarker();
         var machine = new CountingStateMachine();
         var hooks = new AtomicInteger();
@@ -313,9 +313,16 @@ class RabiaNoReplayWhileInactiveTest {
 
         engine.clusterState(ClusterStateNotification.passive());
         assertThat(awaitCondition(engine::isPaused)).isTrue();
+        var before = engine.currentPhaseForTesting();
+
         engine.processDecision(new Decision<>(NODE_2, PEER_PHASE, StateValue.V0, StateMachine.Batch.<TestCommand>emptyBatch()));
 
-        assertThat(awaitCondition(engine::isObserving)).as("precondition: applying the decision moved the observer to Observing").isTrue();
+        assertThat(awaitCondition(() -> engine.currentPhaseForTesting().compareTo(before) > 0)).as("precondition: the decision was applied").isTrue();
+        assertThat(engine.isPaused()).as("applying the decision does not resume the paused observer").isTrue();
+        assertThat(effectsWithin(machine, hooks)).as("still paused: nothing announced").isFalse();
+        engine.clusterState(ClusterStateNotification.active());
+
+        assertThat(awaitCondition(engine::isObserving)).as("the quorum ACTIVE resumes the observer").isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("reaching Observing announced the restore").isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("once").isFalse();
     }
