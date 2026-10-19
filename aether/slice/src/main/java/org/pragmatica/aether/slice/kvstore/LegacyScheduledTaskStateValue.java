@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
 import org.pragmatica.serialization.SliceCodec.TypeReader;
@@ -47,6 +48,8 @@ public record LegacyScheduledTaskStateValue(long lastExecutionAt,
         return new TypeCodec(LegacyScheduledTaskStateValue.class, TAG, writer, reader);
     }
 
+    /// The codec's writer callback: a `void` by the shape of `TypeWriter`.
+    @Contract
     static void writeBody(SliceCodec codec, ByteBuf buf, LegacyScheduledTaskStateValue value) {
         buf.writeByte(SliceCodec.TAG_LONG);
         buf.writeLong(value.lastExecutionAt());
