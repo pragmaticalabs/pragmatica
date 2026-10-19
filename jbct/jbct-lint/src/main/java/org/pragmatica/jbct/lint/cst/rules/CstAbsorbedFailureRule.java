@@ -98,24 +98,41 @@ public class CstAbsorbedFailureRule implements CstLintRule {
         var lines = input.substring(0, Math.max(0, lineStart(input, anchorOf(method).spanStart()) - 1)).split("\n", -1);
         var block = new StringBuilder();
 
-        // unmatched ')' seen below: lines of a multi-line annotation's argument list (`@SuppressWarnings({"a",\n "b"})`) sit between
-        // the comment and the method, and are not comment or annotation lines on their own
+        // Lines of a multi-line annotation's argument list (`@SuppressWarnings({"a",\n "b"})`) sit between the comment and the method
+        // and are not comment or annotation lines on their own. They are held in `pending` and committed only once the walk reaches
+        // the annotation's own `@` line; a code line that merely ends in `)` therefore cannot pull a comment above it into the block.
+        var pending = new StringBuilder();
         var open = 0;
 
         for (var i = lines.length - 1; i >= 0; i--) {
             var line = lines[i].trim();
-            var commentLine = isCommentOrAnnotationLine(line);
+            var commentLine = line.startsWith("//") || line.startsWith("/*") || line.startsWith("*");
 
-            if (line.isEmpty() || !commentLine && open == 0 && !line.endsWith(")")) {
+            if (line.isEmpty() || !commentLine && open == 0 && !line.startsWith("@") && !line.endsWith(")")) {
                 break;
             }
 
-            if (!line.startsWith("//") && !line.startsWith("/*") && !line.startsWith("*")) {
-                open = Math.max(0, open + count(line, ')') - count(line, '('));
+            if (commentLine) {
+                // a comment cannot sit inside an unfinished argument list we are still collecting
+                if (open > 0) {
+                    break;
+                }
+
+                block.insert(0, line + "\n");
+                continue;
             }
 
-            // the scan walks upward, so prepend: a multi-line /* */ or Javadoc must be reassembled in source order
-            block.insert(0, line + "\n");
+            open = Math.max(0, open + count(line, ')') - count(line, '('));
+            pending.insert(0, line + "\n");
+
+            if (open == 0) {
+                if (!line.startsWith("@")) {
+                    break;
+                }
+
+                block.insert(0, pending);
+                pending.setLength(0);
+            }
         }
 
         return MapperSafety.commentsOnly(block.toString());

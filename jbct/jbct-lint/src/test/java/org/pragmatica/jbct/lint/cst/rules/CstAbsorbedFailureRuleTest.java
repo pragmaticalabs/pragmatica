@@ -202,7 +202,6 @@ class CstAbsorbedFailureRuleTest {
                                class Sample {
                                    // FER: about the field only
                                    static final Object X = make(1)
-
                                    Promise<Unit> notifyBuyer(Confirmation c) {
                                        return notifier.send(c).recover(_ -> Unit.unit());
                                    }
