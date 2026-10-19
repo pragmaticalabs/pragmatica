@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
@@ -335,14 +336,257 @@ class SliceRuntimeAdapterTest {
         assertThat(store.calls).as("a healthy slice is not unloaded by an eviction").isEmpty();
     }
 
-    // -- steps outside the path ---------------------------------------------------------------------------------------------
+    // -- PREPARE_TEARDOWN, DEACTIVATE, UNLOAD (N13, N16) ---------------------------------------------------------------------------
     @Test
-    void theStepsOutsideTheTracersPath_failLoudly() {
-        for (var step : List.of(LocalStep.PREPARE_TEARDOWN, LocalStep.DEACTIVATE, LocalStep.UNLOAD, LocalStep.FORCED_CLEANUP, LocalStep.NOTIFY_CONFIG)) {
-            var outcome = run(step);
+    void prepareTeardown_returnsTheRemovesOfTheSlice_andTouchesNothing() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.MixedSlice());
 
-            assertThat(outcome).as(step.name()).isInstanceOf(LocalOutcome.Failed.class);
-            assertThat(messageOf(outcome)).isEqualTo("unwired in phase 3 tracer: " + step);
+        var done = (LocalOutcome.Done) run(LocalStep.PREPARE_TEARDOWN);
+
+        assertThat(done.commands()).as("this node's TOML declares no [streams.orders], so the stream consumer never registered and has nothing to remove")
+                                   .extracting(LegCommand::kind)
+                                   .containsExactly(LegCommand.LegKind.TOPIC_SUBSCRIPTION, LegCommand.LegKind.SCHEDULED_TASK, LegCommand.LegKind.SCHEDULED_TASK);
+        assertThat(done.commands()).extracting(leg -> leg.command()).allMatch(command -> command instanceof org.pragmatica.cluster.state.kvstore.KVCommand.Remove<?>);
+        assertThat(store.calls).as("the step builds, it does not sever anything").isEmpty();
+        assertThat(bridge.calls).isEmpty();
+        assertThat(publisher.calls).isEmpty();
+    }
+
+    @Test
+    void prepareTeardown_isDoneWithNoCommands_whenTheSliceIsNotInTheStore() {
+        assertThat(((LocalOutcome.Done) run(LocalStep.PREPARE_TEARDOWN)).commands()).isEmpty();
+    }
+
+    @Test
+    void deactivate_deactivatesTheSlice_andIsDone() {
+        assertThat(run(LocalStep.DEACTIVATE)).isInstanceOf(LocalOutcome.Done.class);
+        assertThat(store.calls).containsExactly("deactivate " + ORDERS);
+    }
+
+    @Test
+    void deactivate_failsWithTheStoresOwnCause() {
+        var cause = Causes.cause("stop failed");
+
+        store.deactivateFailure = cause;
+
+        assertThat(run(LocalStep.DEACTIVATE)).isEqualTo(LocalOutcome.failed(cause));
+    }
+
+    @Test
+    void unload_unloadsTheSlice_andIsDone() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+
+        assertThat(run(LocalStep.UNLOAD)).isInstanceOf(LocalOutcome.Done.class);
+        assertThat(store.calls).containsExactly("unload " + ORDERS);
+        assertThat(store.loaded()).isEmpty();
+    }
+
+    @Test
+    void unload_failsWithTheStoresOwnCause() {
+        var cause = Causes.cause("class loader would not close");
+
+        store.unloadFailure = cause;
+
+        assertThat(run(LocalStep.UNLOAD)).isEqualTo(LocalOutcome.failed(cause));
+    }
+
+    // -- FORCED_CLEANUP (N17, B-148, NT-73) ------------------------------------------------------------------------------------------
+    private void journaled() {
+        var journal = new CopyOnWriteArrayList<String>();
+
+        store.journal = journal;
+        bridge.journal = journal;
+        publisher.journal = journal;
+        this.journal = journal;
+    }
+
+    private List<String> journal = new CopyOnWriteArrayList<>();
+
+    @Test
+    void forcedCleanup_severesThenDeactivatesThenUnloads_inThatOrder() {
+        journaled();
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+
+        assertThat(run(LocalStep.FORCED_CLEANUP)).isInstanceOf(LocalOutcome.Done.class);
+
+        assertThat(journal).containsExactly("bridge: unregister " + ORDERS,
+                                            "routes: unpublish " + ORDERS,
+                                            "store: deactivate " + ORDERS,
+                                            "store: unload " + ORDERS);
+    }
+
+    /// B-166 CHANGE, NT-73: the config registration does not survive a forced cleanup (legacy left it behind).
+    @Test
+    void forcedCleanup_unregistersTheConfigRegistration() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.ConfigSlice());
+        run(LocalStep.REGISTER_CONFIG);
+        await().atMost(Duration.ofSeconds(5)).until(() -> ConfigProbe.calls.contains("database"));
+        ConfigProbe.calls.clear();
+
+        assertThat(run(LocalStep.FORCED_CLEANUP)).isInstanceOf(LocalOutcome.Done.class);
+
+        configNotifications.notifyChange("database.pool", artifact -> RuntimeFixtures.noConfig());
+        await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(5)).until(ConfigProbe.calls::isEmpty);
+    }
+
+    /// The node-scoped legs go with the instance: this node's topic subscription row (R-3.4.5: always removed) and its stream reference counts. The
+    /// cluster-scoped ones (stream registration, scheduled task and its pause key) stay: whether this was the last replica is the FSM's knowledge
+    /// (`Rows.hostedElsewhere`), and a forced cleanup carries no batch the FSM could filter.
+    @Test
+    void forcedCleanup_releasesTheNodeScopedLegs_andLeavesTheClusterScopedOnes() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.MixedSlice());
+        var cluster = new StubCluster();
+
+        adapterOver(cluster).run(new NodeFsmEffect.LocalOp(1, 0, Option.some(ORDERS), LocalStep.FORCED_CLEANUP, 0, Option.none())).await();
+
+        assertThat(cluster.applied).hasSize(1);
+        assertThat(cluster.applied.getFirst()).hasSize(1).allMatch(command -> command instanceof org.pragmatica.cluster.state.kvstore.KVCommand.Remove<?> remove
+                                                                              && remove.key() instanceof AetherKey.TopicSubscriptionKey);
+    }
+
+    @Test
+    void forcedCleanup_submitsNothing_forASliceWithoutNodeScopedLegs() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+        var cluster = new StubCluster();
+
+        adapterOver(cluster).run(new NodeFsmEffect.LocalOp(1, 0, Option.some(ORDERS), LocalStep.FORCED_CLEANUP, 0, Option.none())).await();
+
+        assertThat(cluster.applied).as("an empty batch would be refused by the engine").isEmpty();
+    }
+
+    /// FER: a release the cluster refuses is logged; the slice is still taken down. The step is Done.
+    @Test
+    void forcedCleanup_stillTakesTheSliceDown_whenTheReleaseIsRefused() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.MixedSlice());
+        var cluster = new StubCluster();
+
+        cluster.script = _ -> Causes.cause("quorum paused").promise();
+
+        try (var logs = new LogCapture(SliceRuntimeAdapter.class.getName())) {
+            assertThat(adapterOver(cluster).run(new NodeFsmEffect.LocalOp(1, 0, Option.some(ORDERS), LocalStep.FORCED_CLEANUP, 0, Option.none())).await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
+            assertThat(store.calls).containsExactly("deactivate " + ORDERS, "unload " + ORDERS);
+            assertThat(logs.lines()).as("the refusal is logged, not swallowed silently")
+                                    .anySatisfy(line -> assertThat(line.message()).contains("Could not release the legs of " + ORDERS).contains("quorum paused"));
+        }
+    }
+
+    /// Both steps of the removal failed: the step reports the deactivation's failure, the first one, and the unload still ran.
+    @Test
+    void forcedCleanup_whenBothTheDeactivationAndTheUnloadFail_reportsTheDeactivation() {
+        var deactivation = Causes.cause("stop failed");
+
+        store.deactivateFailure = deactivation;
+        store.unloadFailure = Causes.cause("class loader would not close");
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+
+        assertThat(run(LocalStep.FORCED_CLEANUP)).isEqualTo(LocalOutcome.failed(deactivation));
+        assertThat(store.calls).containsExactly("deactivate " + ORDERS, "unload " + ORDERS);
+    }
+
+    /// Which legs a forced cleanup may remove: the node-scoped ones (this node's topic subscription row, its stream reference counts), and none of
+    /// the cluster-scoped ones (stream registration, scheduled task).
+    @Test
+    void nodeScoped_keepsTheTopicRowsAndTheReferenceCounts_andDropsTheClusterScopedLegs() {
+        var topic = removalOf("topic");
+        var reference = removalOf("reference");
+        var registration = removalOf("registration");
+        var task = removalOf("task");
+
+        var kept = SliceRuntimeAdapter.nodeScoped(List.of(LegCommand.legCommand(LegCommand.LegKind.TOPIC_SUBSCRIPTION, topic),
+                                                          LegCommand.legCommand(LegCommand.LegKind.STREAM_REGISTRATION, registration),
+                                                          LegCommand.legCommand(LegCommand.LegKind.STREAM_REF, reference),
+                                                          LegCommand.legCommand(LegCommand.LegKind.SCHEDULED_TASK, task)));
+
+        assertThat(kept).containsExactly(topic, reference);
+    }
+
+    /// A deactivation that fails must not leave the slice in the store (the FSM has already recorded it as not loaded): the unload still runs, and the
+    /// step reports the failure so `localops_total{step=FORCED_CLEANUP,result=failed}` counts it.
+    @Test
+    void forcedCleanup_stillUnloads_whenTheDeactivationFails_andReportsIt() {
+        var cause = Causes.cause("stop failed");
+
+        store.deactivateFailure = cause;
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+
+        assertThat(run(LocalStep.FORCED_CLEANUP)).isEqualTo(LocalOutcome.failed(cause));
+        assertThat(store.calls).containsExactly("deactivate " + ORDERS, "unload " + ORDERS);
+    }
+
+    @Test
+    void forcedCleanup_reportsTheUnloadFailure() {
+        var cause = Causes.cause("class loader would not close");
+
+        store.unloadFailure = cause;
+
+        assertThat(run(LocalStep.FORCED_CLEANUP)).isEqualTo(LocalOutcome.failed(cause));
+    }
+
+    private static KVCommand<AetherKey> removalOf(String name) {
+        return new KVCommand.Remove<>(new AetherKey.SliceTargetKey(Artifact.artifact("org.example:" + name + ":1.0.0").unwrap().base()));
+    }
+
+    private SliceRuntimeAdapter adapterOver(StubCluster cluster) {
+        return SliceRuntimeAdapter.sliceRuntimeAdapter(new SliceRuntimeAdapter.Collaborators(SELF,
+                                                                                            store,
+                                                                                            bridge,
+                                                                                            SliceCodec.sliceCodec(List.of()),
+                                                                                            Option.some(publisher),
+                                                                                            Option.some(RuntimeFixtures.FACADE),
+                                                                                            configNotifications,
+                                                                                            kv,
+                                                                                            () -> cluster,
+                                                                                            () -> BOOT_INCARNATION,
+                                                                                            () -> OperatorWarningSink.handingOffTo(warnings::add)));
+    }
+
+    // -- NOTIFY_CONFIG (NI-5, B5) -----------------------------------------------------------------------------------------------------
+    private LocalOutcome notifyConfig(Option<String> key) {
+        return adapter(true).run(new NodeFsmEffect.LocalOp(1, 0, Option.none(), LocalStep.NOTIFY_CONFIG, 0, key)).await().unwrap();
+    }
+
+    @Test
+    void notifyConfig_pushesAChangedKeyToTheSlicesRegisteredForItsSection() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.ConfigSlice());
+        run(LocalStep.REGISTER_CONFIG);
+        await().atMost(Duration.ofSeconds(5)).until(() -> ConfigProbe.calls.contains("database"));
+        ConfigProbe.calls.clear();
+
+        assertThat(notifyConfig(Option.some("database.pool"))).isInstanceOf(LocalOutcome.Done.class);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> ConfigProbe.calls.contains("database"));
+    }
+
+    @Test
+    void notifyConfig_reachesNobody_forAKeyOutsideEverySection() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.ConfigSlice());
+        run(LocalStep.REGISTER_CONFIG);
+        await().atMost(Duration.ofSeconds(5)).until(() -> ConfigProbe.calls.contains("database"));
+        ConfigProbe.calls.clear();
+
+        assertThat(notifyConfig(Option.some("unrelated.key"))).isInstanceOf(LocalOutcome.Done.class);
+
+        await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(5)).until(ConfigProbe.calls::isEmpty);
+    }
+
+    @Test
+    void notifyConfig_failsLoudly_whenTheOpCarriesNoKey() {
+        var outcome = notifyConfig(Option.none());
+
+        assertThat(messageOf(outcome)).isEqualTo("local step NOTIFY_CONFIG carries no config key");
+    }
+
+    // -- every step -------------------------------------------------------------------------------------------------------------------
+    /// A step that names an artifact and is handed none fails loudly instead of being skipped.
+    @Test
+    void aStepThatNeedsAnArtifact_failsLoudly_withoutOne() {
+        for (var step : LocalStep.values()) {
+            if (step != LocalStep.NOTIFY_CONFIG) {
+                var outcome = adapter(true).run(new NodeFsmEffect.LocalOp(1, 7, Option.none(), step, 0, Option.none())).await().unwrap();
+
+                assertThat(outcome).as(step.name()).isInstanceOf(LocalOutcome.Failed.class);
+                assertThat(messageOf(outcome)).as(step.name()).isEqualTo("local step " + step + " needs an artifact");
+            }
         }
 
         assertThat(store.calls).as("none of them touched the store").isEmpty();
@@ -350,35 +594,20 @@ class SliceRuntimeAdapterTest {
         assertThat(publisher.calls).isEmpty();
     }
 
-    /// `UNWIRED_STEPS` and the step switch are two lists (v-2204 N5): for every step, `wired(step)` holds exactly when running it does not fail as
-    /// unwired. A step added to one list and not the other is red.
+    /// No step is left to fail as unwired: running any of them, with the artifact (or the key) it needs, reaches its collaborator and ends `Done`
+    /// on a healthy runtime. A step added to `LocalStep` is a compile error in the adapter's switch, and a case here.
     @Test
-    void wiredSteps_areExactlyTheStepsTheAdapterRuns() {
+    void everyStep_runsAgainstAHealthyRuntime_andIsDone() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+
         for (var step : LocalStep.values()) {
-            var outcome = run(step);
-            var failedAsUnwired = outcome instanceof LocalOutcome.Failed && messageOf(outcome).equals("unwired in phase 3 tracer: " + step);
+            var op = step == LocalStep.NOTIFY_CONFIG
+                     ? new NodeFsmEffect.LocalOp(1, 0, Option.none(), step, 0, Option.some("database.pool"))
+                     : new NodeFsmEffect.LocalOp(1, 7, Option.some(ORDERS), step, 0, Option.none());
+            var outcome = adapter(true).run(op).await().unwrap();
 
-            assertThat(SliceRuntimeAdapter.wired(step)).as(step.name()).isEqualTo(!failedAsUnwired);
+            assertThat(outcome).as(step.name()).isInstanceOf(LocalOutcome.Done.class);
+            store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
         }
-    }
-
-    @Test
-    void aStepWithoutAnArtifact_failsLoudly() {
-        var outcome = adapter(true).run(new NodeFsmEffect.LocalOp(1, 0, Option.none(), LocalStep.NOTIFY_CONFIG, 0, Option.some("database.pool"))).await().unwrap();
-
-        assertThat(messageOf(outcome)).isEqualTo("unwired in phase 3 tracer: NOTIFY_CONFIG");
-    }
-
-    @Test
-    void everyStep_hasADeclaredOutcomeClass() {
-        var onPath = List.of(LocalStep.LOAD, LocalStep.ACTIVATE, LocalStep.REGISTER_BRIDGE, LocalStep.BUILD_LEGS, LocalStep.REGISTER_CONFIG, LocalStep.PUBLISH_ROUTES,
-                             LocalStep.DESCRIBE_ACTIVE, LocalStep.UNPUBLISH, LocalStep.SUSPEND, LocalStep.EVICT);
-        var unwired = List.of(LocalStep.PREPARE_TEARDOWN, LocalStep.DEACTIVATE, LocalStep.UNLOAD, LocalStep.FORCED_CLEANUP, LocalStep.NOTIFY_CONFIG);
-
-        assertThat(List.of(LocalStep.values())).as("a new step must be classified here and in the adapter's switch").containsExactlyInAnyOrderElementsOf(concat(onPath, unwired));
-    }
-
-    private static List<LocalStep> concat(List<LocalStep> first, List<LocalStep> second) {
-        return java.util.stream.Stream.concat(first.stream(), second.stream()).toList();
     }
 }

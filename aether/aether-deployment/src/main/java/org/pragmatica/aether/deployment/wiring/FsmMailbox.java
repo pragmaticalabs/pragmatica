@@ -142,14 +142,25 @@ public final class FsmMailbox<I> {
     /// Stops the consumer and refuses further items. Items still queued are dropped: after a `Close` nobody is left to step them.
     @Contract
     public void close() {
-        closed = true;
-        wake();
-        Option.option(consumer).filter(thread -> thread != Thread.currentThread()).onPresent(this::awaitStopped);
+        closeWithin(CLOSE_JOIN_MS);
     }
 
-    private void awaitStopped(Thread thread) {
+    /// As [#close()], waiting at most `joinMs` for the consumer to exit; `0` does not wait. A caller that already waited out the consumer's current
+    /// input (design 7, 2b) passes `0`: the consumer is stuck in that same input, and joining it again would double the stop's bound.
+    @Contract
+    public void closeWithin(long joinMs) {
+        closed = true;
+        wake();
+        if (joinMs > 0L) {
+            Option.option(consumer)
+                  .filter(thread -> thread != Thread.currentThread())
+                  .onPresent(thread -> awaitStopped(thread, joinMs));
+        }
+    }
+
+    private void awaitStopped(Thread thread, long joinMs) {
         Result.lift(Causes::fromThrowable,
-                    () -> thread.join(CLOSE_JOIN_MS))
+                    () -> thread.join(joinMs))
               .onFailure(cause -> log.warn("Interrupted while stopping {}: {}",
                                            name,
                                            cause.message()));

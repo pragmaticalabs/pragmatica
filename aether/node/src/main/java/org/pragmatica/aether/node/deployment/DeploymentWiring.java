@@ -17,9 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
-import org.pragmatica.aether.deployment.node.machine.LocalStep;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
-import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
@@ -55,8 +53,9 @@ import io.micrometer.core.instrument.MeterRegistry;
 /// The activation hooks (B2 the quorum edge, B3 the level-heal, B7 the leader toggle) are additionally gated by the [EngineMarkerGuard], under
 /// both engines: a node whose engine disagrees with the cluster's activates neither engine's FSMs during its window (design 8.2).
 ///
-/// **N-2.** `ConfigChanged` (B5) is bound to the node interpreter only when the adapter executes the step it triggers (`NOTIFY_CONFIG`); in this
-/// tracer it does not, so the hook is a counted drop under FSM2.
+/// **N-2, discharged.** `ConfigChanged` (B5) reaches the node interpreter on a FSM2 core: the adapter executes every `LocalStep`, `NOTIFY_CONFIG`
+/// included (its switch is exhaustive, so a step it could not run is a compile error), and the hook is bound without a condition. A worker's
+/// hook stays a counted drop (N-3).
 ///
 /// **N-3.** A worker never gets a [Fsm2System]: [#attach] refuses one, and the worker's FSM2-side bindings are counted drops (workers are unwired
 /// in phase 3).
@@ -85,6 +84,7 @@ public final class DeploymentWiring {
         this.registry = registry;
         this.guard = guard;
         bindings.put("B13.Stop", engineTarget("fsm2:Fsm2System.deactivateCluster"));
+        bindings.put("B13.StopDrain", engineTarget("fsm2:Fsm2System.drainNode"));
         bindings.put("B16.Seams", engineTarget("fsm2:SeamPoller"));
         bindings.put("B20.LineageMint", "marker=" + engine);
         this.routes = Fsm2Routes.fsm2Routes(new Fsm2Routes.Targets(node.self(),
@@ -302,9 +302,9 @@ public final class DeploymentWiring {
         return Unit.unit();
     }
 
-    /// B5: a config applied. Bound to the node interpreter only once the adapter executes `NOTIFY_CONFIG` (N-2); until then a counted drop.
+    /// B5: a config applied. Under FSM2 on a core, the node interpreter's `ConfigChanged` (NI-5); on a worker a counted drop (N-3).
     public Consumer<String> configApplied(Consumer<String> legacy) {
-        return isFsm2() && !worker && SliceRuntimeAdapter.wired(LocalStep.NOTIFY_CONFIG)
+        return isFsm2() && !worker
                ? recorded("B5.ConfigApplied", "fsm2:NodeFsmInput.ConfigChanged", this::configChanged)
                : legacy("B5.ConfigApplied", legacy);
     }
@@ -312,6 +312,34 @@ public final class DeploymentWiring {
     private void configChanged(String key) {
         system.onPresent(fsm2 -> fsm2.nodeInterpreter()
                                      .deliver(new NodeFsmInput.ConfigChanged(key)));
+    }
+
+    /// B12: a node reported itself DRAINING. Under FSM2 on a core, the cluster interpreter's `NodeDraining` (CI-10); on a worker a counted drop (N-3);
+    /// under LEGACY the legacy eviction target, unchanged. The membership FSM's acknowledgement is not part of this hook and runs under both engines.
+    public Consumer<NodeId> drainReport(Consumer<NodeId> legacy) {
+        return isFsm2() && !worker
+               ? recorded("B12.DrainReport", "fsm2:Fsm2System.onNodeDraining", this::nodeDraining)
+               : legacy("B12.DrainReport", legacy);
+    }
+
+    private void nodeDraining(NodeId node) {
+        system.onPresent(fsm2 -> fsm2.onNodeDraining(node));
+    }
+
+    /// B14: the committed snapshot was restored (`onStateRestored`). Under FSM2 on a core, the leader FSM's re-incarnation rule; on a worker a counted
+    /// drop (N-3); under LEGACY nothing is added to what the node registers itself (`refreshCommittedLeader` and the rest), recorded as legacy.
+    public Runnable stateRestored() {
+        return isFsm2() && !worker
+               ? recorded("B14.StateRestored", "fsm2:Fsm2System.onStateRestored", this::restored)
+               : legacy("B14.StateRestored", DeploymentWiring::nothing);
+    }
+
+    private static Unit nothing() {
+        return Unit.unit();
+    }
+
+    private void restored() {
+        system.onPresent(Fsm2System::onStateRestored);
     }
 
     /// A one-time legacy registration (B6, the callbacks the NDM is handed): run now under LEGACY, not run under FSM2. Recorded either way; not
@@ -388,6 +416,16 @@ public final class DeploymentWiring {
     @Contract
     public void stop() {
         system.onPresent(Fsm2System::stop);
+    }
+
+    /// B13, the first half of the node's stop (design 7, 2a and 2b): the PASSIVE edge is routed, the FSM2 node interpreter drains (the `SUSPEND`s of the
+    /// quorum loss run, within a bound), and only then the router is quiesced (design 7's order, W-16 (a): the quiesce never precedes the drain).
+    /// Under LEGACY the drain is a no-op and the order is the one the node always had.
+    @Contract
+    public void leaveQuorum(Runnable routePassive, Runnable quiesce) {
+        routePassive.run();
+        system.onPresent(Fsm2System::drainNode);
+        quiesce.run();
     }
 
     /// The first step of the stop sequence (B13): under LEGACY the legacy deactivation; under FSM2 the cluster interpreter deactivates and closes.

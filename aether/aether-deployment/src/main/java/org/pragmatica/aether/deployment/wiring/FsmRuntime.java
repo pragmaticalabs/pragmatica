@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -30,9 +31,13 @@ import org.slf4j.LoggerFactory;
 /// snapshot (the snapshot already contains it). Both are counted `inputs_total{result=dropped_replay|dropped_revision}`.
 abstract class FsmRuntime<I, K, A> {
     private static final Logger log = LoggerFactory.getLogger(FsmRuntime.class);
-    private static final long CLOSE_WAIT_SECONDS = 5L;
+    /// How long a stop waits for an interpreter (design 7, 2b; the cluster's stop bound): `[guess: 10 s; settled by E-07]`.
+    public static final long STOP_WAIT_MS = 10_000L;
+    /// How long the mailbox is joined once the consumer has reached `Close`: it exits at once, so this only bounds a consumer that stalls after it.
+    private static final long JOIN_MS = 5_000L;
 
     private final String name;
+    private final long stopWaitMs;
     private final FsmMailbox<FsmItem<I, K>> mailbox;
     private final FsmTimers<K, A> timers;
     private final AtomicBoolean shutDown = new AtomicBoolean();
@@ -42,7 +47,12 @@ abstract class FsmRuntime<I, K, A> {
     private long watermark;
 
     FsmRuntime(String threadName, FsmTimers.TimerService clock) {
+        this(threadName, clock, STOP_WAIT_MS);
+    }
+
+    FsmRuntime(String threadName, FsmTimers.TimerService clock, long stopWaitMs) {
         this.name = threadName;
+        this.stopWaitMs = stopWaitMs;
         this.mailbox = FsmMailbox.fsmMailbox(threadName, this::handle, this::shutdown);
         this.timers = FsmTimers.fsmTimers(clock, tick -> offered(mailbox.offer(new FsmItem.Tick<>(tick)), "Timer"));
     }
@@ -79,6 +89,27 @@ abstract class FsmRuntime<I, K, A> {
         return offered(mailbox.offer(new FsmItem.Entry<>(reconcile)), "EnterRequested");
     }
 
+    /// Design 7 (2a): resolves once the consumer has handled everything enqueued before this call and [#drained()] holds. Already resolved when
+    /// the interpreter is closed (nothing is left to wait for; the offer is counted `result=closed`).
+    public Promise<Unit> drain() {
+        var reached = Promise.<Unit> promise();
+
+        return offered(mailbox.offer(new FsmItem.Barrier<>(reached)), "Drain")
+               ? reached.flatMap(_ -> drained())
+               : Promise.unitPromise();
+    }
+
+    /// What must also hold when the consumer has reached a [#drain()] marker. The node interpreter adds that its local ops have run.
+    Promise<Unit> drained() {
+        return Promise.unitPromise();
+    }
+
+    /// Design 4.4, B14: the committed snapshot was restored under this interpreter.
+    @Contract
+    public boolean stateRestored() {
+        return offered(mailbox.offer(new FsmItem.Restored<>()), "StateRestored");
+    }
+
     /// Design 7 (2c): an offer after Close is discarded and counted `inputs_total{result=closed}`.
     private boolean offered(boolean accepted, String input) {
         if (!accepted) {
@@ -100,15 +131,19 @@ abstract class FsmRuntime<I, K, A> {
 
     /// `Close` only (design 7, 2c): cancels every timer and stops the consumer. A write in flight is failed by the engine at its own stop;
     /// its settlement arrives at a closed mailbox and is dropped, because no consumer remains to step it.
+    ///
+    /// **Bounded (2b, W-27).** The wait for the consumer to reach `Close` is `stopWaitMs`, and that is the whole bound: a consumer that did not
+    /// reach it is stuck in an input (an inline `Route` subscriber, P3-Q19), so the mailbox is not joined a second time.
     @Contract
     public void close() {
         if (mailbox.onConsumerThread() || mailbox.retireIfConsumerless()) {
             shutdown();
+            mailbox.close();
         } else {
-            requestShutdown();
+            mailbox.closeWithin(requestShutdown()
+                                ? JOIN_MS
+                                : 0L);
         }
-
-        mailbox.close();
     }
 
     // -- the consumer's side ----------------------------------------------------------------------------------------
@@ -119,6 +154,8 @@ abstract class FsmRuntime<I, K, A> {
             case FsmItem.Kv<I, K> kv -> keyValue(kv);
             case FsmItem.Tick<I, K> tick -> tick(tick.tick());
             case FsmItem.Entry<I, K> entry -> entry(entry.reconcile());
+            case FsmItem.Barrier<I, K> barrier -> barrier.reached().succeed(Unit.unit());
+            case FsmItem.Restored<I, K>_ -> restored();
             case FsmItem.Close<I, K> close -> {
                 shutdown();
                 mailbox.close();
@@ -159,25 +196,26 @@ abstract class FsmRuntime<I, K, A> {
     ///
     /// FER: a wait that is interrupted is logged and `close` goes on to stop the consumer anyway; the guarantee is that `close` always
     /// returns, the cost is that timers may not have been cancelled by the consumer before it stops (the map is dropped with the runtime).
-    private void requestShutdown() {
+    private boolean requestShutdown() {
         if (closeRequested.compareAndSet(false, true)) {
             mailbox.offer(new FsmItem.Close<>(stopped));
         }
 
-        Result.lift(Causes::fromThrowable,
-                    () -> stopped.await(CLOSE_WAIT_SECONDS, TimeUnit.SECONDS))
-              .onFailure(cause -> log.warn("Interrupted while closing {}: {}",
-                                           name,
-                                           cause.message()))
-              .onSuccess(reached -> warnIfExpired(reached));
+        return Result.lift(Causes::fromThrowable,
+                           () -> stopped.await(stopWaitMs, TimeUnit.MILLISECONDS))
+                     .onFailure(cause -> log.warn("Interrupted while closing {}: {}",
+                                                  name,
+                                                  cause.message()))
+                     .onSuccess(reached -> warnIfExpired(reached))
+                     .or(false);
     }
 
     /// The wait is bounded (design 7, 2b): on expiry the consumer is still inside an input; it shuts down as it exits.
     private void warnIfExpired(boolean reached) {
         if (!reached) {
-            log.warn("deployment-fsm-stop-timeout {} did not reach Close within {} s; it shuts down when its current input returns",
+            log.warn("deployment-fsm-stop-timeout {} did not reach Close within {} ms; it shuts down when its current input returns",
                      name,
-                     CLOSE_WAIT_SECONDS);
+                     stopWaitMs);
         }
     }
 
@@ -210,6 +248,13 @@ abstract class FsmRuntime<I, K, A> {
     abstract Unit entry(boolean reconcile);
     /// A timer the FSM armed fired and is still the live one.
     abstract Unit fired(K id, A attachment);
+
+    /// The committed snapshot was restored (B14). The node FSM needs nothing: a restore is bracketed by the genuine quorum edges, and its replay
+    /// burst is dropped by the core rule (design 4.4).
+    Unit restored() {
+        return count("StateRestored", "ignored");
+    }
+
     /// Counts an input the interpreter dropped before the FSM saw it: `inputs_total{input, result}`.
     abstract Unit count(String input, String result);
     /// The FSM is being closed; its pure state needs no further step unless the subclass says so.

@@ -54,13 +54,18 @@ public final class ClusterFsmInterpreter extends FsmRuntime<ClusterInput, TimerI
     private final Parts parts;
     private volatile ClusterState state = ClusterState.initial();
 
-    private ClusterFsmInterpreter(Parts parts) {
-        super("deploy-fsm-cluster", parts.clock());
+    private ClusterFsmInterpreter(Parts parts, long stopWaitMs) {
+        super("deploy-fsm-cluster", parts.clock(), stopWaitMs);
         this.parts = parts;
     }
 
     public static ClusterFsmInterpreter clusterFsmInterpreter(Parts parts) {
-        return new ClusterFsmInterpreter(parts);
+        return new ClusterFsmInterpreter(parts, STOP_WAIT_MS);
+    }
+
+    /// As above, with the wait a `close()` gives the consumer (design 7, the cluster's stop bound) set explicitly.
+    public static ClusterFsmInterpreter clusterFsmInterpreter(Parts parts, long stopWaitMs) {
+        return new ClusterFsmInterpreter(parts, stopWaitMs);
     }
 
     /// The state after the last step: read-only, for observers.
@@ -106,6 +111,24 @@ public final class ClusterFsmInterpreter extends FsmRuntime<ClusterInput, TimerI
         return state instanceof ClusterState.Active || state instanceof ClusterState.Rebuilding
                ? step(new ClusterInput.Deactivate())
                : Unit.unit();
+    }
+
+    /// B14, design 4.4: the committed snapshot was restored. A restore implies PASSIVE first, so the leader's FSM is Dormant and nothing happens;
+    /// if it is Active the FSM is re-incarnated, `Deactivate` then `Activate` in this one dispatch (a fresh incarnation and a fresh snapshot, no
+    /// slice outage, and no Dormant gap in which an input queued behind this one would be dropped). `[unverified: that PASSIVE always reaches
+    /// LeaderChange(none) first; W-25 asserts the re-incarnation never fires in E-06]`, which is why it is counted.
+    @Override
+    Unit restored() {
+        return state instanceof ClusterState.Active || state instanceof ClusterState.Rebuilding
+               ? reincarnated()
+               : count("StateRestored", "skipped_dormant");
+    }
+
+    private Unit reincarnated() {
+        count("StateRestored", "reincarnated");
+        step(new ClusterInput.Deactivate());
+
+        return step(new ClusterInput.Activate());
     }
 
     // -- effects -----------------------------------------------------------------------------------------------------

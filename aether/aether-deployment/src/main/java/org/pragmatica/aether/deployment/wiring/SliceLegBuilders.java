@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
@@ -31,6 +32,7 @@ import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
@@ -74,9 +76,13 @@ import org.slf4j.LoggerFactory;
 /// - topic subscriptions: `doPublishTopicSubscriptions` and `buildTopicSubscriptionPutCommand`;
 /// - stream registrations: `doPublishStreamSubscriptions`, `readStreamSubscriptions`, `resolveStreamName`, the #1935 warnings;
 /// - scheduled tasks: `doPublishScheduledTasks` and `buildValidatedScheduledTaskPutCommand`;
-/// - stream references: `buildStreamRefCommands` (ACQUIRE).
+/// - stream references: `buildStreamRefCommands` (ACQUIRE, and RELEASE for the teardown).
 ///
-/// Teardown builders (`PREPARE_TEARDOWN`) are not part of this tracer: the executor fails that step loudly.
+/// **Teardown** ([#teardown], the `PREPARE_TEARDOWN` step) is the same copy in the other direction: the legacy `doUnpublish*` builders and the
+/// RELEASE half of `buildStreamRefCommands`. It builds every remove and release the slice's manifests declare; it does not decide which of them
+/// go. Whether this node was the last replica of the artifact, which keeps the cluster-scoped stream registrations and scheduled tasks while
+/// another replica hosts them, is the node FSM's rule (R-3.4.5, `Batches.keepsOnTeardown`), applied when it assembles the batch; legacy applied it
+/// here (`artifactHostedElsewhere`) because it had no model to ask.
 final class SliceLegBuilders {
     private static final Logger log = LoggerFactory.getLogger(SliceLegBuilders.class);
     private static final String MANIFEST_DIR = "META-INF/slice/";
@@ -151,6 +157,16 @@ final class SliceLegBuilders {
                : acquireCommands(artifact, declarations);
     }
 
+    /// The commands of the teardown batch (N13, N16): this node's topic-subscription rows, the stream registrations, the stream reference
+    /// counts to release, and the scheduled tasks with their pause keys, in the legacy chain's order. Every one is a remove or a release; the
+    /// last-replica filter on the cluster-scoped ones is the FSM's (see the class comment).
+    List<LegCommand> teardown(Artifact artifact, Slice slice) {
+        return concat(topicRemovals(artifact, slice),
+                      streamRemovals(artifact, slice),
+                      referenceReleases(artifact, slice),
+                      scheduledRemovals(artifact, slice));
+    }
+
     ConfigUpdates configUpdates(Artifact artifact, Slice slice) {
         var factory = new ArrayList<String>();
         var sections = new ArrayList<String>();
@@ -217,6 +233,22 @@ final class SliceLegBuilders {
                                    TopicSubscriptionValue.topicSubscriptionValue(sources.self()));
     }
 
+    private List<LegCommand> topicRemovals(Artifact artifact, Slice slice) {
+        return subscriptionEntries(artifact, slice).stream()
+                                  .map(entry -> topicRemove(artifact, entry))
+                                  .map(command -> LegCommand.legCommand(LegKind.TOPIC_SUBSCRIPTION, command))
+                                  .toList();
+    }
+
+    /// #1448: scoped to this node, so an unload removes the row this node published and leaves every other instance's row, and therefore the
+    /// durable group's declaration, standing. The key must match [#topicPut] exactly or the remove silently removes nothing.
+    private KVCommand<AetherKey> topicRemove(Artifact artifact, SubscriptionEntry entry) {
+        return new KVCommand.Remove<>(TopicSubscriptionKey.topicSubscriptionKey(entry.address(),
+                                                                                artifact,
+                                                                                entry.methodName(),
+                                                                                sources.self()));
+    }
+
     private List<SubscriptionEntry> subscriptionEntries(Artifact artifact, Slice slice) {
         var result = new ArrayList<SubscriptionEntry>();
 
@@ -273,6 +305,46 @@ final class SliceLegBuilders {
                                                                                    consumerGroup,
                                                                                    entry.batchMode(),
                                                                                    entry.eventType()));
+    }
+
+    private List<LegCommand> streamRemovals(Artifact artifact, Slice slice) {
+        return streamEntriesOnRemoval(artifact, slice).stream()
+                                     .map(entry -> streamRemove(artifact, entry))
+                                     .map(command -> LegCommand.legCommand(LegKind.STREAM_REGISTRATION, command))
+                                     .toList();
+    }
+
+    private KVCommand<AetherKey> streamRemove(Artifact artifact, StreamEntry entry) {
+        return new KVCommand.Remove<>(StreamRegistrationKey.streamRegistrationKey(entry.streamName(),
+                                                                                  entry.configSection(),
+                                                                                  artifact,
+                                                                                  entry.methodName()));
+    }
+
+    /// The removing read: a consumer that cannot be resolved has nothing registered to remove and nothing for an operator to do, so raising
+    /// "could NOT be registered" here would be a false CRITICAL on every teardown of the slice. Its mark is cleared instead, so that the consumer
+    /// registering later, after its slice was removed in between, raises nothing (legacy `logUnresolvedOnRemoval`).
+    private List<StreamEntry> streamEntriesOnRemoval(Artifact artifact, Slice slice) {
+        var result = new ArrayList<StreamEntry>();
+
+        for (var entry : reactiveBindings(artifact, slice)) {
+            if ("stream".equals(entry.category())) {
+                streamEntry(artifact, entry).onFailure(cause -> unresolvedOnRemoval(artifact, entry, cause))
+                           .option()
+                           .onPresent(result::add);
+            }
+        }
+
+        return result;
+    }
+
+    private void unresolvedOnRemoval(Artifact artifact, ReactiveEntry entry, Cause cause) {
+        unregisteredConsumers.remove(consumerSubject(artifact, entry));
+        log.debug("Declarative stream consumer {}.{} on section [{}] was never resolved, nothing to unpublish: {}",
+                  artifact,
+                  entry.method(),
+                  entry.config(),
+                  cause.message());
     }
 
     /// The registering read: a consumer that cannot be resolved here is one that will receive nothing, so it is raised (#1935). The slice
@@ -414,6 +486,21 @@ final class SliceLegBuilders {
         return result;
     }
 
+    private List<LegCommand> scheduledRemovals(Artifact artifact, Slice slice) {
+        return scheduledEntries(artifact, slice).stream()
+                               .flatMap(entry -> scheduledRemove(artifact, entry))
+                               .map(command -> LegCommand.legCommand(LegKind.SCHEDULED_TASK, command))
+                               .toList();
+    }
+
+    /// The task key and, with it, its operator-pause key (B-145): the pause goes when the task itself goes, so a later redeploy starts unpaused.
+    private static Stream<KVCommand<AetherKey>> scheduledRemove(Artifact artifact, ScheduledEntry entry) {
+        var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
+
+        return Stream.<KVCommand<AetherKey>> of(new KVCommand.Remove<>(key),
+                                                new KVCommand.Remove<>(ScheduledTaskPauseKey.scheduledTaskPauseKey(key)));
+    }
+
     private Option<ScheduleConfig> scheduleConfig(Artifact artifact, String configSection) {
         return configService(artifact).flatMap(service -> service.config(configSection, ScheduleConfig.class)
                                                                  .onFailure(cause -> log.warn("Slice {} schedule config binding failed for section {}: {}",
@@ -439,6 +526,36 @@ final class SliceLegBuilders {
             bindings.flatMap(found -> found.addressFor(declaration.alias()))
                     .onPresent(address -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF,
                                                                              registry.acquireCommand(blueprintTemplate(address)))));
+        }
+
+        return List.copyOf(commands);
+    }
+
+    private List<LegCommand> referenceReleases(Artifact artifact, Slice slice) {
+        var declarations = streamRoleDeclarations(artifact, slice);
+
+        return declarations.isEmpty()
+               ? List.of()
+               : releaseCommands(artifact, declarations);
+    }
+
+    /// The mirror of [#acquireCommands]: one release per declared role whose address the blueprint's bindings resolve and whose registry entry
+    /// exists (a release of an entry nobody acquired is a no-op, so nothing is built for it).
+    private List<LegCommand> releaseCommands(Artifact artifact, List<StreamRole> declarations) {
+        var bindings = owningBlueprintId(artifact).flatMap(this::bindingsFor);
+
+        if (bindings.isEmpty()) {
+            return List.of();
+        }
+
+        var registry = KvBackedStreamRegistry.kvBackedStreamRegistry(sources.cluster().get(),
+                                                                     sources.kvStore());
+        var commands = new ArrayList<LegCommand>();
+
+        for (var declaration : declarations) {
+            bindings.flatMap(found -> found.addressFor(declaration.alias()))
+                    .flatMap(registry::releaseCommand)
+                    .onPresent(command -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF, command)));
         }
 
         return List.copyOf(commands);

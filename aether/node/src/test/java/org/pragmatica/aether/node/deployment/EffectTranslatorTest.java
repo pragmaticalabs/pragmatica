@@ -279,6 +279,28 @@ class EffectTranslatorTest {
         assertThat(registry.counter("aether_deployment_fsm_warnings_unmapped_total", "code", "stray-instance").count()).isZero();
     }
 
+    /// N-5: the backlog sampler's alarm is the catalogued warning `deployment-fsm-backlog` on the subject `<node>/<fsm>`, naming the depth and the threshold.
+    @Test
+    void theBacklogAlarm_raised_isTheCataloguedWarning_onTheNodeAndFsmSubject() {
+        translator.backlogAlarm().raised("node", 10_001);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+        assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG);
+        assertThat(warnings.getFirst().subject()).isEqualTo("core-1/node");
+        assertThat(warnings.getFirst().message()).contains("node FSM").contains("10001").contains("10000");
+        assertThat(registry.counter("aether_deployment_fsm_warnings_unmapped_total", "code", "deployment-fsm-backlog").count()).isZero();
+    }
+
+    @Test
+    void theBacklogAlarm_cleared_isTheRecovery_onTheSameSubject() {
+        translator.backlogAlarm().cleared("cluster", 12);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+        assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED);
+        assertThat(warnings.getFirst().subject()).isEqualTo("core-1/cluster");
+        assertThat(warnings.getFirst().message()).contains("cluster FSM").contains("12").contains("1000");
+    }
+
     // -- metrics (W-18) ---------------------------------------------------------------------------------------------------
     @Test
     void aNodeMetric_isAMicrometerCounterOfThatNameAndTags() {

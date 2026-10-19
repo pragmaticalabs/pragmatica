@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.deployment;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -13,6 +14,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.AbsenceBounds;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterFsm;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.aether.deployment.cluster.fsm2.Settings;
 import org.pragmatica.aether.deployment.cluster.fsm2.Timing;
@@ -21,6 +23,7 @@ import org.pragmatica.aether.deployment.node.machine.NodeFsmConfig;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmTimings;
+import org.pragmatica.aether.deployment.wiring.BacklogSampler;
 import org.pragmatica.aether.deployment.wiring.ClusterFsmInterpreter;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
 import org.pragmatica.aether.deployment.wiring.KvSnapshotter;
@@ -40,6 +43,7 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.swim.SwimConfig;
 
@@ -52,8 +56,10 @@ import org.slf4j.LoggerFactory;
 /// runtime, the translator into the node's router, warning sink and registry, the seam poller and the membership inputs.
 ///
 /// It owns the **inbound routes** the two FSMs consume (B2 the quorum edge, B3 the activation level-heal, B7 the leader toggle, B9 the core
-/// membership arms), each gated by the [EngineMarkerGuard] so that a node whose engine disagrees with the cluster's activates nothing; and the
-/// **stop**: the cluster interpreter deactivates and closes, the node interpreter closes (`Close` only, design 7).
+/// membership arms, B12 the drain report, B14 the state restore), each gated by the [EngineMarkerGuard] where it activates something, so that a
+/// node whose engine disagrees with the cluster's activates nothing; and the **stop** (design 7): [#drainNode] (2a, 2b: the `SUSPEND`s of the
+/// quorum loss run, within a bound), then the cluster interpreter deactivates and closes and the node interpreter closes (2c). The mailbox
+/// depths are watched by a [BacklogSampler] (N-5).
 ///
 /// **No worker.** A worker never gets a `Fsm2System` (N-3): the worker paths are unwired in phase 3, and an interpreter handed to a node that
 /// has no revision to filter by would apply the wrong replay rule.
@@ -85,6 +91,8 @@ public final class Fsm2System {
     private final NodeFsmInterpreter node;
     private final ClusterFsmInterpreter cluster;
     private final SeamPoller seams;
+    private final BacklogSampler backlog;
+    private final long stopWaitMs;
     private final MembershipInputs membership;
     private final EffectTranslator translator;
     private final EngineMarkerGuard guard;
@@ -97,6 +105,8 @@ public final class Fsm2System {
     private Fsm2System(NodeFsmInterpreter node,
                        ClusterFsmInterpreter cluster,
                        SeamPoller seams,
+                       BacklogSampler backlog,
+                       long stopWaitMs,
                        MembershipInputs membership,
                        EffectTranslator translator,
                        EngineMarkerGuard guard,
@@ -110,6 +120,8 @@ public final class Fsm2System {
         this.node = node;
         this.cluster = cluster;
         this.seams = seams;
+        this.backlog = backlog;
+        this.stopWaitMs = stopWaitMs;
         this.membership = membership;
         this.translator = translator;
         this.guard = guard;
@@ -176,6 +188,11 @@ public final class Fsm2System {
 
     // -- assembly ----------------------------------------------------------------------------------------------------
     public static Fsm2System fsm2System(Collaborators c) {
+        return fsm2System(c, NodeFsmInterpreter.STOP_WAIT_MS);
+    }
+
+    /// As above, with the bound a stop gives each interpreter (design 7, 2b; `[guess: 10 s, settled by E-07]`) set explicitly.
+    public static Fsm2System fsm2System(Collaborators c, long stopWaitMs) {
         var translator = EffectTranslator.effectTranslator(c.translator());
         var reader = Submitter.CommittedReader.committedReader(c.store());
         var submitter = Submitter.submitter(c.cluster(), reader);
@@ -196,7 +213,8 @@ public final class Fsm2System {
                                                                                       c.clock(),
                                                                                       translator.nodeSink(),
                                                                                       c.selfReady(),
-                                                                                      translator.stepObserver()));
+                                                                                      translator.stepObserver()),
+                                                         stopWaitMs);
         var poller = new SeamPollerHolder();
         var settings = clusterSettings(c.config(), c.process(), c.swim(), c.splitTimeout());
         var fsm = ClusterFsm.clusterFsm(settings, System::currentTimeMillis, System::nanoTime);
@@ -210,17 +228,25 @@ public final class Fsm2System {
                                                                                                                       .get()),
                                                                                                   c.clock(),
                                                                                                   translator.clusterSink(),
-                                                                                                  translator.stepObserver()));
+                                                                                                  translator.stepObserver()),
+                                                                  stopWaitMs);
         var seams = SeamPoller.seamPoller(c.seamSources(), pollerSink(cluster), c.clock());
 
         poller.bind(seams);
         translator.bindMailboxDepth("node", node::mailboxDepth);
         translator.bindMailboxDepth("cluster", cluster::mailboxDepth);
+        var backlog = BacklogSampler.backlogSampler(List.of(BacklogSampler.Watched.watched("node", node::mailboxDepth),
+                                                            BacklogSampler.Watched.watched("cluster",
+                                                                                           cluster::mailboxDepth)),
+                                                    translator.backlogAlarm(),
+                                                    c.clock());
         var membership = MembershipInputs.membershipInputs(cluster::deliver, c.admissions(), seams);
 
         return new Fsm2System(node,
                               cluster,
                               seams,
+                              backlog,
+                              stopWaitMs,
                               membership,
                               translator,
                               c.guard(),
@@ -291,18 +317,34 @@ public final class Fsm2System {
     }
 
     // -- lifecycle ---------------------------------------------------------------------------------------------------
-    /// Starts both consumers and the seam cadence.
+    /// Starts both consumers, the seam cadence and the backlog sampler.
     @Contract
     public void start() {
         node.start();
         cluster.start();
         seams.start();
+        backlog.start();
     }
 
-    /// Stop ordering (design 7, 2c): the cluster interpreter deactivates and closes, then the node interpreter closes; the local-op executor
-    /// stops with the node interpreter. Each close waits at most its bound and says so if it expires.
+    /// Design 7, 2a and 2b: the node's `SUSPEND` drain, run between the PASSIVE edge and the router quiesce. The node interpreter resolves a marker
+    /// queued behind the quorum loss, so the `SUSPEND`s it queued are known, and then waits for the local-op executor to run them (and anything
+    /// a stale chain left to undo). The wait is bounded; on expiry the stop goes on, WARN `deployment-fsm-stop-timeout`: a slice that is still
+    /// serving when the node stops is closed with it, which is what a stop without a drain would have done to every slice.
+    @Contract
+    @TerminalOperation
+    public void drainNode() {
+        node.drain()
+            .await(TimeSpan.timeSpan(stopWaitMs).millis())
+            .onFailure(cause -> log.warn("deployment-fsm-stop-timeout node did not drain within {} ms; the stop goes on: {}",
+                                         stopWaitMs,
+                                         cause.message()));
+    }
+
+    /// Stop ordering (design 7, 2c): the backlog sampler and the seam cadence stop, the cluster interpreter deactivates and closes, then the node
+    /// interpreter closes; the local-op executor stops with the node interpreter. Each close waits at most its bound and says so if it expires.
     @Contract
     public void stop() {
+        backlog.stop();
         seams.stop();
         cluster.close();
         node.close();
@@ -361,6 +403,22 @@ public final class Fsm2System {
         if (consensusActive.getAsBoolean()) {
             guard.whenOpen(NODE_ENTRY_HEAL, () -> node.requestEntry(true));
         }
+    }
+
+    // -- B12: the drain report ----------------------------------------------------------------------------------------
+    /// CI-10: a node reported itself DRAINING (a metrics pong). The cluster FSM acts on it only while it is the leader's, Dormant it drops the input.
+    @Contract
+    public void onNodeDraining(NodeId draining) {
+        cluster.deliver(new ClusterInput.NodeDraining(draining));
+    }
+
+    // -- B14: the state restore ---------------------------------------------------------------------------------------
+    /// The committed snapshot was restored under this node (`onStateRestored`). A restore is bracketed by the genuine quorum edges (PASSIVE first), so
+    /// the node FSM needs nothing and its replay burst is dropped by the core rule; only the leader's FSM is judged, and only if it is Active, which
+    /// should be impossible (design 4.4, W-25).
+    @Contract
+    public void onStateRestored() {
+        cluster.stateRestored();
     }
 
     // -- B7: the leader toggle ----------------------------------------------------------------------------------------

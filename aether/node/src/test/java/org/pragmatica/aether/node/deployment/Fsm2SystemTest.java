@@ -7,6 +7,8 @@ package org.pragmatica.aether.node.deployment;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Nested;
@@ -16,7 +18,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
-import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
+import org.pragmatica.aether.deployment.wiring.BacklogSampler;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
@@ -28,6 +30,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -141,10 +144,10 @@ class Fsm2SystemTest {
             }
         }
 
-        /// N-2 (W-20): the config hook reaches the node interpreter only if the adapter runs the step it triggers. Today it does not, so it is a
-        /// counted drop; this ties the two so that wiring `NOTIFY_CONFIG` without binding the hook (or the reverse) is red.
+        /// W-20 / MT-14d (B5): a committed config change reaches the node interpreter as `ConfigChanged`, and never the NDM. The adapter now runs
+        /// `NOTIFY_CONFIG` (N-2 is discharged: the hook was a counted drop only while that step was unwired), so the hook is bound.
         @Test
-        void theConfigHook_isBoundIffNotifyConfigIsWired() {
+        void theConfigHook_isBoundToTheNodeInterpreter_underFsm2() {
             try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
                 var legacy = new AtomicInteger();
                 var hook = harness.wiring.configApplied(_ -> legacy.incrementAndGet());
@@ -152,10 +155,23 @@ class Fsm2SystemTest {
                 enterQuorum(harness);
                 hook.accept("orders.banner");
 
+                harness.awaitThat(() -> harness.count("ConfigChanged", "applied", "node") == 1.0);
                 assertThat(legacy).as("never the NDM under FSM2").hasValue(0);
-                assertThat(SliceRuntimeAdapter.wired(LocalStep.NOTIFY_CONFIG)).as("the tripwire: wiring NOTIFY_CONFIG means binding the hook").isFalse();
+                assertThat(harness.registry.find("aether_deployment_fsm2_dropped_total").tags("point", "B5.ConfigApplied").counters()).as("not a drop").isEmpty();
+                assertThat(harness.wiring.recorded()).contains("B5.ConfigApplied -> fsm2:NodeFsmInput.ConfigChanged");
+            }
+        }
+
+        /// N-3: a worker has no node interpreter, so its config hook stays a counted drop under FSM2.
+        @Test
+        void theConfigHook_ofAWorker_isACountedDrop_underFsm2() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                var legacy = new AtomicInteger();
+
+                harness.wiring.configApplied(_ -> legacy.incrementAndGet()).accept("orders.banner");
+
+                assertThat(legacy).hasValue(0);
                 assertThat(harness.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B5.ConfigApplied").count()).isEqualTo(1.0);
-                assertThat(harness.count("ConfigChanged", "applied", "node")).isZero();
             }
         }
     }
@@ -312,6 +328,316 @@ class Fsm2SystemTest {
 
                 assertThat(legacy).hasValue(1);
                 assertThat(harness.system.isPresent()).isFalse();
+            }
+        }
+    }
+
+    // -- design 7: the stop drain (B13, W-16 (a), MT-15) -----------------------------------------------------------------------
+    @Nested
+    class StopDrain {
+        /// W-16 (a): the PASSIVE edge is routed, the node drains (its quorum loss has been stepped, so its `SUSPEND`s are queued and run), and only then
+        /// is the router quiesced. MT-15 skips the drain: the quiesce then runs while the node is still Active.
+        @Test
+        void leaveQuorum_routesPassive_thenDrainsTheNode_thenQuiesces() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                var order = new CopyOnWriteArrayList<String>();
+
+                enterQuorum(harness);
+                harness.wiring.leaveQuorum(() -> {
+                                               harness.router.route(ClusterStateNotification.passive());
+                                               order.add("passive");
+                                           },
+                                           () -> order.add(activeNode(harness)
+                                                           ? "quiesce-while-active"
+                                                           : "quiesce"));
+
+                assertThat(order).containsExactly("passive", "quiesce");
+            }
+        }
+
+        @Test
+        void leaveQuorum_underLegacy_routesPassiveThenQuiesces_withNothingToDrain() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                var order = new CopyOnWriteArrayList<String>();
+
+                harness.wiring.leaveQuorum(() -> order.add("passive"), () -> order.add("quiesce"));
+
+                assertThat(order).containsExactly("passive", "quiesce");
+            }
+        }
+
+        /// 2b: a node consumer stuck in an input does not hold the stop past the bound; the stop says so and goes on.
+        @Test
+        void drainNode_ofAConsumerStuckInAnInput_givesUpAtTheBound_andWarns() throws InterruptedException {
+            var release = new CountDownLatch(1);
+
+            try (var logs = new LogCapture(Fsm2System.class.getName());
+                 var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withStopWait(300).assembled()) {
+                harness.selfReadyHook = () -> awaitRelease(release);
+                harness.router.route(ClusterStateNotification.active());
+                harness.awaitThat(() -> harness.selfReady.get() >= 1);
+                var started = System.nanoTime();
+
+                harness.system.unwrap().drainNode();
+
+                assertThat(Duration.ofNanos(System.nanoTime() - started)).as("bounded by the stop wait, not by the stuck input").isLessThan(Duration.ofSeconds(5));
+                assertThat(logs.on(Fsm2System.class.getName())).anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout")
+                                                                                                           .contains("node did not drain within 300 ms"));
+                release.countDown();
+            } finally {
+                release.countDown();
+            }
+        }
+
+        /// The bound the system gives a stop by default is the design's ten seconds: a stop with a stuck consumer is still waiting after a second, and
+        /// is released the moment the consumer is.
+        @Test
+        void drainNode_withTheDefaultBound_keepsWaitingForAStuckConsumer_andEndsWhenItIsFreed() throws InterruptedException {
+            var release = new CountDownLatch(1);
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withDefaultStopWait().assembled()) {
+                harness.selfReadyHook = () -> awaitRelease(release);
+                harness.router.route(ClusterStateNotification.active());
+                harness.awaitThat(() -> harness.selfReady.get() >= 1);
+
+                var stopper = Thread.ofPlatform().start(harness.system.unwrap()::drainNode);
+
+                await().during(Duration.ofMillis(1_500)).atMost(Duration.ofSeconds(5)).until(stopper::isAlive);
+                release.countDown();
+                stopper.join(5_000);
+
+                assertThat(stopper.isAlive()).as("freed consumer, finished drain").isFalse();
+            } finally {
+                release.countDown();
+            }
+        }
+
+        @Test
+        void drainNode_ofAnIdleNode_returnsWithoutAWarning() {
+            try (var logs = new LogCapture(Fsm2System.class.getName());
+                 var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withStopWait(300).assembled()) {
+                enterQuorum(harness);
+
+                harness.system.unwrap().drainNode();
+
+                assertThat(logs.on(Fsm2System.class.getName())).noneSatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout"));
+            }
+        }
+
+        private void awaitRelease(CountDownLatch release) {
+            try {
+                release.await(20, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    // -- N-5: the backlog sampler (design 3.1) --------------------------------------------------------------------------------
+    @Nested
+    class Backlog {
+        private void fillAboveTheRaiseThreshold(Fsm2System system) {
+            for (var i = 0; i <= BacklogSampler.RAISE_ABOVE; i++) {
+                system.nodeInterpreter().deliver(new NodeFsmInput.TargetRemove(ORDERS.base()));
+            }
+        }
+
+        private void awaitRelease(CountDownLatch release) {
+            try {
+                release.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private boolean has(Fsm2Harness harness, OperatorWarningCode code) {
+            synchronized (harness.warnings) {
+                return harness.warnings.stream().anyMatch(warning -> warning.code() == code);
+            }
+        }
+
+        /// A consumer that cannot keep up: past 10,000 queued inputs the sampler raises `deployment-fsm-backlog` for the node FSM (and none for the
+        /// cluster FSM), and once the consumer has caught up, below 1,000, the recovery is raised on the same subject.
+        @Test
+        void aMailboxAboveTenThousand_raisesTheBacklogWarning_andBelowOneThousandClearsIt() {
+            var clock = new ManualClock();
+            var release = new CountDownLatch(1);
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withClock(clock).assembled()) {
+                harness.selfReadyHook = () -> awaitRelease(release);
+                harness.router.route(ClusterStateNotification.active());
+                harness.awaitThat(() -> harness.selfReady.get() >= 1);
+                var system = harness.system.unwrap();
+
+                fillAboveTheRaiseThreshold(system);
+                clock.advance(BacklogSampler.INTERVAL_MS);
+
+                await().atMost(Duration.ofSeconds(2)).until(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG));
+                assertThat(harness.warnings).filteredOn(warning -> warning.code() == OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG)
+                                            .extracting(warning -> warning.subject())
+                                            .containsExactly("core-1/node");
+
+                release.countDown();
+                harness.awaitThat(() -> system.nodeInterpreter().mailboxDepth() < BacklogSampler.CLEAR_BELOW);
+                clock.advance(BacklogSampler.INTERVAL_MS);
+
+                await().atMost(Duration.ofSeconds(2)).until(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED));
+            } finally {
+                release.countDown();
+            }
+        }
+
+        /// The cluster FSM's mailbox is watched too, under its own subject: held at `Rebuild` (the seams are sampled on its consumer), it backs up
+        /// while the node FSM, idle, does not.
+        @Test
+        void aClusterMailboxAboveTenThousand_raisesTheBacklogWarning_onTheClusterSubjectOnly() {
+            var clock = new ManualClock();
+            var release = new CountDownLatch(1);
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withClock(clock).assembled()) {
+                harness.countedCoresHook = () -> holdTheClusterConsumer(release);
+                harness.commitLeader();
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                harness.awaitThat(() -> harness.system.unwrap().clusterInterpreter().mailboxDepth() == 0 && harness.samples.get() >= 2);
+                var system = harness.system.unwrap();
+
+                for (var i = 0; i <= BacklogSampler.RAISE_ABOVE; i++) {
+                    system.clusterInterpreter().deliver(new ClusterInput.Flush());
+                }
+
+                clock.advance(BacklogSampler.INTERVAL_MS);
+
+                await().atMost(Duration.ofSeconds(2)).until(() -> has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG));
+                assertThat(harness.warnings).filteredOn(warning -> warning.code() == OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG)
+                                            .extracting(warning -> warning.subject())
+                                            .containsExactly("core-1/cluster");
+            } finally {
+                release.countDown();
+            }
+        }
+
+        private void holdTheClusterConsumer(CountDownLatch release) {
+            if (Thread.currentThread().getName().equals("deploy-fsm-cluster")) {
+                awaitRelease(release);
+            }
+        }
+
+        /// The sampler stops with the system: a tick armed before the stop never samples after it, even over a mailbox that is still full.
+        @Test
+        void stop_cancelsTheBacklogSampler() {
+            var clock = new ManualClock();
+            var release = new CountDownLatch(1);
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withClock(clock).withStopWait(200).assembled()) {
+                harness.selfReadyHook = () -> awaitRelease(release);
+                harness.router.route(ClusterStateNotification.active());
+                harness.awaitThat(() -> harness.selfReady.get() >= 1);
+                var system = harness.system.unwrap();
+
+                fillAboveTheRaiseThreshold(system);
+                system.stop();
+                clock.advance(BacklogSampler.INTERVAL_MS * 3);
+
+                await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(5)).until(() -> !has(harness, OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG));
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    // -- B12, B14: the drain report and the state restore (design 4.4, 8.3) ----------------------------------------------------
+    @Nested
+    class DrainReportAndRestore {
+        private void activateLeader(Fsm2Harness harness) {
+            harness.commitLeader();
+            harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+            harness.awaitThat(() -> stepped(harness, "cluster", "Rebuild") == 1);
+        }
+
+        /// B12 / MT-14k: under FSM2 a drain report is the cluster FSM's `NodeDraining`, and the legacy eviction target never runs.
+        @Test
+        void aDrainReport_underFsm2_reachesTheClusterFsm_notTheLegacyTarget() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                var legacy = new CopyOnWriteArrayList<NodeId>();
+
+                activateLeader(harness);
+                harness.wiring.drainReport(legacy::add).accept(Fsm2Harness.PEER);
+
+                harness.awaitThat(() -> stepped(harness, "cluster", "NodeDraining") == 1);
+                assertThat(legacy).as("MT-14k: the legacy target is not bound under FSM2").isEmpty();
+                assertThat(harness.wiring.recorded()).contains("B12.DrainReport -> fsm2:Fsm2System.onNodeDraining");
+            }
+        }
+
+        @Test
+        void aDrainReport_underLegacy_runsTheLegacyTarget_andNoClusterFsmExists() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                var legacy = new CopyOnWriteArrayList<NodeId>();
+
+                harness.wiring.drainReport(legacy::add).accept(Fsm2Harness.PEER);
+
+                assertThat(legacy).containsExactly(Fsm2Harness.PEER);
+                assertThat(harness.system.isPresent()).isFalse();
+                assertThat(harness.wiring.recorded()).contains("B12.DrainReport -> legacy");
+            }
+        }
+
+        /// N-3: a worker has no cluster FSM, so its drain report is a counted drop under FSM2.
+        @Test
+        void aDrainReport_ofAWorker_isACountedDrop_underFsm2() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                var legacy = new CopyOnWriteArrayList<NodeId>();
+
+                harness.wiring.drainReport(legacy::add).accept(Fsm2Harness.PEER);
+
+                assertThat(legacy).isEmpty();
+                assertThat(harness.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B12.DrainReport").count()).isEqualTo(1.0);
+            }
+        }
+
+        /// B14 / MT-14m / W-25: a restore under an Active leader's FSM re-incarnates it (the rule that is expected never to fire); the hook is the
+        /// FSM2 one, not a legacy no-op.
+        @Test
+        void aStateRestore_underAnActiveLeaderFsm_reincarnatesIt() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                activateLeader(harness);
+
+                harness.wiring.stateRestored().run();
+
+                harness.awaitThat(() -> harness.count("StateRestored", "reincarnated", "cluster") == 1.0);
+                harness.awaitThat(() -> stepped(harness, "cluster", "Deactivate") == 1);
+                assertThat(harness.wiring.recorded()).contains("B14.StateRestored -> fsm2:Fsm2System.onStateRestored");
+            }
+        }
+
+        /// A restore implies PASSIVE first, so the leader's FSM is ordinarily Dormant, and nothing is made up (W-25: no synthetic pair).
+        @Test
+        void aStateRestore_underADormantLeaderFsm_doesNothing() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                harness.wiring.stateRestored().run();
+
+                harness.awaitThat(() -> harness.count("StateRestored", "skipped_dormant", "cluster") == 1.0);
+                assertThat(stepped(harness, "cluster", "Rebuild")).isZero();
+                assertThat(stepped(harness, "cluster", "Deactivate")).isZero();
+            }
+        }
+
+        @Test
+        void aStateRestore_underLegacy_addsNothing() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                harness.wiring.stateRestored().run();
+
+                assertThat(harness.wiring.recorded()).contains("B14.StateRestored -> legacy");
+                assertThat(harness.system.isPresent()).isFalse();
+            }
+        }
+
+        @Test
+        void aStateRestore_ofAWorker_isACountedDrop_underFsm2() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, true).assembled()) {
+                harness.wiring.stateRestored().run();
+
+                assertThat(harness.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B14.StateRestored").count()).isEqualTo(1.0);
             }
         }
     }

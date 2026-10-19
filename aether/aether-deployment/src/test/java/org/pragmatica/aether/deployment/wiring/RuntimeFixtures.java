@@ -115,6 +115,10 @@ final class RuntimeFixtures {
         final Set<Artifact> failedEntries = Collections.synchronizedSet(new java.util.HashSet<>());
         volatile Cause loadFailure;
         volatile Cause activateFailure;
+        volatile Cause deactivateFailure;
+        volatile Cause unloadFailure;
+        /// One list shared by the doubles of a test, to read the order of calls across collaborators.
+        volatile List<String> journal;
         volatile Option<ConfigurationProvider> composite = Option.none();
 
         FakeSliceStore withLoaded(Artifact artifact, Slice slice) {
@@ -163,16 +167,27 @@ final class RuntimeFixtures {
         @Override
         public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
             calls.add("deactivate " + artifact);
+            journal("store: deactivate " + artifact);
 
-            return Promise.success(loadedSlice(artifact, new BareSlice()));
+            return deactivateFailure != null
+                   ? deactivateFailure.promise()
+                   : Promise.success(loadedSlice(artifact, new BareSlice()));
         }
 
         @Override
         public Promise<Unit> unloadSlice(Artifact artifact) {
             calls.add("unload " + artifact);
+            journal("store: unload " + artifact);
             failedEntries.remove(artifact);
+            loaded.removeIf(slice -> slice.artifact().equals(artifact));
 
-            return Promise.unitPromise();
+            return unloadFailure != null
+                   ? unloadFailure.promise()
+                   : Promise.unitPromise();
+        }
+
+        private void journal(String entry) {
+            Option.option(journal).onPresent(list -> list.add(entry));
         }
 
         @Override
@@ -183,6 +198,7 @@ final class RuntimeFixtures {
 
     static final class RecordingInvocationHandler implements InvocationHandler {
         final List<String> calls = Collections.synchronizedList(new ArrayList<>());
+        volatile List<String> journal;
 
         @Override
         public void onInvokeRequest(InvocationMessage.InvokeRequest request) {}
@@ -195,6 +211,7 @@ final class RuntimeFixtures {
         @Override
         public void unregisterSlice(Artifact artifact) {
             calls.add("unregister " + artifact);
+            Option.option(journal).onPresent(list -> list.add("bridge: unregister " + artifact));
         }
 
         @Override
@@ -215,6 +232,7 @@ final class RuntimeFixtures {
 
     static final class RecordingRoutePublisher implements HttpRoutePublisher {
         final List<String> calls = Collections.synchronizedList(new ArrayList<>());
+        volatile List<String> journal;
         volatile boolean hasRoutes = true;
         volatile Cause publishFailure;
         volatile Cause unpublishFailure;
@@ -241,6 +259,7 @@ final class RuntimeFixtures {
         @Override
         public Promise<Unit> unpublishRoutes(Artifact artifact) {
             calls.add("unpublish " + artifact);
+            Option.option(journal).onPresent(list -> list.add("routes: unpublish " + artifact));
 
             return unpublishFailure != null
                    ? unpublishFailure.promise()

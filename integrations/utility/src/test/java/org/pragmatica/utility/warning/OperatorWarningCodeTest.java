@@ -47,6 +47,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.INSTANCE_TERMINATION_CLEARED.closesAcrossNodes()).isTrue();
     }
 
+    /// N-5 (deployment FSM design 3.1): the mailbox backlog alarm and its recovery, a WARNING and an INFO of the `deployment` subsystem.
+    @Test
+    void deploymentFsmBacklog_isAWarning_withAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.code()).isEqualTo("deployment-fsm-backlog");
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.code()).isEqualTo("deployment-fsm-backlog-cleared");
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG);
+        assertThat(OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG.hasRecovery()).isTrue();
+    }
+
     @Test
     void codes_areKebabCase() {
         assertThat(Arrays.stream(OperatorWarningCode.values())

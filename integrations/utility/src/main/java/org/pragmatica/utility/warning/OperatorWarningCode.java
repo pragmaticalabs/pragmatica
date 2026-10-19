@@ -178,6 +178,15 @@ public enum OperatorWarningCode {
     WORKER_ABSENCE_UNJUDGEABLE("worker-absence-unjudgeable", "deployment", WarningLevel.WARNING),
     WORKER_NO_COMMUNITY_POLICY("worker-no-community-policy", "deployment", WarningLevel.WARNING),
     WORKER_READMITTED_ON_EVIDENCE("worker-readmitted-on-evidence", "deployment", WarningLevel.WARNING),
+    /// A deployment FSM's mailbox holds more than 10,000 inputs (phase-3 design 3.1, N-5): the mailboxes are unbounded by design, so a consumer that
+    /// cannot keep up is reported here and nowhere else. The subject is `<node>/<fsm>`, the message names the depth. Closed by
+    /// [#DEPLOYMENT_FSM_BACKLOG_CLEARED].
+    DEPLOYMENT_FSM_BACKLOG("deployment-fsm-backlog", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#DEPLOYMENT_FSM_BACKLOG], same subject: the mailbox is back below 1,000 inputs. Raised only when the warning was.
+    DEPLOYMENT_FSM_BACKLOG_CLEARED("deployment-fsm-backlog-cleared",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   DEPLOYMENT_FSM_BACKLOG),
     SLICE_START_AWAITING_TARGET("slice-start-awaiting-target", "deployment", WarningLevel.WARNING),
     /// The recovery of [#SLICE_START_AWAITING_TARGET], same subject (#1109): the target arrived and the start proceeded, or the parked
     /// entry was superseded or removed (an UNLOAD, the leader's orphan sweep). The message says which. Raised only when the warning was.

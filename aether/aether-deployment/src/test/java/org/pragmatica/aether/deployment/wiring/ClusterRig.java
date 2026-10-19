@@ -71,8 +71,15 @@ final class ClusterRig implements AutoCloseable {
     volatile Seams supplied;
     /// The seams the model held at the end of its last `Rebuild` step.
     volatile Seams atRebuild;
+    /// The next snapshot read fails once: the `Rebuild` of that activation is lost, and the FSM rests in `Rebuilding`.
+    volatile boolean failNextSnapshot;
 
     ClusterRig() {
+        this(FsmRuntime.STOP_WAIT_MS);
+    }
+
+    /// `stopWaitMs` is the wait a `close()` gives a consumer that is inside an input (design 7).
+    ClusterRig(long stopWaitMs) {
         var settings = Settings.settings(SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds());
         var fsm = ClusterFsm.clusterFsm(settings, () -> START_WALL + clock.nowMs, () -> START_MONO + clock.nowMs * 1_000_000L);
         var submitter = Submitter.submitter(() -> cluster, Submitter.CommittedReader.committedReader(store));
@@ -84,7 +91,8 @@ final class ClusterRig implements AutoCloseable {
                                                                                                   Map::of,
                                                                                                   clock,
                                                                                                   sunk::add,
-                                                                                                  this::stepped));
+                                                                                                  this::stepped),
+                                                                  stopWaitMs);
         router.addRoute(KVStoreNotification.ValuePut.class, this::onPut);
         router.addRoute(KVStoreNotification.ValueRemove.class, this::onRemove);
         applier.commitLeader(LEADER);
@@ -107,6 +115,10 @@ final class ClusterRig implements AutoCloseable {
 
     private Seams seams() {
         snapshots.incrementAndGet();
+        if (failNextSnapshot) {
+            failNextSnapshot = false;
+            throw new IllegalStateException("snapshot unavailable");
+        }
 
         return supplied != null
                ? supplied

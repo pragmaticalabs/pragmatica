@@ -2680,8 +2680,9 @@ public interface AetherNode extends ManageableNode {
                 // #1968: first, while the cluster-event layer can still carry the recovery of a backup-config-missing alert.
                 backupCoordinatorStop.run();
                 kvBackupService.onPresent(KvBackupService::stop);
-                router.route(ClusterStateNotification.passive());
-                router.quiesce();
+                // B13 (design 7, 2a/2b): PASSIVE, then the FSM2 node's SUSPEND drain (a no-op under LEGACY), then the quiesce.
+                deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),
+                                             router::quiesce);
                 deploymentWiring.stop();
                 controlLoop.stop();
                 workerMetricsAggregator.stop();
@@ -4067,14 +4068,16 @@ public interface AetherNode extends ManageableNode {
                                                                                             currentGenerationEpochSupplier);
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
-        // B4, B10, B11, B12 (design 8.3): hooks of the legacy engine that are off the FSM2 tracer's path; under FSM2 each is a counted drop.
+        // B4, B10, B11 (design 8.3): hooks of the legacy engine that are off the FSM2 path; under FSM2 each is a counted drop. B12 is bound to the cluster FSM2 below.
         var passiveClientActivation = deploymentWiring.legacyGated("B4.PassiveClientSwitch",
                                                                    () -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
                                                                                                  nodeDeploymentManager));
         var workerAdmissionJoin = deploymentWiring.legacy("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
         var placementRedrive = deploymentWiring.legacy("B11.PlacementRedrive",
                                                        clusterDeploymentManager::onNodePlacementPut);
-        var drainReportTarget = deploymentWiring.legacy("B12.DrainReport", clusterDeploymentManager::onNodeDraining);
+        var drainReportTarget = deploymentWiring.drainReport(clusterDeploymentManager::onNodeDraining);
+        // B14 (design 4.4): under FSM2 a core's leader FSM is judged when the committed snapshot is restored; under LEGACY this adds nothing.
+        clusterNode.onStateRestored(deploymentWiring.stateRestored());
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is

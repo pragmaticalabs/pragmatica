@@ -311,6 +311,22 @@ class SliceStoreTest {
         assertThat(stopCount.get()).isEqualTo(0);
     }
 
+    /// The node FSM records a slice as not loaded the moment its UNLOAD ends, failed or not (`Chains.loadedAfter`), and relies on this: the store
+    /// takes the entry out first, so a stop that fails leaves a leaked class loader but never a slice the store still lists (phase-3 design 4.3).
+    @Test
+    void unload_active_withAFailingStop_failsButNoLongerListsTheSlice() {
+        var slice = createTestSlice(
+                () -> Promise.success(Unit.unit()),
+                () -> Causes.cause("stop failed").promise());
+        var store = createStoreWithPreloadedSlice(slice, EntryState.ACTIVE);
+
+        store.unloadSlice(artifact)
+             .await()
+             .onSuccessRun(Assertions::fail);
+
+        assertThat(store.loaded()).isEmpty();
+    }
+
     @Test
     void unload_nonexistent_succeeds() {
         var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());

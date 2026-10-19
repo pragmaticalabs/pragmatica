@@ -46,6 +46,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
+import org.pragmatica.aether.deployment.wiring.NodeFsmInterpreter;
 import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
 import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.swim.SwimConfig;
@@ -82,6 +83,13 @@ final class Fsm2Harness implements AutoCloseable {
     final List<Message> events = Collections.synchronizedList(new ArrayList<>());
     final List<OperatorWarning> warnings = Collections.synchronizedList(new ArrayList<>());
     final AtomicInteger selfReady = new AtomicInteger();
+    /// Run on the node consumer after each `SelfReady` effect: a test that needs the consumer held (a backlog, a stalled stop) blocks in it.
+    volatile Runnable selfReadyHook = () -> {};
+    /// Run wherever the seams are sampled, which includes the cluster consumer at `Rebuild`: a test that needs that consumer held blocks in it.
+    volatile Runnable countedCoresHook = () -> {};
+    /// The bound a stop gives each interpreter (design 7, 2b); the design's 10 s unless a test shortens it, before `assembled()`.
+    private long stopWaitMs = NodeFsmInterpreter.STOP_WAIT_MS;
+    private boolean defaultStopWait;
     final List<String> exits = Collections.synchronizedList(new ArrayList<>());
     final EngineMarkerGuard guard;
     final DeploymentWiring wiring;
@@ -166,6 +174,25 @@ final class Fsm2Harness implements AutoCloseable {
         return guard;
     }
 
+    /// Shortens the stop bound; before `assembled()`.
+    Fsm2Harness withStopWait(long ms) {
+        stopWaitMs = ms;
+
+        return this;
+    }
+
+    /// Builds the system through the one-argument factory, the one production calls, so its default bound is the one under test.
+    Fsm2Harness withDefaultStopWait() {
+        defaultStopWait = true;
+
+        return this;
+    }
+
+    private void selfReadied() {
+        selfReady.incrementAndGet();
+        selfReadyHook.run();
+    }
+
     /// Substitutes the timer service; before `assembled()`.
     Fsm2Harness withClock(FsmTimers.TimerService timers) {
         clock = timers;
@@ -175,6 +202,7 @@ final class Fsm2Harness implements AutoCloseable {
 
     private Set<NodeId> countedCores() {
         samples.incrementAndGet();
+        countedCoresHook.run();
 
         return Set.of(SELF, PEER);
     }
@@ -189,7 +217,9 @@ final class Fsm2Harness implements AutoCloseable {
         entries.addAll(wiring.guardEntries());
         entries.forEach(this::register);
         if (wiring.isFsm2() && !worker) {
-            wiring.attach(Fsm2System.fsm2System(collaborators()));
+            wiring.attach(defaultStopWait
+                          ? Fsm2System.fsm2System(collaborators())
+                          : Fsm2System.fsm2System(collaborators(), stopWaitMs));
         }
         wiring.start();
         system = wiring.system();
@@ -229,7 +259,7 @@ final class Fsm2Harness implements AutoCloseable {
                                             bootTokens,
                                             new SliceRuntimeAdapter.Collaborators(SELF, failingStore(), null, null, Option.none(), Option.none(), null, store, () -> cluster, System::currentTimeMillis, () -> OperatorWarningSink.logOnly()),
                                             Set::of,
-                                            selfReady::incrementAndGet,
+                                            this::selfReadied,
                                             new EffectTranslator.Targets(SELF, events::add, () -> OperatorWarningSink.handingOffTo(warnings::add), registry, _ -> {}),
                                             new SeamPoller.Sources(this::countedCores,
                                                                    () -> Set.of(SELF, PEER),

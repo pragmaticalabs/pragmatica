@@ -58,8 +58,10 @@ B1.node.VersionRoutingKey -> fsm2:Fsm2Routes
 B10.WorkerAdmission -> dropped
 B10.cdm.WorkerJoin -> dropped
 B11.PlacementRedrive -> dropped
-B12.DrainReport -> dropped
+B12.DrainReport -> fsm2:Fsm2System.onNodeDraining
 B13.Stop -> fsm2:Fsm2System.deactivateCluster
+B13.StopDrain -> fsm2:Fsm2System.drainNode
+B14.StateRestored -> fsm2:Fsm2System.onStateRestored
 B15.construction -> fsm2:Fsm2System
 B16.Seams -> fsm2:SeamPoller
 B17.ApplyRecord -> on
@@ -68,7 +70,7 @@ B20.EngineMarkerGuard -> guard
 B20.LineageMint -> marker=FSM2
 B3.ActivationDriver -> fsm2:Fsm2System.reconcileActivation
 B4.PassiveClientSwitch -> dropped
-B5.ConfigApplied -> dropped
+B5.ConfigApplied -> fsm2:NodeFsmInput.ConfigChanged
 B6.SelfReady -> fsm2:SelfReady effect
 B7.LeaderChange -> fsm2:Fsm2System.onLeaderChange
 B8.LeaderKey -> fsm2:Fsm2Routes.leaderEntries

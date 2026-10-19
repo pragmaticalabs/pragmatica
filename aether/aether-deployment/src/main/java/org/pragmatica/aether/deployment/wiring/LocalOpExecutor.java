@@ -5,7 +5,9 @@
 package org.pragmatica.aether.deployment.wiring;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -23,6 +25,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -96,6 +99,8 @@ public final class LocalOpExecutor implements LocalOps {
     private final Counter counter;
     private final Object lock = new Object();
     private final Map<Object, Lane> lanes = new HashMap<>();
+    /// Resolved when the last lane drains or the executor closes (design 7, 2a). Read and written under `lock`; resolved outside it.
+    private final List<Promise<Unit>> idleWaiters = new ArrayList<>();
     private boolean closed;
 
     private LocalOpExecutor(StepRunner runner, FsmTimers.TimerService clock, NodeFsmTimings timings, Counter counter) {
@@ -127,6 +132,39 @@ public final class LocalOpExecutor implements LocalOps {
             closed = true;
             lanes.clear();
         }
+
+        releaseIdleWaiters();
+    }
+
+    /// Resolves when no op is queued or running, the compensating `UNPUBLISH` of a stale publisher included (it is a queued op like any other).
+    /// A closed executor holds nothing, so it is idle: `close()` clears the lanes and nothing is enqueued after it.
+    @Override
+    public Promise<Unit> idle() {
+        synchronized (lock) {
+            if (lanes.isEmpty()) {
+                return Promise.unitPromise();
+            }
+
+            var waiter = Promise.<Unit> promise();
+
+            idleWaiters.add(waiter);
+
+            return waiter;
+        }
+    }
+
+    /// Outside the lock, because resolving a promise runs its continuations on this thread.
+    private void releaseIdleWaiters() {
+        var due = new ArrayList<Promise<Unit>>();
+
+        synchronized (lock) {
+            if (lanes.isEmpty()) {
+                due.addAll(idleWaiters);
+                idleWaiters.clear();
+            }
+        }
+
+        due.forEach(waiter -> waiter.succeed(Unit.unit()));
     }
 
     // -- the lanes ---------------------------------------------------------------------------------------------------
@@ -229,6 +267,7 @@ public final class LocalOpExecutor implements LocalOps {
         guard.run();
         report(queued, once, outcome);
         complete(queued).onPresent(this::start);
+        releaseIdleWaiters();
     }
 
     /// Delivers the settlement once, to whoever gets there first: the body or the timeout.
