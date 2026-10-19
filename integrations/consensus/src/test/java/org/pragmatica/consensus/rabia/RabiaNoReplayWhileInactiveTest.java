@@ -44,6 +44,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaNoReplayWhileInactiveTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
+    private static final NodeId NODE_3 = nodeId("node-3").unwrap();
     private static final Phase PEER_PHASE = Phase.phase(10);
     private static final Phase OWN_PHASE = Phase.phase(5);
     private static final byte[] PEER_SNAPSHOT = "peer".getBytes(StandardCharsets.UTF_8);
@@ -133,7 +134,9 @@ class RabiaNoReplayWhileInactiveTest {
         var hooks = new AtomicInteger();
         var engine = coldStarted(machine, emptyDisk(false), hooks, true);
 
+        // An observer is not part of the majority it adopts from, so it needs a majority of the voters' answers.
         engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.savedState(PEER_SNAPSHOT, PEER_PHASE, List.of()), ResponderState.COLD));
 
         assertThat(awaitCondition(() -> machine.replays.get() >= 1)).as("the observer replays after it leaves Syncing").isTrue();
         assertThat(awaitCondition(() -> hooks.get() >= 1)).isTrue();
