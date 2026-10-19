@@ -2082,7 +2082,9 @@ class ManagementServerImpl implements ManagementServer {
                                                      ctx.queryParams().asMap(),
                                                      ctx.headers().asMap(),
                                                      ctx.body(),
-                                                     "mgmt");
+                                                     ctx.trailers().asMap(),
+                                                     "mgmt",
+                                                     SecurityContext.securityContext());
     }
 
     @SuppressWarnings("JBCT-PAT-01")

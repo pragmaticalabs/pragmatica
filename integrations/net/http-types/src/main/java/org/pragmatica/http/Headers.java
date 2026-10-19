@@ -18,12 +18,46 @@ package org.pragmatica.http;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.lang.Option;
 
 
 /// HTTP headers with case-insensitive lookup (per HTTP specification).
 public interface Headers {
+    /// #2310: field names that are never delivered as request trailers (RFC 9110 §6.5.1). Their meaning has to be
+    /// settled before the content is read (framing, routing, authentication, request modifiers and content format),
+    /// so a value arriving after the body cannot be acted on; [#trailers(Map)] discards them rather than offer a
+    /// handler a credential, a content type or a framing field the request was never processed under. Trailers are
+    /// kept apart from the header section and are never merged into it (RFC 9110 §6.5.2).
+    Set<String> FORBIDDEN_TRAILER_FIELDS = Set.of("content-length",
+                                                  "transfer-encoding",
+                                                  "trailer",
+                                                  "te",
+                                                  "connection",
+                                                  "keep-alive",
+                                                  "proxy-connection",
+                                                  "upgrade",
+                                                  "host",
+                                                  "authorization",
+                                                  "proxy-authorization",
+                                                  "cookie",
+                                                  "expect",
+                                                  "max-forwards",
+                                                  "cache-control",
+                                                  "pragma",
+                                                  "range",
+                                                  "if-match",
+                                                  "if-none-match",
+                                                  "if-modified-since",
+                                                  "if-unmodified-since",
+                                                  "if-range",
+                                                  "content-type",
+                                                  "content-encoding",
+                                                  "content-language",
+                                                  "content-location",
+                                                  "content-range");
+
     /// Get the first value for a header (case-insensitive lookup).
     Option<String> get(String name);
     /// Get all values for a header (case-insensitive lookup).
@@ -64,6 +98,17 @@ public interface Headers {
         raw.forEach((k, v) -> multi.put(k.toLowerCase(), List.of(v)));
 
         return headers(multi);
+    }
+
+    /// #2310: request trailer fields from a raw map, normalized as [#headers(Map)] does, with every name in
+    /// [#FORBIDDEN_TRAILER_FIELDS] discarded.
+    static Headers trailers(Map<String, List<String>> raw) {
+        var permitted = new HashMap<String, List<String>>();
+
+        raw.forEach((k, v) -> permitted.put(k.toLowerCase(), v));
+        permitted.keySet().removeAll(FORBIDDEN_TRAILER_FIELDS);
+
+        return headers(permitted);
     }
 
     /// Empty headers.

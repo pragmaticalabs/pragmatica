@@ -62,6 +62,7 @@ import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Promise.resolved;
 
 
@@ -249,6 +250,7 @@ final class Http3Server {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
         private Http3HeadersFrame headersFrame;
+        private Option<Http3HeadersFrame> trailersFrame = Option.none();
         private ByteBuf bodyData;
 
         Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
@@ -256,9 +258,16 @@ final class Http3Server {
             this.maxContentLength = maxContentLength;
         }
 
+        /// #2310: the first HEADERS frame is the header section; one after it is the trailer section (RFC 9114
+        /// §4.1). Netty's request-stream validation refuses any HEADERS frame after the trailers, and its trailer
+        /// decoding refuses pseudo-header fields and a section over SETTINGS_MAX_FIELD_SECTION_SIZE.
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
-            headersFrame = frame;
+            if (headersFrame == null) {
+                headersFrame = frame;
+            } else {
+                trailersFrame = some(frame);
+            }
         }
 
         @Override
@@ -313,9 +322,16 @@ final class Http3Server {
                                                ? pathAndQuery[1]
                                                : "");
             var headerMap = extractHeaders(h3Headers);
+            var trailers = Headers.trailers(trailersFrame.map(frame -> extractHeaders(frame.headers())).or(Map.of()));
             var body = extractBody();
 
-            return new Http3RequestContext(requestId, method, path, Headers.headers(headerMap), queryParams, body);
+            return new Http3RequestContext(requestId,
+                                           method,
+                                           path,
+                                           Headers.headers(headerMap),
+                                           queryParams,
+                                           body,
+                                           trailers);
         }
 
         private byte[] extractBody() {
@@ -375,7 +391,8 @@ final class Http3Server {
                                        String path,
                                        Headers headers,
                                        QueryParams queryParams,
-                                       byte[] body) implements HttpRequest {}
+                                       byte[] body,
+                                       Headers trailers) implements HttpRequest {}
 
     /// HTTP/3 response writer that sends response as HTTP/3 frames.
     private static class Http3ResponseWriter implements ResponseWriter {

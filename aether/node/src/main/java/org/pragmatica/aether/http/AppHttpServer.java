@@ -1493,13 +1493,16 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, exceeded.message(), path, requestId);
     }
 
+    /// #2310: the trailers travel with the request, to a local slice and across a forward alike.
     private HttpRequestContext toHttpRequestContext(HttpRequest request, String requestId) {
         return HttpRequestContext.httpRequestContext(request.path(),
                                                      request.method().name(),
                                                      request.queryParams().asMap(),
                                                      request.headers().asMap(),
                                                      request.body(),
-                                                     requestId);
+                                                     request.trailers().asMap(),
+                                                     requestId,
+                                                     SecurityContext.securityContext());
     }
 
     private void handleRemoteRoute(HttpRequest request,

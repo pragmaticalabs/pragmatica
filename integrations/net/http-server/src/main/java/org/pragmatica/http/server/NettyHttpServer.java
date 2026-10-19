@@ -16,6 +16,7 @@
 package org.pragmatica.http.server;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -408,6 +409,15 @@ final class NettyHttpServer implements HttpServer {
         private void handleHttpRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
             // WebSocket upgrades never reach here: WebSocketUpgradeRouter consumes them
             var requestId = IdGenerator.generate("req");
+
+            if (request.decoderResult().isFailure()) {
+                refuseUndecodable(ctx,
+                                  requestId,
+                                  request.decoderResult().cause());
+
+                return;
+            }
+
             var requestContext = createRequestContext(requestId, request);
             var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
 
@@ -479,21 +489,29 @@ final class NettyHttpServer implements HttpServer {
             ctx.close();
         }
 
+        /// #2310: a request the decoder could not read completely is refused, never dispatched. The aggregator
+        /// still emits it, carrying the failure, with whatever it had read: a trailer section over the size limit
+        /// would otherwise reach the handler as a complete request without its trailers, and an over-limit header
+        /// section as a placeholder request. The decoder discards the rest of the connection, so it is closed.
+        /// `@Contract`: a Netty handler-boundary write, as [ResponseWriter#error] is.
+        @Contract
+        private static void refuseUndecodable(ChannelHandlerContext ctx, String requestId, Throwable cause) {
+            var status = cause instanceof TooLongHttpHeaderException
+                         ? HttpStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
+                         : HttpStatus.BAD_REQUEST;
+
+            log.debug("Refusing undecodable request {}: {}", requestId, cause.getMessage());
+            new NettyResponseWriter(ctx, requestId, false).error(status, status.message());
+        }
+
         private HttpRequest createRequestContext(String requestId, FullHttpRequest request) {
             var decoder = new QueryStringDecoder(request.uri());
             var path = decoder.path();
             // Netty validates the HTTP method before we receive it, so this will always succeed
             var method = HttpMethod.httpMethod(request.method().name()).fold(_ -> HttpMethod.GET, v -> v);
-            // Parse headers
-            var headerMap = new HashMap<String, List<String>>();
-
-            for (var entry : request.headers()) {
-                headerMap.computeIfAbsent(entry.getKey().toLowerCase(),
-                                          _ -> new java.util.ArrayList<>())
-                         .add(entry.getValue());
-            }
-
-            var headers = Headers.headers(headerMap);
+            var headers = Headers.headers(fieldMap(request.headers()));
+            // #2310: the chunked trailer section; the aggregator leaves it empty for a request that sent none
+            var trailers = Headers.trailers(fieldMap(request.trailingHeaders()));
             // Parse query params
             var queryParams = QueryParams.queryParams(decoder.parameters());
             // Read body
@@ -502,7 +520,18 @@ final class NettyHttpServer implements HttpServer {
 
             content.readBytes(body);
 
-            return new NettyRequestContext(requestId, method, path, headers, queryParams, body);
+            return new NettyRequestContext(requestId, method, path, headers, queryParams, body, trailers);
+        }
+
+        private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
+            var fieldMap = new HashMap<String, List<String>>();
+
+            for (var entry : fields) {
+                fieldMap.computeIfAbsent(entry.getKey().toLowerCase(),
+                                         _ -> new ArrayList<>()).add(entry.getValue());
+            }
+
+            return fieldMap;
         }
     }
 
@@ -524,7 +553,8 @@ final class NettyHttpServer implements HttpServer {
                                        String path,
                                        Headers headers,
                                        QueryParams queryParams,
-                                       byte[] body) implements HttpRequest {}
+                                       byte[] body,
+                                       Headers trailers) implements HttpRequest {}
 
     private static class NettyResponseWriter implements ResponseWriter {
         private final ChannelHandlerContext ctx;
