@@ -200,6 +200,23 @@ class StorageFactoryS3SharedTierTest {
         setups.get("content").instance().get(id).await().onSuccess(opt -> assertThat(opt.or(new byte[0])).isEqualTo(PLAINTEXT));
     }
 
+    /// B18: a keyring boot over a prefix an earlier boot already marked writes ciphertext too. Only the first encrypted
+    /// boot (marker absent) arms a marker; this one finds it and must still wrap the tier. Mutation that reddens it:
+    /// admit the unwrapped tier when the marker is present (`S3SharedTier#armEncrypted`).
+    @Test
+    void keyringBoot_overAnAlreadyMarkedPrefix_writesCiphertext() throws IOException {
+        var s3 = s3Config(ACCESS_KEY, SECRET_KEY);
+        createContent(s3, Option.some(keyring("k1"))).onFailure(cause -> fail(cause.message()));
+        assertThat(markerPresent()).as("the first encrypted boot marks the prefix").isTrue();
+
+        var second = createSharedOnly("content", s3, Option.some(keyring("k1")), defaultsInFreshDir()).fold(cause -> fail(cause.message()),
+                                                                                                          setups -> setups);
+        var id = second.get("content").instance().put(PLAINTEXT).await().fold(cause -> fail(cause.message()), blockId -> blockId);
+
+        assertThat(new String(Arrays.copyOf(rawObject(keyOf(id)), 4), StandardCharsets.US_ASCII)).as("the bucket must hold ciphertext")
+                                                                                                  .isEqualTo("AEC1");
+    }
+
     @Test
     void keyringlessBoot_overEncryptedPrefix_isRefused() throws IOException {
         var s3 = s3Config(ACCESS_KEY, SECRET_KEY);

@@ -107,6 +107,13 @@ class ConfigLoaderSharedTierTest {
             assertThat(storage).containsOnlyKeys("artifacts");
         }
 
+        /// C17: a section without `kind` is the DHT. Mutation that reddens it: default `kind` to `s3` (the section then
+        /// misses every S3 key).
+        @Test
+        void absentKind_isTheDht() {
+            assertThat(load("[storage.content.shared]\n").storage().get("content").shared()).isEqualTo(SharedTierConfig.dht());
+        }
+
         @Test
         void explicitDht_isTheDefault() {
             assertThat(load("[storage.artifacts.shared]\nkind = \"dht\"\n").storage().get("artifacts").shared())
@@ -208,6 +215,31 @@ class ConfigLoaderSharedTierTest {
         void nonPositiveMaxInflight_isRefused() {
             assertThat(refusal(S3_SECTION.replace("max_inflight = 16", "max_inflight = 0")))
                 .isInstanceOf(SharedTierConfigError.InvalidValue.class);
+        }
+
+        /// C18: a required key holding only blanks is missing. Mutation that reddens it: keep blank values.
+        @Test
+        void blankEndpoint_isRefusedAsMissing() {
+            var cause = refusal(S3_SECTION.replace("endpoint = \"https://s3.eu-central-1.amazonaws.com\"", "endpoint = \"  \""));
+
+            assertThat(cause).isInstanceOf(SharedTierConfigError.MissingKey.class);
+            assertThat(cause.message()).contains("endpoint");
+        }
+
+        /// C21: `file:` with no path names no file. Mutation that reddens it: accept an empty path.
+        @Test
+        void fileCredentialsWithoutAPath_areRefused() {
+            assertThat(refusal(S3_SECTION.replace("credentials = \"env\"", "credentials = \"file:  \"")))
+                .isInstanceOf(SharedTierConfigError.InvalidCredentials.class);
+        }
+
+        /// C23: a zero timeout would expire every request. Mutation that reddens it: accept a zero duration.
+        @Test
+        void zeroTimeout_isRefused() {
+            var cause = refusal(S3_SECTION.replace("request_timeout = \"45s\"", "request_timeout = \"0s\""));
+
+            assertThat(cause).isInstanceOf(SharedTierConfigError.InvalidValue.class);
+            assertThat(cause.message()).contains("request_timeout");
         }
 
         @Test

@@ -15,6 +15,7 @@ import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #249: only a [StorageConfig#sharedOnly] instance is placed on derived paths. A configuration built any other way
 /// is placed as written, a blank `diskPath` included: before the explicit flag, a blank `diskPath` alone read as
@@ -46,10 +47,18 @@ class StorageFactoryDerivedPathsTest {
         assertThat(placed.get("artifacts")).isEqualTo(artifacts);
     }
 
-    /// Mutation that reddens it: drop the flag `StorageConfig#sharedOnly` sets.
+    /// Mutations that redden it: drop the flag `StorageConfig#sharedOnly` sets; B08, place a non-synthesized name on the
+    /// bare defaults without its shared tier. The tier is S3, which the defaults do not carry, so losing it shows.
     @Test
     void sharedOnlyInstance_isPlacedOnTheDefaults_keepingItsSharedTier() {
-        var shared = SharedTierConfig.dht();
+        var shared = new SharedTierConfig.S3("http://127.0.0.1:9000",
+                                             "us-east-1",
+                                             "vault-bucket",
+                                             "cluster-a/",
+                                             true,
+                                             new SharedTierConfig.Credentials.Environment(),
+                                             4,
+                                             timeSpan(5).seconds());
 
         var placed = StorageFactory.withDerivedPaths(Map.of("vault", StorageConfig.sharedOnly(shared)), defaults(), false)
                                    .get("vault");
@@ -57,6 +66,7 @@ class StorageFactoryDerivedPathsTest {
         assertThat(placed.diskPath()).isEqualTo(defaults().diskPath());
         assertThat(placed.snapshotPath()).isEqualTo(defaults().snapshotPath());
         assertThat(placed.shared()).isEqualTo(shared);
+        assertThat(placed.derivesPaths()).isFalse();
     }
 
     /// The node builds only from the derived map: a shared-only configuration handed to `createAll` underived is

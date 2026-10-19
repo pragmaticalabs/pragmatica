@@ -58,6 +58,17 @@ class AwsCredentialsProviderTest {
                                   .onFailure(cause -> assertThat(cause.message()).contains("AWS_SECRET_ACCESS_KEY")
                                                                                  .doesNotContain("AKIAENV"));
         }
+
+        /// A04: a variable holding only blanks is not set. Mutation that reddens it: accept the raw value.
+        @Test
+        void environment_blankAccessKey_failsNamingTheVariable() {
+            var env = Map.of("AWS_ACCESS_KEY_ID", "   ", "AWS_SECRET_ACCESS_KEY", "env-secret");
+
+            AwsCredentialsProvider.environment(name -> Option.option(env.get(name)))
+                                  .onSuccess(_ -> fail("Expected failure"))
+                                  .onFailure(cause -> assertThat(cause.message()).contains("AWS_ACCESS_KEY_ID")
+                                                                                 .doesNotContain("env-secret"));
+        }
     }
 
     @Nested
@@ -104,6 +115,24 @@ class AwsCredentialsProviderTest {
                                                                                  .doesNotContain("AKIADEFAULT"));
         }
 
+        /// A07: the `[default]` profile ends at the next section header; a key it lacks is never borrowed from a
+        /// later profile. Mutation that reddens it: read past the next `[`.
+        @Test
+        void profileFile_keyOnlyInALaterProfile_isMissingFromDefault() throws IOException {
+            var file = dir.resolve("credentials");
+            Files.writeString(file, """
+                [default]
+                aws_access_key_id = AKIADEFAULT
+
+                [other]
+                aws_secret_access_key = other-secret
+                """);
+
+            AwsCredentialsProvider.profileFile(file)
+                                  .onSuccess(_ -> fail("a key of another profile must not complete [default]"))
+                                  .onFailure(cause -> assertThat(cause.message()).contains("aws_secret_access_key"));
+        }
+
         @Test
         void profileFile_missingFile_fails() {
             AwsCredentialsProvider.profileFile(dir.resolve("absent"))
@@ -119,6 +148,8 @@ class AwsCredentialsProviderTest {
         private final AtomicInteger credentialFetches = new AtomicInteger();
         private final AtomicReference<String> sessionToken = new AtomicReference<>("");
         private final AtomicReference<Instant> expiration = new AtomicReference<>(Instant.now().plus(6, ChronoUnit.HOURS));
+        private final AtomicInteger tokenStatus = new AtomicInteger(200);
+        private final AtomicReference<String> roleListing = new AtomicReference<>("node-role\n");
         private String endpoint;
 
         @BeforeEach
@@ -137,14 +168,14 @@ class AwsCredentialsProviderTest {
 
         private void token(HttpExchange exchange) throws IOException {
             var ttl = exchange.getRequestHeaders().getFirst("X-aws-ec2-metadata-token-ttl-seconds");
-            respond(exchange, "PUT".equals(exchange.getRequestMethod()) && ttl != null ? 200 : 400, "imds-session-token");
+            respond(exchange, "PUT".equals(exchange.getRequestMethod()) && ttl != null ? tokenStatus.get() : 400, "imds-session-token");
         }
 
         private void credentials(HttpExchange exchange) throws IOException {
             sessionToken.set(exchange.getRequestHeaders().getFirst("X-aws-ec2-metadata-token"));
             var path = exchange.getRequestURI().getPath();
             if (path.endsWith("/security-credentials/")) {
-                respond(exchange, 200, "node-role\n");
+                respond(exchange, 200, roleListing.get());
                 return;
             }
             credentialFetches.incrementAndGet();
@@ -197,6 +228,32 @@ class AwsCredentialsProviderTest {
                     .onSuccess(creds -> assertThat(creds.accessKeyId()).isEqualTo("ASIAIMDS2"));
 
             assertThat(credentialFetches.get()).isEqualTo(2);
+        }
+
+        /// A21: a non-2xx answer is a failure, never a body to use (here an error page would become the session
+        /// token). Mutation that reddens it: accept any status.
+        @Test
+        void instanceProfile_tokenRequestRefused_failsNamingTheStatus() {
+            tokenStatus.set(403);
+            var provider = AwsCredentialsProvider.instanceProfile(JdkHttpOperations.jdkHttpOperations(), endpoint);
+
+            provider.credentials()
+                    .await()
+                    .onSuccess(_ -> fail("a refused token request must fail"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("session token").contains("403"));
+        }
+
+        /// A23: blank lines around the role listing are skipped. Mutation that reddens it: take the first line even
+        /// when blank (the role is then empty and the listing is fetched as if it were the credentials).
+        @Test
+        void instanceProfile_roleListingWithLeadingBlankLine_resolves() {
+            roleListing.set("\nnode-role\n");
+            var provider = AwsCredentialsProvider.instanceProfile(JdkHttpOperations.jdkHttpOperations(), endpoint);
+
+            provider.credentials()
+                    .await()
+                    .onFailure(cause -> fail(cause.message()))
+                    .onSuccess(creds -> assertThat(creds.accessKeyId()).isEqualTo("ASIAIMDS1"));
         }
 
         @Test

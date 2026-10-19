@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -112,6 +113,41 @@ class RemoteTierDurableTest {
             assertThat(s3.started.get()).isEqualTo(5);
         }
 
+        /// S02: a permit returns to the pool when nobody waits. More sequential requests than `maxInflight` would
+        /// otherwise exhaust the permits and queue every later request forever. Mutation that reddens it: drop the
+        /// `inflight--` in `InflightLimiter#nextWaiter`.
+        @Test
+        void sequentialRequests_beyondMaxInflight_allComplete() {
+            var tier = durable(2);
+
+            for (var i = 0; i < 5; i++) {
+                var content = ("sequential-" + i).getBytes(StandardCharsets.UTF_8);
+
+                tier.put(idOf(content), content)
+                    .await(timeSpan(5).seconds())
+                    .onFailure(cause -> fail("request beyond max_inflight did not complete: " + cause.message()));
+            }
+
+            assertThat(s3.objects).hasSize(5);
+        }
+
+        /// S13: the capacity reservation refuses a write whose size would overflow the running total, rather than
+        /// wrapping it negative and admitting it. No real write can get near `Long.MAX_VALUE`, so the counter is set
+        /// directly. Mutation that reddens it: drop the `updated < current` overflow check.
+        @Test
+        void put_overflowingTheUsedBytesCounter_isRefusedAsFull() throws ReflectiveOperationException {
+            var tier = RemoteTier.remoteTier(s3, "blocks", Long.MAX_VALUE);
+            var field = RemoteTier.class.getDeclaredField("usedBytes");
+            field.setAccessible(true);
+            ((AtomicLong) field.get(tier)).set(Long.MAX_VALUE - 1);
+
+            tier.put(idOf(CONTENT), CONTENT)
+                .await()
+                .onSuccess(_ -> fail("an overflowing reservation must be refused"))
+                .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierFull.class));
+            assertThat(s3.objects).isEmpty();
+        }
+
         /// Mutation that reddens it: drop `bounded` (no per-request timeout): the put never resolves.
         @Test
         void request_hangingProvider_timesOutAsUnavailable() {
@@ -191,6 +227,20 @@ class RemoteTierDurableTest {
                       .onFailure(cause -> assertThat(cause).isInstanceOf(RemoteTierError.ProbeMismatch.class));
         }
 
+        /// B23: another node's in-flight probe object is not an existing block, so it never refuses a first encrypted
+        /// boot as plaintext. Mutation that reddens it: keep probe keys in `RemoteTier#existingObjects`.
+        @Test
+        void existingObjects_skipsEveryNodesProbeObjects() {
+            var id = idOf(CONTENT);
+            s3.objects.put("cluster-a/.aether-probe/other-node", CONTENT);
+
+            assertThat(existing(durable(4))).isEmpty();
+
+            s3.objects.put("cluster-a/" + id.shardPrefix() + "/" + id.hexString(), CONTENT);
+
+            assertThat(existing(durable(4))).containsExactly("cluster-a/" + id.shardPrefix() + "/" + id.hexString());
+        }
+
         @Test
         void probe_unreachable_fails() {
             s3.failure = new S3Error.NetworkError("connection refused", Option.none());
@@ -214,6 +264,10 @@ class RemoteTierDurableTest {
         while (System.nanoTime() < settleUntil) {
             Thread.onSpinWait();
         }
+    }
+
+    private static List<String> existing(RemoteTier tier) {
+        return tier.existingObjects(10).await().fold(cause -> fail(cause.message()), keys -> keys);
     }
 
     private static void assertUnavailable(Cause cause) {

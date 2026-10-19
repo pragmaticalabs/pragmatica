@@ -12,7 +12,10 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -150,6 +153,134 @@ class StorageFactorySharedTierBootTest {
                                  .withShared(s3(endpoint, new SharedTierConfig.Credentials.File(credentialsFile())));
 
         assertThat(refusal(Map.of("vault", vault)).message()).contains("'vault'").contains(endpoint);
+    }
+
+    /// B20: redirects are not followed. S3 answers a request for another region with a 301, and following it would
+    /// send the request, signed for this host, to wherever the answer points. The redirect target here is a working
+    /// bucket, so a followed redirect would also admit the tier. Mutation that reddens it: `HttpClient.Redirect.NORMAL`
+    /// in `S3SharedTier#httpOperations`.
+    @Test
+    void createAll_endpointAnsweringARedirect_failsWithoutFollowingIt() throws IOException {
+        var target = FakeBucket.start(Duration.ZERO);
+        var redirecting = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        redirecting.createContext("/", exchange -> redirectTo(exchange, target.endpoint()));
+        redirecting.start();
+        try {
+            var endpoint = "http://127.0.0.1:" + redirecting.getAddress().getPort();
+            var cause = refusal(Map.of("content",
+                                       StorageConfig.sharedOnly(s3(endpoint, new SharedTierConfig.Credentials.File(credentialsFile())))));
+
+            assertThat(cause.message()).contains("'content'").contains("301");
+            assertThat(target.requests()).as("the redirect target must never be contacted").isZero();
+        } finally {
+            redirecting.stop(0);
+            target.stop();
+        }
+    }
+
+    private static void redirectTo(HttpExchange exchange, String targetEndpoint) throws IOException {
+        exchange.getRequestBody().readAllBytes();
+        exchange.getResponseHeaders().add("Location", targetEndpoint + exchange.getRequestURI());
+        exchange.sendResponseHeaders(301, -1);
+        exchange.close();
+    }
+
+    /// B29: admission (probe PUT, GET and DELETE, then the marker GET) is bounded by [S3SharedTier#ADMISSION_REQUESTS]
+    /// request timeouts, not one: four requests that each answer well within the 1 s request timeout take longer than
+    /// one timeout together, and must still admit the tier. Mutation that reddens it: `ADMISSION_REQUESTS = 1`.
+    @Test
+    void createAll_admissionSlowerThanOneRequestTimeout_isAdmitted() throws IOException {
+        var bucket = FakeBucket.start(Duration.ofMillis(400));
+        try {
+            var shared = new SharedTierConfig.S3(bucket.endpoint(),
+                                                 "us-east-1",
+                                                 "aether-boot",
+                                                 "cluster-a/",
+                                                 true,
+                                                 new SharedTierConfig.Credentials.File(credentialsFile()),
+                                                 2,
+                                                 timeSpan(1).seconds());
+
+            boot(Map.of("content", StorageConfig.sharedOnly(shared))).onFailure(cause -> fail("admission must fit its bound: "
+                                                                                              + cause.message()));
+            assertThat(bucket.requests()).as("probe PUT, GET, DELETE and the marker GET").isGreaterThanOrEqualTo(4);
+        } finally {
+            bucket.stop();
+        }
+    }
+
+    /// A path-style bucket in memory: PUT stores, GET answers the object or a `NoSuchKey` 404, a list answers no
+    /// keys, DELETE removes. Every answer waits `delay` first. Signatures are not checked.
+    private record FakeBucket(HttpServer server, Map<String, byte[]> objects, AtomicInteger counter, Duration delay) {
+        static FakeBucket start(Duration delay) throws IOException {
+            var bucket = new FakeBucket(HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0),
+                                        new ConcurrentHashMap<>(),
+                                        new AtomicInteger(),
+                                        delay);
+            bucket.server().createContext("/", bucket::handle);
+            bucket.server().start();
+            return bucket;
+        }
+
+        String endpoint() {
+            return "http://127.0.0.1:" + server.getAddress().getPort();
+        }
+
+        int requests() {
+            return counter.get();
+        }
+
+        void stop() {
+            server.stop(0);
+        }
+
+        private void handle(HttpExchange exchange) throws IOException {
+            counter.incrementAndGet();
+            var body = exchange.getRequestBody().readAllBytes();
+            pause();
+            var path = exchange.getRequestURI().getPath();
+            var listing = Option.option(exchange.getRequestURI().getQuery()).filter(query -> query.contains("list-type")).isPresent();
+            switch (exchange.getRequestMethod()) {
+                case "PUT" -> {
+                    objects.put(path, body);
+                    answer(exchange, 200, new byte[0]);
+                }
+                case "DELETE" -> {
+                    objects.remove(path);
+                    answer(exchange, 204, new byte[0]);
+                }
+                default -> answerGet(exchange, path, listing);
+            }
+        }
+
+        private void answerGet(HttpExchange exchange, String path, boolean listing) throws IOException {
+            if (listing) {
+                answer(exchange, 200, "<ListBucketResult></ListBucketResult>".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            var stored = objects.get(path);
+            if (stored == null) {
+                answer(exchange, 404, "<Error><Code>NoSuchKey</Code><Message>absent</Message></Error>".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            answer(exchange, 200, stored);
+        }
+
+        private void pause() {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private static void answer(HttpExchange exchange, int status, byte[] body) throws IOException {
+            exchange.sendResponseHeaders(status, body.length == 0 ? -1 : body.length);
+            if (body.length > 0) {
+                exchange.getResponseBody().write(body);
+            }
+            exchange.close();
+        }
     }
 
     private static Option<S3SharedTier.SharedTierUnavailable> sharedTierCause(Cause cause) {
