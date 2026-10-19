@@ -227,7 +227,9 @@ class JwtSecurityValidator implements HttpAuthenticator {
                            .stream()
                            .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
-                           .flatMap(values -> Option.option(values).flatMap(JwtSecurityValidator::firstValue).stream())
+                           .flatMap(values -> Option.option(values)
+                                                    .flatMap(JwtSecurityValidator::firstValue)
+                                                    .stream())
                            .filter(v -> v.regionMatches(true,
                                                         0,
                                                         BEARER_PREFIX,
