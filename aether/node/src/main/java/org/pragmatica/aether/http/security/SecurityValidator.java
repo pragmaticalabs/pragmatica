@@ -65,6 +65,9 @@ public interface SecurityValidator {
     /// The safe "no credentials are configured" validator: public routes pass with an EMPTY context,
     /// everything else is refused with [SecurityError#NO_VALIDATOR_CONFIGURED] (#573).
     ///
+    /// Installed by the app-HTTP plane's `SecurityMode.NONE` arm. The management plane does NOT use it: under
+    /// `security_mode = "none"` that plane never consults a validator and is fully open (#1121).
+    ///
     /// "No validator configured" must mean NO AUTHORITY, never ALL AUTHORITY. Returning a failure
     /// rather than an empty success is deliberate: [KvStoreApiKeyValidator] consults its delegate
     /// FIRST and returns immediately on success, so an unconditionally-succeeding delegate
