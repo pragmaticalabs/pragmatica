@@ -85,6 +85,9 @@ public sealed interface MapperSafety permits MapperSafety.unused {
                                                     "CopyOnWriteArrayList",
                                                     "Deque",
                                                     "ArrayDeque",
+                                                    "BlockingDeque",
+                                                    "Vector",
+                                                    "ConcurrentSkipListSet",
                                                     "LinkedBlockingDeque",
                                                     "ConcurrentLinkedDeque",
                                                     "SequencedCollection",
@@ -94,8 +97,9 @@ public sealed interface MapperSafety permits MapperSafety.unused {
                                                     "NavigableSet",
                                                     "TreeSet");
 
-    /// Receivers whose `next` throws on exhaustion.
-    Set<String> ITERATOR_RECEIVERS = Set.of("Iterator", "ListIterator");
+    /// Receivers whose `next` throws on exhaustion: `Iterator`, `ListIterator` and the three `PrimitiveIterator` nestings, whose
+    /// simple names (`PrimitiveIterator.OfInt::next` reads as `OfInt`) are what the reference match sees.
+    Set<String> ITERATOR_RECEIVERS = Set.of("Iterator", "ListIterator", "OfInt", "OfLong", "OfDouble");
 
     /// Java single-line and text-block string literals — masked before op-scanning so a partial-op
     /// pattern never matches inside a literal, and so a string argument (`get("key")`) is never

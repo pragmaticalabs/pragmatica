@@ -467,6 +467,103 @@ class CstMapperMethodReferenceRuleTest {
                 """));
     }
 
+    @Test
+    void analyze_vectorReference_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.Vector;
+                class Handler {
+                    Object run(Result<Vector<String>> r) {
+                        return r.map(Vector::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_blockingDequeReference_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.concurrent.BlockingDeque;
+                class Handler {
+                    Object run(Result<BlockingDeque<String>> r) {
+                        return r.map(BlockingDeque::getLast);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_concurrentSkipListSetReference_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.concurrent.ConcurrentSkipListSet;
+                class Handler {
+                    Object run(Result<ConcurrentSkipListSet<String>> r) {
+                        return r.map(ConcurrentSkipListSet::getFirst);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_primitiveIteratorOfIntReference_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.PrimitiveIterator;
+                class Handler {
+                    Object run(Result<PrimitiveIterator.OfInt> r) {
+                        return r.map(PrimitiveIterator.OfInt::next);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_primitiveIteratorOfLongReference_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.PrimitiveIterator;
+                class Handler {
+                    Object run(Result<PrimitiveIterator.OfLong> r) {
+                        return r.map(PrimitiveIterator.OfLong::next);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_primitiveIteratorOfDoubleReference_flags() {
+        assertEquals(1L, count("""
+                package org.example;
+                import java.util.PrimitiveIterator;
+                class Handler {
+                    Object run(Result<PrimitiveIterator.OfDouble> r) {
+                        return r.map(PrimitiveIterator.OfDouble::next);
+                    }
+                }
+                """));
+    }
+
+    /// Pins the same-file receiver guard: a type declared in this file under a JDK receiver's NAME (`List`) is resolved by its
+    /// own body, here a total `getFirst`, not guessed at by name. Without the guard the name rule flags it.
+    @Test
+    void analyze_sameFileTypeNamedLikeAJdkReceiver_withTotalGetFirst_isClean() {
+        assertEquals(0L, count("""
+                package org.example;
+                class Handler {
+                    record List(String a) {
+                        String getFirst() {
+                            return a;
+                        }
+                    }
+                    Object run(Result<List> r) {
+                        return r.map(List::getFirst);
+                    }
+                }
+                """));
+    }
+
     /// A field initializer has no method around it; the success mapper of a constant is as exposed as any other.
     @Test
     void analyze_referenceInFieldInitializer_flags() {

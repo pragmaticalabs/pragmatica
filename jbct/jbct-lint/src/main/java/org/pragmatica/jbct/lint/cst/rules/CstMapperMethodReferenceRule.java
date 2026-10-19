@@ -25,8 +25,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// The #483 shape was `.map(Type::methodThatThrows)` — a method reference, not an inline lambda.
 /// A method reference in mapper position (`map`/`flatMap`/`filter`/`replaceResult`/`fold`) flags when:
 ///   1. its name marks a throwing accessor (`*OrThrow` / the JDK `orElseThrow`, case-insensitive),
-///      or a container partial accessor (`getFirst` / `getLast`, and `Iterator::next`), regardless of
-///      resolvability, or
+///      or it is `getFirst` / `getLast` on a JDK receiver whose accessor is partial (`List`, `ArrayList`,
+///      `LinkedList`, `CopyOnWriteArrayList`, `Vector`, `Deque`, `ArrayDeque`, `BlockingDeque`,
+///      `LinkedBlockingDeque`, `ConcurrentLinkedDeque`, `SequencedCollection`, `SequencedSet`,
+///      `LinkedHashSet`, `SortedSet`, `NavigableSet`, `TreeSet`, `ConcurrentSkipListSet`) or `next` on
+///      `Iterator` / `ListIterator` / `PrimitiveIterator.OfInt|OfLong|OfDouble`, provided the receiver is
+///      not declared in this file; or
 ///   2. its target method — resolved by the reference's receiver — is declared exactly once in this
 ///      compilation unit with a partial body (R-A's op set).
 ///
@@ -38,6 +42,17 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// than once in the resolved type is excluded from body-scan resolution — only the name heuristic
 /// applies. These scoping rules kill the cross-type collisions corpus validation surfaced (e.g. a
 /// total `X::isActive` no longer flagged because an unrelated `Y.isActive()` is partial).
+///
+/// **Known heuristic limits** (the rule scans text, not types or flow):
+///   - The Stream-pipeline exemption (a `map` / `flatMap` / `filter` reference inside a Stream pipeline is the Iteration
+///     pattern, as in JBCT-TOT-01) is scoped to the enclosing STATEMENT, delimited by the nearest `;` / `{` / `}` before the
+///     reference and the next `;`. A Stream marker anywhere in that statement exempts the reference, so
+///     `Option.from(xs.stream()...).map(List::getFirst)` is falsely exempt; and a block lambda before the reference puts a `{`
+///     / `;` of its own into the text, so a reference after it can be falsely flagged or falsely exempt.
+///   - A `fold` success mapper is found as "the last argument of a call whose first argument has a comma", by regex, so a
+///     reference that is the last argument of a NESTED call inside the failure mapper (`r.fold(c -> g(1, List::getFirst), v -> v)`)
+///     is falsely flagged.
+///   - Only the JDK receivers listed above are recognised by name; a project type that wraps a list is not guessed at.
 public class CstMapperMethodReferenceRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-TOT-02";
 
