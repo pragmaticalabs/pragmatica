@@ -110,6 +110,7 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
                                                           ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds(), Option.some(marker)),
                                                           // A 60 s sync retry: a retry tick queued before the first activation would otherwise run on the
                                                           // Observing engine and send it back to Syncing, which the scenario does not mean to test.
+                                                          // TODO(#2306): doSynchronize treats an Observing engine as settled once #2306 is on rc5; then drop the 60 s workaround.
                                                           ConsensusMetrics.noop(), true, RabiaPersistence.inMemory(), timeSpan(50).millis());
         try {
             var announces = new AtomicInteger();
