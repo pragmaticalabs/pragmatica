@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
-package org.pragmatica.aether.config;
+package org.pragmatica.config.toml;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -13,10 +13,11 @@ import java.lang.annotation.Target;
 /// for one record component, with a mandatory justification — a ticket reference, e.g.
 /// `"#675: parsed but never applied by Main.resolveAutoHeal"`.
 ///
-/// Placed here in `aether-config`'s main sources, not test-scoped: it annotates production record
-/// components, so it must be on the compile classpath of whatever module declares them. `aether-config`
-/// is that module's only consumer today (mirrors the checker's own "widen only when a second consumer
-/// arrives" placement rule, #519).
+/// Placed in the `toml` module's main sources, not test-scoped: it annotates production record
+/// components, so it must be on the compile classpath of whatever module declares them. The gate walks
+/// records declared in `toml` (`TomlDocument`, reached through `SourceProfile.nodeConfig`) as well as in
+/// `aether-config`, and `aether-config` depends on `toml`, so this is the lowest module both can see. It moved
+/// here from `aether-config` for #1455 (`TomlDocument`'s per-document read ledger is not a config key).
 ///
 /// Deliberately NOT `@SuppressWarnings`, despite mirroring jbct-lint's suppression convention in
 /// spirit: `@SuppressWarnings` has `SOURCE` retention (JLS-mandated) and is stripped before class files
