@@ -251,7 +251,8 @@ class StorageFactoryVolumeSentinelTest {
     void createAll_doesNotWarn_whenTheStateDirIsOnAnotherFilesystem() throws IOException {
         var elsewhere = Path.of("/dev/shm");
 
-        assumeTrue(Files.isDirectory(elsewhere) && !StorageFactory.onSameFilesystem(elsewhere, tempDir),
+        // the precondition is read straight from the file stores, never from the function under test
+        assumeTrue(Files.isDirectory(elsewhere) && !Files.getFileStore(elsewhere).equals(Files.getFileStore(tempDir)),
                    "needs a second filesystem (Linux /dev/shm)");
         var otherState = Files.createTempDirectory(elsewhere, "aether-state-1473");
 

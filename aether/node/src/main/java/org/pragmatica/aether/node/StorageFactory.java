@@ -1020,23 +1020,23 @@ public final class StorageFactory {
                                                      cause.message()));
 
         return guardVolume(tiers, snapshotDir).flatMap(_ -> restoreAndSignalReady(STREAMS_NAME,
-                                                                                               snapshotManager,
-                                                                                               metadataStore,
-                                                                                               readinessGate))
-                                       .map(_ -> {
-                                                log.info("Storage 'streams' created: {} tier(s), data dir={}",
-                                                         tiers.size(),
-                                                         snapshotDir.getParent());
+                                                                                  snapshotManager,
+                                                                                  metadataStore,
+                                                                                  readinessGate))
+                          .map(_ -> {
+                                   log.info("Storage 'streams' created: {} tier(s), data dir={}",
+                                            tiers.size(),
+                                            snapshotDir.getParent());
 
-                                                return StorageSetup.storageSetup(STREAMS_NAME,
-                                                                                 instance,
-                                                                                 snapshotManager,
-                                                                                 readinessGate,
-                                                                                 metadataStore,
-                                                                                 demotionManager,
-                                                                                 garbageCollector,
-                                                                                 dhtMarkerCheck);
-                                            });
+                                   return StorageSetup.storageSetup(STREAMS_NAME,
+                                                                    instance,
+                                                                    snapshotManager,
+                                                                    readinessGate,
+                                                                    metadataStore,
+                                                                    demotionManager,
+                                                                    garbageCollector,
+                                                                    dhtMarkerCheck);
+                               });
     }
 
     private static Result<PendingSetup> createOne(String name,
@@ -1447,25 +1447,25 @@ public final class StorageFactory {
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
         return guardVolume(tiers,
-                                        Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
-                                                                                                           snapshotManager,
-                                                                                                           metadataStore,
-                                                                                                           readinessGate))
-                                       .map(_ -> {
-                                                log.info("Storage '{}' created: {} tier(s), snapshot path={}",
-                                                         name,
-                                                         tiers.size(),
-                                                         config.snapshotPath());
+                           Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
+                                                                                              snapshotManager,
+                                                                                              metadataStore,
+                                                                                              readinessGate))
+                          .map(_ -> {
+                                   log.info("Storage '{}' created: {} tier(s), snapshot path={}",
+                                            name,
+                                            tiers.size(),
+                                            config.snapshotPath());
 
-                                                return StorageSetup.storageSetup(name,
-                                                                                 instance,
-                                                                                 snapshotManager,
-                                                                                 readinessGate,
-                                                                                 metadataStore,
-                                                                                 demotionManager,
-                                                                                 garbageCollector,
-                                                                                 dhtMarkerCheck);
-                                            });
+                                   return StorageSetup.storageSetup(name,
+                                                                    instance,
+                                                                    snapshotManager,
+                                                                    readinessGate,
+                                                                    metadataStore,
+                                                                    demotionManager,
+                                                                    garbageCollector,
+                                                                    dhtMarkerCheck);
+                               });
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED
@@ -1502,9 +1502,10 @@ public final class StorageFactory {
     static Result<Path> sentinelFor(Path snapshotPath) {
         var canonical = snapshotPath.toAbsolutePath().normalize();
 
-        return BlockId.blockId(canonical.toString().getBytes(StandardCharsets.UTF_8))
-                      .map(id -> stateDir().resolve(SENTINEL_DIR)
-                                          .resolve(id.hexString() + "-" + readableSuffix(canonical) + ".id"));
+        return BlockId.blockId(canonical.toString().getBytes(StandardCharsets.UTF_8)).map(id -> stateDir().resolve(SENTINEL_DIR)
+                                                                                                        .resolve(id.hexString()
+                                                                                                                + "-" + readableSuffix(canonical)
+                                                                                                                + ".id"));
     }
 
     private static String readableSuffix(Path canonical) {
@@ -1539,18 +1540,18 @@ public final class StorageFactory {
 
     /// Device ids of the nearest existing ancestors; the file stores when the platform has no `unix:dev`.
     static boolean onSameFilesystem(Path first, Path second) {
-        return Result.all(deviceOf(first), deviceOf(second))
+        return Result.all(deviceOf(first),
+                          deviceOf(second))
                      .map(Object::equals)
                      .or(false);
     }
 
     private static Result<Object> deviceOf(Path path) {
         return nearestExisting(path.toAbsolutePath()).toResult(Causes.cause("No existing ancestor of " + path))
-                                                      .flatMap(existing -> Result.lift(Causes::fromThrowable,
-                                                                                       () -> Files.getAttribute(existing,
-                                                                                                                "unix:dev"))
-                                                                                  .orElse(() -> Result.lift(Causes::fromThrowable,
-                                                                                                            () -> (Object) Files.getFileStore(existing))));
+                              .flatMap(existing -> Result.lift(Causes::fromThrowable,
+                                                               () -> Files.getAttribute(existing, "unix:dev"))
+                                                         .orElse(() -> Result.lift(Causes::fromThrowable,
+                                                                                   () -> (Object) Files.getFileStore(existing))));
     }
 
     private static Result<Unit> refuseIfPresent(Path sentinel, Path snapshotPath) {
