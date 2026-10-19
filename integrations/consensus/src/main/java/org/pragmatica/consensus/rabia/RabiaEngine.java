@@ -767,7 +767,6 @@ public class RabiaEngine<C extends Command> {
     private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
 
     private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
-
     /// Whether a sync round is open: a [SyncRequest] has gone out and the engine has not yet adopted a state from the answers. A
     /// request opens a round ([#openSyncRound]); an activation completes it and a quorum-loss pause invalidates it ([#closeSyncRound]).
     /// A response is accepted only into an open round, so input that crosses a pause (answers to a request sent before it) or arrives
@@ -1228,8 +1227,8 @@ public class RabiaEngine<C extends Command> {
         }
 
         var oldState = engineState.getAndSet(new EngineState.Paused());
-        closeSyncRound();
 
+        closeSyncRound();
         exitState(oldState);
         notifyConsensusStateTransition();
         saveState().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
@@ -2532,7 +2531,9 @@ public class RabiaEngine<C extends Command> {
         }
 
         if (engineState.get().isActive() || !syncRoundOpen) {
-            log.trace("Node {} ignoring synchronization response {}. No sync round is open or the node is active", self, response);
+            log.trace("Node {} ignoring synchronization response {}. No sync round is open or the node is active",
+                      self,
+                      response);
 
             return;
         }
