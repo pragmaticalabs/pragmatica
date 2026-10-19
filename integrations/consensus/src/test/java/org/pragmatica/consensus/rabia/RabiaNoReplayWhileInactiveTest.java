@@ -175,6 +175,7 @@ class RabiaNoReplayWhileInactiveTest {
 
         engine.clusterState(ClusterStateNotification.passive());
         assertThat(awaitCondition(engine::isPaused)).as("quorum loss from Syncing pauses the engine").isTrue();
+        assertThat(effectsWithin(machine, hooks)).as("nothing is announced while Paused").isFalse();
         marker.allow.set(true);
         engine.clusterState(ClusterStateNotification.active());
 
@@ -230,6 +231,65 @@ class RabiaNoReplayWhileInactiveTest {
 
         assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("one announce for two restores").isFalse();
+    }
+
+    /// A stopped engine is not serving: with the participation record writable again, nothing announces, because no
+    /// transition into a serving state happens.
+    @Test
+    void restoreWhileRefused_thenStopped_announcesNothing() {
+        var marker = new GateMarker();
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks, false, refusingConfig(marker));
+
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> machine.restores.get() >= 1)).isTrue();
+        engine.stop().await();
+        marker.allow.set(true);
+
+        assertThat(engine.isActive()).isFalse();
+        assertThat(effectsWithin(machine, hooks)).as("nothing is announced while Stopped").isFalse();
+    }
+
+    /// A hook-driven derived view, shaped like `WorkerMetadataServer`: built lazily from the store, valid until the
+    /// restore hook invalidates it. While the restore is unannounced the view keeps serving what it had (the node is
+    /// not serving a new world yet); the deferred announce invalidates it exactly once, when the node first serves.
+    @Test
+    void derivedView_isInvalidatedOnceByTheDeferredAnnounce() {
+        var marker = new GateMarker();
+        var machine = new CountingStateMachine();
+        var view = new DerivedView();
+        var engine = coldStarted(machine, emptyDisk(false), new AtomicInteger(), false, refusingConfig(marker));
+
+        engine.onStateRestored(view::onStateRestored);
+        view.capture();
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> machine.restores.get() >= 1)).isTrue();
+        assertThat(awaitCondition(() -> view.invalidations.get() > 0, SETTLE_MILLIS)).as("not invalidated while the restore is unannounced").isFalse();
+        assertThat(view.initialized).isTrue();
+
+        engine.clusterState(ClusterStateNotification.passive());
+        assertThat(awaitCondition(engine::isPaused)).isTrue();
+        marker.allow.set(true);
+        engine.clusterState(ClusterStateNotification.active());
+
+        assertThat(awaitCondition(() -> view.invalidations.get() == 1)).as("invalidated by the deferred announce").isTrue();
+        assertThat(view.initialized).as("the next capture rebuilds it from the restored store").isFalse();
+        assertThat(awaitCondition(() -> view.invalidations.get() > 1, SETTLE_MILLIS)).as("and only once").isFalse();
+    }
+
+    private static final class DerivedView {
+        volatile boolean initialized;
+        final AtomicInteger invalidations = new AtomicInteger();
+
+        void capture() {
+            initialized = true;
+        }
+
+        void onStateRestored() {
+            initialized = false;
+            invalidations.incrementAndGet();
+        }
     }
 
     private static ProtocolConfig refusingConfig(GateMarker marker) {
