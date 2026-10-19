@@ -126,6 +126,34 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(activeAtHook.get()).as("the hook saw an ACTIVE engine").isEqualTo(1);
     }
 
+    /// The post-restore listeners accumulate (the node registers several: committed-leader refresh, the
+    /// node-replacement and upgrade-run restores, the worker metadata channel). None may run on a node that never
+    /// activated, and every one runs exactly once when the same restore does activate.
+    @Test
+    void everyRegisteredListener_staysSilentOnAFencedNode_andRunsOnceOnAnActivatedOne() {
+        var fencedCalls = new AtomicInteger[] {new AtomicInteger(), new AtomicInteger(), new AtomicInteger()};
+        var fenced = coldStarted(new CountingStateMachine(), emptyDisk(true), new AtomicInteger());
+
+        for (var calls : fencedCalls) {
+            fenced.onStateRestored(calls::incrementAndGet);
+        }
+        fenced.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> failureRecorded(fenced))).as("precondition: the re-persist failed").isTrue();
+        assertThat(awaitCondition(() -> fencedCalls[0].get() + fencedCalls[1].get() + fencedCalls[2].get() > 0, SETTLE_MILLIS)).isFalse();
+
+        var activeCalls = new AtomicInteger[] {new AtomicInteger(), new AtomicInteger(), new AtomicInteger()};
+        var active = coldStarted(new CountingStateMachine(), emptyDisk(false), new AtomicInteger());
+
+        for (var calls : activeCalls) {
+            active.onStateRestored(calls::incrementAndGet);
+        }
+        active.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(active::isActive)).isTrue();
+        assertThat(awaitCondition(() -> activeCalls[0].get() + activeCalls[1].get() + activeCalls[2].get() >= 3)).isTrue();
+        assertThat(awaitCondition(() -> activeCalls[0].get() + activeCalls[1].get() + activeCalls[2].get() > 3, SETTLE_MILLIS)).as("no listener runs twice").isFalse();
+        assertThat(activeCalls[0].get() + activeCalls[1].get() + activeCalls[2].get()).isEqualTo(3);
+    }
+
     /// An observer is not ACTIVE in the voting sense but does serve the restored state, so its restore must still
     /// replay and run the hooks: the guard is "left Syncing", not "is a voter".
     @Test
@@ -200,7 +228,11 @@ class RabiaNoReplayWhileInactiveTest {
     }
 
     private static boolean awaitCondition(BooleanSupplier condition) {
-        var deadline = System.nanoTime() + MILLISECONDS.toNanos(TIMEOUT_MILLIS);
+        return awaitCondition(condition, TIMEOUT_MILLIS);
+    }
+
+    private static boolean awaitCondition(BooleanSupplier condition, long millis) {
+        var deadline = System.nanoTime() + MILLISECONDS.toNanos(millis);
 
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {
