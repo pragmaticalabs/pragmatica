@@ -121,7 +121,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
 
     /// Every typed read so far that found its key present with the wrong type, in read order.
     public List<TypeMismatch> typeMismatches() {
-        return typeMismatchLedger.snapshot();
+        return typeMismatchLedger().snapshot();
     }
 
     /// The load-time gate (#1455): `this` when no typed read hit a wrong-typed value, otherwise
@@ -348,7 +348,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
         var converted = convert.apply(raw);
 
         if (converted.isEmpty()) {
-            typeMismatchLedger.record(section, key, expected, raw);
+            typeMismatchLedger().record(section, key, expected, raw);
         }
 
         return converted;
