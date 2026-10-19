@@ -1896,24 +1896,21 @@ public sealed interface Promise<T> permits PromiseImpl {
 
     @Contract
     private static <T> void watchAny(Promise<T> anySuccess, List<Promise<T>> inputs) {
-        var collector = resultCollector(inputs.size(),
-                                        results -> anySuccess.resolve(allFailed(results)));
+        var collector = resultCollector(inputs.size(), results -> anySuccess.resolve(allFailed(results)));
 
         IntStream.range(0,
                         inputs.size())
                  .forEach(index -> inputs.get(index)
                                          .withResult(result -> result.onSuccess(anySuccess::succeed)
                                                                      .onSuccessRun(() -> cancelAll(inputs))
-                                                                     .onResultRun(() -> collector.registerEvent(index, result))));
+                                                                     .onResultRun(() -> collector.registerEvent(index,
+                                                                                                                result))));
     }
 
     // Reached only after every input has resolved; a success has already resolved the output by then
     // (it is delivered before its event is registered), making this resolution a no-op in that case.
     private static <T> Result<T> allFailed(Object[] results) {
-        return Causes.composite(Stream.of(results)
-                                      .map(result -> (Result<?>) result)
-                                      .toArray(Result<?>[]::new))
-                     .result();
+        return Causes.composite(Stream.of(results).map(result -> (Result<?>) result).toArray(Result<?>[]::new)).result();
     }
 
     /// **[Resolution]**
