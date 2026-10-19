@@ -1100,12 +1100,11 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void promoteObserverToActive() {
-        var oldState = engineState.getAndSet(new EngineState.Idle());
+        var oldState = enterServing(new EngineState.Idle());
 
         exitState(oldState);
         notifyConsensusStateTransition();
         log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
-        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
@@ -1231,9 +1230,9 @@ public class RabiaEngine<C extends Command> {
 
         var observer = resumesAsObserver();
 
-        engineState.set(observer
-                        ? new EngineState.Observing()
-                        : new EngineState.Idle());
+        enterServing(observer
+                     ? new EngineState.Observing()
+                     : new EngineState.Idle());
         notifyConsensusStateTransition();
         log.info("Node {} resumed from pause (quorum returned) as {}. currentPhase={}, pendingBatches={}",
                  self,
@@ -1245,7 +1244,6 @@ public class RabiaEngine<C extends Command> {
         // Replay through the live ordering guard. A remaining gap starts synchronization;
         // only a decision at the applied frontier can mutate the state machine.
         drainBufferedDecisions();
-        announceRestoreIfPending();
         if (!pendingBatches.isEmpty() || requestedConfiguration.isPresent()) {
             safeExecute(this::startPhase);
         }
@@ -2174,7 +2172,7 @@ public class RabiaEngine<C extends Command> {
         log.trace("Node {} starting phase {} with batch {}", self, phase, batch.id());
         var stallDetector = createStallDetector();
 
-        if (!engineState.compareAndSet(current, new EngineState.InPhase(stallDetector))) {
+        if (!enterServingIf(current, new EngineState.InPhase(stallDetector))) {
             stallDetector.cancel(false);
 
             return;
@@ -2589,6 +2587,29 @@ public class RabiaEngine<C extends Command> {
                   cause);
     }
 
+    /// The ONE write path for the serving states `Idle`, `InPhase` and `Observing` (#1516): the state write and the
+    /// announce of an unannounced restore are a single step, so a transition into a serving state, by whatever path,
+    /// cannot forget it. Returns the state that was replaced. `EngineServingWritePathTest` fails if any other write
+    /// of a serving state appears in this class.
+    private EngineState enterServing(EngineState serving) {
+        var oldState = engineState.getAndSet(serving);
+
+        announceRestoreIfPending();
+
+        return oldState;
+    }
+
+    /// [#enterServing] as a compare-and-set; announces only if the write took effect.
+    private boolean enterServingIf(EngineState expected, EngineState serving) {
+        if (!engineState.compareAndSet(expected, serving)) {
+            return false;
+        }
+
+        announceRestoreIfPending();
+
+        return true;
+    }
+
     /// A restore installs the state silently and marks it unannounced; the restore's observable effects, the
     /// notification replay and then the post-restore listeners, run when the engine next stands in `Idle`, `InPhase`
     /// or `Observing` and clears the mark (#1516). The invariant is "a notification implies ACTIVE": a restore on a
@@ -2597,7 +2618,7 @@ public class RabiaEngine<C extends Command> {
     /// per round from a node that was not serving. Dropping the effects instead would lose them: the node can reach
     /// `Idle`/`Observing` without a second restore (`Syncing` -> `Paused` -> [#doResumeFromPause], or a promotion), and a
     /// consumer that never saw the replay would serve a world it was never told about, with derived views that the
-    /// listeners invalidate left stale. So every transition into a serving state calls this; with the mark clear it is a
+    /// listeners invalidate left stale. So it is called from [#enterServing] and [#enterServingIf] only; with the mark clear it is a
     /// no-op, and with the mark set it announces exactly once, whatever the path, and the burst reads the LATEST
     /// installed state (two restores while inactive produce one announce). A node that is fenced for good never
     /// reaches a serving state and so never announces.
@@ -2802,7 +2823,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        var oldState = engineState.getAndSet(new EngineState.Idle());
+        var oldState = enterServing(new EngineState.Idle());
 
         exitState(oldState);
         armCleanupTask();
@@ -2817,12 +2838,11 @@ public class RabiaEngine<C extends Command> {
         // Must happen AFTER engineState=Idle so that `handleDecision`'s state guard accepts
         // re-applied Decisions, and AFTER the Idle-restore so phase-filter math is correct.
         drainBufferedDecisions();
-        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
     private void activateAsObserver() {
-        var oldState = engineState.getAndSet(new EngineState.Observing());
+        var oldState = enterServing(new EngineState.Observing());
 
         exitState(oldState);
         armCleanupTask();
@@ -2834,7 +2854,6 @@ public class RabiaEngine<C extends Command> {
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
         drainBufferedDecisions();
-        announceRestoreIfPending();
     }
 
     /// Cancels any timers owned by the old state during a transition.
@@ -3450,8 +3469,7 @@ public class RabiaEngine<C extends Command> {
         var stallDetector = createStallDetector();
         var current = engineState.get();
 
-        if (! (current instanceof EngineState.Idle) || !engineState.compareAndSet(current,
-                                                                                  new EngineState.InPhase(stallDetector))) {
+        if (! (current instanceof EngineState.Idle) || !enterServingIf(current, new EngineState.InPhase(stallDetector))) {
             stallDetector.cancel(false);
 
             return;
@@ -4019,7 +4037,7 @@ public class RabiaEngine<C extends Command> {
         var oldState = engineState.get();
 
         if (oldState instanceof EngineState.InPhase) {
-            engineState.set(new EngineState.Idle());
+            enterServing(new EngineState.Idle());
             exitState(oldState);
             notifyConsensusStateTransition();
         }
@@ -4041,18 +4059,17 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        engineState.set(new EngineState.Idle());
+        enterServing(new EngineState.Idle());
         armCleanupTask();
         armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());
-        announceRestoreIfPending();
         safeExecute(this::openSlotAfterChange);
     }
 
     private void advancePhaseAsObserver(Phase nextPhase) {
-        var oldState = engineState.getAndSet(new EngineState.Observing());
+        var oldState = enterServing(new EngineState.Observing());
 
         exitState(oldState);
         notifyConsensusStateTransition();
