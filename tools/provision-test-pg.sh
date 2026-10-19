@@ -431,6 +431,7 @@ destroy_pg_vm() {
             if hcloud_delete "/servers/${id}"; then
                 log_ok "server ${id} deleted"
             else
+                log_err "could not delete server ${id} (${name})"
                 failures=$((failures + 1))
             fi
         done <<< "$lines"
@@ -449,6 +450,7 @@ destroy_pg_vm() {
                 if hcloud_delete "/ssh_keys/${kid}"; then
                     log_ok "ssh_key ${kid} deleted"
                 else
+                    log_err "could not delete ssh_key ${kid} (${kname})"
                     failures=$((failures + 1))
                 fi
             done <<< "$keys"
