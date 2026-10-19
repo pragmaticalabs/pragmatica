@@ -102,7 +102,14 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                    BooleanSupplier activeLeader,
                                                                    IntSupplier limit,
                                                                    TimeSpan ceiling) {
-        return capacityControlledLifecycle(delegate, self, store, apply, activeLeader, limit, ceiling, System::currentTimeMillis);
+        return capacityControlledLifecycle(delegate,
+                                           self,
+                                           store,
+                                           apply,
+                                           activeLeader,
+                                           limit,
+                                           ceiling,
+                                           System::currentTimeMillis);
     }
 
     /// `clock` (epoch milliseconds) times the grace an earlier-term allocation is given before it can be released.
@@ -258,10 +265,10 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// OBSERVED absence confirmation.
     private Promise<Unit> confirmDispatches(SourceName source, String binding, Set<NodeId> observed) {
         return leader().filter(_ -> allSourcesInventoried())
-                       .fold(Promise::unitPromise,
-                             _ -> confirmEarlierTermDispatches(source,
-                                                               binding,
-                                                               staleDispatches(source, binding, observed)));
+                     .fold(Promise::unitPromise,
+                           _ -> confirmEarlierTermDispatches(source,
+                                                             binding,
+                                                             staleDispatches(source, binding, observed)));
     }
 
     /// Fail-safe: a configuration that cannot be read, or none committed with an incomplete ledger, is not "every source inventoried".
@@ -325,9 +332,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Promise<Unit> absentDispatch(NodeId node, SourceName source, String binding) {
         var now = clock.getAsLong();
         var since = unmatchedSince.computeIfAbsent(node, _ -> now);
-        var misses = dispatchMisses.computeIfAbsent(node,
-                                                    _ -> new AtomicInteger())
-                                   .incrementAndGet();
+        var misses = dispatchMisses.computeIfAbsent(node, _ -> new AtomicInteger()).incrementAndGet();
 
         return misses >= ABSENCE_CONFIRMATIONS && now - since >= ceiling.millis()
                ? releaseAbsentDispatch(node, source, binding)
@@ -626,7 +631,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Option<LeaderValue> leader() {
         return observeLeadership(store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
                                       .filter(value -> activeLeader.getAsBoolean() && value.leader()
-                                                                                          .equals(self)));
+                                                                                           .equals(self)));
     }
 
     /// Counts lose -> gain edges as the instance observes them (every reconcile and dispatch asks `leader()`). A gain also starts the

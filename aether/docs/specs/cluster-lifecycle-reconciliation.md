@@ -124,16 +124,22 @@ have been dispatched, its durable uncertainty cannot be downgraded to a pre-disp
 A create whose reservation committed but whose dispatch was abandoned before the provider call
 (leadership lost in between) provably did not happen: the instance that abandoned it records the no-create
 evidence and releases it the next time it leads. A different leader cannot know that, so it treats every
-DISPATCHED allocation it did not dispatch itself in its own term as an earlier term's: once it has inventoried
-every committed source, it looks the node up in the provider each pass, adopts the instance if one appears, and
-releases the allocation (no-create evidence first, then the slot) only after three consecutive passes that
-show no instance, with a WARN and the `capacity-dispatch-released` event. The term a dispatch ran under is
-remembered by the dispatching process only; an allocation a process does not remember dispatching counts as an
-earlier term's, which is what a restarted or newly elected leader is.
+DISPATCHED allocation it did not dispatch itself since it last GAINED leadership as an earlier leadership's.
+Once it has inventoried every committed source (a configuration it cannot read does not count), it looks the
+node up in the provider each pass, adopts the instance if one appears, and releases the allocation (no-create
+evidence first, then the slot) only when BOTH hold: three consecutive passes showed no instance, and the create
+ceiling (the join/boot grace) has elapsed since this leader first found it unmatched, so a slow cloud boot is never
+released mid-boot. A sighting restarts the count. The release is a WARN and the `capacity-dispatch-released`
+event. "Dispatched itself" is a per-process leadership generation that advances only when this node gains
+leadership after losing it; a same-leader re-commit (new view sequence, leadership never lost) does not advance it.
+It is remembered by the dispatching process only; an allocation a process does not remember dispatching counts as
+earlier, which is what a restarted or newly elected leader is. [limit: an interlude of another leader that this
+instance never observed, with no reconcile or dispatch call in between, reads as continuous leadership.]
 
 Admission refusals that mean "no complete inventory yet" (a provider not ready at boot, no committed
-configuration yet) are waits: they are counted, recorded as the last provisioning failure and logged at a
-bounded rate, and never count toward the provisioning circuit.
+configuration yet) are waits, not failures: they are counted, logged at a bounded rate and shown in the
+provisioning status as `inventoryWaiting` / `lastInventoryWait` / `inventoryWaits` until an admission gets
+past the inventory. They are not `lastProvisionFailure` and never count toward the provisioning circuit.
 
 Both stalls are operator-attention events with recoveries. A core deficit held open by durable allocations
 for longer than the join grace raises `core-capacity-awaiting-durable` (once per run, by the leader) and

@@ -180,11 +180,9 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                       breaker.nextAllowedMs()),
                                                    diagnostics.lastProvisionFailure()
                                                               .map(ClusterConfigRoutes::toFailureInfo),
-                                                   diagnostics.inventoryWait()
-                                                              .isPresent(),
+                                                   diagnostics.inventoryWait().isPresent(),
                                                    diagnostics.inventoryWaits(),
-                                                   diagnostics.inventoryWait()
-                                                              .map(ClusterConfigRoutes::toFailureInfo));
+                                                   diagnostics.inventoryWait().map(ClusterConfigRoutes::toFailureInfo));
     }
 
     private static ProvisionFailureInfo toFailureInfo(ClusterTopologyManager.LastProvisionFailure failure) {
