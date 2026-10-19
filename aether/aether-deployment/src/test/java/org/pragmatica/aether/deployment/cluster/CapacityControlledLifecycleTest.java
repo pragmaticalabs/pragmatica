@@ -1108,10 +1108,7 @@ class CapacityControlledLifecycleTest {
         lifecycle.provisionNode(spec("first", "east")).await();
         assertThat(lifecycle.allSourcesInventoried()).as("east listed by the admission").isTrue();
 
-        seed(new KVCommand.LeaderTransaction<>(AetherKey.ClusterConfigKey.CURRENT, java.util.UUID.randomUUID().toString(), LEADER, List.of(),
-            List.of(new KVCommand.Mutation<AetherKey, AetherValue>(AetherKey.ClusterConfigKey.CURRENT, store.get(AetherKey.ClusterConfigKey.CURRENT),
-                Option.some(new AetherValue.ClusterConfigValue(Option.some("this is [not valid toml"), "test", "1.0.0", List.of(), 3, 3, "forge", 9, 0))))));
-
+        replaceEastConfig("this is [not valid toml");
         assertThat(store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class).unwrap().tomlContent().or("")).as("staged").contains("not valid");
         assertThat(org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse("this is [not valid toml").isFailure()).as("parse").isTrue();
         assertThat(lifecycle.allSourcesInventoried()).as("the committed configuration cannot be read").isFalse();
