@@ -274,7 +274,8 @@ class LeaderReconcilerTest {
             advancePastProvisioningGates();
             triggerAndFireReconcile();
             assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("AWAITING_DURABLE_CAPACITY");
-            assertThat(events).as("inside the join grace the stall is not yet an event").isEmpty();
+            org.awaitility.Awaitility.await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5))
+                .as("inside the join grace the stall is not yet an event").until(events::isEmpty);
 
             advancePollIntervals(CEILING_WINDOW_INTERVALS);
             advancePastProvisioningGates();
