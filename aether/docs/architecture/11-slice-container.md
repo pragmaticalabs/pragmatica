@@ -208,9 +208,9 @@ All registrations are written to KV-Store in a single batch for atomicity.
 
 | Context | Format | Library |
 |---------|--------|---------|
-| Inter-node invocation | Binary | Fury |
+| Inter-node invocation | Binary | Generated `@Codec` codecs |
 | HTTP request/response | JSON | Jackson |
-| KV-Store values | Binary | Fury |
+| KV-Store values | Binary | Generated `@Codec` codecs |
 
 Request/response types must be:
 - Records or immutable classes

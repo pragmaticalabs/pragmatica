@@ -234,9 +234,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// window and can no longer handshake, so an authenticated Hello arriving AFTER that window is
     /// a false-DEAD survivor, not a drained ghost — accept it (the authenticated Hello is itself
     /// proof-of-life). Below the floor the original DENY stands (covers the deliberate-drain
-    /// window). Mirrors the aether drain grace-terminate = `MembershipConfig.DEFAULT_SPLIT_TIMEOUT
-    /// (15s) × 2 = 30s` (aether/aether-deployment `MembershipConfig`); the consensus layer cannot
-    /// depend on that module, so the value is mirrored here and kept in sync by this reference.
+    /// window). A copy of the aether drain grace-terminate assumption `MembershipConfig.DEFAULT_SPLIT_TIMEOUT
+    /// (15s) × 2 = 30s` (aether/aether-deployment `MembershipConfig`): the consensus layer cannot depend on that
+    /// module, so the value is duplicated here and nothing keeps it in sync. The aether side reaps after the
+    /// operator-configurable `autoHealConfig.provisioningTimeout()` and the split timeout is configurable too, so
+    /// the authority for the real window is that module's, not this constant.
     private static final long TOMBSTONE_READMIT_GRACE_FLOOR_MS = 30_000L;
     /// Multiple of the transport keepalive interval (= ClusterSync `pingInterval`) after which a
     /// CONNECTED peer that has received NO inbound frame on ANY lane is treated as a silent zombie
@@ -909,7 +911,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // duplicate ADD. Terminal removal of a *confirmed-dead* peer is a separate concern
         // handled by `departurePermanent` (the leader's co-confirmed-death verdict /
         // DECOMMISSIONED / SWIM DepartedObserved), which drives the peer to REMOVED. Because
-        // restart is disabled cluster-wide, a same-NodeId never returns; the only paths from
+        // restart is disabled cluster-wide, a restarted process (new boot token) is refused; only the same process the
+        // cluster wrongly declared dead can come back, through `readmit`; the only paths from
         // EVICTED to REMOVED are `departurePermanent` and shutdown — `disconnect` itself never
         // makes the transition terminal.
         //
@@ -1181,7 +1184,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Rotate TLS certificates by restarting the QUIC server with new SSL contexts.
-    /// Existing connections drain naturally; peers reconnect automatically.
+    /// Connections this node accepted close with the old server and their dialers reconnect; connections it dialed
+    /// are not drained and keep the old certificate until they end.
     @SuppressWarnings("JBCT-PAT-01")  // Lifecycle: stop old server, update contexts, start new
     public Promise<Unit> rotateCertificate(QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
         return boundPort().async(QuicTransportError.CertificateRotationFailed.FACTORY.apply("Server not running"))
@@ -2532,7 +2536,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// A peer driven to terminal REMOVED by `departurePermanent` (restart disabled — a dead
-    /// NodeId never returns under the same id) must not be written to or retried. Distinct from
+    /// NodeId never returns as a new process under the same id) must not be written to or retried. Distinct from
     /// EVICTED (transient live-flap), which keeps buffering via `offerOutbound` and drains on
     /// reconnect — only REMOVED short-circuits here.
     private boolean isPeerRemoved(NodeId peerId) {
@@ -2544,7 +2548,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// One write attempt against the captured lane stream. Re-validated every attempt:
     /// if the channel went inactive or is still backpressured this fails (a `Cause`, never a
     /// throw) and the enclosing Retry either reschedules or gives up. A peer disconnecting
-    /// mid-retry therefore fails cleanly — the offline buffer handles reconnect delivery.
+    /// mid-retry therefore fails cleanly, but nothing re-buffers the frame: when the retries run
+    /// out the only action is a DEBUG line, the frame was already reported `Sent`, and recovery
+    /// is the layer above's (Rabia retransmit, the DHT quorum collector, caller deadlines).
     /// This is the atomic unit the Retry re-invokes, so it performs NO retry itself.
     private Promise<Unit> rawBackpressuredWrite(QuicStreamChannel ch,
                                                 byte[] bytes,
