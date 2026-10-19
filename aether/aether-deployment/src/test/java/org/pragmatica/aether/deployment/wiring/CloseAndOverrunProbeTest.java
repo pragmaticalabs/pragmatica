@@ -61,7 +61,6 @@ class CloseAndOverrunProbeTest {
                     Thread.currentThread().interrupt();
                 }
             }
-            consumerThread = Thread.currentThread();
             if (input.equals("close-self")) {
                 close();
             }
@@ -88,6 +87,7 @@ class CloseAndOverrunProbeTest {
         @Override
         Unit closing() {
             closingRan = true;
+            consumerThread = Thread.currentThread();
             closings.incrementAndGet();
             return Unit.unit();
         }
@@ -430,8 +430,6 @@ class CloseAndOverrunProbeTest {
             var probe = new Probe(new ManualTimerService());
 
             probe.start();
-            probe.deliver("seen");
-            await().atMost(Duration.ofSeconds(5)).until(() -> probe.consumerThread != null);
             probe.close();
             if (probe.consumerThread.isAlive()) {
                 alive++;
@@ -529,7 +527,9 @@ class CloseAndOverrunProbeTest {
         var probe = new Probe(new ManualTimerService());
 
         probe.start();
-        await().atMost(Duration.ofSeconds(5)).until(() -> probe.drain().isResolved());
+        var drained = probe.drain();
+
+        await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
         probe.deliver("after-drain");
 
         await().atMost(Duration.ofSeconds(5)).until(() -> probe.steps.contains("after-drain"));
