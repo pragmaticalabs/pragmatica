@@ -44,7 +44,7 @@ public record AppHttpConfig(boolean enabled,
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;
     public static final String DEFAULT_API_VERSION_HEADER = "API-Version";
     /// `[app-http] read_timeout`: how long the listener waits on a client's request bytes before giving up on the
-    /// connection (HTTP/1.1: no byte while no response is pending; HTTP/3: the whole request body). 60 s mirrors
+    /// connection (HTTP/1.1: no byte while no response is pending; HTTP/3: no body frame). 60 s mirrors
     /// nginx's `client_body_timeout` default and the http-server default; it is a guess, not a measurement. A
     /// zero or negative value disables the bound.
     public static final TimeSpan DEFAULT_READ_TIMEOUT = TimeSpan.timeSpan(60).seconds();

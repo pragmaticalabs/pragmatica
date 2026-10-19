@@ -571,11 +571,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout())
-                                           .withBodyRateLimit(bodyRateLimit(config));
+        var serverConfig = serverConfig("app-http-h3", config);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -606,11 +602,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private HttpServerConfig buildServerConfig() {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout())
-                                           .withBodyRateLimit(bodyRateLimit(config));
+        var serverConfig = serverConfig("app-http", config);
         // #967: never demand a client certificate from callers of a USER-facing listener. The node's
         // cluster TlsConfig is Mutual, so building this listener from it made every slice request
         // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
@@ -721,11 +713,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout())
-                                           .withBodyRateLimit(bodyRateLimit(config));
+        var serverConfig = serverConfig("app-http", config);
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                              ? this::handleRequestWithAltSvc
@@ -759,11 +747,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize())
-                                           .withReadTimeout(config.readTimeout())
-                                           .withBodyRateLimit(bodyRateLimit(config));
+        var serverConfig = serverConfig("app-http-h3", config);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -1550,6 +1534,15 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      HttpError.clientMessage(cause),
                                                      request.path(),
                                                      requestId));
+    }
+
+    /// Every app listener, HTTP/1.1 and HTTP/3, at start and at certificate rotation, is configured here, so the
+    /// request bounds `[app-http]` declares (`max_request_size`, `read_timeout`, `min_body_rate`) reach all of them (F6).
+    static HttpServerConfig serverConfig(String name, AppHttpConfig config) {
+        return HttpServerConfig.httpServerConfig(name, config.port())
+                               .withMaxContentLength(config.maxRequestSize())
+                               .withReadTimeout(config.readTimeout())
+                               .withBodyRateLimit(bodyRateLimit(config));
     }
 
     /// `[app-http] min_body_rate` with the server's default grace and window (F6).

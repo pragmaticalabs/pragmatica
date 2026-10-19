@@ -161,9 +161,6 @@ final class Http3Server {
                                      BiConsumer<HttpRequest, ResponseWriter> handler,
                                      EventLoopGroup group,
                                      boolean ownsGroup) {
-        var maxContentLength = config.maxContentLength();
-        var readTimeout = config.readTimeout();
-        var bodyRateLimit = config.bodyRateLimit();
         var codec = Http3.newQuicServerCodecBuilder()
                          .sslContext(quicSslContext)
                          .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
@@ -172,7 +169,7 @@ final class Http3Server {
                          .initialMaxStreamDataBidirectionalRemote(1_000_000)
                          .initialMaxStreamsBidirectional(100)
                          .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
-                         .handler(new QuicConnectionInitializer(handler, maxContentLength, readTimeout, bodyRateLimit))
+                         .handler(new QuicConnectionInitializer(handler, config))
                          .build();
         var bootstrap = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec);
 
@@ -215,27 +212,16 @@ final class Http3Server {
     /// Adds [Http3ServerConnectionHandler] which manages HTTP/3 streams.
     private static class QuicConnectionInitializer extends ChannelInitializer<QuicChannel> {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
-        private final int maxContentLength;
-        private final TimeSpan readTimeout;
-        private final BodyRateLimit bodyRateLimit;
+        private final HttpServerConfig config;
 
-        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
-                                  int maxContentLength,
-                                  TimeSpan readTimeout,
-                                  BodyRateLimit bodyRateLimit) {
+        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, HttpServerConfig config) {
             this.handler = handler;
-            this.maxContentLength = maxContentLength;
-            this.readTimeout = readTimeout;
-            this.bodyRateLimit = bodyRateLimit;
+            this.config = config;
         }
 
         @Override
         protected void initChannel(QuicChannel ch) {
-            ch.pipeline()
-              .addLast(new Http3ServerConnectionHandler(new Http3StreamInitializer(handler,
-                                                                                   maxContentLength,
-                                                                                   readTimeout,
-                                                                                   bodyRateLimit)));
+            ch.pipeline().addLast(new Http3ServerConnectionHandler(new Http3StreamInitializer(handler, config)));
         }
     }
 
@@ -243,23 +229,16 @@ final class Http3Server {
     /// Creates a fresh [Http3RequestHandler] per stream (no shared state).
     private static class Http3StreamInitializer extends ChannelInitializer<QuicStreamChannel> {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
-        private final int maxContentLength;
-        private final TimeSpan readTimeout;
-        private final BodyRateLimit bodyRateLimit;
+        private final HttpServerConfig config;
 
-        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
-                               int maxContentLength,
-                               TimeSpan readTimeout,
-                               BodyRateLimit bodyRateLimit) {
+        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, HttpServerConfig config) {
             this.handler = handler;
-            this.maxContentLength = maxContentLength;
-            this.readTimeout = readTimeout;
-            this.bodyRateLimit = bodyRateLimit;
+            this.config = config;
         }
 
         @Override
         protected void initChannel(QuicStreamChannel ch) {
-            ch.pipeline().addLast(new Http3RequestHandler(handler, maxContentLength, readTimeout, bodyRateLimit));
+            ch.pipeline().addLast(Http3RequestHandler.http3RequestHandler(config, handler));
         }
     }
 
@@ -302,6 +281,16 @@ final class Http3Server {
             this.maxContentLength = maxContentLength;
             this.readTimeout = readTimeout;
             this.bodyRateLimit = bodyRateLimit;
+        }
+
+        /// The handler every request stream gets: the server's configured body limit, read timeout and minimum body
+        /// rate. Package-private so a test can pin that the configured values, not defaults, reach the stream.
+        static Http3RequestHandler http3RequestHandler(HttpServerConfig config,
+                                                       BiConsumer<HttpRequest, ResponseWriter> handler) {
+            return new Http3RequestHandler(handler,
+                                           config.maxContentLength(),
+                                           config.readTimeout(),
+                                           config.bodyRateLimit());
         }
 
         @Override

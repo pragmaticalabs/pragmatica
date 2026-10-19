@@ -54,10 +54,21 @@ class Http3RequestHandlerTest {
     }
 
     private EmbeddedChannel channel(int limit, TimeSpan readTimeout, BodyRateLimit rate) {
-        return new EmbeddedChannel(new Http3Server.Http3RequestHandler((request, response) -> {
-            dispatched.add(request);
-            response.okText("ok");
-        }, limit, readTimeout, rate));
+        return new EmbeddedChannel(new Http3Server.Http3RequestHandler(this::handle, limit, readTimeout, rate));
+    }
+
+    /// The handler exactly as the server builds it for each request stream.
+    private EmbeddedChannel channel(HttpServerConfig config) {
+        var channel = new EmbeddedChannel(Http3Server.Http3RequestHandler.http3RequestHandler(config, this::handle));
+
+        channel.freezeTime();
+
+        return channel;
+    }
+
+    private void handle(HttpRequest request, ResponseWriter response) {
+        dispatched.add(request);
+        response.okText("ok");
     }
 
     private static DefaultHttp3HeadersFrame requestHeaders() {
@@ -225,6 +236,43 @@ class Http3RequestHandlerTest {
         assertThat(dispatched).hasSize(1);
         assertThat(dispatched.getFirst().body()).hasSize(fiveMiB);
         assertThat(responseStatus(channel)).isEqualTo("200");
+        channel.finishAndReleaseAll();
+    }
+
+    /// F6: the server's configured minimum rate reaches each stream, not the default. 10 KiB/s is ten times the
+    /// default minimum, but below the configured 100 KiB/s.
+    @Test
+    void configuredMinimumRate_reachesTheStream() {
+        var channel = channel(HttpServerConfig.httpServerConfig("h3-rate", 0)
+                                              .withMaxContentLength(1024 * 1024)
+                                              .withBodyRateLimit(BodyRateLimit.bodyRateLimit(100 * 1024,
+                                                                                             timeSpan(1).seconds(),
+                                                                                             timeSpan(1).seconds())));
+
+        channel.writeInbound(requestHeaders());
+        for (int tick = 0; tick < 30 && channel.outboundMessages().isEmpty(); tick++) {
+            channel.writeInbound(data(1024));
+            channel.advanceTimeBy(100, TimeUnit.MILLISECONDS);
+            channel.runScheduledPendingTasks();
+        }
+
+        assertThat(responseStatus(channel)).isEqualTo("408");
+        assertThat(dispatched).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    /// I3: the server's configured read timeout reaches each stream, not the 60 s default.
+    @Test
+    void configuredReadTimeout_reachesTheStream() {
+        var channel = channel(HttpServerConfig.httpServerConfig("h3-idle", 0).withReadTimeout(timeSpan(1).seconds()));
+
+        channel.writeInbound(requestHeaders());
+        channel.writeInbound(data(10));
+        channel.advanceTimeBy(2, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+
+        assertThat(responseStatus(channel)).isEqualTo("408");
+        assertThat(dispatched).isEmpty();
         channel.finishAndReleaseAll();
     }
 
