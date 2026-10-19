@@ -97,8 +97,8 @@ class ConfigLoaderPreflightTest {
     }
 
     private static int childExit(String mode) throws Exception {
-        var java = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        var builder = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"), Probe.class.getName(), mode);
+        var javaBin = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        var builder = new ProcessBuilder(javaBin, "-cp", System.getProperty("java.class.path"), Probe.class.getName(), mode);
 
         builder.environment().put("AETHER_BACKUP_ENABLED", "yes");
         builder.redirectErrorStream(true);
