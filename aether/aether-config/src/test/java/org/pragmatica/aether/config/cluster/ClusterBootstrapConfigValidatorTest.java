@@ -668,6 +668,18 @@ class ClusterBootstrapConfigValidatorTest {
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-35").contains("retention"));
         }
 
+        /// #2272's PF-24 and this change's PF-35 compose: one overlay with an unsupported security_mode AND a wrong-typed value is refused
+        /// with both, and PF-35's node load path includes the loader's own security-mode refusal.
+        @Test
+        void validate_unsupportedSecurityModeAndWrongTypedValue_areBothReported() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("app-http", Map.<String, Object>of("security_mode", "bogus-mode"),
+                                                                                         "cluster", Map.<String, Object>of("tls", "yes"))))
+                .onSuccess(v -> Assertions.fail("Expected PF-24 and PF-35"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-24").contains("PF-35").contains("cluster.tls").contains("bogus-mode"));
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("app-http", Map.<String, Object>of("security_mode", "bogus-mode"))))
+                .onFailure(cause -> assertThat(cause.message()).as("the node load path refuses the security mode too").contains("PF-35").contains("bogus-mode"));
+        }
+
         @Test
         void validate_nodeSideTlsPaths_areNotRefusedAgainstTheOperatorFilesystem() {
             validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
