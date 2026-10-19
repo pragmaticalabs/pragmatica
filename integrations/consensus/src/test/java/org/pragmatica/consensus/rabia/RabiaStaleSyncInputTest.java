@@ -51,6 +51,23 @@ class RabiaStaleSyncInputTest {
         assertThat(engine.isActive()).as("the quorum ACTIVE resumes it").isTrue();
     }
 
+    @Test void lateSyncResponses_afterAPauseDuringSyncing_doNotTakeTheEngineToActive() {
+        engine = newEngine(false);
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        assertThat(engine.isActive() || engine.isPaused()).as("control: the engine is syncing, a round is open").isFalse();
+        engine.clusterState(ClusterStateNotification.passive());
+        settle();
+        assertThat(engine.isPaused()).as("control: the pause arrived while syncing").isTrue();
+
+        respond(B);
+        respond(C);
+        settle();
+
+        assertThat(engine.isPaused()).as("answers to the request sent before the pause cannot activate a paused engine").isTrue();
+        assertThat(engine.isActive()).isFalse();
+    }
+
     @Test void lateSyncResponse_afterAnObserverAdopted_doesNotAdoptAgain() {
         engine = newEngine(true);
         adoptFromPeers();
@@ -73,7 +90,7 @@ class RabiaStaleSyncInputTest {
 
         var before = engine.currentPhaseForTesting();
 
-        engine.processDecision(new Decision<>(B, 0, before, StateValue.V1, Batch.emptyBatch(), Option.none()));
+        engine.processDecision(new Decision<>(B, 0, before, StateValue.V0, Batch.emptyBatch(), Option.none()));
         settle();
 
         assertThat(engine.currentPhaseForTesting().value()).as("control: the decision was applied and the observer advanced").isGreaterThan(before.value());
