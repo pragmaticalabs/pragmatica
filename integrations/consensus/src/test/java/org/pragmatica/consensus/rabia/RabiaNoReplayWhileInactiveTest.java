@@ -125,19 +125,45 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(activeAtHook.get()).as("the hook saw an ACTIVE engine").isEqualTo(1);
     }
 
+    /// An observer is not ACTIVE in the voting sense but does serve the restored state, so its restore must still
+    /// replay and run the hooks: the guard is "left Syncing", not "is a voter".
+    @Test
+    void successfulRestore_onAnObserver_stillReplaysOnceAndRunsTheHookOnce() {
+        var machine = new CountingStateMachine();
+        var hooks = new AtomicInteger();
+        var engine = coldStarted(machine, emptyDisk(false), hooks, true);
+
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> machine.replays.get() >= 1)).as("the observer replays after it leaves Syncing").isTrue();
+        assertThat(awaitCondition(() -> hooks.get() >= 1)).isTrue();
+        assertThat(machine.replays.get()).isEqualTo(1);
+        assertThat(hooks.get()).isEqualTo(1);
+    }
+
     private RabiaEngine<TestCommand> coldStarted(StateMachine<TestCommand> machine, RabiaPersistence<TestCommand> persistence, AtomicInteger hooks) {
+        return coldStarted(machine, persistence, hooks, false);
+    }
+
+    private RabiaEngine<TestCommand> coldStarted(StateMachine<TestCommand> machine,
+                                                 RabiaPersistence<TestCommand> persistence,
+                                                 AtomicInteger hooks,
+                                                 boolean gatedObserver) {
         var network = new TestClusterNetwork();
         var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, 3),
                                        network,
                                        machine,
                                        ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
                                        ConsensusMetrics.noop(),
-                                       false,
+                                       gatedObserver,
                                        persistence,
                                        timeSpan(50).millis());
 
         engines.add(engine);
         engine.onStateRestored(hooks::incrementAndGet);
+        if (gatedObserver) {
+            engine.authorizeObservation();
+        }
         engine.clusterState(ClusterStateNotification.active());
         assertThat(awaitCondition(() -> network.getMessages().stream().anyMatch(SyncRequest.class::isInstance)))
             .as("the engine started its sync round before responses are delivered")
