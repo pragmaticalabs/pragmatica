@@ -3,6 +3,9 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -10,6 +13,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.UnaryOperator;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -32,6 +37,7 @@ import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -51,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SnapshotDurableWriteTest {
     private static final String LOGGER = DefaultSnapshotManager.class.getName();
     private static final String NODE_ID = "node-durable";
+    private static final Function<Path, Result<Unit>> NO_SYNC = _ -> Result.unitResult();
 
     @TempDir
     Path tempDir;
@@ -246,6 +253,266 @@ class SnapshotDurableWriteTest {
         assertThat(raceDir.resolve(FileOps.readString(raceDir.resolve("LATEST")).unwrap().trim())).as("LATEST names an existing file")
                   .exists();
         assertThat(appender.warnsMentioning("Snapshot write failed")).isEmpty();
+    }
+
+    // --- Write-time read-back (#2257) ---
+    /// A snapshot is read back through the restore path before its file is committed. The node id is
+    /// written as-is, so one holding a newline encodes to a file that restores under a different id.
+    @Test
+    void snapshotNow_nodeIdThatDoesNotReadBack_isRefusedAndPreviousSnapshotKept() {
+        var good = new DefaultSnapshotManager(store, config);
+        var badConfig = snapshotConfig(tempDir, 100, 600_000, 5, "node\nwith-newline");
+
+        mutate("kept");
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        mutate("refused");
+
+        var refused = new DefaultSnapshotManager(store, badConfig).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// An encoder defect of the SA-01 kind -- a line lost on the way out -- is caught by the integrity
+    /// check the restore would apply, at write time, not at the next boot.
+    @Test
+    void snapshotNow_serializerDropsRefLine_isRefusedAtWrite() {
+        var good = new DefaultSnapshotManager(store, config);
+
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        store.putRef("lost", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withoutLastLine).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A separator mangled by the encoder is a parse failure on the read-back, refused at write time.
+    @Test
+    void snapshotNow_serializerMangledSeparator_isRefusedAtWrite() {
+        var good = new DefaultSnapshotManager(store, config);
+
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        store.putRef("mangled", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withMangledSeparator).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// The encoder itself loses information. The file is written from a snapshot that was rebuilt with the
+    /// loss, so its hash is consistent with what it holds: only a comparison with the in-memory source
+    /// by value can see it.
+    @Test
+    void snapshotNow_encoderLosesRefNameCharacter_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("a\0b", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withoutNul)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    @Test
+    void snapshotNow_encoderLosesRefCount_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount() + 1, lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesLastAccessedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt() + 1, lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesCreatedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt() + 1, lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesAccessCount_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount() + 1, lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesOrphanedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), 0L));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesTiers_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesBlockId_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(BlockId.blockId(new byte[]{1}).unwrap(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesRefTarget_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("target", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withOtherTargets)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A file with an extra trailing line, or an extra ref line, does not read back as captured.
+    @Test
+    void snapshotNow_fileWithTrailingLine_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> DefaultSnapshotManager.serializeSnapshot(snapshot) + "extra-line\n").snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A raw character that is not part of the encoded alphabet is a malformed token even when it equals the name.
+    @Test
+    void snapshotNow_nameWrittenRaw_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("a b", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> DefaultSnapshotManager.serializeSnapshot(snapshot).replace("a%20b|", "a b|")).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private void assertLifecycleLossRefused(UnaryOperator<BlockLifecycle> loss) {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.createLifecycle(new BlockLifecycle(BlockId.blockId("distinct".getBytes(StandardCharsets.UTF_8)).unwrap(), EnumSet.of(TierLevel.MEMORY), 2, 11L, 12L, 13, 14L));
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(snapshot -> withLifecycles(snapshot, loss))).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static MetadataSnapshot withLifecycles(MetadataSnapshot snapshot, UnaryOperator<BlockLifecycle> loss) {
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles().stream().map(loss).toList(), snapshot.refs());
+    }
+
+    private static MetadataSnapshot withOtherTargets(MetadataSnapshot snapshot) {
+        var other = BlockId.blockId(new byte[]{9}).unwrap();
+        var refs = snapshot.refs().keySet().stream().collect(Collectors.toMap(name -> name, _ -> other, (a, b) -> a, LinkedHashMap::new));
+
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
+    }
+
+    @Test
+    void snapshotNow_encoderShiftsEpoch_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withNextEpoch)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// The hash is computed once, from the captured snapshot, and the read-back checks the file carries that
+    /// value: a file whose header hash is not the captured one is refused although its content is right.
+    @Test
+    void snapshotNow_headerHashIsNotTheCapturedOne_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withZeroHash).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static String withZeroHash(MetadataSnapshot snapshot) {
+        return DefaultSnapshotManager.serializeSnapshot(snapshot).replaceFirst("contentHash=[0-9a-f]+", "contentHash=" + "00".repeat(32));
+    }
+
+    private String keptSnapshotThenChange() {
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        new DefaultSnapshotManager(store, config).snapshotNow().unwrap();
+
+        return readLatest();
+    }
+
+    /// A lossy encoder as it would be seen in production: the header carries the hash of the CAPTURED
+    /// snapshot (computed while rendering), so only the body lines can disagree with the in-memory source.
+    private static Function<MetadataSnapshot, String> lossy(Function<MetadataSnapshot, MetadataSnapshot> loss) {
+        return snapshot -> withCapturedHash(snapshot, loss.apply(snapshot));
+    }
+
+    private static String withCapturedHash(MetadataSnapshot captured, MetadataSnapshot lossy) {
+        return DefaultSnapshotManager.serializeSnapshot(lossy)
+                                     .replace("contentHash=" + HexFormat.of().formatHex(lossy.contentHash()),
+                                              "contentHash=" + HexFormat.of().formatHex(captured.contentHash()));
+    }
+
+    @Test
+    void snapshotNow_formatHeaderDisagrees_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replace("format=2\n", "format=7\n"));
+    }
+
+    @Test
+    void snapshotNow_lifecycleLineWithExtraField_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replaceAll("(?m)^([0-9a-f]{64}\\|.*)$", "$1|9"));
+    }
+
+    @Test
+    void snapshotNow_refTargetWithTrailingCharacters_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replaceAll("(?m)^([^\\n#=|]+\\|[0-9a-f]{64})$", "$1ab"));
+    }
+
+    private void assertTextDefectRefused(UnaryOperator<String> defect) {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> defect.apply(DefaultSnapshotManager.serializeSnapshot(snapshot))).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static MetadataSnapshot withoutNul(MetadataSnapshot snapshot) {
+        var refs = snapshot.refs().entrySet().stream().collect(Collectors.toMap(e -> e.getKey().replace("\0", ""), Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
+
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
+    }
+
+    private static MetadataSnapshot withNextEpoch(MetadataSnapshot snapshot) {
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch() + 1, snapshot.nodeId(), snapshot.lifecycles(), snapshot.refs());
+    }
+
+    private static String withoutLastLine(MetadataSnapshot snapshot) {
+        var lines = DefaultSnapshotManager.serializeSnapshot(snapshot).split("\n");
+
+        return String.join("\n", List.of(lines).subList(0, lines.length - 1)) + "\n";
+    }
+
+    private static String withMangledSeparator(MetadataSnapshot snapshot) {
+        return DefaultSnapshotManager.serializeSnapshot(snapshot).replace("mangled|", "mangled ");
+    }
+
+    private void assertRefusedAndPreviousIntact(Result<MetadataSnapshot> refused, String latestBefore) {
+        refused.onSuccess(_ -> Assertions.fail("a snapshot that does not read back must not be written"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(SnapshotError.RoundTripFailed.class));
+        assertThat(readLatest()).as("LATEST still names the previous snapshot").isEqualTo(latestBefore);
+        assertThat(snapshotFiles()).as("no new snapshot file").hasSize(1);
+        assertThat(appender.errorsMentioning("NOT written")).as("the refusal is logged at ERROR").hasSize(1);
+        assertThat(new DefaultSnapshotManager(inMemoryMetadataStore("boot"), config).restoreFromLatest().unwrap().isPresent())
+            .as("the previous snapshot still restores")
+            .isTrue();
     }
 
     // --- Read path: fallback ---
@@ -681,6 +948,14 @@ class SnapshotDurableWriteTest {
         List<Captured> warns() {
             return events.stream()
                          .filter(e -> e.level() == Level.WARN)
+                         .toList();
+        }
+
+        List<Captured> errorsMentioning(String fragment) {
+            return events.stream()
+                         .filter(e -> e.level() == Level.ERROR)
+                         .filter(e -> e.message()
+                                       .contains(fragment))
                          .toList();
         }
 

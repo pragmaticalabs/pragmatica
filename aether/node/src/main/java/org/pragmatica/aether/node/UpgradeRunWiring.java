@@ -125,10 +125,12 @@ public final class UpgradeRunWiring {
         fsm.memberStates()
            .forEach((id, state) -> {
                         if (NodeReplacementWiring.alive(Option.option(state))) {
-                        members.put(id,
-                                    new UpgradeRunPlanner.Member(fsm.memberDescriptor(id).map(d -> d.role()).or("core"),
-                                                                 in.version().apply(id)));
-                    }
+                            members.put(id,
+                                        new UpgradeRunPlanner.Member(fsm.memberDescriptor(id)
+                                                                        .map(d -> d.role())
+                                                                        .or("core"),
+                                                                     in.version().apply(id)));
+                        }
                     });
 
         return members;
@@ -201,10 +203,10 @@ public final class UpgradeRunWiring {
                      .begin(node, targetVersion)
                      .<BeginResult> map(_ -> new BeginResult.Started())
                      .recover(cause -> switch (cause) {
-                case NodeReplacementService.Refusal.NotLeader _, NodeReplacementService.Refusal.AlreadyReplacing _, NodeReplacementService.Refusal.Conflict _, NodeReplacementService.Refusal.UnknownNode _ -> new BeginResult.Deferred(cause.message());
-                case NodeReplacementService.Refusal _ -> new BeginResult.Refused(cause.message());
-                default -> new BeginResult.Deferred(cause.message());
-            });
+                                  case NodeReplacementService.Refusal.NotLeader _, NodeReplacementService.Refusal.AlreadyReplacing _, NodeReplacementService.Refusal.Conflict _, NodeReplacementService.Refusal.UnknownNode _ -> new BeginResult.Deferred(cause.message());
+                                  case NodeReplacementService.Refusal _ -> new BeginResult.Refused(cause.message());
+                                  default -> new BeginResult.Deferred(cause.message());
+                              });
         }
 
         @Override

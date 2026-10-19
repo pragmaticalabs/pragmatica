@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1455 at the blueprint level: `StreamConfigParser` and `BlueprintParser` read through
 /// `TomlDocument`'s typed getters, whose `.or(default)` applied the default to a mistyped value
-/// (`batch-size = "many"`, `max_latency_ms = "fast"`). Each parse must refuse naming key and value.
+/// (`batch_size = "many"`, `max_latency_ms = "fast"`). Each parse must refuse naming key and value.
 /// The `partitions` cases pin the stream declaration's own refusal (#1336), which this fix does not
 /// touch: they stay green with the type-mismatch gate removed.
 class MalformedValueParseRefusalTest {
@@ -74,11 +74,11 @@ class MalformedValueParseRefusalTest {
     void streamConfigParser_parseConsumers_malformedBatchSize_refusesNamingKeyAndValue() {
         assertRefused(StreamConfigParser.parseConsumers("""
             [streams.orders.consumers.billing]
-            batch-size = "many"
-            """, "orders"), "batch-size", "many");
+            batch_size = "many"
+            """, "orders"), "batch_size", "many");
         assertThat(StreamConfigParser.parseConsumers("""
             [streams.orders.consumers.billing]
-            batch-size = 10
+            batch_size = 10
             """, "orders").isSuccess()).isTrue();
     }
 
@@ -168,17 +168,17 @@ class MalformedValueParseRefusalTest {
 
         assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("processing", "serial"), "orders"),
                                  "processing", "serial", "one of: ordered, parallel");
-        assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("on-failure", "ignore"), "orders"),
-                                 "on-failure", "ignore", "one of: retry, skip, stall");
-        assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("read-preference", "closest"), "orders"),
-                                 "read-preference", "closest", "governor, nearest, any-replica, linearizable");
+        assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("on_failure", "ignore"), "orders"),
+                                 "on_failure", "ignore", "one of: retry, skip, stall");
+        assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("read_preference", "closest"), "orders"),
+                                 "read_preference", "closest", "governor, nearest, any-replica, linearizable");
         for (var control : List.of(List.of("processing", "ordered"), List.of("processing", "parallel"),
-                                   List.of("on-failure", "retry"), List.of("on-failure", "skip"), List.of("on-failure", "stall"),
-                                   List.of("read-preference", "governor"), List.of("read-preference", "nearest"),
-                                   List.of("read-preference", "any-replica"), List.of("read-preference", "linearizable"),
-                                   List.of("read-preference", "any"), List.of("read-preference", "replica"),
-                                   List.of("read-preference", "follower"), List.of("read-preference", "follower-only"),
-                                   List.of("read-preference", "linearizable-read"), List.of("read-preference", "strong-read"))) {
+                                   List.of("on_failure", "retry"), List.of("on_failure", "skip"), List.of("on_failure", "stall"),
+                                   List.of("read_preference", "governor"), List.of("read_preference", "nearest"),
+                                   List.of("read_preference", "any-replica"), List.of("read_preference", "linearizable"),
+                                   List.of("read_preference", "any"), List.of("read_preference", "replica"),
+                                   List.of("read_preference", "follower"), List.of("read_preference", "follower-only"),
+                                   List.of("read_preference", "linearizable-read"), List.of("read_preference", "strong-read"))) {
             assertThat(StreamConfigParser.parseConsumers(consumer.formatted(control.get(0), control.get(1)), "orders").isSuccess())
                 .describedAs("%s = %s is a documented token", control.get(0), control.get(1))
                 .isTrue();

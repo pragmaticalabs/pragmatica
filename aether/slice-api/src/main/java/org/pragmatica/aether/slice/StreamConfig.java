@@ -32,7 +32,7 @@ public record StreamConfig(String name,
     /// `"earliest"` is the only value the system accepts, so it is the only honest default (#677).
     ///
     /// This read `"latest"` until 2026-08-29, which made the record's own factories hand out a value
-    /// `StreamResourceValidator` REJECTS — "auto-offset-reset 'latest' has no runtime effect". A
+    /// `StreamResourceValidator` REJECTS — "auto_offset_reset 'latest' has no runtime effect". A
     /// never-committed consumer always starts at offset 0 (earliest), permanently, by the **#478
     /// ruling**, not as a gap to be closed later.
     ///

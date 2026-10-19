@@ -55,12 +55,6 @@ public interface TopologyManager {
         return (clusterSize() - 1) / 2;
     }
 
-    /// Returns the super-majority size (n - f) for fast path optimization.
-    /// When this many nodes agree in Round 1, we can skip Round 2.
-    default int superMajoritySize() {
-        return clusterSize() - maxFailures();
-    }
-
     /// Mapping from IP address (host and port) to node ID.
     Option<NodeId> reverseLookup(SocketAddress socketAddress);
     Promise<Unit> start();

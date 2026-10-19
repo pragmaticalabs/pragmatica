@@ -112,17 +112,17 @@ class KvStoreApiKeyValidator implements SecurityValidator {
                         ApiKeyValue.class,
                         (_, keyValue) -> {
                             if (match.get() != null) {
-                            return;
-                        }
+                                return;
+                            }
 
                             if (!keyValue.isValidForAuth()) {
-                            return;
-                        }
+                                return;
+                            }
 
                             if (MessageDigest.isEqual(candidateHashBytes,
                                                       keyValue.keyHash().getBytes(StandardCharsets.UTF_8))) {
-                            match.set(keyValue);
-                        }
+                                match.set(keyValue);
+                            }
                         });
         var matched = match.get();
 
@@ -168,9 +168,7 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     }
 
     private static Option<String> extractCaseSensitive(Map<String, List<String>> headers) {
-        return Option.option(headers.get(API_KEY_HEADER))
-                     .filter(values -> !values.isEmpty())
-                     .map(List::getFirst);
+        return Option.option(headers.get(API_KEY_HEADER)).flatMap(values -> Option.from(values.stream().findFirst()));
     }
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
@@ -178,8 +176,8 @@ class KvStoreApiKeyValidator implements SecurityValidator {
                            .stream()
                            .filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
-                           .filter(values -> values != null && !values.isEmpty())
-                           .map(List::getFirst)
+                           .flatMap(values -> Option.option(values).stream())
+                           .flatMap(List::stream)
                            .findFirst();
 
         return Option.from(value);

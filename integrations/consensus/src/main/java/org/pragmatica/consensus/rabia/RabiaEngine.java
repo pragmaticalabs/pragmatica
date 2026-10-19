@@ -162,6 +162,19 @@ public class RabiaEngine<C extends Command> {
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
 
     private volatile Option<Cause> authorityFailure = Option.none();
+    /// Why this node's OWN persisted history could not be restored (#1468). Set only by
+    /// [#recordOwnRestoreFailure] and never cleared in-process: the own-restore arm runs only after a genesis has
+    /// resolved (adoption needs an installed electorate), and no genesis installs after that, so unlike
+    /// `authorityFailure` there is no clear in [#installGenesis]. It is not set by a responder-snapshot or a
+    /// re-persist failure, so a supervisor that bounds the stop (`OwnRestoreWatchdog`) acts only on the arms
+    /// it was given.
+    private volatile Option<Cause> ownRestoreFailure = Option.none();
+    /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
+    /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
+    /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which
+    /// the constructor also sets (an invalid initial electorate) and a later genesis clears, so bounding all of
+    /// `authorityFailure` would halt a node that is only waiting for its cluster to form.
+    private volatile Option<Cause> restoredStateSaveFailure = Option.none();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
     private final Map<Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
     /// The §4 command this voter currently carries on its proposals. Always of the current base epoch:
@@ -184,6 +197,18 @@ public class RabiaEngine<C extends Command> {
     /// Executor-confined. The slot this replica last asked each peer to repair; one request per slot.
     private final Map<NodeId, Phase> repairRequests = new HashMap<>();
     private volatile Option<Cause> stateTransferFailure = Option.none();
+
+    /// The cause of a failed restore of this node's own persisted history, while the node is fenced
+    /// from activating because of it (#1468).
+    public Option<Cause> ownRestoreFailure() {
+        return ownRestoreFailure;
+    }
+
+    /// The cause of a failed re-persist after a restore or adoption, while the node is fenced from
+    /// activating because of it (#1516).
+    public Option<Cause> restoredStateSaveFailure() {
+        return restoredStateSaveFailure;
+    }
 
     public Option<Cause> stateTransferFailure() {
         return stateTransferFailure;
@@ -2387,6 +2412,7 @@ public class RabiaEngine<C extends Command> {
     /// restore failure is NOT recorded here: another sync round may adopt a readable snapshot.
     private void recordOwnRestoreFailure(Cause cause) {
         authorityFailure = Option.some(cause);
+        ownRestoreFailure = Option.some(cause);
         logRestoreFailure(cause);
     }
 
@@ -2581,6 +2607,7 @@ public class RabiaEngine<C extends Command> {
     /// and `#syncAdoptionSaveFails_logsFailedToPersistAtError`.
     private void recordRestoredStateSaveFailure(Cause cause) {
         authorityFailure = Option.some(cause);
+        restoredStateSaveFailure = Option.some(cause);
         log.error("Node {} restored state but FAILED to persist it: {}. The restore is "
                  + "in memory ONLY — this node's disk still holds its previous checkpoint, "
                  + "so a restart will lose the restored history and serve a stale store.",

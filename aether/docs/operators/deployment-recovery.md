@@ -59,9 +59,15 @@ A chaos test that kills a process to verify recovery cannot run when the orchest
 
 Aether is designed around a specific failure model — **terminal removal**:
 
-> **A dead NodeId NEVER returns under the same identity.** When a node leaves the
-> presence-derived membership view, the cluster terminally removes that NodeId and never
-> re-admits it. Recovery is *always* a brand-new node with a new ULID NodeId, minted by
+> **A dead NodeId never returns as a different process.** When a node leaves the
+> presence-derived membership view, the cluster terminally removes that NodeId. A new
+> process presenting it (a restart under the same identity) carries a different non-zero boot token
+> and is refused by every observer that has seen the first token; once an observer sees the conflict
+> it retires the NodeId for that observer's lifetime, for both processes. A process that presents no
+> boot token (`0`) is not discriminated until the NodeId is retired, after which it is refused too. Before any conflict, the same process the cluster wrongly
+> declared dead (a false-dead survivor, a healed partition) can be re-admitted: by an authenticated Hello that the membership view
+> or SWIM corroborates, or once its tombstone is at least 30 s old. Recovery from a real
+> failure is *always* a brand-new node with a new ULID NodeId, minted by
 > CTM auto-heal on a fresh host. Each VM (or pod, or systemd-managed host) hosts exactly
 > one aether-node; if that node dies, the host is dead from the cluster's perspective.
 
@@ -85,7 +91,7 @@ Aether takes the second view. Empirically, the second view is right for distribu
 
 The single argument for `--restart unless-stopped` is "if the Docker daemon restarts (host reboot), the container should come back automatically."
 
-Aether's answer: a reboot is a process death, and a dead NodeId never returns under the same id. If the host reboots, CTM observes the node missing and provisions a replacement under a FRESH node id. A host-level unit must therefore neither restart the process (`Restart=no`) nor start it on boot (`systemctl start`, never `enable`) while the node id is fixed per host. Relaunching under the old id is refused once the node has been removed (§4.4). A host that should serve again after a reboot rejoins under a NEW node id.
+Aether's answer: a reboot is a process death, and a dead NodeId never returns as a new process under the same id. If the host reboots, CTM observes the node missing and provisions a replacement under a FRESH node id. A host-level unit must therefore neither restart the process (`Restart=no`) nor start it on boot (`systemctl start`, never `enable`) while the node id is fixed per host. Relaunching under the old id is refused once the node has been removed (§4.4). A host that should serve again after a reboot rejoins under a NEW node id.
 
 In practice, most production deployments use immutable VMs/pods: hosts are cattle, not pets. A host that needs to be rebooted to restore a service is replaced, not nursed.
 

@@ -487,7 +487,7 @@ public sealed interface StreamResourceValidator {
         config.encryptionKeyId()
               .onPresent(keyId -> failures.add(StreamValidationFailure.streamValidationFailure(field,
                                                                                                RULE_INERT_STREAM_CONFIG,
-                                                                                               "encryption-key-id '" + keyId
+                                                                                               "encryption_key_id '" + keyId
                                                                                               + "' has no runtime effect — every stream is written through a single, shared "
                                                                                               + "segment sink with no encryptor wired to it (tracked as #253: BlockEncryptor has "
                                                                                               + "no production key source). Remove the key; it does not protect this stream's "
@@ -504,14 +504,14 @@ public sealed interface StreamResourceValidator {
         if (!"earliest".equalsIgnoreCase(config.autoOffsetReset())) {
             failures.add(StreamValidationFailure.streamValidationFailure(field,
                                                                          RULE_INERT_STREAM_CONFIG,
-                                                                         "auto-offset-reset '" + config.autoOffsetReset()
+                                                                         "auto_offset_reset '" + config.autoOffsetReset()
                                                                         + "' has no runtime effect — a never-committed consumer always starts at offset 0 "
                                                                         + "(earliest) per the #478 ruling, permanently, not as a gap to be closed later. "
                                                                         + "Remove the key or set it to 'earliest', its only honest value."));
         }
     }
 
-    /// A consumer key the parser refuses (#1549: `checkpoint-interval` that is not a duration of at least 1 ms)
+    /// A consumer key the parser refuses (#1549: `checkpoint_interval` that is not a duration of at least 1 ms)
     /// rejects the section under the same per-cause rule as a stream key, instead of throwing out of validation.
     private static void guardConsumerConfigs(String alias, String toml, List<StreamValidationFailure> failures) {
         StreamConfigParser.parseConsumers(toml, alias)
@@ -537,7 +537,7 @@ public sealed interface StreamResourceValidator {
 
         if (config.maxBatchSize() != defaults.maxBatchSize()) {
             failures.add(inertConsumerFailure(field,
-                                              "batch-size",
+                                              "batch_size",
                                               String.valueOf(config.maxBatchSize())));
         }
 
@@ -549,29 +549,29 @@ public sealed interface StreamResourceValidator {
 
         if (config.errorStrategy() != defaults.errorStrategy()) {
             failures.add(inertConsumerFailure(field,
-                                              "on-failure",
+                                              "on_failure",
                                               config.errorStrategy().toString().toLowerCase()));
         }
 
         if (!config.checkpointInterval().equals(defaults.checkpointInterval())) {
             failures.add(inertConsumerFailure(field,
-                                              "checkpoint-interval",
+                                              "checkpoint_interval",
                                               config.checkpointInterval().toString()));
         }
 
         if (config.maxRetries() != defaults.maxRetries()) {
             failures.add(inertConsumerFailure(field,
-                                              "max-retries",
+                                              "max_retries",
                                               String.valueOf(config.maxRetries())));
         }
 
         if (!config.deadLetterStream().equals(defaults.deadLetterStream())) {
-            failures.add(inertConsumerFailure(field, "dead-letter", config.deadLetterStream()));
+            failures.add(inertConsumerFailure(field, "dead_letter", config.deadLetterStream()));
         }
 
         if (config.readPreference() != defaults.readPreference()) {
             failures.add(inertConsumerFailure(field,
-                                              "read-preference",
+                                              "read_preference",
                                               config.readPreference().toString().toLowerCase()));
         }
     }

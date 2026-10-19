@@ -34,6 +34,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
@@ -41,6 +42,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
@@ -293,10 +295,12 @@ public interface StreamConfigParser {
         }
 
         if (sourceOpt.isPresent()) {
-            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
-                                                                                                                      source -> parseExternalResource(streamName,
-                                                                                                                                                      source,
-                                                                                                                                                      effectiveRoleOpt)));
+            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> refuseDashedConsumerSections(doc,
+                                                                                                                                    streamName))
+                                    .flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
+                                                                 source -> parseExternalResource(streamName,
+                                                                                                 source,
+                                                                                                 effectiveRoleOpt)));
         }
         // Spec §11.1.1: shortcut form — when `version` is omitted, default per role.
         // Producer (explicit, inferred from manifest, or absent → producer-assumed) → "1.0.0".
@@ -503,18 +507,28 @@ public interface StreamConfigParser {
                                                "role",
                                                "partitions",
                                                "retention",
-                                               "retention-value",
-                                               "retention-mode",
-                                               "max-age",
-                                               "max-count",
-                                               "max-bytes",
-                                               "auto-offset-reset",
-                                               "max-event-size",
+                                               "retention_value",
+                                               "retention_mode",
+                                               "max_age",
+                                               "max_count",
+                                               "max_bytes",
+                                               "auto_offset_reset",
+                                               "max_event_size",
                                                "consistency",
                                                ReplicationDeclaration.FACTOR_KEY,
                                                ReplicationDeclaration.CONFIRMATION_KEY,
                                                "compression",
-                                               "encryption-key-id");
+                                               "encryption_key_id");
+
+    /// Every key read from a `[streams.<alias>.consumers.<group>]` section. Snake_case like the stream keys; the dashed
+    /// spelling of one of them is refused ([#refuseDashedConsumerKeys]) rather than ignored, which would default it.
+    List<String> CONSUMER_SECTION_KEYS = List.of("processing",
+                                                 "checkpoint_interval",
+                                                 "batch_size",
+                                                 "on_failure",
+                                                 "max_retries",
+                                                 "dead_letter",
+                                                 "read_preference");
 
     /// The keys of [#STREAM_SECTION_KEYS] whose values are integers.
     List<String> INTEGER_KEYS = List.of("partitions",
@@ -546,24 +560,25 @@ public interface StreamConfigParser {
         return suggestions;
     }
 
-    /// The known key a stray key most plausibly meant: identical once `_` is read as `-`, else the closest
-    /// by edit distance within `max(3, length / 2)`; empty when nothing is close.
+    /// The known key a stray key most plausibly meant: identical once `-` is read as `_` (a dashed spelling, refused
+    /// since stream keys are snake_case), else the closest by edit distance within `max(3, length / 2)`; empty when
+    /// nothing is close.
     private static String nearestKey(String key) {
         if (RENAMED_KEYS.containsKey(key)) {
             return RENAMED_KEYS.get(key);
         }
 
-        var dashed = key.replace('_', '-');
+        var snake = key.replace('-', '_');
 
-        if (STREAM_SECTION_KEYS.contains(dashed)) {
-            return dashed;
+        if (STREAM_SECTION_KEYS.contains(snake)) {
+            return snake;
         }
 
         var threshold = Math.max(3, key.length() / 2);
 
         return STREAM_SECTION_KEYS.stream()
-                                  .filter(known -> editDistance(dashed, known) <= threshold)
-                                  .min(Comparator.comparingInt(known -> editDistance(dashed, known)))
+                                  .filter(known -> editDistance(snake, known) <= threshold)
+                                  .min(Comparator.comparingInt(known -> editDistance(snake, known)))
                                   .orElse("");
     }
 
@@ -605,7 +620,7 @@ public interface StreamConfigParser {
         var factor = section.integer(ReplicationDeclaration.FACTOR_KEY);
         var confirmation = section.integer(ReplicationDeclaration.CONFIRMATION_KEY);
         var maxEventSize = optionalLong(section,
-                                        "max-event-size",
+                                        "max_event_size",
                                         StreamValues::size,
                                         StreamConfig.DEFAULT.maxEventSizeBytes()).flatMap(size -> fitsOneFrame(section,
                                                                                                                size));
@@ -639,14 +654,14 @@ public interface StreamConfigParser {
         return Result.all(partitions, retention, maxEventSize, consistency, compression).map((p, r, size, mode, codec) -> StreamConfig.streamConfig(section.alias(),
                                                                                                                                                     p,
                                                                                                                                                     r,
-                                                                                                                                                    section.string("auto-offset-reset")
+                                                                                                                                                    section.string("auto_offset_reset")
                                                                                                                                                            .or("earliest"),
                                                                                                                                                     size,
                                                                                                                                                     parseConsistencyMode(mode),
                                                                                                                                                     factors.replicationFactor(),
                                                                                                                                                     factors.confirmationFactor(),
                                                                                                                                                     parseCompression(codec),
-                                                                                                                                                    section.string("encryption-key-id")));
+                                                                                                                                                    section.string("encryption_key_id")));
     }
 
     private static Option<Result<?>> firstFailure(List<Result<?>> results) {
@@ -662,14 +677,14 @@ public interface StreamConfigParser {
                     .or(success(value));
     }
 
-    /// #1937: one event travels alone in one replication or catch-up frame, so a `max-event-size` above what a frame can carry
+    /// #1937: one event travels alone in one replication or catch-up frame, so a `max_event_size` above what a frame can carry
     /// is refused here, at config validation, rather than at the first oversized event ([StreamEventLimits]).
     private static Result<Long> fitsOneFrame(StreamSection section, long size) {
         return size <= StreamEventLimits.MAX_EVENT_SIZE_BYTES
                ? success(size)
                : new StreamDeclarationError.ValueAboveMaximum(section.alias(),
-                                                              "max-event-size",
-                                                              section.string("max-event-size").or(String.valueOf(size)),
+                                                              "max_event_size",
+                                                              section.string("max_event_size").or(String.valueOf(size)),
                                                               StreamEventLimits.MAX_EVENT_SIZE_BYTES).result();
     }
 
@@ -702,10 +717,10 @@ public interface StreamConfigParser {
     /// bounds follow the same rule so an undeclared bound means the default, uniformly. Under the default
     /// mode (ANY) eviction happens at whichever limit is hit first. `count` keeps its unbounded byte/age
     /// bounds: its count already sizes the ring. Every declared value is typed-refused when malformed,
-    /// overflowing or below 1, as is an unknown `retention` or `retention-mode` spelling.
+    /// overflowing or below 1, as is an unknown `retention` or `retention_mode` spelling.
     private static Result<RetentionPolicy> parseRetention(StreamSection section) {
         var type = optionalEnum(section, "retention", List.of("count", "time", "size", "compound"), "count");
-        var mode = optionalEnum(section, "retention-mode", List.of("any", "all"), "any").map(StreamConfigParser::parseRetentionMode);
+        var mode = optionalEnum(section, "retention_mode", List.of("any", "all"), "any").map(StreamConfigParser::parseRetentionMode);
 
         return type.flatMap(retentionType -> retentionWithMode(section, retentionType, mode));
     }
@@ -720,15 +735,15 @@ public interface StreamConfigParser {
     private static Result<RetentionPolicy> retentionOf(StreamSection section, String type, RetentionMode mode) {
         return switch (type) {
             case "compound" -> compoundRetention(section, mode);
-            case "time" -> optionalLong(section, "retention-value", StreamValues::duration, DEFAULTS.maxAgeMs()).map(ageMs -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
+            case "time" -> optionalLong(section, "retention_value", StreamValues::duration, DEFAULTS.maxAgeMs()).map(ageMs -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
                                                                                                                                                               DEFAULTS.maxBytes(),
                                                                                                                                                               ageMs,
                                                                                                                                                               mode));
-            case "size" -> optionalLong(section, "retention-value", StreamValues::size, DEFAULTS.maxBytes()).map(bytes -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
+            case "size" -> optionalLong(section, "retention_value", StreamValues::size, DEFAULTS.maxBytes()).map(bytes -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
                                                                                                                                                           bytes,
                                                                                                                                                           DEFAULTS.maxAgeMs(),
                                                                                                                                                           mode));
-            default -> optionalLong(section, "retention-value", StreamValues::count, DEFAULTS.maxCount()).map(count -> RetentionPolicy.retentionPolicy(count,
+            default -> optionalLong(section, "retention_value", StreamValues::count, DEFAULTS.maxCount()).map(count -> RetentionPolicy.retentionPolicy(count,
                                                                                                                                                        Long.MAX_VALUE,
                                                                                                                                                        Long.MAX_VALUE,
                                                                                                                                                        mode));
@@ -736,9 +751,9 @@ public interface StreamConfigParser {
     }
 
     private static Result<RetentionPolicy> compoundRetention(StreamSection section, RetentionMode mode) {
-        var maxCount = optionalLong(section, "max-count", StreamValues::count, DEFAULTS.maxCount());
-        var maxBytes = optionalLong(section, "max-bytes", StreamValues::size, DEFAULTS.maxBytes());
-        var maxAge = optionalLong(section, "max-age", StreamValues::duration, DEFAULTS.maxAgeMs());
+        var maxCount = optionalLong(section, "max_count", StreamValues::count, DEFAULTS.maxCount());
+        var maxBytes = optionalLong(section, "max_bytes", StreamValues::size, DEFAULTS.maxBytes());
+        var maxAge = optionalLong(section, "max_age", StreamValues::duration, DEFAULTS.maxAgeMs());
 
         return firstFailure(List.of(maxCount, maxBytes, maxAge)).map(failure -> failure.<RetentionPolicy> map(_ -> DEFAULTS))
                            .or(() -> compoundPolicy(maxCount, maxBytes, maxAge, mode));
@@ -754,18 +769,40 @@ public interface StreamConfigParser {
                                                                                                                  mode));
     }
 
+    /// The `[streams.<name>.consumers.<group>]` table names of one stream, one segment past the prefix.
+    private static List<String> consumerSectionNames(TomlDocument doc, String streamName) {
+        var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
+
+        return doc.sectionNames()
+                  .stream()
+                  .filter(sectionName -> sectionName.startsWith(consumerPrefix))
+                  .filter(sectionName -> !sectionName.substring(consumerPrefix.length())
+                                                     .contains("."))
+                  .toList();
+    }
+
+    /// An External stream's consumer tables are not parsed into configs, but a dashed key in one is still refused,
+    /// the same as under an owned stream: no consumer key is silently ignored.
+    private static Result<Unit> refuseDashedConsumerSections(TomlDocument doc, String streamName) {
+        var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
+
+        return consumerSectionNames(doc, streamName).stream()
+                                   .map(sectionName -> refuseDashedConsumerKeys(doc,
+                                                                                streamName,
+                                                                                sectionName,
+                                                                                sectionName.substring(consumerPrefix.length())))
+                                   .reduce(success(unit()),
+                                           (acc, next) -> acc.flatMap(_ -> next));
+    }
+
     private static Result<Map<String, ConsumerConfig>> extractConsumerConfigs(TomlDocument doc, String streamName) {
         var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
-        var consumers = doc.sectionNames()
-                           .stream()
-                           .filter(sectionName -> sectionName.startsWith(consumerPrefix))
-                           .filter(sectionName -> !sectionName.substring(consumerPrefix.length())
-                                                              .contains("."))
-                           .map(sectionName -> parseConsumerSection(doc,
-                                                                    streamName,
-                                                                    sectionName,
-                                                                    sectionName.substring(consumerPrefix.length())))
-                           .toList();
+        var consumers = consumerSectionNames(doc, streamName).stream()
+                                            .map(sectionName -> parseConsumerSection(doc,
+                                                                                     streamName,
+                                                                                     sectionName,
+                                                                                     sectionName.substring(consumerPrefix.length())))
+                                            .toList();
 
         return firstFailure(List.copyOf(consumers)).map(failure -> failure.<Map<String, ConsumerConfig>> map(_ -> Map.of()))
                            .or(() -> byGroup(consumers));
@@ -777,37 +814,75 @@ public interface StreamConfigParser {
                                                                                                    Function.identity())));
     }
 
-    /// `checkpoint-interval` is read as a duration of at least 1 ms, refused typed like every stream key (#1549);
+    /// `checkpoint_interval` is read as a duration of at least 1 ms, refused typed like every stream key (#1549);
     /// before, a value such as `5 min` threw `NumberFormatException` out of deploy validation.
     private static Result<ConsumerConfig> parseConsumerSection(TomlDocument doc,
                                                                String streamName,
                                                                String section,
                                                                String groupName) {
-        return doc.getString(section, "checkpoint-interval")
-                  .map(raw -> StreamValues.duration(streamName, "consumers." + groupName + ".checkpoint-interval", raw))
-                  .or(success(1000L))
-                  .map(checkpointIntervalMs -> consumerConfig(doc, section, groupName, checkpointIntervalMs));
+        return refuseDashedConsumerKeys(doc, streamName, section, groupName).flatMap(_ -> parseCheckpointInterval(doc,
+                                                                                                                  streamName,
+                                                                                                                  section,
+                                                                                                                  groupName))
+                                       .map(checkpointIntervalMs -> consumerConfig(doc,
+                                                                                   section,
+                                                                                   groupName,
+                                                                                   checkpointIntervalMs));
+    }
+
+    private static Result<Long> parseCheckpointInterval(TomlDocument doc,
+                                                        String streamName,
+                                                        String section,
+                                                        String groupName) {
+        return doc.getString(section, "checkpoint_interval")
+                  .map(raw -> StreamValues.duration(streamName, "consumers." + groupName + ".checkpoint_interval", raw))
+                  .or(success(1000L));
+    }
+
+    /// A consumer key spelled with dashes (`batch-size`) is refused, naming its snake_case spelling: the parser reads
+    /// only the snake_case keys, so the dashed one would otherwise be ignored and its default applied silently.
+    private static Result<Unit> refuseDashedConsumerKeys(TomlDocument doc,
+                                                         String streamName,
+                                                         String section,
+                                                         String groupName) {
+        var dashed = doc.keys(section)
+                        .stream()
+                        .filter(key -> key.indexOf('-') >= 0 && CONSUMER_SECTION_KEYS.contains(key.replace('-', '_')))
+                        .sorted()
+                        .toList();
+
+        return dashed.isEmpty()
+               ? success(unit())
+               : new StreamDeclarationError.UnknownStreamKeys(streamName + ".consumers." + groupName,
+                                                              dashed,
+                                                              dashedSuggestions(dashed)).result();
+    }
+
+    private static Map<String, String> dashedSuggestions(List<String> dashed) {
+        return dashed.stream()
+                     .collect(Collectors.toUnmodifiableMap(Function.identity(),
+                                                           key -> key.replace('-', '_')));
     }
 
     private static ConsumerConfig consumerConfig(TomlDocument doc,
                                                  String section,
                                                  String groupName,
                                                  long checkpointIntervalMs) {
-        var batchSize = doc.getInt(section, "batch-size").or(1);
+        var batchSize = doc.getInt(section, "batch_size").or(1);
         var processing = doc.getParsed(section,
                                        "processing",
                                        "one of: ordered, parallel",
                                        StreamConfigParser::parseProcessingMode)
                             .or(ProcessingMode.ORDERED);
         var onFailure = doc.getParsed(section,
-                                      "on-failure",
+                                      "on_failure",
                                       "one of: retry, skip, stall",
                                       StreamConfigParser::parseErrorStrategy)
                            .or(ErrorStrategy.RETRY);
-        var maxRetries = doc.getInt(section, "max-retries").or(3);
-        var deadLetterStream = doc.getString(section, "dead-letter").or("");
+        var maxRetries = doc.getInt(section, "max_retries").or(3);
+        var deadLetterStream = doc.getString(section, "dead_letter").or("");
         var readPreference = doc.getParsed(section,
-                                           "read-preference",
+                                           "read_preference",
                                            "one of: governor, nearest, any-replica, linearizable",
                                            StreamConfigParser::parseReadPreference)
                                 .or(ReadPreference.GOVERNOR);

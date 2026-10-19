@@ -9,11 +9,11 @@
 # Controlled configuration for the #265 STEP 0 fan-out baseline:
 #   - partitions = 1        -> one clean, globally-ordered log (monotonic offsets).
 #   - retention  = count    -> count-based eviction (never time-based) so a slow
-#     consumer is never evicted mid-test; retention-value is far larger than any
+#     consumer is never evicted mid-test; retention_value is far larger than any
 #     test event count, so nothing is ever dropped (no spurious CursorExpired).
 
 [streams.test-events]
 partitions = 1
 retention = "count"
-retention-value = "100000"
-max-event-size = "64KB"
+retention_value = "100000"
+max_event_size = "64KB"

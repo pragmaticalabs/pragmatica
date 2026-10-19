@@ -66,7 +66,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
 
     private static SourceProfile sshHostsSource(String name, List<String> hosts) {
         var roles = Map.of(NodeRole.CORE,
-                           RoleSubTable.roleSubTable(NodeRole.CORE, Option.empty(), Option.some(hosts), Option.empty(), "default"));
+                           RoleSubTable.roleSubTable(Option.empty(), Option.some(hosts), Option.empty(), "default"));
 
         return SourceProfile.sourceProfile(sourceNameOrDefault(name),
                                            SourceType.SSH,

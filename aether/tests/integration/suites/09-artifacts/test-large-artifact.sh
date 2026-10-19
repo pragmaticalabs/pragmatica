@@ -21,6 +21,33 @@ test_cluster_ready() {
     log_pass "Cluster ready"
 }
 
+# curl_http_status <out_file> <curl args...> — prints the HTTP status ("000" when curl produced none).
+# #2191: bounded by --connect-timeout/--max-time, and retried ONLY when curl itself failed (a lost link, a reset, a
+# timeout: nonzero exit, status 000). Any HTTP answer, 4xx and 5xx included, is the server's verdict and is returned at
+# once without a retry. The PUT targets a content-addressed path, so repeating it after a lost link is safe
+# [design intent — unverified: a re-PUT of identical bytes answering 2xx has not been run against a cluster]. Every
+# transport failure logs curl's exit code, so "link lost" and "server refused" read differently.
+curl_http_status() {
+    local out="$1"; shift
+    local attempts="${LARGE_ARTIFACT_CURL_ATTEMPTS:-3}" i=1 status rc
+    while :; do
+        rc=0
+        status=$(curl -s --connect-timeout "${LARGE_ARTIFACT_CONNECT_TIMEOUT_S:-10}" --max-time "${LARGE_ARTIFACT_MAX_TIME_S:-120}" \
+                      -o "$out" -w "%{http_code}" "$@") || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            printf '%s' "$status"
+            return 0
+        fi
+        log_warn "curl transport failure on attempt ${i}/${attempts}: exit code ${rc}, HTTP status ${status:-000}" >&2
+        if [ "$i" -ge "$attempts" ]; then
+            printf '%s' "${status:-000}"
+            return 0
+        fi
+        i=$((i + 1))
+        sleep "${LARGE_ARTIFACT_RETRY_DELAY_S:-2}"
+    done
+}
+
 push_and_verify_size() {
     local label="$1" size_kb="$2"
     local push_file="${TMPDIR}/large-artifact-push-${label}.bin"
@@ -36,7 +63,7 @@ push_and_verify_size() {
     # string from a curl crash) hits the failure branch instead of silently
     # passing through `[ ... ] 2>/dev/null` arith errors.
     local push_status
-    push_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    push_status=$(curl_http_status /dev/null \
         -X PUT \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/octet-stream" \
@@ -49,7 +76,7 @@ push_and_verify_size() {
 
     # Resolve — must be 2xx. Same positive-form rationale as the push check.
     local resolve_status
-    resolve_status=$(curl -s -o "$resolve_file" -w "%{http_code}" \
+    resolve_status=$(curl_http_status "$resolve_file" \
         -H "X-API-Key: ${API_KEY}" \
         "${CLUSTER_ENDPOINT}/repository/org/test/${ARTIFACT_BASE}/${label}/${ARTIFACT_BASE}-${label}.jar")
     if ! { [ "$resolve_status" -ge 200 ] && [ "$resolve_status" -lt 300 ]; } 2>/dev/null; then

@@ -42,6 +42,10 @@ final class FlowPrinter {
     private StringBuilder output;
     private int currentColumn;
     private int indentLevel;
+    /// Column that `indentLevel == indentBaseLevel` stands for while a braced body is printed inside an aligned
+    /// lambda, or -1 when indent is plain `indentLevel * indentSize`. See `anchorBracedBody` (#974).
+    private int indentBaseCol = -1;
+    private int indentBaseLevel;
     private char lastChar;
     private char prevChar;
     private String lastWord = "";
@@ -187,6 +191,8 @@ final class FlowPrinter {
     private record SavedState(StringBuilder output,
                               int currentColumn,
                               int indentLevel,
+                              int indentBaseCol,
+                              int indentBaseLevel,
                               char lastChar,
                               char prevChar,
                               String lastWord,
@@ -204,6 +210,8 @@ final class FlowPrinter {
         return new SavedState(output,
                               currentColumn,
                               indentLevel,
+                              indentBaseCol,
+                              indentBaseLevel,
                               lastChar,
                               prevChar,
                               lastWord,
@@ -222,6 +230,8 @@ final class FlowPrinter {
         output = saved.output();
         currentColumn = saved.currentColumn();
         indentLevel = saved.indentLevel();
+        indentBaseCol = saved.indentBaseCol();
+        indentBaseLevel = saved.indentBaseLevel();
         lastChar = saved.lastChar();
         prevChar = saved.prevChar();
         lastWord = saved.lastWord();
@@ -292,6 +302,21 @@ final class FlowPrinter {
     /// Using `leaf.text()` instead would return the source slice covering trailing trivia,
     /// causing whitespace bleed into the output.
     private void emitLeafTokens(Cursor.Leaf leaf) {
+        // A diamond `<>` or wildcard-only `<?>` has no children, so it arrives here rather than through
+        // printTypeArgs: raise the type context for it too, or its `<` reads as a relational operator (#974).
+        boolean typeContext = leaf.kindIs(RuleKind.TYPE_ARGS) || leaf.kindIs(RuleKind.WILDCARD_ONLY_TYPE_ARGS) || leaf.kindIs(RuleKind.TYPE_PARAMS);
+
+        if (typeContext) {
+            typeContextDepth++;
+        }
+
+        emitLeafTokensIn(leaf);
+        if (typeContext) {
+            typeContextDepth--;
+        }
+    }
+
+    private void emitLeafTokensIn(Cursor.Leaf leaf) {
         var tokens = leaf.cst().tokens();
         // Position of the last `}` token in this leaf (or -1). Orphan line comments are emitted
         // ONLY when they sit BEFORE a `}` within the leaf — the bodyless `{ // note }` empty-body
@@ -376,7 +401,7 @@ final class FlowPrinter {
             case TERNARY -> printTernary(br);
             case ADDITIVE -> printAdditive(br);
             case LOG_AND -> printLogAnd(br);
-            case TYPE_ARGS -> printTypeArgs(br);
+            case TYPE_ARGS, WILDCARD_ONLY_TYPE_ARGS -> printTypeArgs(br);
             case TYPE_PARAMS -> printTypeParams(br);
             case METHOD_DECL -> printMethodDecl(br);
             default -> walkTokens(br);
@@ -684,6 +709,12 @@ final class FlowPrinter {
     }
 
     private void printBracedBody(Cursor.Branch parent, RuleKind memberKind) {
+        try (var anchor = new BracedBodyAnchor()) {
+            printBracedBodyMembers(parent, memberKind);
+        }
+    }
+
+    private void printBracedBodyMembers(Cursor.Branch parent, RuleKind memberKind) {
         var members = childrenByRule(parent, memberKind);
 
         emitToken("{");
@@ -1372,7 +1403,14 @@ final class FlowPrinter {
                 printAlignedTo(bodyCol);
             }
 
-            printNode(stmt);
+            // A block NESTED in this statement (the body of an `if`, `for`, `try`...) must align to the statement's
+            // own column, not to the enclosing aligned block's: left on the inherited column its body printed at the
+            // same indent as the `if` that owns it and its `}` fell BELOW that column (#974). Pushing the statement
+            // column as the lambda-align base makes `printBlock` indent from it, one level in.
+            try (var nested = alignment.pushLambdaAlign(bodyCol)) {
+                printNode(stmt);
+            }
+
             newline();
         }
 
@@ -1380,6 +1418,12 @@ final class FlowPrinter {
     }
 
     private void printSwitchBlock(Cursor.Branch switchBlock) {
+        try (var anchor = new BracedBodyAnchor()) {
+            printSwitchBlockRules(switchBlock);
+        }
+    }
+
+    private void printSwitchBlockRules(Cursor.Branch switchBlock) {
         emit(" {");
         indentLevel++;
         var rules = childrenByRule(switchBlock, RuleKind.SWITCH_RULE);
@@ -1751,7 +1795,7 @@ final class FlowPrinter {
         int alignColumn = startColumn;
         // Identify a link by its head node; a merged link's head is its `.name` op.
         var methodCallSet = new HashSet<Cursor>(methodCallLinks.stream()
-                                                               .map(List::getFirst)
+                                                               .flatMap(link -> link.stream().limit(1))
                                                                .toList());
 
         if (primary != null) {
@@ -2803,7 +2847,7 @@ final class FlowPrinter {
                     case LOG_AND -> printLogAnd(br);
                     case PARAMS, ORDINARY_PARAMS -> printParams(br);
                     case RECORD_COMPONENTS -> printRecordComponents(br);
-                    case TYPE_ARGS -> printTypeArgs(br);
+                    case TYPE_ARGS, WILDCARD_ONLY_TYPE_ARGS -> printTypeArgs(br);
                     case TYPE_PARAMS -> printTypeParams(br);
                     case SWITCH_BLOCK -> printSwitchBlock(br);
                     case UNARY -> printUnary(br);
@@ -3062,7 +3106,42 @@ final class FlowPrinter {
             return;
         }
 
-        emit(" ".repeat(indentLevel * config.indentSize()));
+        int levels = indentBaseCol < 0
+                     ? indentLevel
+                     : indentLevel - indentBaseLevel;
+        int base = Math.max(indentBaseCol, 0);
+
+        emit(" ".repeat(base + levels * config.indentSize()));
+    }
+
+    /// Scope for a braced body (`switch` block, class body) printed while a lambda alignment is active. Such a body
+    /// is indented by level from the column the aligned lambda put its line at, and its own blocks and members must
+    /// not inherit the lambda's alignment: left alone, `case` labels and members printed at the enclosing
+    /// method's absolute indent and the closing brace fell below the opener (#974). Outside an aligned lambda this
+    /// is a no-op, so unaligned code is untouched.
+    private final class BracedBodyAnchor implements AutoCloseable {
+        private final int savedCol = indentBaseCol;
+        private final int savedLevel = indentBaseLevel;
+        private final AlignmentContext.SuspendedScope suspended;
+
+        BracedBodyAnchor() {
+            if (alignment.hasLambdaAlign()) {
+                indentBaseCol = alignment.lambdaColumn();
+                indentBaseLevel = indentLevel;
+                suspended = alignment.suspendAlignment();
+            } else {
+                suspended = null;
+            }
+        }
+
+        @Override
+        public void close() {
+            if (suspended != null) {
+                suspended.close();
+                indentBaseCol = savedCol;
+                indentBaseLevel = savedLevel;
+            }
+        }
     }
 
     private void printAlignedTo(int column) {
@@ -3293,6 +3372,15 @@ final class FlowPrinter {
 
         if (text.equals(">") && lastChar == '-') {
             return false;
+        }
+
+        // Outside any TYPE_ARGS / TYPE_PARAMS node this '<' / '>' is a relational or shift operator and takes a space
+        // before it whatever precedes it (#974): `1 << 21`, `MAX < x`, `arr[0] << 2`. The checks below guess "generic"
+        // from the preceding token's text, which cannot tell `HashMap<K, V>` from `MAX < x` (both: uppercase word,
+        // then `<`) and read a stale `lastWord` after a numeric literal (`USER_TAG_LIMIT = 1<< 21`); the parser
+        // already knows which it is, and says so through `typeContextDepth`.
+        if (typeContextDepth == 0 && (Character.isLetterOrDigit(lastChar) || lastChar == ')' || lastChar == ']' || lastChar == '"' || lastChar == '\'')) {
+            return true;
         }
 
         if (Character.isLetterOrDigit(lastChar)) {

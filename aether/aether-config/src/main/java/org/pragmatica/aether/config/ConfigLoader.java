@@ -102,7 +102,8 @@ public final class ConfigLoader {
 
             mergeCliOverrides(overrides, builder);
 
-            return refuseRemovedTargetRf(doc).flatMap(_ -> parseReadLinearization(doc))
+            return refuseRemovedTargetRf(doc).flatMap(_ -> refuseUnsupportedSecurityModes(doc))
+                                        .flatMap(_ -> parseReadLinearization(doc))
                                         .map(mode -> applyReadLinearization(builder.build(),
                                                                             mode));
         } catch (IllegalArgumentException e) {
@@ -454,7 +455,57 @@ public final class ConfigLoader {
                                                   apiVersioningDetection,
                                                   apiVersionHeaderName).unwrap();
 
-        builder.appHttp(parseAppTls(doc).map(appHttp::withTls).or(appHttp));
+        builder.appHttp(parseAppTls(doc).map(appHttp::withTls)
+                                   .or(appHttp)
+                                   .withManagementSecurityMode(parseManagementSecurityMode(doc)));
+    }
+
+    /// `[management] security_mode` (#962): optional, `none` or `api-key`. Absent, the Management API inherits
+    /// `[app-http] security_mode`. Any other value was already refused by [#refuseUnsupportedSecurityModes], so what
+    /// reaches here is a mode the management plane has.
+    private static Option<SecurityMode> parseManagementSecurityMode(TomlDocument doc) {
+        return doc.getString("management", "security_mode")
+                  .flatMap(SecurityMode::securityMode);
+    }
+
+    /// A `security_mode` the node cannot honour is refused, never rewritten: a value that is not recognised used to read as the
+    /// default (`[app-http]`) or as `api-key` (`[management]`), so an operator who wrote `jwt` for the management plane, or
+    /// mistyped `nnone`, got a different mode than the one in the file and no word of it (#1455: refuses, never drops).
+    /// Shared with the bootstrap pre-flight (PF-24), so a cloud bootstrap refuses the same values, in the same words, before it
+    /// provisions anything: the two can never disagree about what a node would refuse.
+    public static Result<Unit> refuseUnsupportedSecurityModes(TomlDocument doc) {
+        return refuseUnrecognisedAppHttpMode(doc).flatMap(_ -> refuseUnsupportedManagementMode(doc));
+    }
+
+    private static Result<Unit> refuseUnrecognisedAppHttpMode(TomlDocument doc) {
+        return doc.getString("app-http", "security_mode")
+                  .filter(raw -> SecurityMode.securityMode(raw).isEmpty())
+                  .fold(Result::unitResult,
+                        raw -> ConfigError.invalidConfig("[app-http] security_mode = \"" + raw
+                                                        + "\" is not a security mode."
+                                                        + " Allowed values: none, api-key, jwt.").result());
+    }
+
+    private static Result<Unit> refuseUnsupportedManagementMode(TomlDocument doc) {
+        return doc.getString("management", "security_mode")
+                  .fold(Result::unitResult, ConfigLoader::managementModeVerdict);
+    }
+
+    private static Result<Unit> managementModeVerdict(String raw) {
+        return SecurityMode.securityMode(raw).fold(() -> unsupportedManagementMode(raw, "is not a security mode"),
+                                                   mode -> managementModeSupport(raw, mode));
+    }
+
+    private static Result<Unit> managementModeSupport(String raw, SecurityMode mode) {
+        return mode == SecurityMode.JWT
+               ? unsupportedManagementMode(raw, "is not supported: the management plane has no JWT mode")
+               : Result.unitResult();
+    }
+
+    private static Result<Unit> unsupportedManagementMode(String raw, String reason) {
+        return ConfigError.invalidConfig("[management] security_mode = \"" + raw
+                                        + "\" " + reason
+                                        + ". Allowed values: none, api-key.").result();
     }
 
     /// `[app-http.tls]` — an operator-supplied certificate for the USER-facing listener.
