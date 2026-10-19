@@ -103,4 +103,47 @@ class OwnRestoreWatchdogTest {
 
         assertThat(fired.await(5, TimeUnit.SECONDS)).as("the scheduled sampler reached the exit").isTrue();
     }
+
+    @Test
+    void fence_ownRestoreFailure_isTaggedAsTheOwnRestoreFence() {
+        var fenced = OwnRestoreWatchdog.fence(() -> Option.some(UNREADABLE), Option::none).get();
+
+        assertThat(fenced.fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
+        assertThat(fenced.map(Cause::message)).isEqualTo(Option.some(UNREADABLE.message()));
+    }
+
+    @Test
+    void fence_repersistFailureAlone_isTaggedAsTheRepersistFence() {
+        var disk = Causes.cause("no space left on device");
+        var fenced = OwnRestoreWatchdog.fence(Option::none, () -> Option.some(disk)).get();
+
+        assertThat(fenced.fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
+        assertThat(fenced.map(Cause::message)).isEqualTo(Option.some(disk.message()));
+    }
+
+    @Test
+    void fence_ownRestoreWinsOverRepersist_whenBothArePresent() {
+        var fenced = OwnRestoreWatchdog.fence(() -> Option.some(UNREADABLE), () -> Option.some(Causes.cause("no space left on device"))).get();
+
+        assertThat(fenced.fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
+    }
+
+    @Test
+    void fence_neither_isEmpty() {
+        assertThat(OwnRestoreWatchdog.fence(Option::none, Option::none).get()).isEqualTo(Option.none());
+    }
+
+    @Test
+    void tick_exitsWithTheRepersistFence_atTheBound_whenOnlyTheRepersistFailureIsPresent() {
+        var repersist = new AtomicReference<Option<Cause>>(Option.none());
+        var repersistExits = new CopyOnWriteArrayList<Cause>();
+        var guarded = OwnRestoreWatchdog.ownRestoreWatchdog(OwnRestoreWatchdog.fence(Option::none, repersist::get), now::get, BOUND, repersistExits::add);
+
+        repersist.set(Option.some(Causes.cause("no space left on device")));
+        guarded.tick();
+        now.addAndGet(BOUND_MILLIS);
+        guarded.tick();
+
+        assertThat(repersistExits).singleElement().isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
+    }
 }

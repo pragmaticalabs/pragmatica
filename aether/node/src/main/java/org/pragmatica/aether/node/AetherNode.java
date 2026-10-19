@@ -520,6 +520,11 @@ public interface AetherNode extends ManageableNode {
     /// sysexits(3): the node's snapshot could not be read. Restarting it unchanged reads the same snapshot, so
     /// a supervisor should not (`RestartPreventExitStatus=74`); the node never started with partial state.
     int EXIT_CONSENSUS_RESTORE_FAILED = 74;
+    /// Process exit code when this node restored (or adopted) consensus state but could not persist it, and stayed
+    /// fenced in `JOINING` for the whole bound (#1516, [OwnRestoreWatchdog]). 75 is `EX_TEMPFAIL` in sysexits(3):
+    /// the failure is the node's storage, not its snapshot, so unlike 74 a restart after the storage fault is fixed
+    /// can succeed (the node re-syncs); a restart on the same fault stops the same way.
+    int EXIT_CONSENSUS_STATE_PERSIST_FAILED = 75;
     /// Process exit code when the SWIM gossip-key divergence gate refuses the boot (#683): gossip arrives
     /// under a key epoch this node does not hold and none has ever decrypted. Production reaches it through
     /// `System.exit` so the node's shutdown hooks run ([GossipKeyDivergenceGuard] measured that path); an
@@ -3058,6 +3063,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<Cause> ownRestoreFailure() {
                 return clusterNode.ownRestoreFailure();
+            }
+
+            @Override
+            public Option<Cause> restoredStateSaveFailure() {
+                return clusterNode.restoredStateSaveFailure();
             }
 
             @Override

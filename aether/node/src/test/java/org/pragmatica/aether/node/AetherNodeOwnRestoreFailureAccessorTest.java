@@ -52,6 +52,28 @@ class AetherNodeOwnRestoreFailureAccessorTest {
 
         assertThat(rabiaNode(node).ownRestoreFailure()).isEqualTo(Option.none());
         assertThat(node.ownRestoreFailure()).isEqualTo(Option.none());
+        assertThat(rabiaNode(node).restoredStateSaveFailure()).isEqualTo(Option.none());
+        assertThat(node.restoredStateSaveFailure()).isEqualTo(Option.none());
+    }
+
+    @Test
+    void rabiaNode_reportsTheEnginesRestoredStateSaveFailure() throws ReflectiveOperationException {
+        node = AetherNode.aetherNode(coreConfig(), () -> {}).unwrap();
+
+        failEngineField(rabiaNode(node), "restoredStateSaveFailure");
+
+        assertThat(rabiaNode(node).restoredStateSaveFailure()).isEqualTo(Option.some(UNREADABLE));
+        assertThat(rabiaNode(node).ownRestoreFailure()).as("the two fences are separate accessors").isEqualTo(Option.none());
+    }
+
+    @Test
+    void aetherNode_reportsTheClusterNodesRestoredStateSaveFailure() throws ReflectiveOperationException {
+        node = AetherNode.aetherNode(coreConfig(), () -> {}).unwrap();
+
+        failEngineField(rabiaNode(node), "restoredStateSaveFailure");
+
+        assertThat(node.restoredStateSaveFailure()).isEqualTo(Option.some(UNREADABLE));
+        assertThat(node.ownRestoreFailure()).isEqualTo(Option.none());
     }
 
     @Test
@@ -94,12 +116,16 @@ class AetherNodeOwnRestoreFailureAccessorTest {
     }
 
     private static void failEnginesOwnRestore(RabiaNode<?> rabiaNode) throws ReflectiveOperationException {
+        failEngineField(rabiaNode, "ownRestoreFailure");
+    }
+
+    private static void failEngineField(RabiaNode<?> rabiaNode, String fieldName) throws ReflectiveOperationException {
         var accessor = rabiaNode.getClass().getDeclaredMethod("consensus");
 
         accessor.setAccessible(true);
 
         var engine = accessor.invoke(rabiaNode);
-        var field = engine.getClass().getDeclaredField("ownRestoreFailure");
+        var field = engine.getClass().getDeclaredField(fieldName);
 
         field.setAccessible(true);
         field.set(engine, Option.some(UNREADABLE));

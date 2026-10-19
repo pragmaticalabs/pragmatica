@@ -207,6 +207,8 @@ class RabiaRestoredStateSaveFailureLogTest {
             .as("precondition: the failed re-persist was recorded as the authority failure")
             .isTrue();
         assertThat(engine.ownRestoreFailure()).isEqualTo(Option.none());
+        assertThat(engine.restoredStateSaveFailure()).as("the re-persist fence has its own accessor, which the watchdog bounds (#1516)")
+                                                     .isEqualTo(Option.some(DISK_FULL));
     }
 
     @Test
@@ -221,6 +223,34 @@ class RabiaRestoredStateSaveFailureLogTest {
             .isTrue();
         assertThat(stateMachine.lastRestored()).isEqualTo(OWN_SNAPSHOT);
         assertThat(started.engine().ownRestoreFailure()).isEqualTo(Option.none());
+        assertThat(started.engine().restoredStateSaveFailure()).isEqualTo(Option.some(DISK_FULL));
+    }
+
+    /// CONTROL for the re-persist accessor: a save that succeeds leaves it empty, so it is not a constant.
+    @Test
+    void syncAdoptionSaveSucceeds_leavesRestoredStateSaveFailureEmpty() {
+        var engine = coldStarted(3, new RecordingStateMachine(), emptyDisk(false));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitActive(engine)).isTrue();
+        assertThat(engine.restoredStateSaveFailure()).isEqualTo(Option.none());
+    }
+
+    /// The re-persist fence is permanent like the own-restore one: nothing clears it in-process, so the watchdog's
+    /// clock never restarts on a recovered node. Same entry point as the own-restore pin: a started engine refuses
+    /// `initializeVoters`, which is the only external way to install a genesis.
+    @Test
+    void syncAdoptionSaveFails_noGenesisCanInstallAfterwards_theFailureStays() {
+        var engine = coldStarted(3, new RecordingStateMachine(), emptyDisk(true));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> engine.restoredStateSaveFailure().isPresent())).as("precondition: the failure was recorded").isTrue();
+
+        var refusal = engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(List.of(NODE_1, NODE_2))));
+
+        assertThat(refusal.isFailure()).as("a started engine refuses a genesis install").isTrue();
+        assertThat(engine.restoredStateSaveFailure()).isEqualTo(Option.some(DISK_FULL));
     }
 
     /// The #1020 diagnostic on the sync-adoption arm: the failed re-persist is logged at ERROR, naming

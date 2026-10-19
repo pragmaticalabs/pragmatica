@@ -216,6 +216,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return Option.none();
     }
 
+    /// Why the re-persist of a restored or adopted state failed, while that keeps the node from activating (#1516).
+    /// Empty for a node whose restore was persisted, never needed to, or whose engine is a test double.
+    default Option<org.pragmatica.lang.Cause> restoredStateSaveFailure() {
+        return Option.none();
+    }
+
     default Option<VoterConfiguration> voterConfiguration() {
         return Option.none();
     }
@@ -837,6 +843,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Option<org.pragmatica.lang.Cause> ownRestoreFailure() {
                 return consensus().ownRestoreFailure();
+            }
+
+            @Override
+            public Option<org.pragmatica.lang.Cause> restoredStateSaveFailure() {
+                return consensus().restoredStateSaveFailure();
             }
 
             @Override

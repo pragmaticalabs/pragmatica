@@ -846,22 +846,57 @@ public record Main(String[] args) {
     /// bound on that stop has to be armed BEFORE `start()` is awaited. Production only; in-JVM hosts own their nodes.
     @Contract
     private static void armOwnRestoreWatchdog(AetherNode node) {
-        ownRestoreWatchdog(node::ownRestoreFailure, Main::flushLogs, Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
+        ownRestoreWatchdog(node::ownRestoreFailure,
+                           node::restoredStateSaveFailure,
+                           Main::flushLogs,
+                           Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
     }
 
     /// The production watchdog with the flush and halt injected, so a test can read its bound and drive its exit
     /// without killing the JVM. Package-private for that reason only.
-    static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> failure,
+    static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> ownRestore,
+                                                 Supplier<Option<Cause>> statePersist,
                                                  Runnable flushLogs,
                                                  IntConsumer haltFn) {
-        return OwnRestoreWatchdog.ownRestoreWatchdog(failure,
+        return OwnRestoreWatchdog.ownRestoreWatchdog(OwnRestoreWatchdog.fence(ownRestore, statePersist),
                                                      Main::monotonicMillis,
                                                      OwnRestoreWatchdog.BOUND,
-                                                     cause -> exitConsensusRestoreFailed(cause, flushLogs, haltFn));
+                                                     cause -> exitFenced(cause, flushLogs, haltFn));
     }
 
-    private static long monotonicMillis() {
-        return System.nanoTime() / 1_000_000L;
+    static long monotonicMillis() {
+        return nanosToMillis(System.nanoTime());
+    }
+
+    static long nanosToMillis(long nanos) {
+        return nanos / 1_000_000L;
+    }
+
+    /// The exit for either fence: the type of the failure picks the FATAL text and the code. Anything that is not
+    /// the re-persist fence takes the own-restore exit, as before.
+    @Contract
+    static void exitFenced(Cause cause, Runnable flushLogs, IntConsumer haltFn) {
+        switch (cause) {
+            case OwnRestoreWatchdog.Fence.StatePersistFailed persist -> exitConsensusStatePersistFailed(persist, flushLogs, haltFn);
+            default -> exitConsensusRestoreFailed(cause, flushLogs, haltFn);
+        }
+    }
+
+    /// Same shape as [#exitConsensusRestoreFailed]: FATAL first, flush, halt in `finally`. The text differs because the
+    /// guidance does: the fault is the node's storage, and a restart after it is fixed can succeed (code 75).
+    @Contract
+    static void exitConsensusStatePersistFailed(Cause cause, Runnable flushLogs, IntConsumer haltFn) {
+        log.error("FATAL: this node restored consensus state but could not persist it, and stayed JOINING for {}: {}. "
+                 + "It never started on state its disk does not hold. Exiting with code {}; fix the node's storage "
+                 + "(space, permissions, I/O errors) before restarting, and the node will sync again.",
+                  OwnRestoreWatchdog.BOUND,
+                  cause.message(),
+                  AetherNode.EXIT_CONSENSUS_STATE_PERSIST_FAILED);
+        try {
+            flushLogs.run();
+        } finally {
+            haltFn.accept(AetherNode.EXIT_CONSENSUS_STATE_PERSIST_FAILED);
+        }
     }
 
     /// `halt`, not `exit`: the node is fenced and holds nothing worth a graceful stop, and `System.exit` from a

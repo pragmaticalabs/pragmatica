@@ -173,6 +173,8 @@ class RabiaOwnRestoreFailureTest {
         assertThat(engine.isActive()).as("the node did not activate on the unreadable snapshot").isFalse();
         assertThat(engine.ownRestoreFailure()).as("a responder-snapshot failure is recoverable and is not the own-restore failure")
                                               .isEqualTo(Option.none());
+        assertThat(engine.restoredStateSaveFailure()).as("nor is it a failed re-persist: no save was attempted")
+                                                     .isEqualTo(Option.none());
     }
 
     /// D3: the own-restore arm runs only once a genesis has resolved, and no genesis installs after that, so

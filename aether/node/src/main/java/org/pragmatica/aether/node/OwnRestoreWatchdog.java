@@ -12,12 +12,18 @@ import java.util.function.Supplier;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 
-/// Bounds the stop of a node whose OWN persisted consensus history cannot be restored (#1468).
+/// Bounds the stop of a node that a permanent consensus fence keeps in `JOINING` (#1468, #1516). Two fences are
+/// bounded, each with its own cause type and exit: the node's OWN persisted history cannot be restored
+/// ([Fence.OwnRestoreUnreadable]) and the re-persist of a restored or adopted state failed
+/// ([Fence.StatePersistFailed]); [#fence] combines the two sources. The rest of this comment describes the
+/// first; the second is the same wait and halt.
 ///
 /// Such a node never activates (fail-closed, decided on #1468): it stays `JOINING` and
 /// `start()` does not resolve. This watchdog ends that wedge. When the failure has been continuously
@@ -47,6 +53,28 @@ public record OwnRestoreWatchdog(Supplier<Option<Cause>> failure,
     /// How often the failure is sampled; the bound is therefore exact to within one interval.
     public static final TimeSpan CHECK_INTERVAL = TimeSpan.timeSpan(1).seconds();
     private static final long NOT_SEEN = -1L;
+
+    /// Which permanent fence the watchdog is bounding; the exit picks its FATAL text and code from the type.
+    public sealed interface Fence extends Cause {
+        /// The node's own persisted consensus history could not be restored (#1468).
+        record OwnRestoreUnreadable(String detail, String message) implements Fence {
+            public static final Fn1<OwnRestoreUnreadable, String> FACTORY = Causes.forOneValue("%s", OwnRestoreUnreadable::new);
+        }
+
+        /// The re-persist of a restored or adopted state failed (#1516).
+        record StatePersistFailed(String detail, String message) implements Fence {
+            public static final Fn1<StatePersistFailed, String> FACTORY = Causes.forOneValue("%s", StatePersistFailed::new);
+        }
+    }
+
+    /// The failure source the watchdog samples: the own-restore failure when present, otherwise the failed
+    /// re-persist, each tagged with its [Fence] type (the cause text is kept).
+    public static Supplier<Option<Cause>> fence(Supplier<Option<Cause>> ownRestore, Supplier<Option<Cause>> statePersist) {
+        return () -> ownRestore.get()
+                               .<Cause>map(cause -> Fence.OwnRestoreUnreadable.FACTORY.apply(cause.message()))
+                               .orElse(() -> statePersist.get()
+                                                         .<Cause>map(cause -> Fence.StatePersistFailed.FACTORY.apply(cause.message())));
+    }
 
     public static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> failure,
                                                         LongSupplier nowMillis,

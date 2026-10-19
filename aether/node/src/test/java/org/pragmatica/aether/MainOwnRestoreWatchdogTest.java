@@ -79,7 +79,7 @@ class MainOwnRestoreWatchdogTest {
     @Test
     void exit_haltsWithCodeSeventyFour() {
         var events = new CopyOnWriteArrayList<String>();
-        var watchdog = Main.ownRestoreWatchdog(Option::none, () -> events.add("flush"), code -> events.add("halt " + code));
+        var watchdog = Main.ownRestoreWatchdog(Option::none, Option::none, () -> events.add("flush"), code -> events.add("halt " + code));
 
         watchdog.exit().accept(UNREADABLE);
 
@@ -90,6 +90,7 @@ class MainOwnRestoreWatchdogTest {
     void exit_logsTheFatalNamingTheCauseAndTheCode_thenFlushesBeforeTheHalt() {
         var events = new CopyOnWriteArrayList<String>();
         var watchdog = Main.ownRestoreWatchdog(Option::none,
+                                               Option::none,
                                                () -> events.add("flush after " + appender.capturedErrors().size() + " errors"),
                                                code -> events.add("halt " + code));
 
@@ -107,7 +108,7 @@ class MainOwnRestoreWatchdogTest {
     @Test
     void exit_stillHalts_whenTheFlushThrows() {
         var halted = new CopyOnWriteArrayList<Integer>();
-        var watchdog = Main.ownRestoreWatchdog(Option::none, MainOwnRestoreWatchdogTest::throwingFlush, halted::add);
+        var watchdog = Main.ownRestoreWatchdog(Option::none, Option::none, MainOwnRestoreWatchdogTest::throwingFlush, halted::add);
 
         try {
             watchdog.exit().accept(UNREADABLE);
@@ -120,7 +121,7 @@ class MainOwnRestoreWatchdogTest {
 
     @Test
     void watchdog_isBoundedAtOneHundredTwentySeconds_andSamplesTheNodesAccessor() {
-        var watchdog = Main.ownRestoreWatchdog(() -> Option.some(UNREADABLE), () -> {}, _ -> {});
+        var watchdog = Main.ownRestoreWatchdog(() -> Option.some(UNREADABLE), Option::none, () -> {}, _ -> {});
 
         assertThat(watchdog.boundMillis()).isEqualTo(120_000L).isEqualTo(OwnRestoreWatchdog.BOUND.millis());
         assertThat(watchdog.failure().get()).isEqualTo(Option.some(UNREADABLE));
@@ -133,7 +134,74 @@ class MainOwnRestoreWatchdogTest {
 
     @Test
     void armOwnRestoreWatchdog_samplesTheNodesAccessor_andHaltsTheRealJvm() {
-        assertThat(mainCode()).contains("ownRestoreWatchdog(node::ownRestoreFailure,Main::flushLogs,Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);");
+        assertThat(mainCode()).contains("ownRestoreWatchdog(node::ownRestoreFailure,node::restoredStateSaveFailure,Main::flushLogs,Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);");
+    }
+
+    private static final org.pragmatica.lang.Cause DISK_FULL = Causes.cause("no space left on device");
+
+    @Test
+    void exitCode_forAFailedRepersist_isSeventyFive_distinctFromSeventyFour() {
+        assertThat(AetherNode.EXIT_CONSENSUS_STATE_PERSIST_FAILED).isEqualTo(75)
+                                                                  .isNotEqualTo(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
+    }
+
+    @Test
+    void exit_forAFailedRepersist_haltsWithCodeSeventyFive_afterItsOwnFatal_andTheFlush() {
+        var events = new CopyOnWriteArrayList<String>();
+        var watchdog = Main.ownRestoreWatchdog(Option::none,
+                                               () -> Option.some(DISK_FULL),
+                                               () -> events.add("flush after " + appender.capturedErrors().size() + " errors"),
+                                               code -> events.add("halt " + code));
+
+        watchdog.exit().accept(OwnRestoreWatchdog.Fence.StatePersistFailed.FACTORY.apply(DISK_FULL.message()));
+
+        assertThat(appender.capturedErrors()).singleElement()
+                                             .satisfies(message -> assertThat(message).startsWith("FATAL: this node restored consensus state but could not persist it")
+                                                                                      .contains(DISK_FULL.message())
+                                                                                      .contains("code 75")
+                                                                                      .doesNotContain("code 74"));
+        assertThat(events).containsExactly("flush after 1 errors", "halt 75");
+    }
+
+    @Test
+    void exit_forAFailedRepersist_stillHalts_whenTheFlushThrows() {
+        var halted = new CopyOnWriteArrayList<Integer>();
+        var watchdog = Main.ownRestoreWatchdog(Option::none, Option::none, MainOwnRestoreWatchdogTest::throwingFlush, halted::add);
+
+        try {
+            watchdog.exit().accept(OwnRestoreWatchdog.Fence.StatePersistFailed.FACTORY.apply(DISK_FULL.message()));
+        } catch (IllegalStateException expected) {
+            // the flush failure propagates; the halt must not be preempted by it
+        }
+
+        assertThat(halted).containsExactly(75);
+    }
+
+    @Test
+    void watchdog_samplesTheRepersistAccessor_andTagsItAsTheRepersistFence() {
+        var watchdog = Main.ownRestoreWatchdog(Option::none, () -> Option.some(DISK_FULL), () -> {}, _ -> {});
+
+        assertThat(watchdog.failure().get().map(org.pragmatica.lang.Cause::message)).isEqualTo(Option.some(DISK_FULL.message()));
+        assertThat(watchdog.failure().get().fold(() -> null, c -> c)).isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
+    }
+
+    /// W9: the production clock converts nanoseconds to milliseconds. A wrong divisor moves the bound by orders of
+    /// magnitude (a 1_000 divisor would reach the 120 s bound after 120 ms), and nothing else exercises it.
+    @Test
+    void nanosToMillis_divides_byOneMillion() {
+        assertThat(Main.nanosToMillis(5_000_000_000L)).isEqualTo(5_000L);
+        assertThat(Main.nanosToMillis(1_999_999L)).isEqualTo(1L);
+    }
+
+    @Test
+    void productionClock_advancesOneMillisecondPerMillisecond() throws InterruptedException {
+        var watchdog = Main.ownRestoreWatchdog(Option::none, Option::none, () -> {}, _ -> {});
+        var before = watchdog.nowMillis().getAsLong();
+
+        Thread.sleep(200);
+        var elapsed = watchdog.nowMillis().getAsLong() - before;
+
+        assertThat(elapsed).as("a 200 ms sleep must read as about 200 ms on the watchdog's clock").isBetween(190L, 5_000L);
     }
 
     private static void throwingFlush() {
