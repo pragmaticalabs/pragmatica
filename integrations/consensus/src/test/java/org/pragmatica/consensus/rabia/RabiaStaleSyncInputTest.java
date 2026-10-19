@@ -42,6 +42,7 @@ class RabiaStaleSyncInputTest {
 
         respond(B);
         respond(C);
+        settle();
 
         assertThat(engine.isPaused()).as("responses to a request sent before the pause cannot resume a paused engine").isTrue();
         assertThat(routed).as("nothing is published: no ACTIVE without a quorum ACTIVE").hasSize(published);
@@ -70,9 +71,12 @@ class RabiaStaleSyncInputTest {
         settle();
         assertThat(engine.isPaused()).as("control: quorum loss paused the observer").isTrue();
 
-        engine.processDecision(new Decision<>(B, 0, engine.currentPhaseForTesting(), StateValue.V1, Batch.emptyBatch(), Option.none()));
+        var before = engine.currentPhaseForTesting();
+
+        engine.processDecision(new Decision<>(B, 0, before, StateValue.V1, Batch.emptyBatch(), Option.none()));
         settle();
 
+        assertThat(engine.currentPhaseForTesting().value()).as("control: the decision was applied and the observer advanced").isGreaterThan(before.value());
         assertThat(engine.isPaused()).as("applying a decision does not resume a paused observer").isTrue();
         engine.clusterState(ClusterStateNotification.active());
         settle();
