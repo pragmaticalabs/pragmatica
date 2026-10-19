@@ -93,7 +93,24 @@ class RabiaObserverStaleSyncTickTest {
         assertThat(engine.currentPhaseForTesting()).as("a settled observer does not re-adopt from responses a tick finds").isEqualTo(settledPhase);
     }
 
-    @Test void observerPausedForQuorumLoss_thenResumed_signalsObservingAgainOnce() {
+    @Test void queuedSyncRetryTick_onPausedEngine_leavesItPaused_andTheNextActiveResumesIt() throws Exception {
+        engine = voterEngine();
+        adoptFromPeers();
+        engine.clusterState(ClusterStateNotification.passive());
+        settle();
+        assertThat(engine.isPaused()).as("control: quorum loss paused the voter").isTrue();
+        var published = routed.size();
+
+        runQueuedSyncTick();
+
+        assertThat(engine.isPaused()).as("a tick queued before the pause finds nothing to synchronize: a paused engine resumes on ACTIVE, not through a sync round").isTrue();
+        assertThat(routed).as("the stale tick publishes nothing").hasSize(published);
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        assertThat(engine.isActive()).as("the legitimate ACTIVE lands: the engine resumes").isTrue();
+    }
+
+    @Test void observerPausedForQuorumLoss_thenResumed_signalsObservingAgainOnce() {    @Test void observerPausedForQuorumLoss_thenResumed_signalsObservingAgainOnce() {
         engine = observerEngine();
         adoptFromPeers();
         resumed.clear();
