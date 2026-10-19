@@ -65,7 +65,8 @@ public final class ConfigLoader {
                                                      Map<String, String> overrides,
                                                      Fn1<String, String> env,
                                                      Predicate<Path> fileExists) {
-        return fromDocumentWithOverrides(doc, overrides, env).flatMap(config -> ConfigValidator.validate(config, fileExists))
+        return fromDocumentWithOverrides(doc, overrides, env).flatMap(config -> ConfigValidator.validate(config,
+                                                                                                         fileExists))
                                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
@@ -1352,7 +1353,6 @@ public final class ConfigLoader {
     /// name files on the node (`/etc/aether/tls/*.pem`), not on the operator's machine, so the operator's filesystem must not
     /// change the verdict either. Path syntax is still validated; the node's own load checks the real files.
     public static final Predicate<Path> PREFLIGHT_FILESYSTEM = _ -> true;
-
     /// The environment cluster bootstrap judges a node config against: empty. The process environment of the operator's
     /// machine describes the operator, not the node that will boot (its environment arrives with its own user data), so it
     /// must not change the verdict.
