@@ -110,7 +110,7 @@ class RabiaObserverStaleSyncTickTest {
         assertThat(engine.isActive()).as("the legitimate ACTIVE lands: the engine resumes").isTrue();
     }
 
-    @Test void observerPausedForQuorumLoss_thenResumed_signalsObservingAgainOnce() {    @Test void observerPausedForQuorumLoss_thenResumed_signalsObservingAgainOnce() {
+    @Test void observerPausedForQuorumLoss_thenResumed_signalsObservingAgainOnce() {
         engine = observerEngine();
         adoptFromPeers();
         resumed.clear();
