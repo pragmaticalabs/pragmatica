@@ -6,6 +6,7 @@ import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -137,6 +138,54 @@ class MalformedValueReaderTest {
             assertRefusedNamingKeyAndValue(toml("[server]\nsecure = \"yes\"\n").getBoolean("server.secure"),
                                            "server.secure",
                                            "yes");
+        }
+
+        record OptionalTimeouts(String name, Option<org.pragmatica.lang.parse.TimeSpan> timeout, Option<java.time.Duration> window) {}
+
+        /// An optional duration component that does not parse bound `none()` and the record was built (#1455).
+        @Test
+        void config_unparseableOptionalDuration_isRefusedNamingKeyValueAndExpected() {
+            for (var key : java.util.List.of("timeout", "window")) {
+                var result = toml("[test]\nname = \"n\"\n" + key + " = \"soon\"\n").config("test", OptionalTimeouts.class);
+
+                assertThat(result.isFailure()).describedAs("%s = \"soon\" must refuse, bound %s", key, result).isTrue();
+                result.onFailure(cause -> assertThat(cause.message()).contains("test." + key)
+                                                                     .contains("soon")
+                                                                     .contains("a duration such as 30s"));
+            }
+
+            var bound = toml("[test]\nname = \"n\"\ntimeout = \"5s\"\nwindow = \"1m\"\n").config("test", OptionalTimeouts.class).unwrap();
+
+            assertThat(bound.timeout().isPresent()).isTrue();
+            assertThat(bound.window().isPresent()).isTrue();
+        }
+
+        record OptionalPort(String name, Option<Integer> port) {}
+
+        /// The record binder reads through TomlDocument's typed getters; a mistyped optional component
+        /// bound `none()` and the record was built. The bind refuses it by name (#1455, A4).
+        @Test
+        void config_malformedOptionalComponent_isRefusedNamingKeyAndValue() {
+            var result = toml("[test]\nname = \"n\"\nport = \"80x\"\n").config("test", OptionalPort.class);
+
+            assertThat(result.isFailure()).describedAs("port = \"80x\" must refuse the bind, bound %s", result)
+                                          .isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("test.port")
+                                                                 .contains("80x"));
+            assertThat(toml("[test]\nname = \"n\"\nport = 8443\n").config("test", OptionalPort.class).unwrap().port()).isEqualTo(Option.some(8443));
+        }
+
+        /// The service's document outlives a bind; a mistyped section must refuse only its own bind
+        /// (#1455, A4) -- not every later bind of an unrelated, well-formed section.
+        @Test
+        void config_malformedSection_doesNotRefuseAnUnrelatedSectionBoundLater() {
+            var service = toml("[bad]\nname = \"n\"\nport = \"80x\"\n\n[good]\nname = \"g\"\nport = 8443\n");
+
+            assertThat(service.config("bad", OptionalPort.class).isFailure()).isTrue();
+            assertThat(service.config("good", OptionalPort.class).unwrap().port()).isEqualTo(Option.some(8443));
+            service.config("bad", OptionalPort.class)
+                   .onSuccess(bound -> Assertions.fail("must refuse, bound " + bound))
+                   .onFailure(cause -> assertThat(cause.message().split("80x", -1)).hasSize(2));
         }
 
         @Test

@@ -35,6 +35,21 @@ class IncludeResolverTest {
     }
 
     @Nested
+    class MistypedInclude {
+
+        /// #1455: `include = "base.toml"` (a string) read as no include and the base was dropped.
+        @Test
+        void resolve_stringInsteadOfArray_isRefusedNamingTheValue() {
+            var doc = TomlParser.parse("include = \"base.toml\"\n[server]\nport = 8080\n").unwrap();
+
+            IncludeResolver.resolve(doc, Path.of("/tmp"))
+                           .onSuccess(resolved -> Assertions.fail("a non-array include must refuse, resolved " + resolved))
+                           .onFailure(cause -> assertThat(cause.message()).contains("include")
+                                                                          .contains("base.toml"));
+        }
+    }
+
+    @Nested
     class CycleDetection {
 
         @Test

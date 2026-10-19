@@ -21,6 +21,14 @@ public sealed interface ConfigError extends Cause {
         }
     }
 
+    /// #1455: a key that is present but not of the requested type is a failed read, not an absent key.
+    record TypeMismatch(String key, String expected, String raw) implements ConfigError {
+        @Override
+        public String message() {
+            return "Configuration value for " + key + " is not " + expected + ": \"" + raw + "\"";
+        }
+    }
+
     record ValidationFailed(String key, String reason) implements ConfigError {
         @Override
         public String message() {
