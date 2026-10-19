@@ -276,6 +276,35 @@ class Http3RequestHandlerTest {
         channel.finishAndReleaseAll();
     }
 
+    /// I1: the server's configured body limit reaches each stream, not the 64 KiB default.
+    @Test
+    void configuredBodyLimit_reachesTheStream() {
+        var channel = channel(HttpServerConfig.httpServerConfig("h3-limit", 0).withMaxContentLength(100));
+
+        channel.writeInbound(requestHeaders());
+        channel.writeInbound(data(200));
+
+        assertThat(responseStatus(channel)).isEqualTo("413");
+        assertThat(dispatched).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    /// The stream initializer the server installs on every request stream builds its handler from the server's
+    /// config: a body limit far below the default is the one applied.
+    @Test
+    void streamInitializer_installsAHandlerBuiltFromTheServerConfig() {
+        var config = HttpServerConfig.httpServerConfig("h3-init", 0).withMaxContentLength(100);
+        var channel = new EmbeddedChannel(new Http3Server.Http3StreamInitializer(this::handle, config));
+
+        assertThat(channel.pipeline().first()).isInstanceOf(Http3Server.Http3RequestHandler.class);
+        channel.writeInbound(requestHeaders());
+        channel.writeInbound(data(200));
+
+        assertThat(responseStatus(channel)).isEqualTo("413");
+        assertThat(dispatched).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
     @Test
     void streamTornDownBeforeInputClosed_releasesBufferedBody() {
         var channel = channel();

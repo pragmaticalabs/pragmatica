@@ -95,6 +95,27 @@ public final class TlsProbe {
         }
     }
 
+    /// The status of a real HTTPS POST carrying `bodyBytes` bytes.
+    public static int httpsPostStatus(int port, int bodyBytes) throws Exception {
+        var connection = (HttpsURLConnection) URI.create("https://127.0.0.1:" + port + "/upload").toURL().openConnection();
+
+        connection.setSSLSocketFactory(trustAll().getSocketFactory());
+        connection.setHostnameVerifier((_, _) -> true);
+        connection.setConnectTimeout(5_000);
+        connection.setReadTimeout(10_000);
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setFixedLengthStreamingMode(bodyBytes);
+        try {
+            try (var out = connection.getOutputStream()) {
+                out.write(new byte[bodyBytes]);
+            }
+            return connection.getResponseCode();
+        } finally {
+            connection.disconnect();
+        }
+    }
+
     /// Whether a PLAIN-text HTTP request is answered with HTTP (it must not be on a TLS port).
     public static boolean plainHttpAnswered(int port) {
         try (var client = HttpClient.newHttpClient()) {

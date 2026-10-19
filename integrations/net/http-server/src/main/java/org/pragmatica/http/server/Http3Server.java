@@ -226,8 +226,10 @@ final class Http3Server {
     }
 
     /// Initializer for each new HTTP/3 request stream.
-    /// Creates a fresh [Http3RequestHandler] per stream (no shared state).
-    private static class Http3StreamInitializer extends ChannelInitializer<QuicStreamChannel> {
+    /// Creates a fresh [Http3RequestHandler] per stream (no shared state). Typed on [Channel], not [QuicStreamChannel],
+    /// because it needs nothing QUIC-specific; package-private so a test can install it on an `EmbeddedChannel` and pin
+    /// that the server's config reaches each stream.
+    static class Http3StreamInitializer extends ChannelInitializer<Channel> {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final HttpServerConfig config;
 
@@ -237,7 +239,7 @@ final class Http3Server {
         }
 
         @Override
-        protected void initChannel(QuicStreamChannel ch) {
+        protected void initChannel(Channel ch) {
             ch.pipeline().addLast(Http3RequestHandler.http3RequestHandler(config, handler));
         }
     }
