@@ -405,6 +405,10 @@ class BlueprintSecurityOverrideClusterWideTest {
         awaitAllAppHttpPortsReady();
         applyBlueprint(leaderMgmtPort, overrideCarrierBlueprint());
         awaitEveryNodeAnswers(GOVERNED_PATH, REFUSED, "every node enforces the override before the kill/rejoin cycle");
+        // PRECONDITION of the later "echo on every node" control: the 403s above prove only that the route is
+        // registered, not that every instance is ACTIVE.
+        awaitEchoActiveOn(cluster.status().nodes().stream().map(NodeStatus::id).toList(),
+                          "echo ACTIVE on every pre-kill node before the victim is killed");
         var rosterBefore = cluster.status().nodes();
         var idsBefore = rosterBefore.stream().map(NodeStatus::id).toList();
         var victim = rosterBefore.stream()
@@ -443,6 +447,8 @@ class BlueprintSecurityOverrideClusterWideTest {
                   .hasSize(NODES)
                   .contains(joined);
         assertDerivedPortsMatchHarness();
+        awaitEchoActiveOn(rosterAfter.stream().map(NodeStatus::id).toList(),
+                          "echo ACTIVE on exactly the post-rejoin roster (departed " + victim.id() + " withdrawn)");
         assertEchoSliceRunningOnEveryNode("after " + joined + " replaced " + victim.id());
         var replacement = rosterAfter.stream()
                                      .filter(node -> node.id().equals(joined))
@@ -594,6 +600,28 @@ class BlueprintSecurityOverrideClusterWideTest {
                       .filter(slice -> slice.artifact().equals(TEST_ARTIFACT))
                       .flatMap(slice -> slice.instances().stream())
                       .filter(instance -> !"FAILED".equals(instance.state()))
+                      .map(EmberCluster.SliceInstanceStatus::nodeId)
+                      .toList();
+    }
+
+    /// `cluster.slicesStatus()` reads ONE node's local mirror (the first in map order; after the replacement joins
+    /// that is the replacement itself, possibly still replaying), and the departed node's rows are withdrawn by a
+    /// consensus write. Await the convergence the product guarantees eventually; the strict control that follows
+    /// stays a single read of the converged state.
+    private void awaitEchoActiveOn(List<String> expectedNodeIds, String what) {
+        await().alias(what)
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> echoActiveNodeIds().size() == expectedNodeIds.size()
+                          && echoActiveNodeIds().containsAll(expectedNodeIds));
+    }
+
+    private List<String> echoActiveNodeIds() {
+        return cluster.slicesStatus()
+                      .stream()
+                      .filter(slice -> slice.artifact().equals(TEST_ARTIFACT))
+                      .flatMap(slice -> slice.instances().stream())
+                      .filter(instance -> "ACTIVE".equals(instance.state()))
                       .map(EmberCluster.SliceInstanceStatus::nodeId)
                       .toList();
     }
