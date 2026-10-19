@@ -21,13 +21,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
@@ -41,6 +34,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequ
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -57,17 +51,7 @@ class RabiaElectorateRefusalLogTest {
     private static final long RETRY_MILLIS = 50;
     private static final int MIN_ROUNDS = 12;
 
-    private final List<String> warnings = new CopyOnWriteArrayList<>();
-    private final AbstractAppender appender = new AbstractAppender("electorate-refusal", (Filter) null, null, true, Property.EMPTY_ARRAY) {
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel() == Level.WARN) {
-                warnings.add(event.getMessage().getFormattedMessage());
-            }
-        }
-    };
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
     private RabiaEngine<TestCommand> engine;
 
     @AfterEach
@@ -75,17 +59,14 @@ class RabiaElectorateRefusalLogTest {
         if (engine != null) {
             engine.stop().await();
         }
-        if (loggerConfig != null) {
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(originalLevel);
-            ((LoggerContext) LogManager.getContext(false)).updateLoggers();
+        if (capture != null) {
+            capture.close();
         }
-        appender.stop();
     }
 
     @Test
     void nodeOutsideTheElectorate_reportsTheRefusalOncePerEpisode_andTheStallPeriodically() {
-        capture();
+        capture = LogCapture.capture(RabiaEngine.class, Level.WARN, false);
         var requests = new AtomicInteger();
         var target = new AtomicReference<RabiaEngine<TestCommand>>();
         var network = new TestClusterNetwork() {
@@ -114,29 +95,16 @@ class RabiaElectorateRefusalLogTest {
 
         assertThat(engine.isActive()).as("the node outside the electorate never activates").isFalse();
         assertThat(requests.get()).as("control: the adoption loop really retried many rounds").isGreaterThanOrEqualTo(MIN_ROUNDS * 3);
-        assertThat(count(REFUSAL)).as("the refusal is reported once per sync episode, not once per retry; warnings: %s", warnings)
+        assertThat(count(REFUSAL)).as("the refusal is reported once per sync episode, not once per retry; warnings: %s", warnings())
                                   .isEqualTo(1);
         assertThat(count(STUCK)).as("the stall itself is still reported periodically (#1447)").isPositive();
     }
 
-    private long count(String fragment) {
-        return warnings.stream().filter(message -> message.contains(fragment)).count();
+    private List<String> warnings() {
+        return capture.messages(Level.WARN);
     }
 
-    private void capture() {
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        var name = RabiaEngine.class.getName();
-        var existing = configuration.getLoggerConfig(name);
-        if (!name.equals(existing.getName())) {
-            existing = new LoggerConfig(name, Level.WARN, false);
-            configuration.addLogger(name, existing);
-        }
-        loggerConfig = existing;
-        originalLevel = existing.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+    private long count(String fragment) {
+        return warnings().stream().filter(message -> message.contains(fragment)).count();
     }
 }
