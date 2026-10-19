@@ -33,6 +33,13 @@ class ValueObjectModuleTest {
         }
     }
 
+    /// Its factory accepts `null`, so only the module's own refusal stands between `{"value":null}` and a value.
+    record Count(Integer value) {
+        public static Result<Count> count(Integer value) {
+            return Result.success(new Count(value));
+        }
+    }
+
     record Signup(Email email, Quantity quantity, Option<Email> backup) {}
 
     record Hidden(String value) {
@@ -78,6 +85,12 @@ class ValueObjectModuleTest {
         assertRefused("{}", new TypeToken<Email>() {}, "Email");
         assertRefused("{\"value\":null}", new TypeToken<Email>() {}, "Email");
         assertRefused("{\"value\":\"nope\"}", new TypeToken<Email>() {}, "not an email: nope");
+    }
+
+    @Test
+    void valueObjectDocument_refusesANullComponent_evenWhereTheFactoryWouldAcceptIt() {
+        assertThat(read("{\"value\":3}", new TypeToken<Count>() {})).isEqualTo(new Count(3));
+        assertRefused("{\"value\":null}", new TypeToken<Count>() {}, "Null member 'value' of value object Count");
     }
 
     // Nested is decided by the value's own position, so a value object stays bare as a map value or an element of a

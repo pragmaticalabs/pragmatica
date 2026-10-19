@@ -247,6 +247,9 @@ class CombinatorAgreementTest {
     void valueObjectsNested_acceptOnlyTheBareForm_asTheProductionMapperDoes() {
         assertJacksonAgreement(JsonTypeCodec.listOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
                                List.of("[]", "[\"x\",\"y\"]", "[{\"value\":\"x\"}]", "[\"\"]", "{\"value\":\"x\"}"));
+        assertJacksonAgreement(JsonTypeCodec.setOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+                               List.of("[]", "[\"x\",\"y\"]", "[{\"value\":\"x\"}]", "[\"\"]", "{\"value\":\"x\"}"));
+        assertEquals(Set.of(new Code("x")), JsonTypeCodec.setOf(Containers_CodeJson.CODEC).decode("[\"x\"]").unwrap());
         assertJacksonAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
                                List.of("{}", "{\"k\":\"x\"}", "{\"k\":{\"value\":\"x\"}}", "{\"k\":\" \"}"));
         assertJacksonAgreement(Containers_CodesByCodeJson.CODEC, new TypeToken<>() {},
