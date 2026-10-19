@@ -767,6 +767,14 @@ public class RabiaEngine<C extends Command> {
     private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
 
     private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
+
+    /// Whether a sync round is open: a [SyncRequest] has gone out and the engine has not yet adopted a state from the answers. A
+    /// request opens a round ([#openSyncRound]); an activation completes it and a quorum-loss pause invalidates it ([#closeSyncRound]).
+    /// A response is accepted only into an open round, so input that crosses a pause (answers to a request sent before it) or arrives
+    /// after the adoption it was meant for cannot take a `Paused` engine to `Active` without a quorum ACTIVE, nor re-adopt on a
+    /// settled one. The flag starts open: a cold engine takes responses before its first request, as it always did. The rounds are
+    /// local; the protocol carries no round id, so answers to an earlier request of the SAME open round are still accepted.
+    private volatile boolean syncRoundOpen = true;
     private final RabiaPersistence<C> persistence;
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
@@ -1181,6 +1189,7 @@ public class RabiaEngine<C extends Command> {
         // Syncing (triggerResync is a no-op while Syncing) and can be drained/killed as a not-ready
         // node before the first request ever goes out. The scheduled `synchronize` remains the retry;
         // doSynchronize processes accumulated responses (>= quorum) or re-broadcasts.
+        openSyncRound();
         broadcastCoreObservers(new SyncRequest(self));
         var task = SharedScheduler.schedule(this::synchronize,
                                             config.syncRetryInterval().randomize(SCALE));
@@ -1219,6 +1228,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         var oldState = engineState.getAndSet(new EngineState.Paused());
+        closeSyncRound();
 
         exitState(oldState);
         notifyConsensusStateTransition();
@@ -2232,6 +2242,7 @@ public class RabiaEngine<C extends Command> {
         var request = new SyncRequest(self);
 
         log.trace("Node {}: requesting phase synchronization {}", self, request);
+        openSyncRound();
         broadcastCoreObservers(request);
         var task = SharedScheduler.schedule(this::synchronize,
                                             config.syncRetryInterval().randomize(SCALE));
@@ -2520,8 +2531,8 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (engineState.get().isActive()) {
-            log.trace("Node {} ignoring synchronization response {}. Node is active", self, response);
+        if (engineState.get().isActive() || !syncRoundOpen) {
+            log.trace("Node {} ignoring synchronization response {}. No sync round is open or the node is active", self, response);
 
             return;
         }
@@ -2777,6 +2788,15 @@ public class RabiaEngine<C extends Command> {
                                   .isSuccess();
     }
 
+    private void openSyncRound() {
+        syncRoundOpen = true;
+    }
+
+    private void closeSyncRound() {
+        syncRoundOpen = false;
+        syncResponses.clear();
+    }
+
     /// Once per sync episode: every retry of the adoption loop re-enters [#activate], so an unguarded WARN
     /// repeated at the retry cadence without bound (measured: one per `syncRetryInterval`). The stall
     /// itself stays reported periodically by [#warnIfSyncStuck].
@@ -2816,7 +2836,7 @@ public class RabiaEngine<C extends Command> {
         armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
-        syncResponses.clear();
+        closeSyncRound();
         syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in phase {}", self, currentPhase.get());
@@ -2835,7 +2855,7 @@ public class RabiaEngine<C extends Command> {
         armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
-        syncResponses.clear();
+        closeSyncRound();
         syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
@@ -4055,7 +4075,15 @@ public class RabiaEngine<C extends Command> {
         safeExecute(this::openSlotAfterChange);
     }
 
+    /// Applying a decision advances an observer's phase; it does not resume a paused one. `Paused` is left by a quorum ACTIVE
+    /// ([#resumeFromPause], which returns a non-voter to `Observing`), so a paused observer stays `Paused` while it keeps applying.
     private void advancePhaseAsObserver(Phase nextPhase) {
+        if (engineState.get().isPaused()) {
+            log.trace("Node {} (observer) advancing to phase {} while paused", self, nextPhase);
+
+            return;
+        }
+
         var oldState = engineState.getAndSet(new EngineState.Observing());
 
         exitState(oldState);
