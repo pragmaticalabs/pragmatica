@@ -274,5 +274,31 @@ class ContentStoreReclamationTest {
                     .isEqualTo(1);
             assertThat(refCountAfterDrop).as("locator: dropping the only name must reach zero").isZero();
         }
+
+        /// F7: a name containing `=` and `|` survives a restart. A snapshot reader skips every data line containing
+        /// `=`, so an unescaped `=` would drop the ref, and the snapshot's content hash would then reject the whole
+        /// snapshot.
+        @Test
+        void put_nameWithEqualsAndPipe_snapshotAndRestore_isReadableFromTheRebuiltStore() {
+            var name = "reports/q=3|final.bin";
+            var config = snapshotConfig(tempDir.resolve("snapshots"), 100, 600_000, 5, "reclamation-node");
+
+            putContent(name, CONTENT_A);
+            snapshotManager(metadataStore, config).forceSnapshot();
+
+            var restoredStore = MetadataStore.inMemoryMetadataStore("reclamation-restored");
+            var snapshot = snapshotManager(restoredStore, config).restoreFromLatest()
+                                                                 .unwrap();
+
+            assertThat(snapshot.isPresent()).as("the snapshot passes its integrity check and restores").isTrue();
+            restoredStore.restoreLifecycles(snapshot.unwrap().lifecycles());
+            restoredStore.restoreRefs(snapshot.unwrap().refs());
+
+            var restoredStorage = StorageInstance.storageInstance("reclamation-restored", List.of(memoryTier), restoredStore);
+            var restored = ContentStore.contentStore(restoredStorage,
+                                                     ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
+
+            assertThat(restored.get(name).await().unwrap().unwrap()).isEqualTo(CONTENT_A);
+        }
     }
 }

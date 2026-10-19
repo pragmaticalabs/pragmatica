@@ -3,6 +3,8 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+import org.pragmatica.lang.Option;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -201,6 +203,34 @@ class ContentStoreManifestFramingTest {
         assertThat(get("old")).isEqualTo("fresh".getBytes(StandardCharsets.UTF_8));
         assertThat(storage.resolveRef("old").isEmpty()).as("the legacy ref is retired").isTrue();
         assertThat(refCounts(List.of(id))).allMatch(count -> count <= 0);
+    }
+
+    /// Deleting a name written before the upgrade retires its legacy ref: the file is no longer readable, and the legacy
+    /// manifest's chunks are released.
+    @Test
+    void deletingALegacyName_retiresTheLegacyRef_andReleasesItsChunks() {
+        var part = content(100, 6);
+        var id = storage.put(part).await().unwrap().hexString();
+        var legacyManifest = (ContentManifest.MAGIC_HEADER + "old|100|1|" + id).getBytes(StandardCharsets.UTF_8);
+
+        storage.swapRef("old", legacyManifest).await().unwrap();
+        assertThat(get("old")).as("control: the legacy file is readable before the delete").isEqualTo(part);
+
+        store.delete("old").await().onFailure(c -> fail("delete: " + c.message()));
+
+        assertThat(storage.resolveRef("old").isEmpty()).as("the legacy ref is retired").isTrue();
+        assertThat(store.get("old").await().map(Option::isPresent).or(false)).as("a deleted pre-upgrade file is no longer readable")
+                                                                       .isFalse();
+        assertThat(refCounts(List.of(id))).allMatch(count -> count <= 0);
+    }
+
+    /// A name written before the upgrade exists although it has no trusted ref.
+    @Test
+    void legacyName_exists() {
+        storage.swapRef("legacy-only", "written before the envelope".getBytes(StandardCharsets.UTF_8)).await().unwrap();
+
+        assertThat(store.exists("legacy-only").await().unwrap()).isTrue();
+        assertThat(store.exists("never-written").await().unwrap()).as("control: an absent name does not exist").isFalse();
     }
 
     /// The proof the trusted namespace rests on: a LEGACY snapshot line (no escaped-name header) is split at its first
