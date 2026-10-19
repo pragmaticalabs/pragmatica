@@ -205,7 +205,8 @@ public class PromiseAnyTest {
             assertTrue(any.isResolved());
             any.await()
                .onSuccess(_ -> fail("Expected failure"))
-               .onFailure(cause -> assertSame(CoreError.emptyAny(), cause));
+               .onFailure(cause -> assertEquals(CoreError.emptyAny(), cause))
+               .onFailure(cause -> assertEquals("any() of no promises", cause.message()));
         }
     }
 
