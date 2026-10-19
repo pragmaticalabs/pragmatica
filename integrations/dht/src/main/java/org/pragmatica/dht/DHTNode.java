@@ -911,6 +911,7 @@ public final class DHTNode {
     @Contract
     public void handleVerifiedReadRequest(DHTMessage.VerifiedReadRequest request,
                                           Consumer<DHTMessage> responseHandler) {
+        repair.noteVerifiedReadAnswered();
         if (!verifiedReadServable(ring.partitionFor(request.key()))) {
             responseHandler.accept(refusedVerifiedRead(request));
 

@@ -87,6 +87,7 @@ public final class RepairPlane {
     private final AtomicLong verifiedReadFallbacks = new AtomicLong();
     private final AtomicLong verifiedReadMismatches = new AtomicLong();
     private final AtomicLong verifiedReadQuorumFallbacks = new AtomicLong();
+    private final AtomicLong verifiedReadsAnswered = new AtomicLong();
     private final AtomicReference<TimeSpan> freshnessWindow = new AtomicReference<>(DEFAULT_FRESHNESS_WINDOW);
     private final AtomicReference<TimeSpan> hedgeDelay = new AtomicReference<>(DEFAULT_HEDGE_DELAY);
 
@@ -276,6 +277,11 @@ public final class RepairPlane {
         verifiedReadQuorumFallbacks.incrementAndGet();
     }
 
+    @Contract
+    void noteVerifiedReadAnswered() {
+        verifiedReadsAnswered.incrementAndGet();
+    }
+
     /// Repair messages carrying entries sent since start: migration pages, rebalance and departure pushes.
     public long pagesSent() {
         return pagesSent.get();
@@ -304,5 +310,11 @@ public final class RepairPlane {
     /// Verified reads that found no verifiable copy on any single replica and fell back to the quorum read.
     public long verifiedReadQuorumFallbacks() {
         return verifiedReadQuorumFallbacks.get();
+    }
+
+    /// Verified read requests from other replicas' readers this node answered since start, served or refused: the
+    /// evidence that the node routes them to this plane at all.
+    public long verifiedReadsAnswered() {
+        return verifiedReadsAnswered.get();
     }
 }
