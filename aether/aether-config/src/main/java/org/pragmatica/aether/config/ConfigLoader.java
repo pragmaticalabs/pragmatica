@@ -448,7 +448,9 @@ public final class ConfigLoader {
     /// A `security_mode` the node cannot honour is refused, never rewritten: a value that is not recognised used to read as the
     /// default (`[app-http]`) or as `api-key` (`[management]`), so an operator who wrote `jwt` for the management plane, or
     /// mistyped `nnone`, got a different mode than the one in the file and no word of it (#1455: refuses, never drops).
-    private static Result<Unit> refuseUnsupportedSecurityModes(TomlDocument doc) {
+    /// Shared with the bootstrap pre-flight (PF-24), so a cloud bootstrap refuses the same values, in the same words, before it
+    /// provisions anything: the two can never disagree about what a node would refuse.
+    public static Result<Unit> refuseUnsupportedSecurityModes(TomlDocument doc) {
         return refuseUnrecognisedAppHttpMode(doc).flatMap(_ -> refuseUnsupportedManagementMode(doc));
     }
 

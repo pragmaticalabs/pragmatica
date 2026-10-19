@@ -707,12 +707,43 @@ class ClusterBootstrapConfigValidatorTest {
             assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), some("  None "), "0.0.0.0/0"))).isTrue();
         }
 
-        /// The node reads any management value other than `none` as api-key, so a typo or `jwt` closes the plane:
-        /// PF-24 must not refuse it, even while the app plane says none.
+        /// A management value no node can honour is REFUSED here, before any server is provisioned, in the loader's words (key, value,
+        /// allowed values); it is not read as closed and passed on to fail at boot.
+        private static String refusalOf(ClusterBootstrapConfig config) {
+            return validate(config).fold(cause -> cause.message(), _ -> "");
+        }
+
         @Test
-        void validate_managementTypoOrJwt_isNotPf24_evenWhileAppHttpIsNone() {
-            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), some("nnone"), "0.0.0.0/0"))).isFalse();
-            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), some("jwt"), "0.0.0.0/0"))).isFalse();
+        void validate_managementJwt_isRefusedAtBootstrap_namingKeyValueAndAllowedValues() {
+            assertThat(refusalOf(cloudConfigWithModes(some("none"), some("jwt"), "203.0.113.0/24")))
+                .contains("PF-24")
+                .contains("[management] security_mode = \"jwt\"")
+                .contains("the management plane has no JWT mode")
+                .contains("Allowed values: none, api-key");
+        }
+
+        @Test
+        void validate_managementTypo_isRefusedAtBootstrap() {
+            assertThat(refusalOf(cloudConfigWithModes(some("api-key"), some("nnone"), "203.0.113.0/24")))
+                .contains("PF-24")
+                .contains("[management] security_mode = \"nnone\"")
+                .contains("is not a security mode")
+                .contains("Allowed values: none, api-key");
+        }
+
+        @Test
+        void validate_appHttpTypo_isRefusedAtBootstrap() {
+            assertThat(refusalOf(cloudConfigWithModes(some("nnone"), none(), "203.0.113.0/24")))
+                .contains("PF-24")
+                .contains("[app-http] security_mode = \"nnone\"")
+                .contains("Allowed values: none, api-key, jwt");
+        }
+
+        /// Control: supported modes (including the accepted spellings) raise no such refusal.
+        @Test
+        void validate_supportedModes_areNotRefusedAsUnsupported() {
+            assertThat(refusalOf(cloudConfigWithModes(some("API_KEY"), some(" None "), "203.0.113.0/24"))).doesNotContain("Allowed values");
+            assertThat(refusalOf(cloudConfigWithModes(some("api-key"), some("api-key"), "203.0.113.0/24"))).doesNotContain("Allowed values");
         }
 
         @Test

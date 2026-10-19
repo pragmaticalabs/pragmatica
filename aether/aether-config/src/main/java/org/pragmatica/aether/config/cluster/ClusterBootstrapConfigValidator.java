@@ -422,6 +422,7 @@ public final class ClusterBootstrapConfigValidator {
                                               int managementPort,
                                               List<String> errors) {
         checkIngressProviderSupport(name, source, errors);
+        checkSecurityModesAreSupported(name, source, errors);
         checkPublicManagementWithoutAuth(name, source, managementPort, errors);
         checkJwtWithoutJwks(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
@@ -475,6 +476,18 @@ public final class ClusterBootstrapConfigValidator {
                   + " unauthenticated management API on the public internet — anyone who can reach it"
                   + " can deploy, scale and reconfigure the cluster. Scope source_cidr to your operator"
                   + " network, or enable authentication.");
+    }
+
+    /// PF-24 — a `security_mode` no node can honour (`[management]` `jwt`, or an unrecognised value in either section) is refused by the
+    /// node at boot, which is after the cloud servers exist and bill. Caught here instead, with the loader's own parse
+    /// ([ConfigLoader#refuseUnsupportedSecurityModes]) on the COMPOSED document a node loads, so key, value and allowed values read exactly
+    /// as the node would report them and the two cannot disagree.
+    private static void checkSecurityModesAreSupported(String name, SourceProfile source, List<String> errors) {
+        composedAppHttp(source).onPresent(doc -> ConfigLoader.refuseUnsupportedSecurityModes(doc)
+                                                             .onFailure(cause -> errors.add("PF-24: Source '" + name + "': "
+                                                                                           + cause.message()
+                                                                                           + " Every node would refuse to start on it;"
+                                                                                           + " fix the node_config before provisioning.")));
     }
 
     /// PF-34 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
