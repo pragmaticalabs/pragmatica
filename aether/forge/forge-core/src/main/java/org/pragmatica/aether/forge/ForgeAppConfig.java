@@ -45,10 +45,11 @@ interface ForgeAppConfig {
     /// the mode as written, and both ways out; a `jwt` value also gets the reason it does not help.
     static String keylessManagementRefusal(String file, String mode) {
         return "refusing to start: " + file
-               + " sets [management] security_mode = \"" + mode + "\" but declares no API key, so Forge's own control calls to the"
-               + " management plane would be refused with 401." + jwtNote(mode)
-               + " Declare a key ([app-http.api-keys.<key>] or AETHER_API_KEYS),"
-               + " or choose another mode: set [management] security_mode = \"none\" or remove the setting.";
+             + " sets [management] security_mode = \"" + mode
+             + "\" but declares no API key, so Forge's own control calls to the"
+             + " management plane would be refused with 401." + jwtNote(mode)
+             + " Declare a key ([app-http.api-keys.<key>] or AETHER_API_KEYS),"
+             + " or choose another mode: set [management] security_mode = \"none\" or remove the setting.";
     }
 
     private static String jwtNote(String mode) {

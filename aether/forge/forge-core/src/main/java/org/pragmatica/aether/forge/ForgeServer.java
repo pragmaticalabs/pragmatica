@@ -420,16 +420,14 @@ public final class ForgeServer {
     /// The refusal text for the sibling as it stands: the file, and the mode as the operator WROTE it (the loader reads any
     /// non-`none` value as api-key, so the raw value is the only way to tell a `jwt` user what they configured).
     String keylessManagementRefusal() {
-        var file = startupConfig.forgeConfig()
-                                .map(path -> path.resolveSibling("aether.toml"));
+        var file = startupConfig.forgeConfig().map(path -> path.resolveSibling("aether.toml"));
         var written = file.flatMap(path -> TomlParser.parseFile(path)
                                                      .option()
                                                      .flatMap(doc -> doc.getString("management", "security_mode")))
                           .map(String::trim)
                           .or("api-key");
 
-        return ForgeAppConfig.keylessManagementRefusal(file.map(Path::toString)
-                                                           .or("aether.toml"),
+        return ForgeAppConfig.keylessManagementRefusal(file.map(Path::toString).or("aether.toml"),
                                                        written);
     }
 
