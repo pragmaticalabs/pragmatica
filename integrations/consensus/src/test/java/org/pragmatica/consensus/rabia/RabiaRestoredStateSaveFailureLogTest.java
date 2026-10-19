@@ -253,6 +253,38 @@ class RabiaRestoredStateSaveFailureLogTest {
         assertThat(engine.restoredStateSaveFailure()).isEqualTo(Option.some(DISK_FULL));
     }
 
+    /// E1, #1468/#1516: a cluster that is still forming must never be halted. The watchdog bounds only
+    /// `ownRestoreFailure` and `restoredStateSaveFailure`, and `authorityFailure` is NOT one of its sources because the
+    /// engine constructor sets it and a later genesis clears it. An invalid initial electorate fails the constructor's
+    /// `initializeVoters`: the authority failure is recorded (precondition) and neither watchdog source may be.
+    @Test
+    void constructorFailure_setsTheAuthorityFailure_butNeitherWatchdogSource() {
+        var engine = startedOn(new TestTopologyManager(NODE_1, 0), new RecordingStateMachine(), emptyDisk(false), false).engine();
+
+        assertThat(engine.voterReconfigurationStatus().failure()).as("precondition: the constructor recorded the authority failure")
+                                                                 .contains("at least one member");
+        assertThat(engine.ownRestoreFailure()).isEqualTo(Option.none());
+        assertThat(engine.restoredStateSaveFailure()).as("a forming cluster must not reach the watchdog's re-persist arm")
+                                                     .isEqualTo(Option.none());
+    }
+
+    /// E1, the other half: while genesis is pending the engine neither adopts nor restores, so a persistence whose save
+    /// always fails is never reached, however many cold sync answers arrive. The state is event-driven, so a run of
+    /// answers stands in for the minutes a cluster may spend forming.
+    @Test
+    void genesisPending_repeatedSyncAnswers_withAFailingSave_leaveBothWatchdogSourcesEmpty() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = startedOn(new TestTopologyManager(NODE_1, 3), stateMachine, emptyDisk(true), true).engine();
+
+        for (var round = 0; round < 50; round++) {
+            engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+            assertThat(engine.isGenesisPending()).as("precondition: genesis is still pending at round " + round).isTrue();
+            assertThat(engine.ownRestoreFailure()).isEqualTo(Option.none());
+            assertThat(engine.restoredStateSaveFailure()).isEqualTo(Option.none());
+        }
+        assertThat(stateMachine.lastRestored()).as("nothing was adopted while genesis was pending").isNull();
+    }
+
     /// The #1020 diagnostic on the sync-adoption arm: the failed re-persist is logged at ERROR, naming
     /// the stale-disk consequence and the cause.
     @Test
@@ -374,8 +406,15 @@ class RabiaRestoredStateSaveFailureLogTest {
     private Started started(int clusterSize,
                             StateMachine<TestCommand> stateMachine,
                             RabiaPersistence<TestCommand> persistence) {
+        return startedOn(new TestTopologyManager(NODE_1, clusterSize), stateMachine, persistence, false);
+    }
+
+    private Started startedOn(TestTopologyManager topology,
+                              StateMachine<TestCommand> stateMachine,
+                              RabiaPersistence<TestCommand> persistence,
+                              boolean pendingGenesis) {
         var network = new TestClusterNetwork();
-        var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, clusterSize),
+        var engine = new RabiaEngine<>(topology,
                                        network,
                                        stateMachine,
                                        ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
@@ -385,6 +424,9 @@ class RabiaRestoredStateSaveFailureLogTest {
                                        timeSpan(50).millis());
 
         engines.add(engine);
+        if (pendingGenesis) {
+            assertThat(engine.deferGenesis().isSuccess()).isTrue();
+        }
         engine.clusterState(ClusterStateNotification.active());
 
         return new Started(engine, network);
