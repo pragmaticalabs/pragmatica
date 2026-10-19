@@ -3,6 +3,7 @@
 # EmberReadCommittedFailoverTest (2 tests, #2087): 58.9 s on bigboy at 40a421bb9 (earlier runs of the one-test version 40.1-51.3 s); weight rounded up.
 # EmberVoterHealTest 116 (#2098): surefire class time on bigboy, 3 runs of f2098-2f21a633a: 116.4 s, 113.4 s, 112.4 s (maximum used).
 # TransportWiringTripwireEmberTest 10 (#2215): surefire class time 9.5 s locally at b04c9bcf13 (load ~6; 2 of 4 tests @Disabled, so re-measure when they are enabled).
+# The ten *TripwireTest classes below (#2201): surefire class time at 27b5fa9a4b on three hosts (3 runs, spread under 3 s per class: 132.7-134.5 s ColdRestart, 14.1 ConsumerPath, 54.5 CursorCheckpoint, 12.1 ForwardedPublishLoop, 32.7-32.8 ForwardLane, 69.3-69.9 MemoryBudget, 58.8-61.2 OwnerRestart, 13.6-14.2 ReplicationBatching, 16.4-18.3 SealedTier, 69.9 WalFailStop); maximum rounded up. Their @Disabled tests are skipped, so re-measure when one is enabled.
 EmberAmnesiacRestartTest 162
 EmberBlackholedReplicaRecoveryTest 94
 EmberBootstrapAdminKeyAuthTest 10
@@ -46,3 +47,13 @@ EmberWorkerDhtReplicationTest 16
 MinimumLiveIsrTest 0
 EmberVoterHealTest 116
 TransportWiringTripwireEmberTest 10
+EmberColdRestartAckedLossTripwireTest 134
+EmberConsumerPathTripwireTest 15
+EmberCursorCheckpointLoadTripwireTest 55
+EmberForwardLaneTripwireTest 33
+EmberForwardedPublishLoopTripwireTest 12
+EmberMemoryBudgetTripwireTest 70
+EmberOwnerRestartAckedTailTripwireTest 62
+EmberReplicationBatchingTripwireTest 15
+EmberSealedTierRetentionTripwireTest 17
+EmberWalFailStopNodeTripwireTest 70

@@ -157,7 +157,7 @@ jobs:
           retention-days: 7
 
   # Ember's tests (#1643), split by class across runners. They are serial in one module and took 53 of build-and-test's
-  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 2 shards to 3. The required check
+  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 3 shards to 4. The required check
   # names are ember-shard-1 .. ember-shard-N.
   ember-shard:
     name: ember-shard-${{ matrix.shard }}
@@ -166,7 +166,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     env:
       SHARDS: ${{ strategy.job-total }}
       SHARD: ${{ matrix.shard }}
