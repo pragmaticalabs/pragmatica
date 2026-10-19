@@ -2715,19 +2715,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Math.max(1L, (long)(delayMs * factor));
     }
 
-    /// Periodic missing-peer reconciler tick. For every configured non-passive peer that is
-    /// not currently CONNECTED, dispatches `connectPeer(...)` (subject to per-peer jittered
-    /// exponential backoff) so the asymmetric-handshake hole — node A handshakes with B/C/D
-    /// but permanently misses E — self-heals without operator intervention. When all
-    /// configured peers are connected this is a no-op.
-    ///
-    /// Skips peers in CONNECTING phase (a dial is already in flight; existing dedup at
-    /// `connectPeer` would no-op anyway, but we save the topology lookup). Skips peers in
-    /// REMOVED phase (authoritatively departed; resurrecting them is the responsibility of
-    /// the topology / cluster-formation layer, not the transport reconciler).
-    ///
-    /// Package-private to allow tests to drive ticks deterministically without scheduling.
-    @SuppressWarnings("JBCT-PAT-01")  // Periodic tick: walk topology, gate per-peer, dispatch dial
     /// Fixed-rate entry of the reconciler: defers the tick by a random offset below `RECONCILE_TICK_JITTER_MS`.
     /// The deferred tick re-checks `isRunning`, so a tick pending at `stop()` is a no-op.
     @Contract
@@ -2747,6 +2734,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return ThreadLocalRandom.current().nextLong(RECONCILE_TICK_JITTER_MS);
     }
 
+    /// Periodic missing-peer reconciler tick. For every configured non-passive peer that is
+    /// not currently CONNECTED, dispatches `connectPeer(...)` (subject to per-peer jittered
+    /// exponential backoff) so the asymmetric-handshake hole — node A handshakes with B/C/D
+    /// but permanently misses E — self-heals without operator intervention. When all
+    /// configured peers are connected this is a no-op.
+    ///
+    /// Skips peers in CONNECTING phase (a dial is already in flight; existing dedup at
+    /// `connectPeer` would no-op anyway, but we save the topology lookup). Skips peers in
+    /// REMOVED phase (authoritatively departed; resurrecting them is the responsibility of
+    /// the topology / cluster-formation layer, not the transport reconciler).
+    ///
+    /// Package-private to allow tests to drive ticks deterministically without scheduling.
+    @SuppressWarnings("JBCT-PAT-01")  // Periodic tick: walk topology, gate per-peer, dispatch dial
     @Contract
     void reconcileMissingPeersTick() {
         if (!isRunning.get()) {
