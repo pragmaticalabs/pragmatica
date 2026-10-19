@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -120,6 +121,25 @@ public class PromiseAnyTest {
             var loser = Promise.<String>promise();
             var any = Promise.any(winner, loser);
 
+            winner.succeed("winner");
+            any.await();
+
+            loser.await()
+                 .onSuccess(_ -> fail("Expected the loser to be cancelled"))
+                 .onFailure(cause -> assertInstanceOf(CoreError.Cancelled.class, cause));
+        }
+    }
+
+    @Nested
+    class CallerListIsNotRetained {
+        @Test
+        void any_cancelsLosers_whenCallerClearsItsListAfterwards() {
+            var winner = Promise.<String>promise();
+            var loser = Promise.<String>promise();
+            var inputs = new ArrayList<>(List.of(winner, loser));
+            var any = Promise.any(inputs);
+
+            inputs.clear();
             winner.succeed("winner");
             any.await();
 
