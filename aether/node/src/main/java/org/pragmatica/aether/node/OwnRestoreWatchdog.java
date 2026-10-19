@@ -58,22 +58,25 @@ public record OwnRestoreWatchdog(Supplier<Option<Cause>> failure,
     public sealed interface Fence extends Cause {
         /// The node's own persisted consensus history could not be restored (#1468).
         record OwnRestoreUnreadable(String detail, String message) implements Fence {
-            public static final Fn1<OwnRestoreUnreadable, String> FACTORY = Causes.forOneValue("%s", OwnRestoreUnreadable::new);
+            public static final Fn1<OwnRestoreUnreadable, String> FACTORY = Causes.forOneValue("%s",
+                                                                                               OwnRestoreUnreadable::new);
         }
 
         /// The re-persist of a restored or adopted state failed (#1516).
         record StatePersistFailed(String detail, String message) implements Fence {
-            public static final Fn1<StatePersistFailed, String> FACTORY = Causes.forOneValue("%s", StatePersistFailed::new);
+            public static final Fn1<StatePersistFailed, String> FACTORY = Causes.forOneValue("%s",
+                                                                                             StatePersistFailed::new);
         }
     }
 
     /// The failure source the watchdog samples: the own-restore failure when present, otherwise the failed
     /// re-persist, each tagged with its [Fence] type (the cause text is kept).
-    public static Supplier<Option<Cause>> fence(Supplier<Option<Cause>> ownRestore, Supplier<Option<Cause>> statePersist) {
+    public static Supplier<Option<Cause>> fence(Supplier<Option<Cause>> ownRestore,
+                                                Supplier<Option<Cause>> statePersist) {
         return () -> ownRestore.get()
-                               .<Cause>map(cause -> Fence.OwnRestoreUnreadable.FACTORY.apply(cause.message()))
+                               .<Cause> map(cause -> Fence.OwnRestoreUnreadable.FACTORY.apply(cause.message()))
                                .orElse(() -> statePersist.get()
-                                                         .<Cause>map(cause -> Fence.StatePersistFailed.FACTORY.apply(cause.message())));
+                                                         .<Cause> map(cause -> Fence.StatePersistFailed.FACTORY.apply(cause.message())));
     }
 
     public static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> failure,

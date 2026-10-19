@@ -877,7 +877,9 @@ public record Main(String[] args) {
     @Contract
     static void exitFenced(Cause cause, Runnable flushLogs, IntConsumer haltFn) {
         switch (cause) {
-            case OwnRestoreWatchdog.Fence.StatePersistFailed persist -> exitConsensusStatePersistFailed(persist, flushLogs, haltFn);
+            case OwnRestoreWatchdog.Fence.StatePersistFailed persist -> exitConsensusStatePersistFailed(persist,
+                                                                                                        flushLogs,
+                                                                                                        haltFn);
             default -> exitConsensusRestoreFailed(cause, flushLogs, haltFn);
         }
     }
