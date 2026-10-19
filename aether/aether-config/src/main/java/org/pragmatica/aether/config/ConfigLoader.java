@@ -456,7 +456,8 @@ public final class ConfigLoader {
         return doc.getString("app-http", "security_mode")
                   .filter(raw -> SecurityMode.securityMode(raw).isEmpty())
                   .fold(Result::unitResult,
-                        raw -> ConfigError.invalidConfig("[app-http] security_mode = \"" + raw + "\" is not a security mode."
+                        raw -> ConfigError.invalidConfig("[app-http] security_mode = \"" + raw
+                                                        + "\" is not a security mode."
                                                         + " Allowed values: none, api-key, jwt.").result());
     }
 
@@ -466,9 +467,8 @@ public final class ConfigLoader {
     }
 
     private static Result<Unit> managementModeVerdict(String raw) {
-        return SecurityMode.securityMode(raw)
-                           .fold(() -> unsupportedManagementMode(raw, "is not a security mode"),
-                                 mode -> managementModeSupport(raw, mode));
+        return SecurityMode.securityMode(raw).fold(() -> unsupportedManagementMode(raw, "is not a security mode"),
+                                                   mode -> managementModeSupport(raw, mode));
     }
 
     private static Result<Unit> managementModeSupport(String raw, SecurityMode mode) {
@@ -478,7 +478,8 @@ public final class ConfigLoader {
     }
 
     private static Result<Unit> unsupportedManagementMode(String raw, String reason) {
-        return ConfigError.invalidConfig("[management] security_mode = \"" + raw + "\" " + reason
+        return ConfigError.invalidConfig("[management] security_mode = \"" + raw
+                                        + "\" " + reason
                                         + ". Allowed values: none, api-key.").result();
     }
 
