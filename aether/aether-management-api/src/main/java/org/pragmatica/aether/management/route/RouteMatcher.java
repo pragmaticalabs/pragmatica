@@ -68,7 +68,7 @@ public final class RouteMatcher {
     /// either incompatible (impossible, since both matched) or one properly dominates the other
     /// (see [#dominates]) -- so the maximum by literal count always exists and is unique.
     public Result<MatchedRoute> match(HttpMethod method, String rawPath) {
-        var segments = splitSegments(rawPath);
+        var segments = MavenRepositoryPath.foldGroup(method, splitSegments(rawPath));
         var bucket = buckets.getOrDefault(new BucketKey(method, segments.size()), List.of());
         ManagementRoute best = null;
         var bestLiteralCount = -1;

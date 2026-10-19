@@ -425,6 +425,7 @@ public final class ClusterBootstrapConfigValidator {
         checkSecurityModesAreSupported(name, source, errors);
         checkPublicManagementWithoutAuth(name, source, managementPort, errors);
         checkJwtWithoutJwks(name, source, errors);
+        checkNodeConfigLoads(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
     }
 
@@ -504,6 +505,22 @@ public final class ClusterBootstrapConfigValidator {
                                                        + ". Every node would refuse to start: there is nothing to verify"
                                                        + " tokens against. jwks_url is required (issuer/audience optional); set it, or change"
                                                        + " security_mode."));
+    }
+
+    /// PF-35 (#1455) — a node refuses to boot on a node config it cannot load: a wrong-typed value, an invalid enumeration
+    /// token, boolean, duration or size, a removed key. Judged by the node's OWN loader on the same composed document PF-34
+    /// reads (global default + source-type default + the source's `node_config`), so the bootstrap check and the node give
+    /// the same verdict for every key, not for one.
+    private static void checkNodeConfigLoads(String name, SourceProfile source, List<String> errors) {
+        composedAppHttp(source).flatMap(ClusterBootstrapConfigValidator::nodeLoadFailure)
+                       .onPresent(problem -> errors.add("PF-35: Source '" + name
+                                                       + "' node_config cannot be loaded by a node: " + problem
+                                                       + ". Every node would refuse to start."));
+    }
+
+    private static Option<String> nodeLoadFailure(TomlDocument composed) {
+        return ConfigLoader.checkNodeDocument(composed).fold(cause -> Option.some(cause.message()),
+                                                             _ -> Option.<String> none());
     }
 
     private static Option<TomlDocument> composedAppHttp(SourceProfile source) {

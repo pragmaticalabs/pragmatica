@@ -1570,6 +1570,35 @@ class MembershipFsmTest {
             assertThat(manager.effective()).isZero();
         }
 
+        /// R1: a core that went Suspect and then received the sustained-absence crossing leaves the core set.
+        @Test
+        void onDownHysteresisMet_suspectCore_leavesCoreMembers() {
+            var manager = activeManager();
+
+            promoteCoreMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            assertThat(manager.coreMembers()).containsExactly(A);
+            manager.onDownHysteresisMet(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(manager.coreMembers()).doesNotContain(A);
+        }
+
+        /// The sampler re-delivers the crossing while absence continues: a crossing that lands on a Member is
+        /// absorbed, and the next one, after the member has gone Suspect, still departs it.
+        @Test
+        void onDownHysteresisMet_repeatedCrossing_ignoredInMemberThenDepartsSuspect() {
+            var manager = activeManager();
+
+            promoteCoreMember(manager, A);
+            manager.onDownHysteresisMet(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            manager.onSwimFaulty(A, 4L);
+            manager.onDownHysteresisMet(A);
+            manager.onDownHysteresisMet(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(manager.coreMembers()).doesNotContain(A);
+        }
+
         @Test
         void onDownHysteresisMet_onObservedId_isIgnored() {
             var manager = MembershipFsm.membershipFsm();

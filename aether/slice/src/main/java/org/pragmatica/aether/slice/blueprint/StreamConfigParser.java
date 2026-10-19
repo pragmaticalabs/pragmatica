@@ -38,7 +38,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.utils.Causes.cause;
@@ -419,7 +421,19 @@ public interface StreamConfigParser {
     private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .flatMap(doc -> extractConsumerConfigs(doc, streamName));
+                         .flatMap(doc -> typeChecked(doc,
+                                                     extractConsumerConfigs(doc, streamName)));
+    }
+
+    /// #1455: the consumer keys (`batch-size`, `max-retries`) are the only typed reads in this parser; they
+    /// answer Option and take a default for a present-but-wrong-typed value. The document records those
+    /// reads and the parse refuses here, naming them. The stream-resource keys (`partitions`, `replicas`)
+    /// are read through the stream declaration, which refuses a malformed value itself (#1336), so
+    /// the resource entry points need no gate.
+    private static <T> Result<T> typeChecked(TomlDocument doc, Result<T> parsed) {
+        return parsed.flatMap(value -> doc.requireNoTypeMismatches()
+                                          .mapError(err -> cause("Stream config parse error: " + err.message()))
+                                          .map(_ -> value));
     }
 
     private static boolean isStreamSection(String sectionName) {
@@ -855,16 +869,22 @@ public interface StreamConfigParser {
                                                  String groupName,
                                                  long checkpointIntervalMs) {
         var batchSize = doc.getInt(section, "batch_size").or(1);
-        var processing = doc.getString(section, "processing")
-                            .map(StreamConfigParser::parseProcessingMode)
+        var processing = doc.getParsed(section,
+                                       "processing",
+                                       "one of: ordered, parallel",
+                                       StreamConfigParser::parseProcessingMode)
                             .or(ProcessingMode.ORDERED);
-        var onFailure = doc.getString(section, "on_failure")
-                           .map(StreamConfigParser::parseErrorStrategy)
+        var onFailure = doc.getParsed(section,
+                                      "on_failure",
+                                      "one of: retry, skip, stall",
+                                      StreamConfigParser::parseErrorStrategy)
                            .or(ErrorStrategy.RETRY);
         var maxRetries = doc.getInt(section, "max_retries").or(3);
         var deadLetterStream = doc.getString(section, "dead_letter").or("");
-        var readPreference = doc.getString(section, "read_preference")
-                                .map(StreamConfigParser::parseReadPreference)
+        var readPreference = doc.getParsed(section,
+                                           "read_preference",
+                                           "one of: governor, nearest, any-replica, linearizable",
+                                           StreamConfigParser::parseReadPreference)
                                 .or(ReadPreference.GOVERNOR);
 
         return ConsumerConfig.consumerConfig(groupName,
@@ -877,10 +897,11 @@ public interface StreamConfigParser {
                                              readPreference);
     }
 
-    private static ProcessingMode parseProcessingMode(String value) {
+    private static Option<ProcessingMode> parseProcessingMode(String value) {
         return switch (value.toLowerCase()) {
-            case "parallel" -> ProcessingMode.PARALLEL;
-            default -> ProcessingMode.ORDERED;
+            case "ordered" -> some(ProcessingMode.ORDERED);
+            case "parallel" -> some(ProcessingMode.PARALLEL);
+            default -> none();
         };
     }
 
@@ -906,20 +927,22 @@ public interface StreamConfigParser {
         };
     }
 
-    private static ReadPreference parseReadPreference(String value) {
+    private static Option<ReadPreference> parseReadPreference(String value) {
         return switch (value.toLowerCase()) {
-            case "nearest" -> ReadPreference.NEAREST;
-            case "any-replica", "any_replica", "any", "replica", "follower-only", "follower_only", "follower" -> ReadPreference.ANY_REPLICA;
-            case "linearizable", "linearizable-read", "strong-read" -> ReadPreference.LINEARIZABLE;
-            default -> ReadPreference.GOVERNOR;
+            case "governor" -> some(ReadPreference.GOVERNOR);
+            case "nearest" -> some(ReadPreference.NEAREST);
+            case "any-replica", "any_replica", "any", "replica", "follower-only", "follower_only", "follower" -> some(ReadPreference.ANY_REPLICA);
+            case "linearizable", "linearizable-read", "strong-read" -> some(ReadPreference.LINEARIZABLE);
+            default -> none();
         };
     }
 
-    private static ErrorStrategy parseErrorStrategy(String value) {
+    private static Option<ErrorStrategy> parseErrorStrategy(String value) {
         return switch (value.toLowerCase()) {
-            case "skip" -> ErrorStrategy.SKIP;
-            case "stall" -> ErrorStrategy.STALL;
-            default -> ErrorStrategy.RETRY;
+            case "retry" -> some(ErrorStrategy.RETRY);
+            case "skip" -> some(ErrorStrategy.SKIP);
+            case "stall" -> some(ErrorStrategy.STALL);
+            default -> none();
         };
     }
 }

@@ -44,42 +44,42 @@ final class InMemoryConfigService implements ConfigService {
 
     @Override
     public Promise<Option<Integer>> getInt(String section, String key) {
-        return Promise.success(getHierarchical(section, key, TomlDocument::getInt));
+        return typedHierarchical(section, key, "integer", TomlDocument::getInt);
     }
 
     @Override
     public Promise<Option<Integer>> getInt(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope).getInt(section, key));
+        return typedIn(scope, section, key, "integer", TomlDocument::getInt);
     }
 
     @Override
     public Promise<Option<Boolean>> getBoolean(String section, String key) {
-        return Promise.success(getHierarchical(section, key, TomlDocument::getBoolean));
+        return typedHierarchical(section, key, "boolean", TomlDocument::getBoolean);
     }
 
     @Override
     public Promise<Option<Boolean>> getBoolean(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope).getBoolean(section, key));
+        return typedIn(scope, section, key, "boolean", TomlDocument::getBoolean);
     }
 
     @Override
     public Promise<Option<Double>> getDouble(String section, String key) {
-        return Promise.success(getHierarchical(section, key, TomlDocument::getDouble));
+        return typedHierarchical(section, key, "float", TomlDocument::getDouble);
     }
 
     @Override
     public Promise<Option<Double>> getDouble(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope).getDouble(section, key));
+        return typedIn(scope, section, key, "float", TomlDocument::getDouble);
     }
 
     @Override
     public Promise<Option<List<String>>> getStringList(String section, String key) {
-        return Promise.success(getHierarchical(section, key, TomlDocument::getStringList));
+        return typedHierarchical(section, key, "array of strings", TomlDocument::getStringList);
     }
 
     @Override
     public Promise<Option<List<String>>> getStringList(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope).getStringList(section, key));
+        return typedIn(scope, section, key, "array of strings", TomlDocument::getStringList);
     }
 
     @Override
@@ -120,6 +120,58 @@ final class InMemoryConfigService implements ConfigService {
 
         return Promise.success(new WatchSubscription(watchKey, entry));
     }
+
+    // #1455: the typed reads answer Option, and a present-but-wrong-typed value reads as absent. A
+    // service query must tell the two apart, so a wrong-typed key fails the read naming key and
+    // value. The read goes through a view with its own ledger: the stored documents live as long as
+    // the service, and their ledgers would otherwise collect every repeated wrong-typed read.
+    private <T> Promise<Option<T>> typedHierarchical(String section,
+                                                     String key,
+                                                     String expected,
+                                                     ValueGetter<T> getter) {
+        return firstTyped(0, section, key, expected, getter);
+    }
+
+    private <T> Promise<Option<T>> firstTyped(int from,
+                                              String section,
+                                              String key,
+                                              String expected,
+                                              ValueGetter<T> getter) {
+        return from == HIERARCHY.size()
+               ? Promise.success(Option.none())
+               : typedIn(HIERARCHY.get(from), section, key, expected, getter).flatMap(found -> found.fold(() -> firstTyped(from + 1,
+                                                                                                                           section,
+                                                                                                                           key,
+                                                                                                                           expected,
+                                                                                                                           getter),
+                                                                                                          value -> Promise.success(Option.some(value))));
+    }
+
+    private <T> Promise<Option<T>> typedIn(ConfigScope scope,
+                                           String section,
+                                           String key,
+                                           String expected,
+                                           ValueGetter<T> getter) {
+        var view = new TomlDocument(documents.get(scope).sections(),
+                                    documents.get(scope).tableArrays());
+
+        return getter.get(view, section, key)
+                     .fold(() -> absentOrMistyped(view, section, key, expected),
+                           value -> Promise.success(Option.some(value)));
+    }
+
+    private static <T> Promise<Option<T>> absentOrMistyped(TomlDocument view,
+                                                           String section,
+                                                           String key,
+                                                           String expected) {
+        return view.rawValue(section, key)
+                   .fold(() -> Promise.success(Option.none()),
+                         raw -> new ConfigError.TypeMismatch(section + "." + key,
+                                                             expected,
+                                                             String.valueOf(raw)).promise());
+    }
+
+    private static final List<ConfigScope> HIERARCHY = List.of(ConfigScope.SLICE, ConfigScope.NODE, ConfigScope.GLOBAL);
 
     private <T> Option<T> getHierarchical(String section, String key, ValueGetter<T> getter) {
         var sliceValue = getter.get(documents.get(ConfigScope.SLICE), section, key);
