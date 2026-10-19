@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.lang.Functions.Fn1;
@@ -20,6 +21,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
@@ -40,52 +42,64 @@ public final class ConfigLoader {
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
-        return TomlParser.parseFile(path)
-                         .flatMap(ConfigLoader::fromDocument)
-                         .flatMap(ConfigValidator::validate)
-                         .flatMap(StorageEncryptionConfigValidator::validate);
+        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
-        return TomlParser.parse(content)
-                         .flatMap(ConfigLoader::fromDocument)
-                         .flatMap(ConfigValidator::validate)
-                         .flatMap(StorageEncryptionConfigValidator::validate);
+        return TomlParser.parse(content).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
-        return TomlParser.parseFile(path)
-                         .flatMap(doc -> fromDocumentWithOverrides(doc, overrides))
-                         .flatMap(ConfigValidator::validate)
-                         .flatMap(StorageEncryptionConfigValidator::validate);
+        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, overrides, System::getenv, FileOps::exists));
+    }
+
+    /// THE node load path, shared by every entry point and by cluster bootstrap's pre-flight ([#checkNodeDocument]):
+    /// parse the document into a config, then run the configuration and storage-encryption validators. One function, so
+    /// pre-flight and boot cannot drift apart; only the environment and the filesystem differ.
+    ///
+    /// ASSUMPTION (guarded by `ConfigLoaderPreflightTest#preflightVerdict_doesNotDependOnTheValuesTheEnvironmentSupplies`): the
+    /// three values the environment feeds into the built config (the TLS cluster secret, the API keys, `${env:...}`
+    /// placeholders of the cloud section) are read by NO validator, so an empty environment cannot change a verdict. A
+    /// validator that starts reading one of them turns that test red, and has to decide what pre-flight does about it.
+    private static Result<AetherConfig> loadDocument(TomlDocument doc,
+                                                     Map<String, String> overrides,
+                                                     Fn1<String, String> env,
+                                                     Predicate<Path> fileExists) {
+        return fromDocumentWithOverrides(doc, overrides, env).flatMap(config -> ConfigValidator.validate(config,
+                                                                                                         fileExists))
+                                        .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static AetherConfig aetherConfig(Environment env) {
         return AetherConfig.aetherConfig(env);
     }
 
-    private static Result<AetherConfig> fromDocument(TomlDocument doc) {
-        return fromDocumentWithOverrides(doc, Map.of());
-    }
-
-    private static Result<AetherConfig> fromDocumentWithOverrides(TomlDocument doc, Map<String, String> overrides) {
+    private static Result<AetherConfig> fromDocumentWithOverrides(TomlDocument doc,
+                                                                  Map<String, String> overrides,
+                                                                  Fn1<String, String> env) {
         var envStr = overrides.getOrDefault("environment",
                                             doc.getString("cluster", "environment").or("docker"));
-
-        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc,
-                                                                                     overrides,
-                                                                                     environment,
-                                                                                     environmentIsExplicit(doc,
-                                                                                                           overrides)));
+        // #1455: every typed read above and below answers Option, so a present-but-wrong-typed value
+        // (`port = "80x"`) took the reader's default; the document recorded each such read, and the
+        // load refuses here naming all of them.
+        return Environment.environment(envStr)
+                          .flatMap(environment -> assembleConfig(doc,
+                                                                 overrides,
+                                                                 environment,
+                                                                 environmentIsExplicit(doc, overrides),
+                                                                 env))
+                          .flatMap(config -> doc.requireNoTypeMismatches()
+                                                .map(_ -> config));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
     private static Result<AetherConfig> assembleConfig(TomlDocument doc,
                                                        Map<String, String> overrides,
                                                        Environment environment,
-                                                       boolean environmentExplicit) {
+                                                       boolean environmentExplicit,
+                                                       Fn1<String, String> env) {
         try {
-            var builder = populateBuilder(doc, environment, environmentExplicit);
+            var builder = populateBuilder(doc, environment, environmentExplicit, env);
 
             mergeCliOverrides(overrides, builder);
 
@@ -144,23 +158,24 @@ public final class ConfigLoader {
 
     private static AetherConfig.Builder populateBuilder(TomlDocument doc,
                                                         Environment environment,
-                                                        boolean environmentExplicit) {
+                                                        boolean environmentExplicit,
+                                                        Fn1<String, String> env) {
         var builder = AetherConfig.builder().withEnvironment(environment);
 
         populateClusterConfig(doc, builder);
         populateNodeConfig(doc, builder);
-        populateTlsConfig(doc, builder, environment);
+        populateTlsConfig(doc, builder, environment, env);
         populateDockerConfig(doc, builder, environment);
         populateKubernetesConfig(doc, builder, environment);
         populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
-        populateAppHttpConfig(doc, builder);
-        populateBackupConfig(doc, builder, environment, environmentExplicit);
+        populateAppHttpConfig(doc, builder, env);
+        populateBackupConfig(doc, builder, environment, environmentExplicit, env);
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
         populateStorageConfig(doc, builder);
         populateStorageEncryptionConfig(doc, builder);
-        populateCloudConfig(doc, builder);
+        populateCloudConfig(doc, builder, env);
         populateEndpointsConfig(doc, builder);
         populateStreamingConfig(doc, builder);
         populateMembershipConfig(doc, builder);
@@ -254,9 +269,11 @@ public final class ConfigLoader {
     }
 
     private static TimeSpan parseTimeSpan(TomlDocument doc, String section, String key, TimeSpan defaultValue) {
-        return doc.getString(section, key)
-                  .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                  .option())
+        return doc.getParsed(section,
+                             key,
+                             "a duration such as 30s",
+                             v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                                                    .option())
                   .map(ts -> TimeSpan.fromDuration(ts.duration()))
                   .or(defaultValue);
     }
@@ -272,8 +289,10 @@ public final class ConfigLoader {
     }
 
     private static int parseDataSize(TomlDocument doc, String section, String key, int defaultValue) {
-        return doc.getString(section, key)
-                  .flatMap(v -> DataSize.dataSize(v).option())
+        return doc.getParsed(section,
+                             key,
+                             "a size such as 64MB",
+                             v -> DataSize.dataSize(v).option())
                   .map(DataSize::bytesAsInt)
                   .or(defaultValue);
     }
@@ -281,7 +300,7 @@ public final class ConfigLoader {
     @SuppressWarnings("JBCT-RET-07")
     private static void populateClusterConfig(TomlDocument doc, AetherConfig.Builder builder) {
         doc.getInt("cluster", "nodes").onPresent(builder::nodes);
-        doc.getString("cluster", "tls").map(ConfigLoader::toBooleanValue).onPresent(builder::tls);
+        doc.getBoolean("cluster", "tls").onPresent(builder::tls);
         doc.getInt("cluster", "core_max").onPresent(builder::coreMax);
         doc.getInt("cluster", "max_nodes").onPresent(builder::maxNodes);
         builder.ports(portsFromDocument(doc));
@@ -290,8 +309,10 @@ public final class ConfigLoader {
     private static PortsConfig portsFromDocument(TomlDocument doc) {
         var mgmtPort = doc.getInt("cluster.ports", "management").or(PortsConfig.DEFAULT_MANAGEMENT_PORT);
         var clusterPort = doc.getInt("cluster.ports", "cluster").or(PortsConfig.DEFAULT_CLUSTER_PORT);
-        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol")
-                              .flatMap(HttpProtocol::httpProtocol)
+        var mgmtProtocol = doc.getParsed("cluster.ports",
+                                         "management_protocol",
+                                         "one of: h1, h3, both",
+                                         HttpProtocol::httpProtocol)
                               .or(HttpProtocol.H1);
 
         return PortsConfig.portsConfig(mgmtPort, clusterPort, mgmtProtocol).unwrap();
@@ -303,24 +324,26 @@ public final class ConfigLoader {
         doc.getString("node", "gc").onPresent(builder::gc);
     }
 
-    private static void populateTlsConfig(TomlDocument doc, AetherConfig.Builder builder, Environment environment) {
+    private static void populateTlsConfig(TomlDocument doc,
+                                          AetherConfig.Builder builder,
+                                          Environment environment,
+                                          Fn1<String, String> env) {
         var tlsEnabled = isTlsEnabled(doc, environment);
 
         if (tlsEnabled) {
-            builder.tlsConfig(tlsFromDocument(doc, System::getenv));
+            builder.tlsConfig(tlsFromDocument(doc, env));
         }
     }
 
     private static boolean isTlsEnabled(TomlDocument doc, Environment environment) {
-        return doc.getString("cluster", "tls")
-                  .map(ConfigLoader::toBooleanValue)
+        return doc.getBoolean("cluster", "tls")
                   .or(environment.defaultTls());
     }
 
     /// The `[tls]` section with the host environment supplied: `cluster_secret`, else the ambient secret (`AETHER_CLUSTER_SECRET` or
     /// the file `AETHER_CLUSTER_SECRET_FILE` names, #828).
     static TlsConfig tlsFromDocument(TomlDocument doc, Fn1<String, String> env) {
-        var autoGen = doc.getString("tls", "auto_generate").map(ConfigLoader::toBooleanValue).or(true);
+        var autoGen = doc.getBoolean("tls", "auto_generate").or(true);
         var certPath = doc.getString("tls", "cert_path").or("");
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
@@ -362,7 +385,7 @@ public final class ConfigLoader {
     }
 
     private static void populateTtmConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var ttmEnabled = doc.getString("ttm", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+        var ttmEnabled = doc.getBoolean("ttm", "enabled").or(false);
 
         if (ttmEnabled) {
             builder.ttm(ttmFromDocument(doc));
@@ -399,12 +422,12 @@ public final class ConfigLoader {
     }
 
     @SuppressWarnings("JBCT-STY-05")
-    private static void populateAppHttpConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+    private static void populateAppHttpConfig(TomlDocument doc, AetherConfig.Builder builder, Fn1<String, String> env) {
+        var enabled = doc.getBoolean("app-http", "enabled").or(false);
         var port = doc.getInt("app-http", "port").or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
         var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
         var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
-        var apiKeys = resolveApiKeys(doc);
+        var apiKeys = resolveApiKeys(doc, env);
         // #290: secure by default. When `security_mode` is not configured the effective mode is
         // API_KEY (was: NONE unless api-keys present), so a default-config node's management plane and
         // dashboard require authentication rather than serving the control plane wide open. The
@@ -412,13 +435,14 @@ public final class ConfigLoader {
         // none was provisioned. An explicit `security_mode` (including "none") always wins.
         var securityMode = explicitMode.or(SecurityMode.API_KEY);
         var jwtConfig = parseJwtConfig(doc);
-        var httpProtocol = doc.getString("app-http", "protocol")
-                              .flatMap(HttpProtocol::httpProtocol)
+        var httpProtocol = doc.getParsed("app-http", "protocol", "one of: h1, h3, both", HttpProtocol::httpProtocol)
                               .or(HttpProtocol.H1);
         // #198 §7: cluster-level API-version detection mode + header name (per-slice override is a
         // documented follow-up). Defaults keep path mode (byte-identical to pre-#198-C3b behavior).
-        var apiVersioningDetection = doc.getString("app-http", "api_versioning_detection")
-                                        .flatMap(ApiVersioningDetection::apiVersioningDetection)
+        var apiVersioningDetection = doc.getParsed("app-http",
+                                                   "api_versioning_detection",
+                                                   "one of: path, header",
+                                                   ApiVersioningDetection::apiVersioningDetection)
                                         .or(ApiVersioningDetection.PATH);
         var apiVersionHeaderName = doc.getString("app-http", "api_version_header")
                                       .or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
@@ -515,8 +539,9 @@ public final class ConfigLoader {
     private static void populateBackupConfig(TomlDocument doc,
                                              AetherConfig.Builder builder,
                                              Environment environment,
-                                             boolean environmentExplicit) {
-        effectiveBackup(doc, System::getenv, environment, environmentExplicit).onPresent(builder::backup);
+                                             boolean environmentExplicit,
+                                             Fn1<String, String> env) {
+        effectiveBackup(doc, env, environment, environmentExplicit).onPresent(builder::backup);
     }
 
     /// The node's effective `[backup]` (TOML merged with the environment variables), refused when its path is unwritable for `environment`.
@@ -571,7 +596,8 @@ public final class ConfigLoader {
                                                  java.util.function.Consumer<String> overrideNotice,
                                                  java.util.function.Consumer<String> sourceNotice) {
         var sources = new java.util.LinkedHashMap<String, String>();
-        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(ConfigLoader::toBooleanValue)
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(raw -> strictBoolean(raw).getOrThrow(IllegalArgumentException::new,
+                                                                                                                                                          "invalid [backup] enabled"))
                                .or(false);
 
         if (!enabled) {
@@ -651,14 +677,17 @@ public final class ConfigLoader {
         builder.timeouts(timeoutsFromDocument(doc));
     }
 
-    private static void populateCloudConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        doc.getString("cloud", "provider").onPresent(provider -> applyCloudConfig(doc, builder, provider));
+    private static void populateCloudConfig(TomlDocument doc, AetherConfig.Builder builder, Fn1<String, String> env) {
+        doc.getString("cloud", "provider").onPresent(provider -> applyCloudConfig(doc, builder, provider, env));
     }
 
-    private static void applyCloudConfig(TomlDocument doc, AetherConfig.Builder builder, String provider) {
+    private static void applyCloudConfig(TomlDocument doc,
+                                         AetherConfig.Builder builder,
+                                         String provider,
+                                         Fn1<String, String> env) {
         var credentials = doc.getSection("cloud.credentials");
         var compute = doc.getSection("cloud.compute");
-        var cc = CloudConfig.cloudConfig(provider, resolveEnvVars(credentials), resolveEnvVars(compute)).unwrap();
+        var cc = CloudConfig.cloudConfig(provider, resolveEnvVars(credentials, env), resolveEnvVars(compute, env)).unwrap();
         var lb = doc.getSection("cloud.load_balancer");
         var discovery = doc.getSection("cloud.discovery");
         var secrets = doc.getSection("cloud.secrets");
@@ -865,10 +894,10 @@ public final class ConfigLoader {
         return EndpointConfig.endpointConfig(host, port, username, password);
     }
 
-    private static Map<String, String> resolveEnvVars(Map<String, String> map) {
+    private static Map<String, String> resolveEnvVars(Map<String, String> map, Fn1<String, String> env) {
         var resolved = new HashMap<String, String>();
 
-        map.forEach((k, v) -> resolved.put(k, resolveEnvVar(v)));
+        map.forEach((k, v) -> resolved.put(k, resolveEnvVar(v, env)));
 
         return resolved;
     }
@@ -1197,9 +1226,11 @@ public final class ConfigLoader {
                                               String stringKey,
                                               String msKey,
                                               TimeSpan defaultValue) {
-        var fromString = doc.getString(section, stringKey)
-                            .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                            .option())
+        var fromString = doc.getParsed(section,
+                                       stringKey,
+                                       "a duration such as 30s",
+                                       v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                                                              .option())
                             .map(ts -> TimeSpan.fromDuration(ts.duration()));
 
         if (fromString.isPresent()) {
@@ -1292,7 +1323,8 @@ public final class ConfigLoader {
     @SuppressWarnings("JBCT-RET-07")
     private static void mergeCliOverrides(Map<String, String> overrides, AetherConfig.Builder builder) {
         if (overrides.containsKey("nodes")) {
-            Number.parseInt(overrides.get("nodes")).onSuccess(builder::nodes);
+            builder.nodes(Number.parseInt(overrides.get("nodes")).getOrThrow(IllegalArgumentException::new,
+                                                                             "invalid --nodes"));
         }
 
         if (overrides.containsKey("heap")) {
@@ -1300,12 +1332,44 @@ public final class ConfigLoader {
         }
 
         if (overrides.containsKey("tls")) {
-            builder.tls(Boolean.parseBoolean(overrides.get("tls")));
+            builder.tls(strictBoolean(overrides.get("tls")).getOrThrow(IllegalArgumentException::new, "invalid --tls"));
         }
+    }
+
+    /// #1455: `[backup] enabled = "yes"` (or the environment variable set to it) read as a DISABLED backup and the node ran
+    /// without one, and `--tls=yes` turned TLS off; a value that is not `true` or `false` refuses the load like the
+    /// neighbouring `restore` mode does. The CLI overrides use the same parse as the TOML booleans.
+    private static Result<Boolean> strictBoolean(String raw) {
+        return switch (raw.toLowerCase()) {
+            case "true" -> success(true);
+            case "false" -> success(false);
+            default -> ConfigError.invalidConfig("'" + raw + "' is not true or false").result();
+        };
     }
 
     /// The one parse of a boolean setting (`"true"`, any case, exact: no trimming), shared with cluster bootstrap's PF-34 so the bootstrap check
     /// and the node agree on whether `[app-http] enabled` is on.
+    /// The filesystem cluster bootstrap judges a node config against: every file exists. The certificate, key and CA paths
+    /// name files on the node (`/etc/aether/tls/*.pem`), not on the operator's machine, so the operator's filesystem must not
+    /// change the verdict either. Path syntax is still validated; the node's own load checks the real files.
+    public static final Predicate<Path> PREFLIGHT_FILESYSTEM = _ -> true;
+    /// The environment cluster bootstrap judges a node config against: empty. The process environment of the operator's
+    /// machine describes the operator, not the node that will boot (its environment arrives with its own user data), so it
+    /// must not change the verdict.
+    public static final Fn1<String, String> PREFLIGHT_ENVIRONMENT = Map.<String, String> of()::get;
+
+    /// Whether a node would load this composed node document: the node's FULL load path (parse, then
+    /// [ConfigValidator#validate] and [StorageEncryptionConfigValidator#validate]), judged against an empty environment
+    /// ([#PREFLIGHT_ENVIRONMENT]). Cluster bootstrap runs it per source so a fleet whose config the node would refuse at
+    /// boot is refused before it is provisioned (PF-35). It cannot see what the node's own environment will add.
+    public static Result<Unit> checkNodeDocument(TomlDocument doc) {
+        return checkNodeDocument(doc, PREFLIGHT_ENVIRONMENT, PREFLIGHT_FILESYSTEM);
+    }
+
+    static Result<Unit> checkNodeDocument(TomlDocument doc, Fn1<String, String> env, Predicate<Path> fileExists) {
+        return loadDocument(doc, Map.of(), env, fileExists).mapToUnit();
+    }
+
     public static boolean toBooleanValue(String s) {
         return "true".equalsIgnoreCase(s);
     }

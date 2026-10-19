@@ -12,7 +12,6 @@ import java.util.regex.Pattern;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
-import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
@@ -97,7 +96,13 @@ public class ObligationsCommand implements Callable<Integer> {
             return USAGE_ERROR;
         }
 
-        var config = ConfigLoader.load(Option.option(configPath), Option.none());
+        var loadedConfig = CliConfig.load(Option.option(configPath));
+
+        if (loadedConfig.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        var config = loadedConfig.unwrap();
         var files = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
         var parser = new Java25Parser();
         var obligations = new ArrayList<Obligation>();
