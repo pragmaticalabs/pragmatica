@@ -192,12 +192,12 @@ class RabiaRestoredStateSaveFailureLogTest {
             .contains(DISK_FULL.message());
     }
 
-    /// D1, the false-positive class: a failed re-persist fences the node through `authorityFailure`, but it is not a
-    /// failure to restore the node's OWN history, so the watchdog bound (`ownRestoreFailure`) must stay empty on both
-    /// arms. This pins the scope #1468 decided; widening it to cover the permanent re-persist fence (#1516) is a
-    /// separate decision. The precondition on each arm shows the failing save was really reached.
+    /// A failed re-persist fences the node through `authorityFailure`. It is not a failure to restore the node's OWN
+    /// history, so `ownRestoreFailure` stays empty and the watchdog's own-restore arm does not fire; the re-persist arm
+    /// is the one the watchdog bounds (`restoredStateSaveFailure`, #1516), asserted here on both restore paths. The
+    /// precondition on each arm shows the failing save was really reached.
     @Test
-    void syncAdoptionSaveFails_leavesOwnRestoreFailureEmpty() {
+    void syncAdoptionSaveFails_firesTheRepersistArmNotTheOwnRestoreArm() {
         var stateMachine = new RecordingStateMachine();
         var engine = coldStarted(3, stateMachine, emptyDisk(true));
 
@@ -212,7 +212,7 @@ class RabiaRestoredStateSaveFailureLogTest {
     }
 
     @Test
-    void ownRestoreSaveFails_leavesOwnRestoreFailureEmpty() {
+    void ownRestoreSaveFails_firesTheRepersistArmNotTheOwnRestoreArm() {
         var stateMachine = new RecordingStateMachine();
         var started = started(3, stateMachine, failingSaveAt(OWN_PHASE, OWN_SNAPSHOT));
 

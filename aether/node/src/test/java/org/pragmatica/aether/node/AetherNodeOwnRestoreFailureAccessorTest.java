@@ -22,6 +22,8 @@ import org.pragmatica.net.tcp.TlsConfig;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -92,6 +94,40 @@ class AetherNodeOwnRestoreFailureAccessorTest {
         failEnginesOwnRestore(rabiaNode(node));
 
         assertThat(node.ownRestoreFailure()).isEqualTo(Option.some(UNREADABLE));
+    }
+
+    /// The watchdog over a real node's accessors: a re-persist failure on the engine reaches the exit, tagged as the
+    /// re-persist fence, once the bound has passed on an injected clock; an own-restore failure reaches it as the
+    /// own-restore fence. Two arms, two types: dropping either source from the combined supplier leaves one red.
+    @Test
+    void watchdog_overARealNode_exitsWithTheRepersistFence_whenOnlyTheRepersistFailureIsSet() throws ReflectiveOperationException {
+        node = AetherNode.aetherNode(coreConfig(), () -> {}).unwrap();
+        failEngineField(rabiaNode(node), "restoredStateSaveFailure");
+
+        assertThat(exitCauseAfterTheBound()).isInstanceOf(OwnRestoreWatchdog.Fence.StatePersistFailed.class);
+    }
+
+    @Test
+    void watchdog_overARealNode_exitsWithTheOwnRestoreFence_whenTheOwnRestoreFailureIsSet() throws ReflectiveOperationException {
+        node = AetherNode.aetherNode(coreConfig(), () -> {}).unwrap();
+        failEngineField(rabiaNode(node), "ownRestoreFailure");
+
+        assertThat(exitCauseAfterTheBound()).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
+    }
+
+    private Object exitCauseAfterTheBound() {
+        var now = new AtomicLong(1_000);
+        var exits = new CopyOnWriteArrayList<Cause>();
+        var watchdog = OwnRestoreWatchdog.ownRestoreWatchdog(OwnRestoreWatchdog.fence(node::ownRestoreFailure, node::restoredStateSaveFailure),
+                                                             now::get,
+                                                             OwnRestoreWatchdog.BOUND,
+                                                             exits::add);
+
+        watchdog.tick();
+        now.addAndGet(OwnRestoreWatchdog.BOUND.millis());
+        watchdog.tick();
+
+        return exits.isEmpty() ? null : exits.getFirst();
     }
 
     private AetherNodeConfig coreConfig() {
