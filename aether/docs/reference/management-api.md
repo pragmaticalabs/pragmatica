@@ -6518,6 +6518,7 @@ Both bounds apply the same way over HTTP/1.1 and HTTP/3.
 
 - `read_timeout` is an idle bound: a request that receives no body byte for this long is refused. Over HTTP/1.1, a connection that is silent for this long while no response is pending (a stalled body, an idle keep-alive connection) is closed. Over HTTP/3, a request stream whose body is silent this long receives `408 Request Timeout` and its input is reset. Upgraded WebSocket connections are exempt.
 - `min_body_rate` bounds a client that trickles just inside the idle bound. After a 10 s grace from the start of the request, the body's bytes are averaged over each 10 s window. A body arriving below the rate is refused: over HTTP/1.1 the connection is closed, and over HTTP/3 the request receives `408` and its stream input is reset. A slow upload above the rate completes however long it takes.
+- Request trailers (an HTTP/1.1 chunked trailer section, or an HTTP/3 HEADERS frame after the body) are accepted but not delivered to the handler, over HTTP/1.1 and HTTP/3 alike: a request exposes only its headers and body. A request-trailers API is tracked as #2310.
 
 ### Multipart File Upload
 

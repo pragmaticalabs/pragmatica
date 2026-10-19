@@ -249,8 +249,8 @@ final class Http3Server {
     /// Each stream gets its own instance — no @Sharable needed.
     ///
     /// A body over `maxContentLength` is answered 413 as soon as it crosses the limit and is never dispatched
-    /// (I1: it was cut to the limit and dispatched as if complete). A HEADERS frame after the first is a trailer
-    /// section and never replaces the request headers (I16). The body buffer is released on every exit: dispatch,
+    /// (I1: it was cut to the limit and dispatched as if complete). Request trailers are not delivered (#2310).
+    /// The body buffer is released on every exit: dispatch,
     /// rejection, a stream that closes without headers, and a stream torn down before its input closed.
     ///
     /// I3/F6: the same two bounds as HTTP/1.1. IDLE: a body that delivers no frame for `readTimeout` (QUIC's own 5 s
