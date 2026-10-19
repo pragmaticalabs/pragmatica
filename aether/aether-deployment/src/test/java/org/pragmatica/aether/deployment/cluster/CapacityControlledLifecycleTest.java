@@ -1108,7 +1108,8 @@ class CapacityControlledLifecycleTest {
         var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
         losingLeadership(leading, new AtomicInteger(1)).provisionNode(spec("first", "east")).await();
         var next = successor(new java.util.concurrent.CopyOnWriteArrayList<>());
-        onListing = () -> replaceEastConfig("this is [not valid toml");
+        onListing = () -> seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some("this is [not valid toml"), "test", "1.0.0", List.of(), 3, 3, "forge", 9, 0)));
 
         now.addAndGet(2 * GRACE_MS);
         next.reconcileInventory().await().unwrap();
