@@ -170,24 +170,42 @@ public class PromiseAnyTest {
 
     @Nested
     class EmptyInput {
-        // Pinned current behaviour (not a design endorsement): with no inputs there is no event to count,
-        // so the result never resolves. Same for the explicit-failureResult overloads.
+        // An empty input can never produce a success or an event, so it resolves at once instead of hanging.
         @Test
-        void any_neverResolves_emptyList() throws InterruptedException {
-            var any = Promise.any(List.<Promise<String>>of());
-
-            Thread.sleep(200);
-
-            assertFalse(any.isResolved());
+        void any_failsImmediately_emptyList() {
+            assertEmptyAnyFailure(Promise.any(List.<Promise<String>>of()));
         }
 
         @Test
-        void any_neverResolves_emptyVarargs() throws InterruptedException {
-            var any = Promise.<String>any();
+        void any_failsImmediately_emptyVarargs() {
+            assertEmptyAnyFailure(Promise.<String>any());
+        }
 
-            Thread.sleep(200);
+        @Test
+        void any_resolvesWithProvidedFailureResult_emptyVarargs() {
+            var any = Promise.any(THIRD.<String>result());
 
-            assertFalse(any.isResolved());
+            assertTrue(any.isResolved());
+            any.await()
+               .onSuccess(_ -> fail("Expected failure"))
+               .onFailure(cause -> assertSame(THIRD, cause));
+        }
+
+        @Test
+        void any_resolvesWithProvidedFailureResult_emptyList() {
+            var any = Promise.any(THIRD.<String>result(), List.<Promise<String>>of());
+
+            assertTrue(any.isResolved());
+            any.await()
+               .onSuccess(_ -> fail("Expected failure"))
+               .onFailure(cause -> assertSame(THIRD, cause));
+        }
+
+        private void assertEmptyAnyFailure(Promise<String> any) {
+            assertTrue(any.isResolved());
+            any.await()
+               .onSuccess(_ -> fail("Expected failure"))
+               .onFailure(cause -> assertSame(CoreError.emptyAny(), cause));
         }
     }
 
