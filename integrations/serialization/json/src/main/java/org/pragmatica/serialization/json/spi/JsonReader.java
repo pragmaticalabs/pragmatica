@@ -88,7 +88,7 @@ public final class JsonReader {
     private static final byte[] QUOTED_NEGATIVE_INFINITY = {'"', '-', 'I', 'n', 'f', 'i', 'n', 'i', 't', 'y', '"'};
 
     // Beyond any int: an exponent this large is already out of range for every target type.
-    private static final long EXPONENT_CAP = 1L<< 40;
+    private static final long EXPONENT_CAP = 1L << 40;
     private static final Currency DEFAULT_CURRENCY = Currency.getInstance("XXX");
     private static final UUID NIL_UUID = new UUID(0, 0);
 

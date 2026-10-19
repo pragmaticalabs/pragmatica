@@ -51,7 +51,7 @@ import static org.pragmatica.lang.Result.success;
 sealed interface JsonCodecRegistry {
     /// A services iterator consumes the entry it fails on, so a scan always advances; this bound only guarantees that
     /// an iterator which failed without advancing could not hang a lookup. No class path holds this many providers.
-    int MAX_PROVIDER_STEPS = 1<< 20;
+    int MAX_PROVIDER_STEPS = 1 << 20;
     String SERVICES_ENTRY = "META-INF/services/" + JsonCodecProvider.class.getName();
 
     ClassValue<Result<Option<JsonTypeCodec<?>>>> CODECS = new ClassValue<>() {
