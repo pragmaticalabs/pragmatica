@@ -1015,20 +1015,23 @@ public final class StorageFactory {
                                                      cause.message()));
 
         return refuseIfVolumeWasWritten(tiers, snapshotDir).flatMap(_ -> restoreAndSignalReady(STREAMS_NAME,
-                                                                                                snapshotManager,
-                                                                                                metadataStore,
-                                                                                                readinessGate)).map(_ -> {
-            log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
+                                                                                               snapshotManager,
+                                                                                               metadataStore,
+                                                                                               readinessGate))
+                                       .map(_ -> {
+                                                log.info("Storage 'streams' created: {} tier(s), data dir={}",
+                                                         tiers.size(),
+                                                         snapshotDir.getParent());
 
-            return StorageSetup.storageSetup(STREAMS_NAME,
-                                             instance,
-                                             snapshotManager,
-                                             readinessGate,
-                                             metadataStore,
-                                             demotionManager,
-                                             garbageCollector,
-                                             dhtMarkerCheck);
-        });
+                                                return StorageSetup.storageSetup(STREAMS_NAME,
+                                                                                 instance,
+                                                                                 snapshotManager,
+                                                                                 readinessGate,
+                                                                                 metadataStore,
+                                                                                 demotionManager,
+                                                                                 garbageCollector,
+                                                                                 dhtMarkerCheck);
+                                            });
     }
 
     private static Result<PendingSetup> createOne(String name,
@@ -1438,21 +1441,26 @@ public final class StorageFactory {
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
-        return refuseIfVolumeWasWritten(tiers, Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
-                                                                                                                  snapshotManager,
-                                                                                                                  metadataStore,
-                                                                                                                  readinessGate)).map(_ -> {
-            log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
+        return refuseIfVolumeWasWritten(tiers,
+                                        Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
+                                                                                                           snapshotManager,
+                                                                                                           metadataStore,
+                                                                                                           readinessGate))
+                                       .map(_ -> {
+                                                log.info("Storage '{}' created: {} tier(s), snapshot path={}",
+                                                         name,
+                                                         tiers.size(),
+                                                         config.snapshotPath());
 
-            return StorageSetup.storageSetup(name,
-                                             instance,
-                                             snapshotManager,
-                                             readinessGate,
-                                             metadataStore,
-                                             demotionManager,
-                                             garbageCollector,
-                                             dhtMarkerCheck);
-        });
+                                                return StorageSetup.storageSetup(name,
+                                                                                 instance,
+                                                                                 snapshotManager,
+                                                                                 readinessGate,
+                                                                                 metadataStore,
+                                                                                 demotionManager,
+                                                                                 garbageCollector,
+                                                                                 dhtMarkerCheck);
+                                            });
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED
@@ -1481,13 +1489,13 @@ public final class StorageFactory {
     /// directories never share a sentinel, whatever characters their names hold) plus its last segment
     /// for the operator's eye.
     static Result<Path> sentinelFor(Path snapshotPath) {
-        var canonical = snapshotPath.toAbsolutePath()
-                                    .normalize();
+        var canonical = snapshotPath.toAbsolutePath().normalize();
 
-        return BlockId.blockId(canonical.toString().getBytes(StandardCharsets.UTF_8))
-                      .map(id -> Path.of(StorageConfig.defaultRoot())
-                                     .resolve(SENTINEL_DIR)
-                                     .resolve(id.hexString() + "-" + readableSuffix(canonical) + ".id"));
+        return BlockId.blockId(canonical.toString().getBytes(StandardCharsets.UTF_8)).map(id -> Path.of(StorageConfig.defaultRoot())
+                                                                                                    .resolve(SENTINEL_DIR)
+                                                                                                    .resolve(id.hexString()
+                                                                                                            + "-" + readableSuffix(canonical)
+                                                                                                            + ".id"));
     }
 
     private static String readableSuffix(Path canonical) {
