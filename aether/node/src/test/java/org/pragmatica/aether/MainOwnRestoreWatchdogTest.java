@@ -125,7 +125,8 @@ class MainOwnRestoreWatchdogTest {
         var watchdog = Main.ownRestoreWatchdog(() -> Option.some(UNREADABLE), Option::none, () -> {}, _ -> {});
 
         assertThat(watchdog.boundMillis()).isEqualTo(120_000L).isEqualTo(OwnRestoreWatchdog.BOUND.millis());
-        assertThat(watchdog.failure().get()).isEqualTo(Option.some(UNREADABLE));
+        assertThat(unwrap(watchdog.failure().get())).isInstanceOf(OwnRestoreWatchdog.Fence.OwnRestoreUnreadable.class);
+        assertThat(watchdog.failure().get().map(org.pragmatica.lang.Cause::message)).isEqualTo(Option.some(UNREADABLE.message()));
     }
 
     @Test
