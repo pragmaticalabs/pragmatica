@@ -102,10 +102,16 @@ class AetherNodePrefetchBootTest {
         assertThat(managers.values()).as("control: dormant until the node is ready")
                                      .allSatisfy(manager -> assertThat(manager.isActive()).isFalse());
 
+        assertThat(node.prefetchGossipStats().isEmpty()).as("control: SWIM is not running before start, so there is nothing to report").isTrue();
+
         node.start().await(timeSpan(30).seconds()).onFailure(cause -> fail("start must succeed: " + cause.message()));
 
         await().atMost(Duration.ofSeconds(90))
                .untilAsserted(() -> assertThat(managers.values()).allSatisfy(manager -> assertThat(manager.isActive()).isTrue()));
+        await().atMost(Duration.ofSeconds(30))
+               .untilAsserted(() -> assertThat(node.prefetchGossipStats().isPresent())
+                   .as("a running node reports its prefetch gossip counters, so an operator can see the drops")
+                   .isTrue());
     }
 
     @Test

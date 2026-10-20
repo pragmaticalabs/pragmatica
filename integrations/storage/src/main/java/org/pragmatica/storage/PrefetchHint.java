@@ -11,9 +11,4 @@ public record PrefetchHint(String blockIdHex, int accessCount) {
     public static PrefetchHint prefetchHint(String blockIdHex, int accessCount) {
         return new PrefetchHint(blockIdHex, accessCount);
     }
-
-    /// Construct a hint from domain types.
-    public static PrefetchHint prefetchHint(BlockId blockId, int accessCount) {
-        return new PrefetchHint(blockId.hexString(), accessCount);
-    }
 }

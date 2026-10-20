@@ -82,6 +82,7 @@ import org.pragmatica.aether.node.backup.GitBackupRepository;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
+import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
 import org.pragmatica.aether.node.prefetch.StoragePrefetchChannel;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
@@ -2572,8 +2573,14 @@ public interface AetherNode extends ManageableNode {
                           // can close.
                           Option<SpiResourceProvider> spiResourceProvider,
                           NodeReplacementService nodeReplacementService,
-                          UpgradeRunService upgradeRunService) implements AetherNode {
+                          UpgradeRunService upgradeRunService,
+                          StoragePrefetchChannel prefetchChannel) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public Option<PrefetchGossipStats> prefetchGossipStats() {
+                return PrefetchGossipStats.prefetchGossipStats(swimHealthDetector.appGossipStats(), prefetchChannel);
+            }
 
             @Override
             public Epoch currentGenerationEpoch() {
@@ -5280,10 +5287,11 @@ public interface AetherNode extends ManageableNode {
         // Storage prefetch hints ride SWIM's application gossip: once per probe round the hottest blocks of one
         // instance go to one random peer in a datagram of their own, and arriving hints reach the prefetch manager
         // of the instance they name. The managers stay dormant until the node reports ready.
-        swimHealthDetector.registerGossipChannel(StoragePrefetchChannel.CHANNEL,
-                                                 StoragePrefetchChannel.storagePrefetchChannel(StorageFactory.prefetchManagers(storageSetups),
-                                                                                               serializer,
-                                                                                               deserializer));
+        var prefetchChannel = StoragePrefetchChannel.storagePrefetchChannel(StorageFactory.prefetchManagers(storageSetups),
+                                                                            serializer,
+                                                                            deserializer);
+
+        swimHealthDetector.registerGossipChannel(StoragePrefetchChannel.CHANNEL, prefetchChannel);
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
         // observations directly. NODE_FAILED / NODE_LEFT events are emitted via the
         // canonical MembershipDecision route (MembershipDeltaProjector, Wave 4), keyed off
@@ -6824,7 +6832,8 @@ public interface AetherNode extends ManageableNode {
                                   backupRestoreCoordinator::onNodeStopping,
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service(),
-                                  upgradeWiring.service());
+                                  upgradeWiring.service(),
+                                  prefetchChannel);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -7067,7 +7076,8 @@ public interface AetherNode extends ManageableNode {
                                                                             backupRestoreCoordinator::onNodeStopping,
                                                                             resourceProviderSetup.spiProvider(),
                                                                             replacementWiring.service(),
-                                                                            upgradeWiring.service());
+                                                                            upgradeWiring.service(),
+                                                                            prefetchChannel);
                                                   }
 
                                                   return node;
