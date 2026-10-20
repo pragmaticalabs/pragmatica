@@ -74,6 +74,27 @@ class CommunityAdmissionLedgerTest {
     }
 
     @Test
+    void theJoinGraceAndThePendingTtl_arePinnedByLiteral() {
+        assertThat(CommunityAdmissionLedger.JOIN_GRACE_MS).isEqualTo(60_000L);
+        assertThat(CommunityAdmissionLedger.PENDING_TTL_MS).isEqualTo(30_000L);
+        assertThat(CommunityAdmissionLedger.MAX_ATTEMPTS).isEqualTo(3);
+    }
+
+    @Test
+    void refusals_countInARow_andRestartWhenGivenUpOrPlaced() {
+        var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
+
+        assertThat(ledger.refused(A)).isEqualTo(1);
+        assertThat(ledger.refused(A)).isEqualTo(2);
+        assertThat(ledger.refused(B)).as("per worker").isEqualTo(1);
+        ledger.giveUp(A);
+        assertThat(ledger.refused(A)).as("a gave-up worker starts counting afresh").isEqualTo(1);
+        assertThat(ledger.placed(A)).as("it had been given up on").isTrue();
+        assertThat(ledger.refused(A)).as("placing restarts the count").isEqualTo(1);
+        assertThat(ledger.placed(A)).as("not reported unplaced any more").isFalse();
+    }
+
+    @Test
     void blockedSources_reportOnlyTheTransitions() {
         var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
 

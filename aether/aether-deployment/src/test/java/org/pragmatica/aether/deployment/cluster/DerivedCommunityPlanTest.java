@@ -78,6 +78,14 @@ class DerivedCommunityPlanTest {
     }
 
     @Test
+    void plan_theIdleCommunityIsDissolved_whenALaterOneHasMembers() {
+        assertThat(plan(GROWTH,
+                        Map.of("eu-w-0", PAST_GRACE),
+                        view(0, ACTIVE, 10, 0),
+                        view(1, ACTIVE, 10, 3))).containsExactly(Action.BeginDissolve.beginDissolve("eu-w-0"));
+    }
+
+    @Test
     void plan_emptyButNotTimed_waits() {
         assertThat(plan(GROWTH, Map.of(), view(0, ACTIVE, 10, 4), view(1, ACTIVE, 10, 0))).isEmpty();
     }

@@ -235,15 +235,16 @@ class CommunityPlacementDerivedTest {
     @Test
     void reconcile_noCommittedPolicy_leavesDerivedCommunitiesAlone() {
         start(HEAD);
-        community("eu-w-0", CommunityState.ACTIVE, 100, 4);
-        community("eu-w-1", CommunityState.ACTIVE, 100, 0);
+        community("eu-w-0", CommunityState.ACTIVE, 50, 4);
+        community("eu-w-1", CommunityState.ACTIVE, 50, 0);
         var reconciler = reconciler();
 
         pass(reconciler);
         now.addAndGet(GRACE_MS * 2);
         pass(reconciler);
 
-        assertThat(value("eu-w-0").targetSize()).isEqualTo(100);
+        assertThat(value("eu-w-0").targetSize()).as("no committed policy: nothing to follow, not even the node default of 100").isEqualTo(50);
+        assertThat(value("eu-w-1").targetSize()).isEqualTo(50);
         assertThat(value("eu-w-1").state()).isEqualTo(CommunityState.ACTIVE);
     }
 

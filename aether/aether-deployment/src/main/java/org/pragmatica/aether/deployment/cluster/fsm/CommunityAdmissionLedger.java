@@ -30,7 +30,12 @@ import org.pragmatica.lang.Option;
 ///
 /// Kept on the deployment context, not on the `Active` state, so it survives a leader FSM rebuild on this node. Nothing here is
 /// replicated: a new leader starts empty, which can only let one extra joiner into a full community, inside the soft cap.
-public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, Set<String> blockedSources) {
+public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending,
+                                       Set<String> blockedSources,
+                                       ConcurrentMap<NodeId, Integer> refusals,
+                                       Set<NodeId> unplaced) {
+    /// How many times in a row the leader decides a worker's community afresh after the commit was refused, before it reports the worker unplaced.
+    public static final int MAX_ATTEMPTS = 3;
     public static final long PENDING_TTL_MS = 30_000L;
     public static final long JOIN_GRACE_MS = 60_000L;
 
@@ -41,7 +46,7 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, S
     }
 
     public static CommunityAdmissionLedger communityAdmissionLedger() {
-        return new CommunityAdmissionLedger(new ConcurrentHashMap<>(), ConcurrentHashMap.newKeySet());
+        return new CommunityAdmissionLedger(new ConcurrentHashMap<>(), ConcurrentHashMap.newKeySet(), new ConcurrentHashMap<>(), ConcurrentHashMap.newKeySet());
     }
 
     @Contract
@@ -90,5 +95,24 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, S
     /// Records that a join for `source` was admitted; true when the source had been reported blocked.
     public boolean clearBlocked(String source) {
         return blockedSources.remove(source);
+    }
+
+    /// Counts one more refused commit for `node` and answers how many in a row there have been.
+    public int refused(NodeId node) {
+        return refusals.merge(node, 1, Integer::sum);
+    }
+
+    /// The leader gave up on `node` for now: its count restarts, and it is remembered as unplaced so that its placement can be reported.
+    @Contract
+    public void giveUp(NodeId node) {
+        refusals.remove(node);
+        unplaced.add(node);
+    }
+
+    /// `node` was placed: its count restarts. True when it had been reported unplaced.
+    public boolean placed(NodeId node) {
+        refusals.remove(node);
+
+        return unplaced.remove(node);
     }
 }

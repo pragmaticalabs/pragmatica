@@ -399,7 +399,17 @@ public enum OperatorWarningCode {
     COMMUNITY_GROWTH_BLOCKED("community-growth-blocked", "community-growth", WarningLevel.WARNING),
     /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
     /// was raised, or a community has room). INFO, published only after a published blocked event for the source (#752 mechanism).
-    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED);
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED),
+    /// A worker has no community because the leader's commit of its assignment was refused several times in a row (#241): the community
+    /// changed between each decision and its commit. Subject is the worker. The worker takes a community when it is admitted again (restart it
+    /// if it does not). Closed by [#COMMUNITY_ASSIGNMENT_PLACED].
+    COMMUNITY_ASSIGNMENT_UNPLACED("community-assignment-unplaced", "community-assignment", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO, published only after a
+    /// published unplaced event for the worker (#752 mechanism).
+    COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",
+                                "community-assignment",
+                                WarningLevel.INFO,
+                                COMMUNITY_ASSIGNMENT_UNPLACED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

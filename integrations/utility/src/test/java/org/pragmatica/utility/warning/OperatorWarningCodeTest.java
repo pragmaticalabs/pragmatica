@@ -122,6 +122,15 @@ class OperatorWarningCodeTest {
         assertThat(UNCLOSED_BEFORE_THE_RULE).doesNotContain(OperatorWarningCode.TOPIC_TIER_MISMATCH);
     }
 
+    /// #241: a worker left without a community is a WARNING with an INFO recovery for the same subject.
+    @Test
+    void communityAssignmentUnplaced_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED);
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED.code()).isEqualTo("community-assignment-unplaced");
+    }
+
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
         OperatorWarningCode.SWIM_KILL_GATE_HELD,
         OperatorWarningCode.CORE_ABSENCE_FENCE,

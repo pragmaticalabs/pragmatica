@@ -177,23 +177,61 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         fixture.racedBy(() -> fixture.seedCommunity(FIRST));
         fixture.joinAll(1);
-        assertThat(fixture.hasDirective(1)).as("the mint lost the race to the community another writer created").isFalse();
-        fixture.rejoin(1);
 
-        assertThat(fixture.communityOf(1)).as("its retry does not count its own refused attempt against the community").isEqualTo(FIRST);
+        assertThat(fixture.communityOf(1)).as("the leader decided afresh after the refusal, without waiting for the worker to be admitted again").isEqualTo(FIRST);
     }
 
     @Test
-    void join_growthOn_aRefusedAttempt_keepsItsEntry_becauseADuplicateMayHaveCommitted() {
+    void join_growthOn_aCommitRefusedEveryTime_endsUnplacedAfterTheBoundedRetries_andIsReportedThenRecovers() {
         var fixture = fixture(config(true, 2, 5));
+        var codes = fixture.captureWarnings();
 
-        fixture.racedBy(() -> fixture.seedCommunity(FIRST));
+        fixture.seedCommunity(FIRST);
+        fixture.alwaysRace(() -> fixture.toggleCommunityState(FIRST));
         fixture.joinAll(1);
 
         assertThat(fixture.hasDirective(1)).isFalse();
-        assertThat(fixture.context().communityAdmission().isRecent(worker(1), fixture.context().nowMs()))
-            .as("a refusal says nothing about the other attempt for the same worker (events arrive twice): the entry stays until the retry replaces it")
-            .isTrue();
+        assertThat(fixture.cluster().applies.get()).as("the first attempt and two retries, no more").isEqualTo(CommunityAdmissionLedger.MAX_ATTEMPTS);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
+        fixture.alwaysRace(() -> {});
+        fixture.rejoin(1);
+        assertThat(fixture.communityOf(1)).isEqualTo(FIRST);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-placed"));
+    }
+
+    @Test
+    void join_growthOn_aWorkerPlacedAtOnce_raisesNoPlacedRecovery() {
+        var fixture = fixture(config(true, 2, 5));
+        var codes = fixture.captureWarnings();
+
+        fixture.joinAll(1);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+        org.awaitility.Awaitility.await().pollDelay(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(2)).until(() -> true);
+        assertThat(codes).doesNotContain("community-assignment-placed");
+    }
+
+    @Test
+    void join_growthOn_aPendingMintIsUndersized_andIsFilledBeforeAnActiveCommunityIsPacked() {
+        var fixture = fixture(config(true, 3, 5));
+
+        fixture.seedMembers(FIRST, 1);
+        fixture.context().communityAdmission().register(new NodeId("in-flight"), SECOND, fixture.context().nowMs());
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(2)).as("w-1 is minted by a join in flight and still FORMING: it fills first, though w-0 is as full").isEqualTo(SECOND);
+    }
+
+    @Test
+    void join_growthOn_aWorkerSilentPastTheJoinGrace_noLongerHoldsItsSlot() {
+        var fixture = fixture(config(true, 1, 5));
+
+        fixture.joinAll(1);
+        fixture.markEveryoneAbsent();
+        fixture.passTheJoinGrace();
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(2)).as("61 s after its assignment the silent worker is absent, so w-0 has room").isEqualTo(FIRST);
     }
 
     @Test
@@ -364,6 +402,18 @@ class ClusterDeploymentStateCommunityGrowthTest {
             cluster.failNext = true;
         }
 
+        /// Every commit lands after `change` ran: another writer keeps changing the community.
+        void alwaysRace(Runnable change) {
+            cluster.beforeEveryApply = change;
+        }
+
+        void toggleCommunityState(String id) {
+            var current = community(id).unwrap();
+
+            kvStore.put(CommunityKey.communityKey(id),
+                        current.withState(current.state() == CommunityState.FORMING ? CommunityState.DEGRADED : CommunityState.FORMING));
+        }
+
         void rejoin(int number) {
             harness.dispatch(new ClusterDeploymentEvents.WorkerJoinReceived(
                 new org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision(worker(number), "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
@@ -481,6 +531,8 @@ class ClusterDeploymentStateCommunityGrowthTest {
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
         final List<List<KVCommand<AetherKey>>> held = Collections.synchronizedList(new ArrayList<>());
         volatile boolean hold;
+        volatile Runnable beforeEveryApply = () -> {};
+        final java.util.concurrent.atomic.AtomicInteger applies = new java.util.concurrent.atomic.AtomicInteger();
         volatile boolean failNext;
         volatile Runnable beforeApply = () -> {};
         private final InMemoryKvStore committed;
@@ -507,6 +559,8 @@ class ClusterDeploymentStateCommunityGrowthTest {
                 return org.pragmatica.lang.utils.Causes.cause("consensus unavailable").promise();
             }
 
+            applies.incrementAndGet();
+            beforeEveryApply.run();
             var change = beforeApply;
 
             beforeApply = () -> {};
