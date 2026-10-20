@@ -100,8 +100,43 @@ allow_below_rf         = false  # a floor below 3 weakens redundancy and must be
 unknown key refuses the whole apply. A declared `[community.<id>]` may not take an id of the shape `<source>-w-<number>`
 (the derived ids) and may not exceed 200.
 
-`max_size` and `viability_floor` are in force now. `max_communities`, `dissolve_grace_seconds` and `growth` are accepted and
-validated, and take effect with the growth policy; until then every source keeps its single `<source>-w-0` community.
+**Derived and declared communities.** A *derived* community is one the cluster mints itself: `<source>-w-N`, for the
+sources of a cluster that declares no `[community.*]`. A *declared* community is one the operator names. The policy
+resizes derived communities only; a declared community is never resized, grown or dissolved except by its own
+`target_size`.
+
+**Growth** (`growth = true`). A worker joining a source takes a community once, at admission, and keeps it for life
+(assignment is immutable; moving a worker is a make-before-break replacement under a new node id). The choice is a pure
+function of the source's derived communities:
+
+1. a FORMING or DEGRADED community below the floor with room is filled first (an undersized community cannot take work);
+2. otherwise the fullest ACTIVE community below `max_size` (pack);
+3. otherwise a new `<source>-w-N` is minted for the joiner, up to `max_communities`;
+4. at that bound the joiner goes to the least-full community up to the 200 ceiling; beyond it the join is refused and the
+   operator is told (`community-growth-blocked`).
+
+A member counts toward `max_size` only while it is live; a dead member that still holds a directive does not keep a slot.
+The cap is soft. The leader also counts the joins it has decided but not yet seen commit (for 30 seconds at most), so one
+leader does not hand the last slot to two joiners. A leader change forgets those, so two joins that commit in the same round after
+a failover can both take it, and a community can pass `max_size` by that few. The ceiling of 200 is checked against the same
+count. Growth never moves an existing member into a new community, so a new community starts small and fills from joiners only.
+
+**Dissolve** (`growth = true`). A derived community that has been empty for `dissolve_grace_seconds`, while another open
+community of its source exists, is dissolved by the leader: the newest idle community of a source first, one at a time, and the
+last community of a source never. "Empty" means no activation directive names it at all: a dead worker whose directive has not been
+garbage-collected still counts as a member. Emptiness is timed in the leader's memory, so a new leader restarts the grace, which
+delays a dissolve and never hastens one. Dissolving is two committed steps. The first writes DISSOLVING over the empty community;
+from then on a joiner's commit is refused. The second, on a later pass, reads the directives again: still empty, the community
+becomes DISSOLVED; a directive that committed before the first step reopens the community (FORMING) instead of stranding its
+member. With `growth = false` nothing is dissolved, but a community the policy had begun to dissolve is still settled.
+
+**Resize.** When `max_size` changes in the committed policy, the leader re-stamps the `target_size` of every derived community to it,
+whatever `growth` says. A declared community keeps its own `target_size`.
+
+**Operator events.** A join the policy cannot place (every community of the source at the ceiling and the source at
+`max_communities`) raises `community-growth-blocked` for the source, with what to raise; the next admission for that source raises
+its recovery, `community-growth-resumed`. The refused worker has no community and takes one when it is admitted again.
+
 
 ## Facts and assignment
 
