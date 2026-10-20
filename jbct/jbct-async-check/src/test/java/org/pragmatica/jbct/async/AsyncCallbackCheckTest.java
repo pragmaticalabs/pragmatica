@@ -560,6 +560,107 @@ class AsyncCallbackCheckTest {
     }
 
     @Nested
+    class Siblings {
+        @Test
+        void flags_allowlistedCallbackWhoseSiblingHasAnEffect() {
+            var found = compile(Map.of("org.example.Foo", HEADER + """
+                    class Foo {
+                        boolean done;
+                        void run(Promise<String> p) {
+                            p.onSuccess(_ -> done = true)
+                             .onFailure(c -> System.out.println(c));
+                        }
+                    }
+                    """), "warning");
+
+            assertThat(found.lines()).hasSize(2);
+            assertThat(found.messages()).anyMatch(message -> message.contains("sibling") || message.contains("same chain"));
+        }
+
+        @Test
+        void flags_siblingAcrossDerivedPromises() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> done = true)
+                         .timeout(org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds())
+                         .onSuccess(v -> System.out.println(v));
+                    }
+                    """))).hasSize(2);
+        }
+
+        @Test
+        void flags_siblingAbove() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> System.out.println(v))
+                         .onFailure(_ -> done = true);
+                    }
+                    """))).hasSize(2);
+        }
+
+        @Test
+        void flags_resolveOnlyCallbackNextToAnEffect() {
+            assertThat(lines(body("""
+                    boolean done;
+                    Promise<String> other = Promise.promise();
+                    void run(Promise<String> p) {
+                        p.onFailure(_ -> done = true)
+                         .onFailure(other::fail);
+                    }
+                    """))).hasSize(2);
+        }
+
+        @Test
+        void clean_siblingsThatAreAllAllowlisted() {
+            assertThat(lines(body("""
+                    Promise<String> other = Promise.promise();
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> System.out.println(v))
+                         .onFailure(other::fail);
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void clean_otherChainStepsAreNotSiblings() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> System.out.println(v))
+                         .timeout(org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds())
+                         .map(String::trim)
+                         .onFailure(c -> System.out.println(c));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void clean_siblingsInSeparateStatements() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        // detached: one flag, nothing reads it
+                        p.onSuccess(_ -> done = true);
+                        p.onFailure(c -> System.out.println(c));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void clean_oneJustificationCoversTheChain() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        // detached: the flag is only read on the next tick
+                        p.onSuccess(_ -> done = true)
+                         .onFailure(c -> System.out.println(c));
+                    }
+                    """))).isEmpty();
+        }
+    }
+
+    @Nested
     class Suppression {
         @Test
         void clean_detachedCommentAboveAStatementWhoseCallIsOnALaterLine() {

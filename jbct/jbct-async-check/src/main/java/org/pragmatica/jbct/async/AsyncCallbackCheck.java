@@ -148,7 +148,49 @@ public final class AsyncCallbackCheck implements TaskListener {
     private void check(TreePath path, MethodInvocationTree call) {
         var argumentPath = new TreePath(path, call.getArguments().getFirst());
 
-        effectOf(argumentPath, enclosingTypes(path)).filter(_ -> !isSuppressed(path)).ifPresent(effect -> report(path, call, effect));
+        effectOf(argumentPath, enclosingTypes(path)).or(() -> siblingEffect(path, call))
+                                                    .filter(_ -> !isSuppressed(path))
+                                                    .ifPresent(effect -> report(path, call, effect));
+    }
+
+    /// A callback that is itself allowlisted is still reported when another callback of the same promise chain has an effect:
+    /// the chain's callbacks run on their own threads, unordered with the dependents of the promise, so a log line or a
+    /// resolved promise that depends on that effect has no guaranteed order either. One justification on the statement covers the
+    /// whole chain.
+    private Optional<Effect> siblingEffect(TreePath path, MethodInvocationTree call) {
+        var outermost = path;
+
+        while (outermost.getParentPath().getLeaf() instanceof MemberSelectTree select
+               && select.getExpression() == outermost.getLeaf()
+               && outermost.getParentPath().getParentPath().getLeaf() instanceof MethodInvocationTree) {
+            outermost = outermost.getParentPath().getParentPath();
+        }
+
+        var scope = enclosingTypes(path);
+
+        for (var current = outermost; current.getLeaf() instanceof MethodInvocationTree invocation; ) {
+            if (isPromiseCallback(current) && invocation.getArguments().size() == 1) {
+                var sibling = effectOf(new TreePath(current, invocation.getArguments().getFirst()), scope);
+
+                if (sibling.isPresent()) {
+                    return Optional.of(new Effect("is allowlisted, but the " + callbackName(invocation) + " callback of the same chain "
+                                                  + sibling.get().description(), null));
+                }
+            }
+
+            if (!(invocation.getMethodSelect() instanceof MemberSelectTree select
+                  && select.getExpression() instanceof MethodInvocationTree)) {
+                break;
+            }
+
+            current = new TreePath(new TreePath(current, select), select.getExpression());
+        }
+
+        return Optional.empty();
+    }
+
+    private static String callbackName(MethodInvocationTree invocation) {
+        return invocation.getMethodSelect() instanceof MemberSelectTree select ? select.getIdentifier().toString() : "on*";
     }
 
     private Optional<Effect> effectOf(TreePath argumentPath, Set<Element> scope) {
