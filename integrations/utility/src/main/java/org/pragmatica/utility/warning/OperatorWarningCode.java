@@ -380,7 +380,14 @@ public enum OperatorWarningCode {
     /// decisions, or it left the lagging state another way (promoted to a voter, removed from the cluster, shutting down; the message
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
-    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING);
+    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// A worker still has no committed activation directive after the community-absence window (#1840): its SWIM ANNOUNCE is held until the
+    /// directive commits, so the cluster's SWIM scope does not include it. Typically the leader has not admitted it (no capacity reservation
+    /// or admission authorisation), or the directive was refused. The subject is the node. Closed by [#WORKER_ASSIGNED].
+    WORKER_ASSIGNMENT_OVERDUE("worker-assignment-overdue", "membership", WarningLevel.WARNING),
+    /// The recovery of [#WORKER_ASSIGNMENT_OVERDUE], same subject (#1840): the worker's activation directive committed and its held SWIM ANNOUNCE was
+    /// released. Raised only when the warning was.
+    WORKER_ASSIGNED("worker-assigned", "membership", WarningLevel.INFO, WORKER_ASSIGNMENT_OVERDUE);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

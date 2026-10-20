@@ -10,6 +10,10 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -28,6 +32,7 @@ import org.pragmatica.swim.SwimTransport;
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
@@ -49,8 +54,12 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
     private static final InetSocketAddress SEED = new InetSocketAddress("127.0.0.9", 9101);
     /// Spans two announce rounds (500 ms apart) with margin.
     private static final long QUIET_MILLIS = 1_300;
+    /// A bound no test reaches, for the tests that are not about the overdue warning.
+    private static final TimeSpan NEVER_OVERDUE = timeSpan(10).minutes();
+    private static final TimeSpan SHORT_BOUND = timeSpan(300).millis();
 
     private final List<SwimTransportCall> sent = new CopyOnWriteArrayList<>();
+    private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private NodeInfo self;
     private CoreSwimHealthDetector detector;
     private SwimProtocol swim;
@@ -67,6 +76,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
         var ctx = detector.contextForTest();
         var transport = new RecordingTransport();
 
+        detector.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
         ctx.dispatch(new SwimHealthEvents.StartRequested());
         swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, noopListener(), SELF, new InetSocketAddress("127.0.0.1", 9101))
                            .unwrap();
@@ -80,7 +90,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
 
     @Test
     void announceJoinWhenAssigned_beforeAssignment_announcesNothingButSeedsIdentity() throws InterruptedException {
-        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED));
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE);
 
         Thread.sleep(QUIET_MILLIS);
 
@@ -90,7 +100,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
 
     @Test
     void markAssigned_afterAHeldAnnounce_releasesItToTheSeeds() {
-        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED));
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE);
 
         detector.markAssigned();
 
@@ -105,7 +115,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
     void announceJoinWhenAssigned_afterAssignment_announcesAtOnce() {
         detector.markAssigned();
 
-        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED));
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE);
 
         await().atMost(5, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(announcesToSeed()).as("already assigned: no hold").isNotEmpty());
@@ -113,7 +123,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
 
     @Test
     void markAssigned_repeated_releasesTheHeldAnnounceOnce() throws InterruptedException {
-        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED));
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE);
         detector.markAssigned();
         await().atMost(5, TimeUnit.SECONDS).until(() -> !announcesToSeed().isEmpty());
         swim.onMessage(SEED, Ack.ack(SEED_ID, 0L, List.of()));
@@ -125,6 +135,79 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
         Thread.sleep(QUIET_MILLIS);
 
         assertThat(announcesToSeed()).as("a repeated assignment must not re-arm the acknowledged join").hasSize(afterJoinAck);
+    }
+
+    @Test
+    void announceJoinWhenAssigned_heldPastTheBound_raisesTheOverdueWarningOnce() throws InterruptedException {
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), SHORT_BOUND);
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(codes()).as("still held after the bound").containsExactly(OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE));
+        assertThat(warnings.getFirst().subject()).as("names the node").isEqualTo(SELF.id());
+        assertThat(warnings.getFirst().message()).as("names the node and the recovery").contains(SELF.id()).contains("replace the node");
+        Thread.sleep(QUIET_MILLIS);
+
+        assertThat(codes()).as("one warning per hold").hasSize(1);
+        assertThat(announcesToSeed()).as("the hold is kept: no fallback announce").isEmpty();
+    }
+
+    @Test
+    void markAssigned_afterTheOverdueWarning_raisesTheRecovery() {
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), SHORT_BOUND);
+        await().atMost(5, TimeUnit.SECONDS).until(() -> !warnings.isEmpty());
+
+        detector.markAssigned();
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(codes()).containsExactly(OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
+                                                                        OperatorWarningCode.WORKER_ASSIGNED));
+    }
+
+    @Test
+    void markAssigned_beforeTheBound_raisesNothingAndCancelsTheWarning() throws InterruptedException {
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), timeSpan(600).millis());
+
+        detector.markAssigned();
+        Thread.sleep(QUIET_MILLIS);
+
+        assertThat(warnings).as("released inside the bound: no warning, no recovery").isEmpty();
+    }
+
+    /// The directive commits while the hold is being set: the holder has decided to hold but has not stored the
+    /// call. The assignment must wait for the hold and then release it, not slip between decision and store.
+    @Test
+    void markAssigned_whileTheHoldIsBeingSet_releasesTheHeldAnnounce() throws InterruptedException {
+        var parked = new CountDownLatch(1);
+        var proceed = new CountDownLatch(1);
+
+        detector.afterHoldDecisionForTest(() -> park(parked, proceed));
+        var holder = new Thread(() -> detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE));
+
+        holder.start();
+        assertThat(parked.await(5, TimeUnit.SECONDS)).as("holder parked mid-hold").isTrue();
+        var assigner = new Thread(detector::markAssigned);
+
+        assigner.start();
+        Thread.sleep(200);
+        proceed.countDown();
+        holder.join(5_000);
+        assigner.join(5_000);
+
+        await().atMost(3, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(announcesToSeed()).as("the release won the race").isNotEmpty());
+    }
+
+    private static void park(CountDownLatch parked, CountDownLatch proceed) {
+        parked.countDown();
+        try {
+            proceed.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private List<OperatorWarningCode> codes() {
+        return warnings.stream().map(OperatorWarning::code).toList();
     }
 
     private List<SwimTransportCall> announcesToSeed() {

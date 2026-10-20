@@ -10,12 +10,14 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import static org.mockito.Mockito.never;
@@ -30,6 +32,8 @@ class AetherNodeJoinAnnouncementTest {
     private static final NodeInfo SELF = NodeInfo.nodeInfo(new NodeId("node-1"), NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
     private static final List<InetSocketAddress> SEEDS = List.of(new InetSocketAddress("127.0.0.2", 9101));
 
+    private static final TimeSpan ABSENCE = TimeoutsConfig.ClusterTimeouts.clusterTimeouts().communityAbsence();
+
     private final CoreSwimHealthDetector detector = Mockito.mock(CoreSwimHealthDetector.class);
 
     private static AetherNodeConfig config(Option<WorkerConfig> workerConfig) {
@@ -41,6 +45,7 @@ class AetherNodeJoinAnnouncementTest {
 
         when(config.self()).thenReturn(SELF.id());
         when(config.workerConfig()).thenReturn(workerConfig);
+        when(config.timeouts()).thenReturn(TimeoutsConfig.timeoutsConfig());
         when(config.topology()).thenReturn(new TopologyConfig(SELF.id(), 5, timeSpan(1).seconds(), timeSpan(10).seconds(), List.of(self)));
 
         return config;
@@ -53,7 +58,7 @@ class AetherNodeJoinAnnouncementTest {
         verifyNoInteractions(detector);
         trigger.run();
 
-        verify(detector).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS);
+        verify(detector).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS, ABSENCE);
         verify(detector, never()).announceJoin(SELF, "c", 5L, 7L, SEEDS);
     }
 
@@ -64,7 +69,7 @@ class AetherNodeJoinAnnouncementTest {
 
         trigger.run();
 
-        verify(detector).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS);
+        verify(detector).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS, ABSENCE);
         verify(detector, never()).announceJoin(SELF, "c", 5L, 7L, SEEDS);
     }
 
@@ -76,6 +81,6 @@ class AetherNodeJoinAnnouncementTest {
         trigger.run();
 
         verify(detector).announceJoin(SELF, "c", 5L, 7L, SEEDS);
-        verify(detector, never()).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS);
+        verify(detector, never()).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS, ABSENCE);
     }
 }

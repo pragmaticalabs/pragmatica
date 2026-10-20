@@ -8725,7 +8725,12 @@ public interface AetherNode extends ManageableNode {
                                      long bootToken,
                                      List<InetSocketAddress> seeds) {
         return configuredWorker(config)
-               ? () -> swimHealthDetector.announceJoinWhenAssigned(self, clusterName, incarnation, bootToken, seeds)
+               ? () -> swimHealthDetector.announceJoinWhenAssigned(self,
+                                                                   clusterName,
+                                                                   incarnation,
+                                                                   bootToken,
+                                                                   seeds,
+                                                                   config.timeouts().cluster().communityAbsence())
                : () -> swimHealthDetector.announceJoin(self, clusterName, incarnation, bootToken, seeds);
     }
 
