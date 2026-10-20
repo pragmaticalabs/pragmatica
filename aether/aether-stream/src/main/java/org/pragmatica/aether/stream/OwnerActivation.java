@@ -1293,10 +1293,10 @@ public final class OwnerActivation {
     private Promise<Unit> verifyAgreement(String stream, int partition, long local, List<PeerWatermark> others) {
         return Promise.allOf(others.stream()
                                    .map(peer -> verifyOverlap(stream, partition, local, peer).withFailure(cause -> flagBudgetHolder(stream,
-                                                                                                                                  partition,
-                                                                                                                                  local,
-                                                                                                                                  peer,
-                                                                                                                                  cause)))
+                                                                                                                                    partition,
+                                                                                                                                    local,
+                                                                                                                                    peer,
+                                                                                                                                    cause)))
                                    .toList())
                       .flatMap(results -> Result.allOf(results).async())
                       .mapToUnit();

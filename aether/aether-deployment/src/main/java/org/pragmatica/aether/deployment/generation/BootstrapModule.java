@@ -174,10 +174,10 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         clusterNode.apply(List.copyOf(batch))
                    .withFailure(cause -> log.warn("Leader-change bootstrap batch failed ({} commands, attempt {}/{}): {}",
-                                                commandCount,
-                                                bootstrapAttempts.get(),
-                                                BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
-                                                cause.message()))
+                                                  commandCount,
+                                                  bootstrapAttempts.get(),
+                                                  BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
+                                                  cause.message()))
                    .withSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, commandCount));
     }
 

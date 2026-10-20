@@ -2730,17 +2730,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         reconnectBackoff.compute(peerId,
                                  (_, prior) -> {
                                      if (prior == null) {
-                                     allowed[0] = true;
+                                         allowed[0] = true;
 
-                                     return new ReconnectBackoff(nowMs + jittered(BACKOFF_INITIAL_MS),
-                                                                 BACKOFF_INITIAL_MS);
-                                 }
+                                         return new ReconnectBackoff(nowMs + jittered(BACKOFF_INITIAL_MS),
+                                                                     BACKOFF_INITIAL_MS);
+                                     }
 
                                      if (nowMs < prior.nextAttemptMs) {
-                                     allowed[0] = false;
+                                         allowed[0] = false;
 
-                                     return prior;
-                                 }
+                                         return prior;
+                                     }
 
                                      allowed[0] = true;
                                      var nextDelay = Math.min(prior.currentDelayMs * 2, BACKOFF_CAP_MS);

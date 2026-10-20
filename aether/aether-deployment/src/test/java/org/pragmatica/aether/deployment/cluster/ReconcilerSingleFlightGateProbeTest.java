@@ -7,11 +7,12 @@ package org.pragmatica.aether.deployment.cluster;
 import io.netty.buffer.ByteBuf;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.LateResolution;
@@ -200,7 +201,9 @@ class ReconcilerSingleFlightGateProbeTest {
 
         seedPlacementScenario(store);
 
-        var ready = new HashSet<>(Set.of(OLD_WORKER));
+        var ready = ConcurrentHashMap.<NodeId> newKeySet();
+
+        ready.add(OLD_WORKER);
         var reconciler = CommunityPlacementReconciler.communityPlacementReconciler(CORE,
                                                                                    store,
                                                                                    commands -> LateResolution.later(store.process(store.createBatch(commands))),
@@ -220,7 +223,19 @@ class ReconcilerSingleFlightGateProbeTest {
                                                                                    (node, cause) -> {},
                                                                                    org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis(),
                                                                                    System::currentTimeMillis);
+        var operationKey = new AetherKey.CommunityPlacementOperationKey("stable");
         var skipped = new AtomicInteger();
+
+        // Walk the operation to DRAIN_REQUESTED, where every further reconcile calls the (late) drain: a tick with asynchronous work
+        // each time, which is what lets the gate's release race the caller's next reconcile.
+        for (var step = 0; step < 30 && !draining(store, operationKey); step++) {
+            store.getTyped(operationKey, AetherValue.CommunityPlacementOperationValue.class)
+                 .onPresent(operation -> makeReady(store, ready, operation.targetNode()));
+            reconciler.reconcile().await();
+            LockSupport.parkNanos(20_000_000L);
+        }
+
+        assertThat(draining(store, operationKey)).as("the warm-up reached DRAIN_REQUESTED").isTrue();
 
         for (var trial = 0; trial < TRIALS; trial++) {
             reconciler.reconcile().await();
@@ -235,6 +250,24 @@ class ReconcilerSingleFlightGateProbeTest {
 
         assertThat(skipped.get()).as("reconcile calls turned away by the gate right after an awaited one (of %d)", TRIALS)
                                  .isZero();
+    }
+
+    /// The replacement the operation created has joined: placed, activated as a worker of the community and ready.
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void makeReady(KVStore<AetherKey, AetherValue> store, Set<NodeId> ready, NodeId target) {
+        List<KVCommand> seeds = List.of(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(target),
+                                                            new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")),
+                                        new KVCommand.Put<>(new AetherKey.NodePlacementKey(target),
+                                                            new AetherValue.NodePlacementValue("pool", Option.some("new"), "new-instance")));
+
+        seeds.forEach(command -> store.process(store.createBatch(List.of(command))));
+        ready.add(target);
+    }
+
+    private static boolean draining(KVStore<AetherKey, AetherValue> store, AetherKey.CommunityPlacementOperationKey key) {
+        return store.getTyped(key, AetherValue.CommunityPlacementOperationValue.class)
+                    .map(operation -> operation.phase() == AetherValue.PlacementOperationPhase.DRAIN_REQUESTED)
+                    .or(false);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

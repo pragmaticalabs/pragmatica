@@ -137,8 +137,8 @@ public interface GovernorAnnouncer {
                 request.apply(proposal)
                        .withSuccess(response -> accept(id, response))
                        .withFailure(cause -> org.slf4j.LoggerFactory.getLogger(GovernorAnnouncer.class)
-                                                                  .debug("Governor nomination deferred: {}",
-                                                                         cause.message()))
+                                                                    .debug("Governor nomination deferred: {}",
+                                                                           cause.message()))
                        .withResult(_ -> pending.set(false));
             }
 

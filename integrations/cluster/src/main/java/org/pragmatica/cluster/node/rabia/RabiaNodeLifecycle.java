@@ -6,6 +6,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+
 /// The order in which a [RabiaNode] brings its three parts up and down, as chain steps: a part starts (or stops) only
 /// once the one before it has, so nothing runs concurrently with, or ahead of, the part it depends on.
 sealed interface RabiaNodeLifecycle {
@@ -29,7 +30,8 @@ sealed interface RabiaNodeLifecycle {
                             .flatMap(networkStop);
     }
 
-    private static Promise<Unit> stopTopologyAfter(Supplier<Promise<Unit>> topologyStop, Result<Unit> consensusStopped) {
+    private static Promise<Unit> stopTopologyAfter(Supplier<Promise<Unit>> topologyStop,
+                                                   Result<Unit> consensusStopped) {
         return topologyStop.get()
                            .flatMap(_ -> consensusStopped.async());
     }

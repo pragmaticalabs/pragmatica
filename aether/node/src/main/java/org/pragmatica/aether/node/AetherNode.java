@@ -2841,19 +2841,15 @@ public interface AetherNode extends ManageableNode {
             // A dependent step must not fail the start it follows: a throw from the effects is logged, not propagated.
             @Contract
             private void runFormationEffects() {
-                Result.lift(this::onClusterFormed)
-                      .onFailure(cause -> log.warn("Cluster formation effects failed: {}", cause.message()));
+                Result.lift(this::onClusterFormed).onFailure(cause -> log.warn("Cluster formation effects failed: {}",
+                                                                               cause.message()));
             }
 
             @Contract
             private void onClusterFormed() {
-                log.info("Aether node {} cluster formation complete",
-                         self());
-                clusterNode.network()
-                           .server()
-                           .onPresent(this::registerEventLoopGroups);
-                clusterNode.leaderManager()
-                           .triggerElection();
+                log.info("Aether node {} cluster formation complete", self());
+                clusterNode.network().server().onPresent(this::registerEventLoopGroups);
+                clusterNode.leaderManager().triggerElection();
             }
 
             private void registerEventLoopGroups(Server server) {
@@ -8724,7 +8720,6 @@ public interface AetherNode extends ManageableNode {
                                    Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
-
         // `startOutcome::fail` and the announcement are dependent steps (`withFailure`/`withSuccess`), so they have run
         // when `start` resolves for whoever awaits it. `failNode` may block (Ember awaits the node's own stop), so it stays
         // a detached handler, registered on the DERIVED promise: it can run only after `startOutcome` was failed.
@@ -8745,8 +8740,8 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
         if (!swimHealthDetector.isClosed()) {
-            Result.lift(announceJoinTrigger::run)
-                  .onFailure(cause -> LOG.warn("SWIM join announcement failed: {}", cause.message()));
+            Result.lift(announceJoinTrigger::run).onFailure(cause -> LOG.warn("SWIM join announcement failed: {}",
+                                                                              cause.message()));
         }
     }
 
