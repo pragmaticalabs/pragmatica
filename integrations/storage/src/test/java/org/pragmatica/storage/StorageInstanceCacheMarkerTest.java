@@ -504,6 +504,125 @@ class StorageInstanceCacheMarkerTest {
         }
 
         @Test
+        void promote_ofAHotMarker_copiesItOnce_thenNeverReadsTheSharedTierAgain() {
+            var id = writeElsewhere("promoted-once");
+
+            for (var i = 0; i < 6; i++) {
+                reader.get(id).await().unwrap();
+            }
+
+            var promotion = PromotionManager.promotionManager(List.of(readerMemory, readerDisk, shared),
+                                                              readerStore,
+                                                              PromotionConfig.promotionConfig(5, 60_000L, 10));
+
+            promotion.activate();
+
+            var before = shared.gets();
+
+            assertThat(promotion.promote()).as("the first cycle copies it to memory").isEqualTo(1);
+            assertThat(shared.gets() - before).as("at the price of exactly one read of the shared tier").isEqualTo(1);
+
+            var afterFirst = shared.gets();
+
+            for (var cycle = 0; cycle < 5; cycle++) {
+                assertThat(promotion.promote()).as("cycle %d: it is in the tier it was promoted to", cycle).isZero();
+            }
+
+            assertThat(shared.gets()).as("a candidate test that asks the ADJACENT tier (the disk) instead of the tier the block "
+                                         + "is written to (memory) re-reads it from the shared tier every cycle")
+                                     .isEqualTo(afterFirst);
+            assertThat(recordOf(id).presentIn()).containsExactlyInAnyOrder(TierLevel.MEMORY, TierLevel.REMOTE);
+        }
+
+        @Test
+        void promote_ofAMarker_isJudgedByItsOwnTarget_aFullAdjacentDiskDoesNotStarveIt() throws Exception {
+            var fullDisk = LocalDiskTier.localDiskTier(tempDir.resolve("full-disk"), 1_000).flatMap(LocalDiskTier::open).unwrap();
+            var filler = bytes("f".repeat(900));
+
+            fullDisk.put(BlockId.blockId(filler).unwrap(), filler).await().unwrap();
+
+            var id = writeElsewhere("memory-has-room");
+            var tiers = List.of(readerMemory, fullDisk, shared);
+            var diskFull = StorageInstance.storageInstance("disk-full", tiers, readerStore);
+
+            for (var i = 0; i < 6; i++) {
+                diskFull.get(id).await().unwrap();
+            }
+
+            var promotion = PromotionManager.promotionManager(tiers,
+                                                              readerStore,
+                                                              PromotionConfig.promotionConfig(5, 60_000L, 10, 0.5));
+
+            promotion.activate();
+
+            assertThat(promotion.promote()).as("the marker goes to memory, which has room; the disk's fullness is not its concern")
+                                           .isEqualTo(1);
+            assertThat(readerMemory.exists(id).await().unwrap()).isTrue();
+        }
+
+        @Test
+        void promote_aMarkerWithNoTarget_isNotACandidate_soItCannotUseUpTheBatch() {
+            var stranded = writeElsewhere("stranded-marker");
+            var tiers = List.of(readerDisk, shared);
+            var diskOnly = StorageInstance.storageInstance("disk-only", tiers, readerStore);
+
+            for (var i = 0; i < 9; i++) {
+                diskOnly.get(stranded).await().unwrap();
+            }
+
+            var content = bytes("owned-and-hot-too");
+            var owned = BlockId.blockId(content).unwrap();
+
+            shared.put(owned, content).await().unwrap();
+            readerStore.createLifecycle(new BlockLifecycle(owned,
+                                                           EnumSet.of(TierLevel.REMOTE),
+                                                           1,
+                                                           System.currentTimeMillis(),
+                                                           System.currentTimeMillis(),
+                                                           6,
+                                                           0L));
+
+            var promotion = PromotionManager.promotionManager(tiers,
+                                                              readerStore,
+                                                              PromotionConfig.promotionConfig(5, 60_000L, 1));
+
+            promotion.activate();
+
+            assertThat(recordOf(stranded).accessCount()).as("control: the marker is the hotter of the two").isGreaterThan(recordOf(owned).accessCount());
+            assertThat(promotion.promote()).as("a batch of one goes to the block that can move, not to the hotter marker with nowhere to go")
+                                           .isEqualTo(1);
+            assertThat(readerDisk.exists(owned).await().unwrap()).isTrue();
+        }
+
+        @Test
+        void promote_ofAMarker_whoseTargetIsAtItsWatermark_readsNothing() {
+            var tinyMemory = MemoryTier.memoryTier(1_000, TierLevel.MEMORY);
+            var filler = bytes("f".repeat(900));
+
+            tinyMemory.put(BlockId.blockId(filler).unwrap(), filler).await().unwrap();
+
+            var id = writeElsewhere("target-has-no-room");
+            var tiers = List.of(tinyMemory, readerDisk, shared);
+            var memoryFull = StorageInstance.storageInstance("memory-full", tiers, readerStore);
+
+            for (var i = 0; i < 6; i++) {
+                memoryFull.get(id).await().unwrap();
+            }
+
+            var promotion = PromotionManager.promotionManager(tiers,
+                                                              readerStore,
+                                                              PromotionConfig.promotionConfig(5, 60_000L, 10, 0.5));
+
+            promotion.activate();
+
+            var before = shared.gets();
+
+            assertThat(promotion.promote()).isZero();
+            assertThat(shared.gets() - before).as("a marker whose own target (memory) is full costs no source read, "
+                                                  + "though the adjacent disk has room").isZero();
+        }
+
+        @Test
         void demote_ofAMarkerNamingADurableTier_movesTheBlockDown_neverDropsIt() throws Exception {
             // 1,000 bytes so that one small block puts the tier over the 1% high watermark.
             var first = LocalDiskTier.localDiskTier(tempDir.resolve("first-disk"), 1_000).flatMap(LocalDiskTier::open).unwrap();
