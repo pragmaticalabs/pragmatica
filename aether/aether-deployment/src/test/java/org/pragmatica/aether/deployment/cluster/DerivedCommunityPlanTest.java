@@ -70,6 +70,14 @@ class DerivedCommunityPlanTest {
     }
 
     @Test
+    void plan_emptyExactlyAtTheGrace_beginsDissolve() {
+        assertThat(plan(GROWTH,
+                        Map.of("eu-w-1", NOW - 60_000L),
+                        view(0, ACTIVE, 10, 4),
+                        view(1, ACTIVE, 10, 0))).containsExactly(Action.BeginDissolve.beginDissolve("eu-w-1"));
+    }
+
+    @Test
     void plan_emptyButNotTimed_waits() {
         assertThat(plan(GROWTH, Map.of(), view(0, ACTIVE, 10, 4), view(1, ACTIVE, 10, 0))).isEmpty();
     }

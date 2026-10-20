@@ -157,8 +157,7 @@ public sealed interface DerivedCommunityPlan {
 
     private static boolean newer(View view, View other) {
         return other.id()
-                    .equals(view.id()) || index(view).or(-1) > index(other).or(-1) || index(view).equals(index(other)) && view.id()
-                                                                                                                              .compareTo(other.id()) > 0;
+                    .equals(view.id()) || index(view).or(-1) > index(other).or(-1);
     }
 
     private static Option<Integer> index(View view) {
