@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -110,12 +111,33 @@ final class DefaultPromotionManager implements PromotionManager {
                                               StorageTier sourceTier,
                                               StorageTier targetTier) {
         return candidates.stream()
-                         .map(candidate -> promoteBlock(candidate.blockId(),
-                                                        sourceTier,
-                                                        targetTier))
+                         .map(candidate -> promoteToTargetOf(candidate, sourceTier, targetTier))
                          .filter(moved -> moved > 0)
                          .map(moved -> new PromotionResult(1, moved))
                          .reduce(PromotionResult.NONE, PromotionResult::add);
+    }
+
+    private long promoteToTargetOf(BlockLifecycle candidate, StorageTier sourceTier, StorageTier adjacentTier) {
+        return targetFor(candidate, adjacentTier).map(target -> promoteBlock(candidate.blockId(), sourceTier, target))
+                                                 .or(0L);
+    }
+
+    /// A block this node owns is promoted one tier up. A cache-only block ([BlockLifecycle#cacheOnly]) goes
+    /// to the nearest tier at or above that one which is not durable: a copy of a block some other node wrote
+    /// must never land on this node's durable disk, where nothing would ever collect it. None -> not promoted.
+    private Option<StorageTier> targetFor(BlockLifecycle candidate, StorageTier adjacentTier) {
+        return candidate.cacheOnly()
+               ? nearestCacheTierFrom(tiers.indexOf(adjacentTier))
+               : Option.some(adjacentTier);
+    }
+
+    private Option<StorageTier> nearestCacheTierFrom(int index) {
+        return Option.from(IntStream.iterate(index,
+                                             i -> i >= 0,
+                                             i -> i - 1)
+                                    .mapToObj(tiers::get)
+                                    .filter(tier -> !tier.isDurable())
+                                    .findFirst());
     }
 
     private List<BlockLifecycle> selectCandidates(TierLevel tierLevel) {

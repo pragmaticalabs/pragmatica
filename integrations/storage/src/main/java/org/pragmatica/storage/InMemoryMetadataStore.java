@@ -42,13 +42,25 @@ final class InMemoryMetadataStore implements MetadataStore {
 
     @Override
     public boolean claimBlock(BlockId blockId, BlockLifecycle sentinel) {
-        var claimed = lifecycle.putIfAbsent(blockId, sentinel) == null;
+        var claimed = lifecycle.putIfAbsent(blockId, sentinel) == null || replaceCacheMarker(blockId, sentinel);
 
         if (claimed) {
             epoch.incrementAndGet();
         }
 
         return claimed;
+    }
+
+    /// A claim for a real block replaces a cache-only marker (atomically, against the marker as read: a
+    /// read that touched it since loses the compare and the claimant sees an owned or fresh record next time
+    /// round). A claim for a marker never does.
+    private boolean replaceCacheMarker(BlockId blockId, BlockLifecycle sentinel) {
+        var existing = lifecycle.get(blockId);
+
+        return !sentinel.cacheOnly()
+               && existing != null
+               && existing.cacheOnly()
+               && lifecycle.replace(blockId, existing, sentinel.withPresenceOf(existing));
     }
 
     @Override

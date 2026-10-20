@@ -72,7 +72,8 @@ sealed interface SnapshotReadBack {
         return true;
     }
 
-    /// `<64 hex>|<tiers>|<refCount>|<lastAccessedAt>|<createdAt>|<accessCount>|<orphanedAt>`, exactly 7 fields.
+    /// `<64 hex>|<tiers>|<refCount>|<lastAccessedAt>|<createdAt>|<accessCount>|<orphanedAt>`, plus
+    /// `|CACHE_ONLY` when -- and only when -- the record is a cache-only marker. Nothing else follows.
     private static boolean lifecycleReadsBack(String line, BlockLifecycle expected) {
         var bar1 = line.indexOf('|');
         var bar2 = line.indexOf('|', bar1 + 1);
@@ -80,6 +81,12 @@ sealed interface SnapshotReadBack {
         var bar4 = line.indexOf('|', bar3 + 1);
         var bar5 = line.indexOf('|', bar4 + 1);
         var bar6 = line.indexOf('|', bar5 + 1);
+        var bar7 = bar6 > 0
+                   ? line.indexOf('|', bar6 + 1)
+                   : -1;
+        var orphanedEnd = bar7 < 0
+                          ? line.length()
+                          : bar7;
 
         return bar1 == 64
                && bar2 > 0
@@ -87,14 +94,21 @@ sealed interface SnapshotReadBack {
                && bar4 > 0
                && bar5 > 0
                && bar6 > 0
-               && line.indexOf('|', bar6 + 1) < 0
+               && flagReadsBack(line, bar7, expected)
                && idReadsBack(line, 0, expected.blockId())
                && tiersRead(line.substring(bar1 + 1, bar2)).equals(expected.presentIn())
                && Integer.parseInt(line, bar2 + 1, bar3, 10) == expected.refCount()
                && Long.parseLong(line, bar3 + 1, bar4, 10) == expected.lastAccessedAt()
                && Long.parseLong(line, bar4 + 1, bar5, 10) == expected.createdAt()
                && Integer.parseInt(line, bar5 + 1, bar6, 10) == expected.accessCount()
-               && Long.parseLong(line, bar6 + 1, line.length(), 10) == expected.orphanedAt();
+               && Long.parseLong(line, bar6 + 1, orphanedEnd, 10) == expected.orphanedAt();
+    }
+
+    /// No 8th field for an ordinary record; exactly the `CACHE_ONLY` flag, and nothing after it, for a marker.
+    private static boolean flagReadsBack(String line, int bar7, BlockLifecycle expected) {
+        return expected.cacheOnly()
+               ? bar7 > 0 && line.substring(bar7 + 1).equals(MetadataSnapshot.LineFlag.CACHE_ONLY.name())
+               : bar7 < 0;
     }
 
     /// `<percent-encoded name>|<64 hex>`.

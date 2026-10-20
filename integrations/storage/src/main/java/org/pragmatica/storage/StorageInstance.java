@@ -1,10 +1,16 @@
 package org.pragmatica.storage;
 
 import java.nio.file.Path;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Contract;
@@ -36,7 +42,25 @@ public interface StorageInstance {
     /// Read content by block ID -- waterfall through tiers by latency.
     Promise<Option<byte[]>> get(BlockId id);
     /// Check if a block exists in any tier.
+    ///
+    /// A shared tier answers for the whole cluster, so `true` here does NOT mean this node holds the block:
+    /// it never makes a block local. [#warm] does.
     Promise<Boolean> exists(BlockId id);
+
+    /// Makes this node hold a copy of `id` in its own cache tiers, fetched from wherever the read
+    /// waterfall finds it (in practice the cluster-shared tier). Resolves `true` when a copy was made,
+    /// and `false` when nothing was to be done or nothing could be: a node-private tier already holds the
+    /// block, the block is absent everywhere, or every cache tier refused it (full, or failing).
+    ///
+    /// Not a read: it counts no access, so a prefetch cannot make a block look popular. The copy is recorded
+    /// as a cache-only marker when this node holds no record of the block ([BlockLifecycle#cacheOnly]), so
+    /// demotion can see and evict it. Only cache tiers are written -- never a durable one: a warmed copy is
+    /// not this node's data.
+    ///
+    /// The default warms nothing: an implementation without cache tiers has nowhere to put the copy.
+    default Promise<Boolean> warm(BlockId id) {
+        return Promise.success(false);
+    }
     /// Adds a named reference to a block this instance ALREADY holds, crediting one reference for the
     /// new name. This is the aliasing primitive -- a second (third, ...) name for a block that some
     /// other reference is already keeping alive.
@@ -255,7 +279,27 @@ public interface StorageInstance {
                                            WritePolicy writePolicy,
                                            Option<Path> logRoot,
                                            AppendLog.TornTailSink tornTailSink) {
-        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy, logRoot, tornTailSink);
+        return storageInstance(name, tiers, metadataStore, writePolicy, logRoot, tornTailSink, DefaultStorageInstance::ignoreAccess);
+    }
+
+    /// As above, plus `accessListener`, told of every [#get] that found its block -- after the access is
+    /// recorded, once per caller (callers sharing one in-flight read are each counted). It runs on the
+    /// reading thread, so it must be cheap and must not throw. [#warm] never reports to it.
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy,
+                                           Option<Path> logRoot,
+                                           AppendLog.TornTailSink tornTailSink,
+                                           Consumer<BlockId> accessListener) {
+        return new DefaultStorageInstance(name,
+                                          tiers,
+                                          metadataStore,
+                                          writePolicy,
+                                          logRoot,
+                                          tornTailSink,
+                                          accessListener,
+                                          DefaultStorageInstance.CacheMarkerLimits.DEFAULT);
     }
 }
 
@@ -296,6 +340,26 @@ final class DefaultStorageInstance implements StorageInstance {
     /// that finds a registration waits for that write instead of deduplicating onto a claim whose bytes may
     /// never land -- a ref, cursor or checkpoint naming it would then name nothing.
     private final Map<BlockId, Promise<Unit>> writing = new ConcurrentHashMap<>();
+    private final Consumer<BlockId> accessListener;
+    /// Levels of the tiers that are cluster-shared: a copy there is not this node's, so a record that places
+    /// the block only on these tiers holds nothing of this node's to track.
+    private final Set<TierLevel> sharedLevels;
+    private final CacheMarkerLimits markerLimits;
+    private final LongSupplier clockMillis;
+    /// Cache-only markers this instance has created since the last sweep: an upper-bound estimate (removals
+    /// elsewhere do not decrement it) that [#sweepIdleMarkers] replaces with an exact count.
+    private final AtomicInteger cacheMarkers = new AtomicInteger();
+    private final AtomicLong lastMarkerSweepMillis = new AtomicLong();
+
+    /// Bounds on the cache-only markers that READS create for blocks this node does not own. A marker is
+    /// created for every distinct block read from a shared tier, so without a bound the metadata store would
+    /// grow with the cluster's whole working set. At `maxMarkers` no new marker is created until a sweep
+    /// (at most one per `sweepIntervalMs`) has dropped the markers that hold nothing of this node's and have
+    /// been idle for `idleMs`. A block read while the table is full is simply not tracked: it counts no
+    /// access, exactly like the prefetch observation table at its cap.
+    record CacheMarkerLimits(int maxMarkers, long idleMs, long sweepIntervalMs) {
+        static final CacheMarkerLimits DEFAULT = new CacheMarkerLimits(100_000, 600_000L, 5_000L);
+    }
 
     DefaultStorageInstance(String name,
                            List<StorageTier> tiers,
@@ -303,10 +367,53 @@ final class DefaultStorageInstance implements StorageInstance {
                            WritePolicy writePolicy,
                            Option<Path> logRoot,
                            AppendLog.TornTailSink tornTailSink) {
+        this(name,
+             tiers,
+             metadataStore,
+             writePolicy,
+             logRoot,
+             tornTailSink,
+             DefaultStorageInstance::ignoreAccess,
+             CacheMarkerLimits.DEFAULT);
+    }
+
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot,
+                           AppendLog.TornTailSink tornTailSink,
+                           Consumer<BlockId> accessListener,
+                           CacheMarkerLimits markerLimits) {
+        this(name,
+             tiers,
+             metadataStore,
+             writePolicy,
+             logRoot,
+             tornTailSink,
+             accessListener,
+             markerLimits,
+             System::currentTimeMillis);
+    }
+
+    /// Test seam: the clock marker idleness and sweep spacing are measured on.
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot,
+                           AppendLog.TornTailSink tornTailSink,
+                           Consumer<BlockId> accessListener,
+                           CacheMarkerLimits markerLimits,
+                           LongSupplier clockMillis) {
+        this.accessListener = accessListener;
+        this.markerLimits = markerLimits;
+        this.clockMillis = clockMillis;
         this.name = name;
         this.tiers = List.copyOf(tiers);
         this.requiredTiers = requiredTiersOf(this.tiers);
         this.cacheTiers = this.tiers.stream().filter(tier -> !requiredTiers.contains(tier)).toList();
+        this.sharedLevels = sharedLevelsOf(this.tiers);
         this.metadataStore = metadataStore;
         this.writePolicy = writePolicy;
         this.logRoot = logRoot;
@@ -341,7 +448,43 @@ final class DefaultStorageInstance implements StorageInstance {
     public Promise<Boolean> exists(BlockId id) {
         return metadataStore.containsBlock(id)
                ? Promise.success(true)
-               : checkTiersForExistence(id, 0);
+               : checkTiersForExistence(id, 0, _ -> true);
+    }
+
+    /// Fetches the block through the read waterfall only when no node-private tier holds it, and copies it
+    /// into the cache tiers. The waterfall read is the one [#get] shares (single flight, integrity verified),
+    /// but no access is recorded: this is this node acting on a hint, not a reader asking for the block.
+    @Override
+    public Promise<Boolean> warm(BlockId id) {
+        return checkTiersForExistence(id, 0, tier -> !tier.isShared()).flatMap(held -> fetchUnlessHeld(held, id));
+    }
+
+    private Promise<Boolean> fetchUnlessHeld(boolean held, BlockId id) {
+        return held || cacheTiers.isEmpty()
+               ? Promise.success(false)
+               : readCache.deduplicate(id, () -> waterfallRead(id)).flatMap(opt -> copyIfFound(id, opt));
+    }
+
+    private Promise<Boolean> copyIfFound(BlockId id, Option<byte[]> found) {
+        return found.fold(() -> Promise.success(false), content -> copyToCacheTiers(id, content));
+    }
+
+    /// The record comes first: a copy with no record is invisible to demotion (#886), so the cache-only
+    /// marker is created here whatever the marker table's room (the read that fetched the block already
+    /// created one when there was room; this covers the full-table case, bounded by the callers' in-flight
+    /// cap). Presence is then recorded per tier as each write lands.
+    private Promise<Boolean> copyToCacheTiers(BlockId id, byte[] content) {
+        metadataStore.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.noneOf(TierLevel.class)));
+
+        return promoteToCacheTiers(id, content).map(_ -> holdsPrivateCopy(id));
+    }
+
+    private boolean holdsPrivateCopy(BlockId id) {
+        return metadataStore.getLifecycle(id)
+                            .map(lc -> lc.presentIn()
+                                         .stream()
+                                         .anyMatch(level -> !sharedLevels.contains(level)))
+                            .or(false);
     }
 
     @Override
@@ -610,9 +753,17 @@ final class DefaultStorageInstance implements StorageInstance {
     /// removed it (#801) -- so the id must not be handed out and the put goes round again, where its
     /// claim now succeeds and [#afterCollection] orders its write behind GC's tier deletes.
     private Promise<BlockId> deduplicateBlock(BlockId id, byte[] content) {
-        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented)
-                            .fold(() -> handlePut(id, content),
-                                  lc -> Promise.success(deduplicated(lc.blockId())));
+        return creditOwnedBlock(id).fold(() -> handlePut(id, content),
+                                         lc -> Promise.success(deduplicated(lc.blockId())));
+    }
+
+    /// Credits a reference to the block's record, but only to a record this node owns. A cache-only marker
+    /// is no duplicate to deduplicate onto -- it records that the block was READ here, never that it was
+    /// written to this node's required tiers -- so it is left as it is and reported as empty, which sends
+    /// the put round again to claim the id (a claim replaces a marker, see [MetadataStore#claimBlock]).
+    private Option<BlockLifecycle> creditOwnedBlock(BlockId id) {
+        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncrementedIfOwned)
+                            .filter(lc -> !lc.cacheOnly());
     }
 
     private static BlockId deduplicated(BlockId id) {
@@ -976,9 +1127,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// GC removed the record meanwhile; the put goes round again as a fresh claim, as [#deduplicateBlock]
     /// does.
     private Promise<BlockId> rewriteDeduplicated(BlockId id, byte[] content) {
-        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented)
-                            .fold(() -> handleDurablePut(id, content),
-                                  _ -> rewriteRequiredTiers(id, content));
+        return creditOwnedBlock(id).fold(() -> handleDurablePut(id, content), _ -> rewriteRequiredTiers(id, content));
     }
 
     private Promise<BlockId> rewriteRequiredTiers(BlockId id, byte[] content) {
@@ -1041,27 +1190,103 @@ final class DefaultStorageInstance implements StorageInstance {
             return StorageError.IntegrityError.integrityError(expectedId, computedId).promise();
         }
 
-        recordTierPresence(expectedId, tier.level());
+        recordReadPresence(expectedId, tier);
 
         return Promise.success(some(content));
     }
 
     // --- Existence check ---
-    private Promise<Boolean> checkTiersForExistence(BlockId id, int tierIndex) {
+    private Promise<Boolean> checkTiersForExistence(BlockId id, int tierIndex, Predicate<StorageTier> inScope) {
         if (tierIndex >= tiers.size()) {
             return Promise.success(false);
         }
 
-        return tiers.get(tierIndex)
-                    .exists(id)
-                    .flatMap(found -> found
-                                      ? Promise.success(true)
-                                      : checkTiersForExistence(id, tierIndex + 1));
+        var tier = tiers.get(tierIndex);
+
+        return (inScope.test(tier)
+                ? tier.exists(id)
+                : Promise.success(false)).flatMap(found -> found
+                                                           ? Promise.success(true)
+                                                           : checkTiersForExistence(id, tierIndex + 1, inScope));
     }
 
     // --- Lifecycle helpers ---
     private void recordAccess(BlockId id) {
         metadataStore.computeLifecycle(id, BlockLifecycle::withAccessTimestamp);
+        accessListener.accept(id);
+    }
+
+    @Contract
+    static void ignoreAccess(BlockId id) {}
+
+    private static Set<TierLevel> sharedLevelsOf(List<StorageTier> tiers) {
+        var shared = EnumSet.noneOf(TierLevel.class);
+
+        tiers.stream().filter(StorageTier::isShared).map(StorageTier::level).forEach(shared::add);
+
+        return shared;
+    }
+
+    /// A read found `id` in `tier`. A node with a record just adds the presence. A node with none -- it did
+    /// not write the block -- gets a cache-only marker, so its accesses are counted (promotion reads them)
+    /// and any copy it keeps is visible to demotion; unless the copy it just read is on a DURABLE tier, in
+    /// which case the block is this node's own data whose record was lost, and calling it a cache would let
+    /// demotion evict the only durable copy.
+    private void recordReadPresence(BlockId id, StorageTier tier) {
+        metadataStore.computeLifecycle(id, lc -> lc.withTierAdded(tier.level()))
+                     .onEmpty(() -> trackReadOnlyBlock(id, tier));
+    }
+
+    private void trackReadOnlyBlock(BlockId id, StorageTier tier) {
+        if (!tier.isDurable() && hasRoomForMarker()) {
+            createMarker(id, tier.level());
+        }
+    }
+
+    /// The claim loses to a writer or another reader that got there first; the presence is then added to
+    /// whatever record that left.
+    private void createMarker(BlockId id, TierLevel level) {
+        if (metadataStore.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(level)))) {
+            cacheMarkers.incrementAndGet();
+        } else {
+            recordTierPresence(id, level);
+        }
+    }
+
+    private boolean hasRoomForMarker() {
+        return cacheMarkers.get() < markerLimits.maxMarkers() || sweepIdleMarkers();
+    }
+
+    /// At most one sweep per interval; true when it left room for another marker.
+    private boolean sweepIdleMarkers() {
+        var now = clockMillis.getAsLong();
+        var last = lastMarkerSweepMillis.get();
+
+        return now - last >= markerLimits.sweepIntervalMs()
+               && lastMarkerSweepMillis.compareAndSet(last, now)
+               && reclaimIdleMarkers(now) < markerLimits.maxMarkers();
+    }
+
+    /// Drops the markers that track nothing of this node's -- every tier in the record is shared -- and have
+    /// not been touched for the idle window, by compare-and-remove against the record as scanned (a read or
+    /// put that landed since wins). Re-counts the markers left, which also corrects the drift in
+    /// [#cacheMarkers]; returns that count.
+    private int reclaimIdleMarkers(long now) {
+        var markers = metadataStore.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).toList();
+        var reclaimed = markers.stream()
+                               .filter(marker -> isIdleSharedOnly(marker, now))
+                               .filter(marker -> metadataStore.releaseClaim(marker.blockId(), marker))
+                               .count();
+        var remaining = markers.size() - (int) reclaimed;
+
+        cacheMarkers.set(remaining);
+        log.debug("Cache marker sweep on '{}': {} reclaimed, {} left", name, reclaimed, remaining);
+
+        return remaining;
+    }
+
+    private boolean isIdleSharedOnly(BlockLifecycle marker, long now) {
+        return now - marker.lastAccessedAt() >= markerLimits.idleMs() && sharedLevels.containsAll(marker.presentIn());
     }
 
     private void recordTierPresence(BlockId id, TierLevel tier) {

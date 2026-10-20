@@ -30,6 +30,13 @@ public record MetadataSnapshot(long epoch,
     private static final HexFormat HEX = HexFormat.of();
     private static final int CHUNK = 16 * 1024;
 
+    /// An optional trailing field of a lifecycle line, written ONLY for a record that carries the flag. A
+    /// line without it is byte-for-byte what the encoder wrote before flags existed, so a snapshot from before
+    /// them still hashes the same, still validates and still restores; the flag costs ordinary records nothing.
+    enum LineFlag {
+        CACHE_ONLY
+    }
+
     /// Defensive copies. The refs copy keeps iteration order: the file order IS the hashed order, so a
     /// snapshot read back from a file hashes the same lines in the same order the writer did.
     public MetadataSnapshot {
@@ -85,16 +92,20 @@ public record MetadataSnapshot(long epoch,
             separator = ",";
         }
 
-        return sb.append('|')
-                 .append(lifecycle.refCount())
-                 .append('|')
-                 .append(lifecycle.lastAccessedAt())
-                 .append('|')
-                 .append(lifecycle.createdAt())
-                 .append('|')
-                 .append(lifecycle.accessCount())
-                 .append('|')
-                 .append(lifecycle.orphanedAt());
+        sb.append('|')
+          .append(lifecycle.refCount())
+          .append('|')
+          .append(lifecycle.lastAccessedAt())
+          .append('|')
+          .append(lifecycle.createdAt())
+          .append('|')
+          .append(lifecycle.accessCount())
+          .append('|')
+          .append(lifecycle.orphanedAt());
+
+        return lifecycle.cacheOnly()
+               ? sb.append('|').append(LineFlag.CACHE_ONLY.name())
+               : sb;
     }
 
     private static StringBuilder appendRefLine(StringBuilder sb, String name, BlockId id) {
