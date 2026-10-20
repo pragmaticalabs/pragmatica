@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.api;
 
+import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -24,6 +25,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.http.server.HttpServerError;
@@ -60,10 +62,16 @@ class ManagementServerBindFailureTest {
         }
     };
 
+    /// A TCP port this test deliberately HOLDS (taken by someone else, as in the flake), chosen the way the module's other
+    /// tests choose theirs. Not `new ServerSocket(0)`: that is the reserve-then-release pattern `ClusterTestPortsTest` forbids.
+    private static ServerSocket heldPort() throws IOException {
+        return new ServerSocket(ClusterTestPorts.freeTcpAndUdpPort());
+    }
+
     @Test
     @Timeout(120)
     void start_portAlreadyHeld_failsWithBindFailedNamingThePort() throws Exception {
-        try (var thief = new ServerSocket(0)) {
+        try (var thief = heldPort()) {
             var port = thief.getLocalPort();
             var server = managementServerOn(port);
 
@@ -83,7 +91,7 @@ class ManagementServerBindFailureTest {
     @Test
     @Timeout(120)
     void requireStarted_portAlreadyHeld_failsAtTheStartNamingTheBindCause() throws Exception {
-        try (var thief = new ServerSocket(0)) {
+        try (var thief = heldPort()) {
             var server = managementServerOn(thief.getLocalPort());
 
             try {
