@@ -572,6 +572,45 @@ class AsyncCallbackCheckTest {
     }
 
     @Nested
+    class PureFactories {
+        @Test
+        void clean_buildingAPromiseOrAResultInACallback() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p) {
+                        p.onFailure(c -> c.promise());
+                        p.onFailure(c -> c.result());
+                        p.onSuccess(v -> Promise.success(v));
+                        p.onFailure(c -> Promise.failure(c));
+                        p.onResult(r -> Promise.resolved(r));
+                        p.onSuccessRun(() -> Promise.unitPromise());
+                        p.onSuccessRun(() -> Promise.promise());
+                        p.onSuccessRun(() -> Unit.unit());
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void flags_theArgumentsOfAFactoryAreStillScanned() {
+            assertThat(lines(body("""
+                    java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger();
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> Promise.success(count.incrementAndGet()));
+                    }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void flags_promiseFactoryThatRunsItsConsumer() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> Promise.promise(inner -> done = true));
+                    }
+                    """))).hasSize(1);
+        }
+    }
+
+    @Nested
     class Announcement {
         @Test
         void note_announcesTheCheckOnceWithTheTypeCount() {
