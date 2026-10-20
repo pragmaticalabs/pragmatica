@@ -1,9 +1,13 @@
 package org.pragmatica.storage;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
@@ -22,8 +26,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 class StorageInstanceLateTierTest {
     private static final int TRIALS = 20;
     private static final long ANSWER_DELAY_MS = 2;
+    private static final long CACHE_RECORDING_DELAY_MS = 30;
 
-    private final MetadataStore metadata = MetadataStore.inMemoryMetadataStore("late-tiers");
+    private final MetadataStore metadata = slowCacheTierRecording(MetadataStore.inMemoryMetadataStore("late-tiers"));
     private final StorageInstance storage = StorageInstance.storageInstance("late-tiers",
                                                                             List.of(new LateTier(MemoryTier.memoryTier(1024 * 1024)),
                                                                                     new LateTier(MemoryTier.memoryTier(1024 * 1024,
@@ -73,6 +78,42 @@ class StorageInstanceLateTierTest {
 
         assertThat(uncounted.get()).as("trials where the caller's read had not yet been counted as an access")
                                    .isZero();
+    }
+
+    /// The metadata write that records a cache tier as holding the block is the side effect under test, so that one write is
+    /// slowed; every other metadata operation passes straight through.
+    private static MetadataStore slowCacheTierRecording(MetadataStore delegate) {
+        return (MetadataStore) Proxy.newProxyInstance(MetadataStore.class.getClassLoader(),
+                                                      new Class<?>[]{MetadataStore.class},
+                                                      (_, method, args) -> invokeSlowingCacheTierRecording(delegate, method, args));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object invokeSlowingCacheTierRecording(MetadataStore delegate, Method method, Object[] args) throws Throwable {
+        if (method.getName().equals("computeLifecycle") && addsCacheTier(delegate, (BlockId) args[0], (UnaryOperator<BlockLifecycle>) args[1])) {
+            sleep(CACHE_RECORDING_DELAY_MS);
+        }
+
+        try {
+            return method.invoke(delegate, args);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static boolean addsCacheTier(MetadataStore delegate, BlockId id, UnaryOperator<BlockLifecycle> updater) {
+        return delegate.getLifecycle(id)
+                       .filter(lifecycle -> !lifecycle.presentIn().contains(TierLevel.MEMORY))
+                       .filter(lifecycle -> updater.apply(lifecycle).presentIn().contains(TierLevel.MEMORY))
+                       .isPresent();
+    }
+
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private int accessCount(BlockId id) {
@@ -146,11 +187,7 @@ class StorageInstanceLateTierTest {
         }
 
         private static <T> void answerAfterDelay(Promise<T> promise, Supplier<Promise<T>> call) {
-            try {
-                Thread.sleep(ANSWER_DELAY_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            sleep(ANSWER_DELAY_MS);
             call.get().onResult(promise::resolve);
         }
     }
