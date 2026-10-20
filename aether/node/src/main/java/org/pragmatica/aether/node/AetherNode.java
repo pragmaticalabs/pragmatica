@@ -2793,6 +2793,7 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
+                stopStorageMaintenance(storageSetups);
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
 
                 return Unit.unit();
@@ -3617,6 +3618,7 @@ public interface AetherNode extends ManageableNode {
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                            () -> {},
                                                            drainInitiatedEmitter(scheduledTaskDrainHookRef,
+                                                                                 () -> stopStorageMaintenance(storageSetups),
                                                                                  clusterEventDrainEmitterRef),
                                                            departurePush,
                                                            jvmExit);
@@ -4181,14 +4183,23 @@ public interface AetherNode extends ManageableNode {
         // `active` flag, so the periodic driver below can call demote()/collectGarbage()
         // unconditionally on every node (leader or not) and it safely no-ops until this node's
         // adapter is activated.
+        //
+        // Promotion, and demotion of `artifacts` and `content`, are NOT leader-pinned: their fast tiers are
+        // private to each node, so a leader-only manager would warm only the leader's caches. Both are
+        // activated on every node when it reports ready (signalReadyActivatingStorage, below) and deactivated
+        // on stop. `streams` stays as it was: leader-pinned demotion, no promotion.
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
+        var compositePromotionManager = StorageFactory.compositePromotionManager(storageSetups);
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
                                                                                       compositeGarbageCollector);
         var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
+                                                                                         compositePromotionManager,
+                                                                                         PromotionStallWatch.promotionStallWatch(storageSetups,
+                                                                                                                                 operatorWarningSink),
                                                                                          compositeGarbageCollector);
 
-        LOG.info("Storage maintenance enabled: demotion+GC cadence={}, storage setups={}",
+        LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",
                  config.timeouts().storageMaintenance().interval(),
                  storageSetups.keySet());
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
@@ -6834,7 +6845,9 @@ public interface AetherNode extends ManageableNode {
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          nodeLifecycle::signalReady,
+                                                                                          () -> signalReadyActivatingStorage(nodeLifecycle::signalReady,
+                                                                                                                             storageSetups,
+                                                                                                                             () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE),
                                                                                           nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
@@ -7391,6 +7404,36 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReady(Runnable signalReady, NodeReportedStateHolder holder) {
         signalReady.run();
         holder.onSubsystemsReady();
+    }
+
+    /// Per-node storage maintenance starts with the node's readiness: promotion and demotion of `artifacts` and
+    /// `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
+    /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. FER (degrade forward):
+    /// a manager that cannot start is logged and the node still becomes ready, with that instance's tiers unmaintained;
+    /// promotion is an optimization, not a dependency.
+    @Contract
+    static void signalReadyActivatingStorage(Runnable signalReady,
+                                             Map<String, StorageFactory.StorageSetup> storageSetups,
+                                             BooleanSupplier draining) {
+        activateStorageUnlessDraining(storageSetups, draining);
+        signalReady.run();
+    }
+
+    /// The ready signal fires on EVERY entry of the node-deployment state machine to Active, so it can fire again after
+    /// the node began draining (a quorum-loss drain, then quorum comes back before the process exits). Drain is one-way and
+    /// single-shot (`DrainProcedure`: INACTIVE -> DRAINING -> EXITED, nothing leads back), so a draining node's maintenance
+    /// must stay off: re-activating it would resume promotion and demotion on a node that is leaving.
+    @Contract
+    private static void activateStorageUnlessDraining(Map<String, StorageFactory.StorageSetup> storageSetups,
+                                                      BooleanSupplier draining) {
+        if (draining.getAsBoolean()) {
+            LOG.info("Node is draining: storage maintenance stays off");
+
+            return;
+        }
+
+        StorageFactory.activateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}",
+                                                                                          cause.message()));
     }
 
     /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed
@@ -7996,34 +8039,46 @@ public interface AetherNode extends ManageableNode {
 
     /// `DrainProcedure`'s single-shot `drainInitiatedEmitter`, invoked once inside the INACTIVE->DRAINING
     /// CAS and therefore the node's one drain edge, shared by all three triggers (QUORUM_LOSS,
-    /// CORE_ABSENCE, COMMANDED). Two consumers, in falling order of consequence:
+    /// CORE_ABSENCE, COMMANDED). Three consumers, in falling order of consequence:
     ///
     ///   1. #273 item 1 — stop this node's ALL-mode scheduled fires. A correctness action.
-    ///   2. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
+    ///   2. Stop this node's storage promotion and per-node demotion.
+    ///   3. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
     ///
-    /// The scheduled-task hook runs FIRST but inside its own no-throw guard, so it can neither delay nor
-    /// suppress (2). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
-    /// outer guard would let a throw from (1) swallow (2) — the exact loss #565 was filed for.
+    /// The two hooks run FIRST but each inside its own no-throw guard, so neither can delay nor
+    /// suppress (3). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
+    /// outer guard would let a throw from (1) or (2) swallow (3) — the exact loss #565 was filed for.
     ///
     /// Package-private and named rather than an inline lambda so the composition itself is testable:
     /// `ScheduledTaskDrainWiringBootTest` drives a real drain through it. Both arguments are
     /// forward-declared refs — the manager and the event aggregator are both constructed after
     /// `DrainProcedure`.
     static Consumer<DrainReason> drainInitiatedEmitter(AtomicReference<Runnable> scheduledTaskDrainHookRef,
+                                                       Runnable storageMaintenanceStop,
                                                        AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef) {
         return reason -> {
-            runScheduledTaskDrainHookSafely(scheduledTaskDrainHookRef.get());
+            runDrainHookSafely("Scheduled-task", scheduledTaskDrainHookRef.get());
+            runDrainHookSafely("Storage-maintenance", storageMaintenanceStop);
             clusterEventDrainEmitterRef.get()
                                        .accept(reason);
         };
     }
 
-    private static void runScheduledTaskDrainHookSafely(Runnable hook) {
+    private static void runDrainHookSafely(String name, Runnable hook) {
         try {
             hook.run();
         } catch (Throwable t) {
-            LOG.warn("Scheduled-task drain hook failed: {} — drain proceeds", t.getMessage());
+            LOG.warn("{} drain hook failed: {} — drain proceeds", name, t.getMessage());
         }
+    }
+
+    /// Promotion and demotion of this node's storage stop when the node starts draining, not only when it stops: a
+    /// draining node is leaving, and a cycle that copies blocks into tiers about to be torn down gains nothing. FER: a
+    /// manager that will not deactivate is logged and the drain goes on. Also run first thing in `shutdownStorage()`.
+    @Contract
+    private static void stopStorageMaintenance(Map<String, StorageFactory.StorageSetup> storageSetups) {
+        StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be deactivated: {}",
+                                                                                            cause.message()));
     }
 
     /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this

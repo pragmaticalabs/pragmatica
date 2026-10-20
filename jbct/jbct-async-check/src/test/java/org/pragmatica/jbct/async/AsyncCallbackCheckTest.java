@@ -572,6 +572,87 @@ class AsyncCallbackCheckTest {
     }
 
     @Nested
+    class PureFactories {
+        @Test
+        void clean_buildingAPromiseOrAResultInACallback() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p) {
+                        p.onFailure(c -> c.promise());
+                        p.onFailure(c -> c.result());
+                        p.onSuccess(v -> Promise.success(v));
+                        p.onFailure(c -> Promise.failure(c));
+                        p.onResult(r -> Promise.resolved(r));
+                        p.onSuccessRun(() -> Promise.unitPromise());
+                        p.onSuccessRun(() -> Promise.promise());
+                        p.onSuccessRun(() -> Unit.unit());
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void clean_factoryMethodReferences() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p, Result<String> r) {
+                        p.onFailure(Cause::promise);
+                        p.onFailure(Cause::result);
+                        p.onSuccess(Promise::success);
+                        p.onSuccessRun(Promise::unitPromise);
+                        p.onSuccess(_ -> r.fold(Cause::promise, Promise::success));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void flags_aMethodReferenceThatIsNotAFactory() {
+            assertThat(lines(body("""
+                    Gate gate = new Gate();
+                    static class Gate { void release(String key) { } String conv(Object o) { return "x"; } }
+                    void run(Promise<String> p, Result<String> r) {
+                        p.onSuccess(gate::release);
+                        p.onSuccess(_ -> r.fold(gate::conv, gate::conv));
+                    }
+                    """))).hasSize(2);
+        }
+
+        @Test
+        void flags_sameNamedStaticsOfOtherTypes() {
+            assertThat(lines(body("""
+                    static class Other {
+                        static String success(String v) { System.out.println(v); return v; }
+                        static String promise() { return "x"; }
+                        static String unit() { return "x"; }
+                    }
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> Other.success(v));
+                        p.onSuccessRun(() -> Other.promise());
+                        p.onSuccessRun(() -> Other.unit());
+                        p.onSuccess(Other::success);
+                    }
+                    """))).hasSize(4);
+        }
+
+        @Test
+        void flags_theArgumentsOfAFactoryAreStillScanned() {
+            assertThat(lines(body("""
+                    java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger();
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> Promise.success(count.incrementAndGet()));
+                    }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void flags_promiseFactoryThatRunsItsConsumer() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> Promise.promise(inner -> done = true));
+                    }
+                    """))).hasSize(1);
+        }
+    }
+
+    @Nested
     class Announcement {
         @Test
         void note_announcesTheCheckOnceWithTheTypeCount() {
