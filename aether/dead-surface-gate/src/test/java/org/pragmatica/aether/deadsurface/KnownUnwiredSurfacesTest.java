@@ -17,7 +17,6 @@ import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.storage.AppendLog;
-import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.WritePolicy;
@@ -84,16 +83,19 @@ class KnownUnwiredSurfacesTest {
                   + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
     }
 
-    /// Reachability control for the cache-only-marker groundwork. `StorageInstance.warm` and the read-hit listener
-    /// overload of `StorageInstance.storageInstance` were registered here as unwired until the prefetch wiring landed;
-    /// that wiring is now in production (`DefaultPrefetchManager` calls `warm`, `StorageFactory` builds the instance
-    /// with the listener), so the scanner must reach both. Kept as a control: if it flips, the scanner or the wiring
-    /// changed, and a surface has gone dead again.
+    /// Reachability control for the read-hit listener overload of `StorageInstance.storageInstance`: `StorageFactory`
+    /// builds every production instance through it, so the scanner must reach it. It was registered here as unwired until
+    /// the prefetch wiring landed; if this flips, the scanner or the wiring changed.
+    ///
+    /// `StorageInstance.warm` was registered beside it, and is NOT asserted here any more: its production caller is the
+    /// prefetch manager in `integrations/storage`, which this gate's corpus (aether modules only) does not scan, so a
+    /// reachability check on `warm` would answer "no" whether or not the call exists. The call is pinned where the manager
+    /// is tested: `PrefetchManagerTest#processHints_blockOnlyInTheSharedTier_copiesItIntoTheCacheTier` goes red when the
+    /// manager stops calling `warm`.
     @Test
-    void storageWarmAndReadHitListener_areCalledFromProduction() throws Exception {
+    void storageReadHitListener_isCalledFromProduction() throws Exception {
         assertCorpusComplete();
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
-        var warm = MethodRef.of(StorageInstance.class.getDeclaredMethod("warm", BlockId.class));
         var listenerOverload = MethodRef.of(StorageInstance.class.getDeclaredMethod("storageInstance",
                                                                                     String.class,
                                                                                     List.class,
@@ -103,8 +105,6 @@ class KnownUnwiredSurfacesTest {
                                                                                     AppendLog.TornTailSink.class,
                                                                                     Consumer.class));
 
-        assertTrue(reachability.isReachable(warm),
-                   "StorageInstance.warm is no longer reached from production: the prefetch manager stopped calling it.");
         assertTrue(reachability.isReachable(listenerOverload),
                    "The read-hit listener overload is no longer reached from production: StorageFactory stopped using it.");
     }

@@ -6854,7 +6854,7 @@ public interface AetherNode extends ManageableNode {
         BooleanSupplier nodeDraining = () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE;
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          () -> signalReadyActivatingStorage(() -> signalReadyAndWakePrefetch(nodeLifecycle,
+                                                                                          () -> signalReadyActivatingStorage(() -> signalReadyAndWakePrefetch(nodeLifecycle::signalReady,
                                                                                                                                                                 storageSetups,
                                                                                                                                                                 nodeDraining),
                                                                                                                              storageSetups,
@@ -7414,10 +7414,10 @@ public interface AetherNode extends ManageableNode {
     /// neither tells peers what to fetch nor starts fetching for them. A node that has begun draining stays asleep: the
     /// ready signal can fire again after the drain began, and a leaving node must not start fetching for its peers.
     @Contract
-    private static void signalReadyAndWakePrefetch(NodeLifecycle lifecycle,
-                                                   Map<String, StorageFactory.StorageSetup> storageSetups,
-                                                   BooleanSupplier draining) {
-        lifecycle.signalReady();
+    static void signalReadyAndWakePrefetch(Runnable signalReady,
+                                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                                           BooleanSupplier draining) {
+        signalReady.run();
         if (!draining.getAsBoolean()) {
             StorageFactory.activatePrefetch(storageSetups);
         }
