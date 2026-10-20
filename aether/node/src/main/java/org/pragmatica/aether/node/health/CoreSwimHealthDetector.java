@@ -118,10 +118,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// (the only edge SWIM emits to the cluster-wide `TransportObservation` stream) to
     /// the cluster `MessageRouter`. Wired by the Aether node assembly.
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
+
     /// Application gossip channels pending wiring into the underlying [`SwimProtocol`] once it is created in
     /// `seedAndWrap`; the storage prefetch channel registers here during node assembly.
     private final Map<Integer, GossipChannel> pendingGossipChannels = new ConcurrentHashMap<>();
-
     private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
     private final MembershipResyncPolicy resync = MembershipResyncPolicy.membershipResyncPolicy();
     /// Test seam (#1308): runs on the starting thread once the SWIM port is bound and before the

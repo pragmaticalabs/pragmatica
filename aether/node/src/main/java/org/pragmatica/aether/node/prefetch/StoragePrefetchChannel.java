@@ -53,7 +53,9 @@ public final class StoragePrefetchChannel implements GossipChannel {
     private final AtomicLong droppedMalformed = new AtomicLong();
     private final AtomicLong trimmed = new AtomicLong();
 
-    private StoragePrefetchChannel(Map<String, PrefetchManager> managers, Serializer serializer, Deserializer deserializer) {
+    private StoragePrefetchChannel(Map<String, PrefetchManager> managers,
+                                   Serializer serializer,
+                                   Deserializer deserializer) {
         this.managers = Map.copyOf(managers);
         this.instances = List.copyOf(new TreeMap<>(managers).keySet());
         this.serializer = serializer;
@@ -86,7 +88,8 @@ public final class StoragePrefetchChannel implements GossipChannel {
 
         var start = Math.floorMod(rotation.getAndIncrement(), instances.size());
 
-        return Option.from(IntStream.range(0, instances.size())
+        return Option.from(IntStream.range(0,
+                                           instances.size())
                                     .mapToObj(offset -> instances.get((start + offset) % instances.size()))
                                     .map(instance -> fittedGossip(instance, budgetBytes))
                                     .flatMap(Option::stream)
@@ -100,10 +103,12 @@ public final class StoragePrefetchChannel implements GossipChannel {
         return Option.from(IntStream.iterate(hints.size(),
                                              kept -> kept > 0,
                                              kept -> kept - 1)
-                                    .mapToObj(kept -> new Fitted(kept, encoded(instance, hints, kept)))
+                                    .mapToObj(kept -> new Fitted(kept,
+                                                                 encoded(instance, hints, kept)))
                                     .filter(fitted -> fitted.bytes().length <= budgetBytes)
                                     .findFirst())
-                     .onPresent(fitted -> countTrimmed(fitted.kept(), hints.size()))
+                     .onPresent(fitted -> countTrimmed(fitted.kept(),
+                                                       hints.size()))
                      .map(Fitted::bytes);
     }
 
@@ -122,14 +127,16 @@ public final class StoragePrefetchChannel implements GossipChannel {
     @Override
     @Contract
     public void incoming(NodeId from, byte[] payload) {
-        Result.<StoragePrefetchGossip> lift(Causes::fromThrowable, () -> deserializer.decode(payload))
+        Result.<StoragePrefetchGossip> lift(Causes::fromThrowable,
+                                            () -> deserializer.decode(payload))
               .onSuccess(this::deliver)
-              .onFailure(cause -> dropMalformed(from, cause.message()));
+              .onFailure(cause -> dropMalformed(from,
+                                                cause.message()));
     }
 
     private void deliver(StoragePrefetchGossip gossip) {
         option(managers.get(gossip.instance())).onPresent(manager -> manager.processHints(gossip.toPrefetchHints()))
-                                               .onEmpty(() -> dropUnknownInstance(gossip.instance()));
+              .onEmpty(() -> dropUnknownInstance(gossip.instance()));
     }
 
     private void dropUnknownInstance(String instance) {

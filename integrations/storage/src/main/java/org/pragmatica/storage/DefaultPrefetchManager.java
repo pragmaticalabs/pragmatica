@@ -222,7 +222,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     private boolean notOnCooldown(PrefetchHint hint) {
         var now = clockMillis.getAsLong();
         var cooledDown = option(cooldowns.get(hint.blockIdHex())).map(lastAttempt -> (now - lastAttempt) >= config.cooldownMs())
-                                                                  .or(true);
+                               .or(true);
 
         if (!cooledDown) {
             droppedCooldown.incrementAndGet();
@@ -253,7 +253,9 @@ final class DefaultPrefetchManager implements PrefetchManager {
     private void finishPrefetch(Result<Boolean> result, BlockId id) {
         inFlight.decrementAndGet();
         result.onSuccess(copied -> countWarmed(copied, id))
-              .onFailure(cause -> log.debug("Prefetch failed for block {}: {}", id, cause.message()));
+              .onFailure(cause -> log.debug("Prefetch failed for block {}: {}",
+                                            id,
+                                            cause.message()));
     }
 
     private void countWarmed(boolean copied, BlockId id) {

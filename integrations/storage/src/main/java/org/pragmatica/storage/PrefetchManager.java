@@ -32,7 +32,6 @@ public interface PrefetchManager {
 
     /// What this manager has done so far, for the operator surface.
     PrefetchStats stats();
-
     /// Activate the prefetch manager, allowing hint collection and prefetch.
     Result<Unit> activate();
     /// Deactivate the prefetch manager. All operations become no-ops.

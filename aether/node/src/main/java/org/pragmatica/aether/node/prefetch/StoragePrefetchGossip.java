@@ -38,14 +38,16 @@ public record StoragePrefetchGossip(String instance, List<Hint> hints) {
     public static StoragePrefetchGossip from(String instance, List<PrefetchHint> hints) {
         return storagePrefetchGossip(instance,
                                      hints.stream()
-                                          .map(hint -> Hint.hint(hint.blockIdHex(), hint.accessCount()))
+                                          .map(hint -> Hint.hint(hint.blockIdHex(),
+                                                                 hint.accessCount()))
                                           .toList());
     }
 
     /// The hints as a prefetch manager takes them.
     public List<PrefetchHint> toPrefetchHints() {
         return hints.stream()
-                    .map(hint -> PrefetchHint.prefetchHint(hint.blockIdHex(), hint.accessCount()))
+                    .map(hint -> PrefetchHint.prefetchHint(hint.blockIdHex(),
+                                                           hint.accessCount()))
                     .toList();
     }
 }

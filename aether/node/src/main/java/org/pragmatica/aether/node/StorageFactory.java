@@ -1475,7 +1475,8 @@ public final class StorageFactory {
                                                        WritePolicy.WRITE_THROUGH,
                                                        Option.none(),
                                                        AppendLog.TornTailSink.logOnly(),
-                                                       id -> prefetchHolder.get().recordAccess(id));
+                                                       id -> prefetchHolder.get()
+                                                                           .recordAccess(id));
         var prefetchManager = prefetchManagerFor(config, instance);
 
         prefetchHolder.set(prefetchManager);
@@ -1525,8 +1526,11 @@ public final class StorageFactory {
     public static Map<String, PrefetchManager> prefetchManagers(Map<String, StorageSetup> setups) {
         return setups.entrySet()
                      .stream()
-                     .filter(entry -> entry.getValue().prefetchManager() != PrefetchManager.NOOP)
-                     .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().prefetchManager()));
+                     .filter(entry -> entry.getValue()
+                                           .prefetchManager() != PrefetchManager.NOOP)
+                     .collect(Collectors.toMap(Map.Entry::getKey,
+                                               entry -> entry.getValue()
+                                                             .prefetchManager()));
     }
 
     /// Wakes every instance's prefetch manager: a node that reports ready starts to gossip hints and act on them.
@@ -1544,7 +1548,10 @@ public final class StorageFactory {
     }
 
     private static void activateOne(String name, PrefetchManager manager) {
-        manager.activate().onFailure(cause -> log.warn("Prefetch manager for '{}' could not be activated: {}", name, cause.message()));
+        manager.activate()
+               .onFailure(cause -> log.warn("Prefetch manager for '{}' could not be activated: {}",
+                                            name,
+                                            cause.message()));
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED

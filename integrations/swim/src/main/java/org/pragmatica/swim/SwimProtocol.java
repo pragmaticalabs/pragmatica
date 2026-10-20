@@ -978,7 +978,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// order, or the same pair of nodes would keep exchanging payloads.
     @Contract
     void sendAppGossip() {
-        randomAliveMember().onPresent(peer -> gossipChannels.forEach((channel, handler) -> offerAppGossip(peer, channel, handler)));
+        randomAliveMember().onPresent(peer -> gossipChannels.forEach((channel, handler) -> offerAppGossip(peer,
+                                                                                                          channel,
+                                                                                                          handler)));
     }
 
     private Option<SwimMember> randomAliveMember() {
@@ -1007,8 +1009,11 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         appGossipSent.incrementAndGet();
-        transport.send(peer.address(), AppGossip.appGossip(selfId, channel, payload))
-                 .onFailure(cause -> LOG.debug("SWIM app gossip to {} failed: {}", peer.nodeId().id(), cause.message()));
+        transport.send(peer.address(),
+                       AppGossip.appGossip(selfId, channel, payload))
+                 .onFailure(cause -> LOG.debug("SWIM app gossip to {} failed: {}",
+                                               peer.nodeId().id(),
+                                               cause.message()));
     }
 
     /// Proactively disseminate this node's own latest `Alive(selfId, selfIncarnation)`
