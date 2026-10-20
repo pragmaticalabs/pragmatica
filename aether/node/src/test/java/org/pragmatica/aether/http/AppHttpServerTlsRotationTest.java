@@ -5,8 +5,6 @@
 
 package org.pragmatica.aether.http;
 
-import java.security.cert.X509Certificate;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -70,13 +68,12 @@ class AppHttpServerTlsRotationTest {
             var applied = server.rotateCertificate(good).await(timeSpan(60).seconds());
 
             assertThat(applied.isSuccess()).as("a valid bundle rotates").isTrue();
-            // An applied rotation re-binds the CONFIGURED port, which is 0 here: the rotated listener has a new port, and
-            // boundPort() follows the listener's state transition, which can trail the rotation promise. Poll until the
-            // listener at the reported port presents a different certificate.
-            assertThat(TlsProbe.eventually(() -> presentsOtherCertificate(server, original), EVENT_BUDGET_MS))
-                .as("after the valid rotation the certificate changed").isTrue();
+            // An applied rotation re-binds the CONFIGURED port, which is 0 here: the rotated listener has a new port. The
+            // port is recorded before the rotation promise resolves, so it is read immediately, no polling.
             int rotatedPort = TlsProbe.requireBoundPort(server.boundPort(), "rotated app TLS listener");
 
+            assertThat(TlsProbe.sameCertificate(original, TlsProbe.presentedCertificate(rotatedPort)))
+                .as("after the valid rotation the certificate changed").isFalse();
             assertThat(TlsProbe.httpsStatus(rotatedPort)).isPositive();
             assertThat(TlsProbe.eventually(() -> TlsProbe.countOf(events, "http-tls-rotation-restored") == 1, EVENT_BUDGET_MS))
                 .as("the recovery event follows the later successful rotation").isTrue();
@@ -86,14 +83,6 @@ class AppHttpServerTlsRotationTest {
             assertThat(TlsProbe.countOf(events, "http-tls-rotation-restored")).as("recovery only once per refusal").isEqualTo(1);
         } finally {
             server.stop().await(timeSpan(30).seconds());
-        }
-    }
-
-    private static boolean presentsOtherCertificate(AppHttpServer server, X509Certificate original) {
-        try {
-            return !TlsProbe.sameCertificate(original, TlsProbe.presentedCertificate(server.boundPort().or(0)));
-        } catch (Exception notYet) {
-            return false;
         }
     }
 
