@@ -52,7 +52,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | SWIM member address change refused | none — replace the node under a fresh NodeId | `SwimAnnounceSourcePinTest` (unit; no multi-node proof yet) |
 | Full-cluster restart | derived state rebuilds; consensus state is memory-only, declared state restores from a pushed `[backup]` | guarantees.md §1–§2 · **partial (#349)** |
 | DHT / artifact loss under churn | mitigation only | **pending full fix (#420 / #349)** |
-| Pub/sub message loss | none (at-most-once) | guarantees.md §5 |
+| Pub/sub message loss | none (at-most-once); a refused or failed per-subscriber delivery is counted and a tier mismatch raises an event | guarantees.md §5 |
 
 ## Cluster membership and leader election
 
@@ -285,7 +285,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Pub/sub message loss
 
 - **Symptom:** a subscriber that is down at publish time misses the message permanently; the publisher sees success.
-- **Detection surface:** **none** — `topic.publish` is at-most-once and returns success even when nothing is delivered.
+- **Detection surface:** `topic.publish` is at-most-once and still returns success when a delivery does not happen, but the loss is no longer silent: a publish that finds no subscriber increments `aether.topic.publish.undelivered`; a delivery a subscriber refused or failed increments `aether.topic.delivery.undelivered` (tags `topic`, `address`, `slice`, `reason` = `tier-mismatch` | `failed`); and a context-taking (durable-topic) subscriber reached by an ephemeral publisher raises the `topic-tier-mismatch` operator warning (`/api/v1/events`, `details.code`), closed by `topic-tier-mismatch-resolved`. A subscriber that is merely down is counted as `failed` only if the delivery was attempted; one that is not registered at all is not seen. Nothing is retried or redelivered.
 - **Automatic response:** none (best-effort, no retry, no persistence, no dedup).
 - **Degraded / at risk:** any message to a momentarily-absent subscriber.
 - **Operator action:** use **durable streams**, not pub/sub, for delivery-critical paths; add application-level acknowledgment where needed.

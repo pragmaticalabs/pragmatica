@@ -115,6 +115,7 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
         var topicAddress = resolveTopicAddress(config, context);
         var publisherSlice = context.extension(String.class).or(UNSCOPED_PUBLISHER);
         var meters = context.extension(MeterRegistry.class).option();
+        var sink = context.extension(OperatorWarningSink.class).or(OperatorWarningSink.logOnly());
 
         return context.extension(TopicSubscriptionRegistry.class)
                       .flatMap(registry -> context.extension(SliceInvoker.class)
@@ -123,7 +124,8 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
                                                                                                             publisherSlice,
                                                                                                             registry,
                                                                                                             invoker,
-                                                                                                            meters)))
+                                                                                                            meters,
+                                                                                                            sink)))
                       .async();
     }
 
