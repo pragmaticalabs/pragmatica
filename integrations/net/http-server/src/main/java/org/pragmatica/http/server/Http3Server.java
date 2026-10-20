@@ -16,6 +16,7 @@
 package org.pragmatica.http.server;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -24,23 +25,28 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
+import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.IdGenerator;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoopGroup;
@@ -51,6 +57,7 @@ import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.http3.Http3DataFrame;
+import io.netty.handler.codec.http3.Http3ErrorCode;
 import io.netty.handler.codec.http3.Http3Headers;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
@@ -60,9 +67,11 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Promise.resolved;
 
@@ -151,12 +160,24 @@ final class Http3Server {
 
     /// Package-private so the #1612 tests can pass an owned group and check its termination at the moment a
     /// failed create reports.
-    @SuppressWarnings("JBCT-UTIL-01")
     static Promise<Http3Server> bind(HttpServerConfig config,
                                      QuicSslContext quicSslContext,
                                      BiConsumer<HttpRequest, ResponseWriter> handler,
                                      EventLoopGroup group,
                                      boolean ownsGroup) {
+        return bind(config, quicSslContext, handler, group, ownsGroup, none());
+    }
+
+    /// #2310 test seam: `streamWriteInterceptor` supplies, per request stream, a handler installed between the HTTP/3
+    /// frame codec and the request handler, so a test can fail a response frame write the way a transport failure
+    /// would. Production passes none.
+    @SuppressWarnings("JBCT-UTIL-01")
+    static Promise<Http3Server> bind(HttpServerConfig config,
+                                     QuicSslContext quicSslContext,
+                                     BiConsumer<HttpRequest, ResponseWriter> handler,
+                                     EventLoopGroup group,
+                                     boolean ownsGroup,
+                                     Option<Supplier<ChannelHandler>> streamWriteInterceptor) {
         var maxContentLength = config.maxContentLength();
         var codec = Http3.newQuicServerCodecBuilder()
                          .sslContext(quicSslContext)
@@ -166,7 +187,7 @@ final class Http3Server {
                          .initialMaxStreamDataBidirectionalRemote(1_000_000)
                          .initialMaxStreamsBidirectional(100)
                          .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
-                         .handler(new QuicConnectionInitializer(handler, maxContentLength))
+                         .handler(new QuicConnectionInitializer(handler, maxContentLength, streamWriteInterceptor))
                          .build();
         var bootstrap = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec);
 
@@ -210,16 +231,22 @@ final class Http3Server {
     private static class QuicConnectionInitializer extends ChannelInitializer<QuicChannel> {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
+        private final Option<Supplier<ChannelHandler>> streamWriteInterceptor;
 
-        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
+        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
+                                  int maxContentLength,
+                                  Option<Supplier<ChannelHandler>> streamWriteInterceptor) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
+            this.streamWriteInterceptor = streamWriteInterceptor;
         }
 
         @Override
         protected void initChannel(QuicChannel ch) {
             ch.pipeline()
-              .addLast(new Http3ServerConnectionHandler(new Http3StreamInitializer(handler, maxContentLength)));
+              .addLast(new Http3ServerConnectionHandler(new Http3StreamInitializer(handler,
+                                                                                   maxContentLength,
+                                                                                   streamWriteInterceptor)));
         }
     }
 
@@ -228,14 +255,20 @@ final class Http3Server {
     private static class Http3StreamInitializer extends ChannelInitializer<QuicStreamChannel> {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
+        private final Option<Supplier<ChannelHandler>> streamWriteInterceptor;
 
-        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
+        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
+                               int maxContentLength,
+                               Option<Supplier<ChannelHandler>> streamWriteInterceptor) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
+            this.streamWriteInterceptor = streamWriteInterceptor;
         }
 
         @Override
         protected void initChannel(QuicStreamChannel ch) {
+            streamWriteInterceptor.onPresent(interceptor -> ch.pipeline()
+                                                              .addLast(interceptor.get()));
             ch.pipeline().addLast(new Http3RequestHandler(handler, maxContentLength));
         }
     }
@@ -289,11 +322,11 @@ final class Http3Server {
         @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
         private void dispatch(ChannelHandlerContext ctx) {
             var requestId = IdGenerator.generate("req");
-            var requestContext = buildRequestContext(requestId);
             var responseWriter = new Http3ResponseWriter(ctx, requestId);
-
+            // #2310: building the request (headers, request trailers, body) is inside the guard too, so a failure there
+            // is answered 500 instead of closing the stream from exceptionCaught
             try {
-                handler.accept(requestContext, responseWriter);
+                handler.accept(buildRequestContext(requestId), responseWriter);
             } catch (Exception e) {
                 log.error("Error handling HTTP/3 request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
@@ -402,6 +435,8 @@ final class Http3Server {
         // Thread-safe: each Http3ResponseWriter is created per-stream and accessed only from the Netty event loop thread
         private final Map<String, String> pendingHeaders = new HashMap<>();
         private final AtomicBoolean written = new AtomicBoolean(false);
+        private final AtomicBoolean reset = new AtomicBoolean(false);
+        private final Promise<Unit> flushed = Promise.promise();
 
         Http3ResponseWriter(ChannelHandlerContext ctx, String requestId) {
             this.ctx = ctx;
@@ -419,23 +454,90 @@ final class Http3Server {
 
         @Override
         public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            writeAsync(status, body, contentType);
+        }
+
+        /// #2310: a response that fails never leaves the stream to the idle timeout. Until the HEADERS frame is handed
+        /// to the channel nothing is committed: a failure building it (a header the codec refuses, a content type that
+        /// throws) is answered `500` with the server's own headers only. From the HEADERS write on, the response is
+        /// committed: a failed frame write resets the stream with `H3_INTERNAL_ERROR`. Each failure is logged once,
+        /// and the returned promise fails with it, as [NettyHttpServer]'s writer fails its flush promise.
+        @Override
+        public Promise<Unit> writeAsync(HttpStatus status, byte[] body, ContentType contentType) {
             if (!written.compareAndSet(false, true)) {
-                return;
+                return flushed;
             }
 
-            var responseHeaders = new io.netty.handler.codec.http3.DefaultHttp3Headers();
+            Result.lift(Causes::fromThrowable,
+                        () -> responseHeaders(status, body.length, contentType, pendingHeaders))
+                  .onFailure(this::answerInternalError)
+                  .onSuccess(headers -> commit(headers, body));
 
-            responseHeaders.status(String.valueOf(status.code()));
-            responseHeaders.set("content-type", contentType.headerText());
-            responseHeaders.setInt("content-length", body.length);
-            responseHeaders.set("x-request-id", requestId);
-            pendingHeaders.forEach(responseHeaders::set);
-            ctx.write(new DefaultHttp3HeadersFrame(responseHeaders));
-            if (body.length > 0) {
-                ctx.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body)))
-                   .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
-            } else {
-                ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+            return flushed;
+        }
+
+        private Http3Headers responseHeaders(HttpStatus status,
+                                             int contentLength,
+                                             ContentType contentType,
+                                             Map<String, String> extraHeaders) {
+            var headers = new io.netty.handler.codec.http3.DefaultHttp3Headers();
+
+            headers.status(String.valueOf(status.code()));
+            headers.set("content-type", contentType.headerText());
+            headers.setInt("content-length", contentLength);
+            headers.set("x-request-id", requestId);
+            extraHeaders.forEach(headers::set);
+
+            return headers;
+        }
+
+        private void answerInternalError(Cause cause) {
+            log.error("Failed to build HTTP/3 response for request {}, answering 500: {}", requestId, cause.message());
+            var body = "{\"error\":\"Internal Server Error\"}".getBytes(StandardCharsets.UTF_8);
+
+            commit(responseHeaders(HttpStatus.INTERNAL_SERVER_ERROR,
+                                   body.length,
+                                   CommonContentType.APPLICATION_JSON,
+                                   Map.of()),
+                   body);
+            flushed.fail(cause);
+        }
+
+        /// The HEADERS frame and the body, then a clean `FIN` once the last write succeeds. Any failed write resets the
+        /// stream instead, once.
+        private void commit(Http3Headers headers, byte[] body) {
+            ctx.write(new DefaultHttp3HeadersFrame(headers)).addListener(this::resetOnFailure);
+            var last = body.length > 0
+                       ? ctx.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body)))
+                       : ctx.writeAndFlush(Unpooled.EMPTY_BUFFER);
+
+            last.addListener(this::finishOrReset);
+        }
+
+        private void resetOnFailure(Future<? super Void> future) {
+            if (!future.isSuccess()) {
+                reset(future.cause());
+            }
+        }
+
+        private void finishOrReset(Future<? super Void> future) {
+            if (!future.isSuccess()) {
+                reset(future.cause());
+            } else if (!reset.get()) {
+                ((QuicStreamChannel) ctx.channel()).shutdownOutput();
+                flushed.succeed(Unit.unit());
+            }
+        }
+
+        private void reset(Throwable cause) {
+            if (reset.compareAndSet(false, true)) {
+                // WARN without a stack trace: after the commit the failure is the transport's (often a peer that
+                // already went away), not the handler's; H1 does not log it at all and only fails the flush promise
+                log.warn("HTTP/3 response for request {} failed after its headers were committed, resetting the stream: {}",
+                         requestId,
+                         cause.toString());
+                ((QuicStreamChannel) ctx.channel()).shutdownOutput(Http3ErrorCode.H3_INTERNAL_ERROR.code());
+                flushed.fail(Causes.fromThrowable(cause));
             }
         }
     }
