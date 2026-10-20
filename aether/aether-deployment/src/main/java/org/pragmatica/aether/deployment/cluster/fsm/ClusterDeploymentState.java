@@ -1159,12 +1159,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             ctx.communityAdmission().forget(node);
-            placeByDecision(node,
-                            source,
-                            configuration,
-                            CommunityGrowthPolicy.pick(source,
-                                                       DerivedCommunities.candidates(ctx, source, ctx.nowMs()),
-                                                       policy));
+            var candidates = DerivedCommunities.candidates(ctx, source, ctx.nowMs());
+            var decision = CommunityGrowthPolicy.pick(source, candidates, policy);
+
+            log.info("Growth policy for worker {} of source {}: {} (max_size {}, communities {})",
+                     node,
+                     source,
+                     decision,
+                     policy.maxSize(),
+                     candidates);
+            placeByDecision(node, source, configuration, decision);
         }
 
         private void placeByDecision(NodeId node,
