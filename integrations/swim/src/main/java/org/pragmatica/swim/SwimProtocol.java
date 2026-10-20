@@ -1523,7 +1523,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean allPeersFaulty() {
-        return members.values().stream().allMatch(m -> m.state() == MemberState.FAULTY);
+        return members.values()
+                      .stream()
+                      .allMatch(m -> m.state() == MemberState.FAULTY);
     }
 
     /// Least-recently-probed (LRP) selection: pick the probable member with the
