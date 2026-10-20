@@ -38,9 +38,12 @@ class ProvisionTestPgDestroyTest {
     private Path state;
     private Path stubDir;
     private Path envFile;
+    private Path bareDir;
 
     @BeforeEach
     void setUp(@TempDir Path tempDir) {
+        ScriptGate.requiredTool("jq");
+        bareDir = tempDir.resolve("bare");
         state = tempDir.resolve("state");
         stubDir = tempDir.resolve("stub");
         envFile = tempDir.resolve("aether-test-pg.env");
@@ -111,6 +114,17 @@ class ProvisionTestPgDestroyTest {
                   .contains("DELETE https://api.hetzner.cloud/v1/servers/42");
     }
 
+    /// Same refusal as `pg-firewall.sh`: a missing jq is named up front, before any API call.
+    @Test
+    void destroy_refusesNamingJq_whenJqIsNotInstalled() {
+        given(ScriptGate.linkTools(bareDir, List.of("bash")));
+        var execution = executed(runScript(Map.of(), "--destroy", stubDir + ":" + bareDir));
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(1);
+        assertThat(execution.output()).contains("missing dependency: jq");
+        assertThat(calls()).as("refused before any API call").isEmpty();
+    }
+
     private Result<Unit> write(String name, String content) {
         return Result.lift(() -> Files.createDirectories(state))
                      .flatMap(directory -> Result.lift(() -> Files.writeString(directory.resolve(name),
@@ -123,14 +137,18 @@ class ProvisionTestPgDestroyTest {
     }
 
     private Result<ScriptRunner.Execution> runScript(Map<String, String> extraEnvironment, String flag) {
+        return runScript(extraEnvironment, flag, stubDir + ":" + System.getenv("PATH"));
+    }
+
+    private Result<ScriptRunner.Execution> runScript(Map<String, String> extraEnvironment, String flag, String path) {
         var environment = new HashMap<String, String>();
 
-        environment.put("PATH", stubDir + ":" + System.getenv("PATH"));
+        environment.put("PATH", path);
         environment.put("STUB_STATE", state.toString());
         environment.put("HCLOUD_TOKEN", "stub-token-not-real");
         environment.put("PG_ENV_FILE", envFile.toString());
         environment.putAll(extraEnvironment);
 
-        return ScriptRunner.run(ScriptRunner.repoRoot(), environment, List.of("tools/provision-test-pg.sh", flag));
+        return ScriptRunner.runHermetic(ScriptRunner.repoRoot(), environment, List.of("tools/provision-test-pg.sh", flag));
     }
 }

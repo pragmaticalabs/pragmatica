@@ -33,8 +33,8 @@ sealed interface ScriptRunner {
     /// Bound on the walk from the working directory toward the filesystem root.
     int MAX_ASCENT = 16;
     String EXECUTABLE_PERMISSIONS = "rwxr-xr-x";
-    /// The only variables a script inherits from the JVM that launched it. Everything else the scripts read
-    /// (`AETHER_SSH_KEY`, `HCLOUD_TOKEN`, `FIREWALL_NAME`, `PG_LABEL`, `TARGET_HOST`, ...) must come from the
+    /// The only variables [#runHermetic] lets a script inherit from the JVM that launched it. Everything else the
+    /// scripts read (`AETHER_SSH_KEY`, `HCLOUD_TOKEN`, `FIREWALL_NAME`, `PG_LABEL`, ...) must come from the
     /// `environment` a test passes, so an operator's or a CI worker's exported variables can never change a verdict.
     List<String> INHERITED = List.of("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "USER", "LOGNAME");
 
@@ -45,7 +45,13 @@ sealed interface ScriptRunner {
     }
 
     static Result<Execution> run(Path workingDir, Map<String, String> environment, List<String> command) {
-        return captureFile().flatMap(captured -> spawn(captured, workingDir, environment, command));
+        return captureFile().flatMap(captured -> spawn(captured, workingDir, environment, command, false));
+    }
+
+    /// Like [#run], but the script sees [#INHERITED] plus `environment` and nothing else. For scripts whose
+    /// behaviour depends on variables an operator may have exported (cloud tokens, resource names, keys).
+    static Result<Execution> runHermetic(Path workingDir, Map<String, String> environment, List<String> command) {
+        return captureFile().flatMap(captured -> spawn(captured, workingDir, environment, command, true));
     }
 
     /// Output goes to a file rather than a pipe: a process that never exits would block a pipe read
@@ -63,20 +69,25 @@ sealed interface ScriptRunner {
     private static Result<Execution> spawn(Path captured,
                                            Path workingDir,
                                            Map<String, String> environment,
-                                           List<String> command) {
-        return Result.lift(() -> processBuilder(captured, workingDir, environment, command).start()).flatMap(process -> settle(process,
+                                           List<String> command,
+                                           boolean hermetic) {
+        return Result.lift(() -> processBuilder(captured, workingDir, environment, command, hermetic).start()).flatMap(process -> settle(process,
                                                                                                                                captured));
     }
 
     private static ProcessBuilder processBuilder(Path captured,
                                                  Path workingDir,
                                                  Map<String, String> environment,
-                                                 List<String> command) {
+                                                 List<String> command,
+                                                 boolean hermetic) {
         var builder = new ProcessBuilder(command).directory(workingDir.toFile())
                                                  .redirectErrorStream(true)
                                                  .redirectOutput(captured.toFile());
 
-        builder.environment().keySet().retainAll(INHERITED);
+        if (hermetic) {
+            builder.environment().keySet().retainAll(INHERITED);
+        }
+
         builder.environment().putAll(environment);
 
         return builder;
