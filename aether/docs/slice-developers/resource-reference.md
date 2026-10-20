@@ -1120,8 +1120,10 @@ shape, both enforced at compile time:
   default) would hand the handler a bare event, so the **blueprint is refused when it is published**: the response
   names the topic, the publishing slice and the subscribing method (`Deploy refused, topic tier mismatch: ...`),
   and nothing is deployed. Declare the topic `durable` in the publisher's `resources.toml`, or drop the
-  `MessageContext` parameter. A bare handler on an ephemeral topic is not affected. (A subscriber that reaches an
-  ephemeral publisher some other way is refused per delivery at runtime and counted on
+  `MessageContext` parameter. A bare handler on an ephemeral topic is not affected. The same check holds when the
+  publisher and subscriber are deployed separately, in either order: each slice's activation records the topic and tier it
+  publishes or needs, and an activation that conflicts with a standing row fails with the same message. (A delivery that still
+  reaches a mismatch, e.g. two activations at the same instant, is refused per delivery at runtime and counted on
   `aether.topic.delivery.undelivered`, with the `topic-tier-mismatch` operator warning.)
 - **A handler cannot carry both interceptors and `MessageContext`.** Aspects (`@WithRetry`,
   `@WithCache`, and the rest of the [Aspects](#aspects-interceptors) section) wrap a handler as
