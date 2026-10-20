@@ -27,12 +27,20 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
+import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -90,6 +98,9 @@ class ClusterDeploymentStateWorkerRemovalTest {
     private static final String COMMUNITY_ID = SOURCE + "-w-0";
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice-worker-removal:1.0.0").unwrap();
 
+    /// The core members the leader counts; mutable so a test can keep a node counted while its removal decision arrives.
+    private final Set<NodeId> countedCores = ConcurrentHashMap.newKeySet();
+    private java.util.function.Supplier<Set<NodeId>> coreSource = () -> Set.copyOf(countedCores);
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
@@ -97,6 +108,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
     @BeforeEach
     void setUp() {
         var router = MessageRouter.mutable();
+        countedCores.add(SELF);
         kvStore = new InMemoryKvStore(router);
         cluster = new RecordingClusterNode(SELF, kvStore);
         kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
@@ -114,7 +126,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    () -> Set.of(SELF),
+                                                    () -> coreSource.get(),
                                                     () -> Set.of(SELF),
                                                     Set::of,
                                                     Set.of(SELF),
@@ -224,6 +236,80 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .as("#731: the departed worker's SliceNodeKey KV entry must be removed directly, "
                         + "not left to the stale sweep")
                     .isEqualTo(Option.empty());
+        }
+
+        /// #1337: a departed node's topic subscription and publisher rows go with it. Its unload never runs, and a standing row would
+        /// refuse a legitimate deployment of the opposite tier on behalf of a node that no longer exists. Another node's rows stay.
+        @Test
+        void workerLeave_departedWorker_clearsItsTopicRows_andKeepsEveryOthers() {
+            joinWorker(WORKER_1);
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var departedPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, WORKER_1);
+            var departedSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, WORKER_1);
+            var survivingPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var survivingSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, SELF);
+
+            kvStore.put(departedPub, TopicPublisherValue.topicPublisherValue(WORKER_1, TopicTier.EPHEMERAL));
+            kvStore.put(departedSub, TopicSubscriptionValue.topicSubscriptionValue(WORKER_1, TopicTier.DURABLE));
+            kvStore.put(survivingPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(survivingSub, TopicSubscriptionValue.topicSubscriptionValue(SELF, TopicTier.DURABLE));
+
+            leaveWorker(WORKER_1);
+
+            assertThat(kvStore.get(departedPub)).as("the departed node's publisher row is removed").isEqualTo(Option.empty());
+            assertThat(kvStore.get(departedSub)).as("the departed node's subscription row is removed").isEqualTo(Option.empty());
+            assertThat(kvStore.get(survivingPub).isPresent()).as("another node's publisher row stays").isTrue();
+            assertThat(kvStore.get(survivingSub).isPresent()).as("another node's subscription row stays").isTrue();
+        }
+
+        /// #1337 (v-2339 F1): after a leader failover, or whenever no removal decision is delivered, a vanished node's topic rows would
+        /// refuse opposite-tier activations forever. The periodic sweep removes rows of nodes that are no longer placement nodes
+        /// (core members and registered workers) and keeps the rows of every live one.
+        @Test
+        void staleTopicRowSweep_removesRowsOfAVanishedNode_andKeepsLiveNodesRows() {
+            joinWorker(WORKER_1);
+            var vanished = new NodeId("node-vanished");
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var vanishedPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, vanished);
+            var vanishedSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, vanished);
+            var selfPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var workerSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, WORKER_1);
+
+            kvStore.put(vanishedPub, TopicPublisherValue.topicPublisherValue(vanished, TopicTier.EPHEMERAL));
+            kvStore.put(vanishedSub, TopicSubscriptionValue.topicSubscriptionValue(vanished, TopicTier.DURABLE));
+            kvStore.put(selfPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(workerSub, TopicSubscriptionValue.topicSubscriptionValue(WORKER_1, TopicTier.DURABLE));
+
+            activeState().staleEntryCleaner().cleanupStaleTopicRows(activeState().placementNodes());
+
+            assertThat(kvStore.get(vanishedPub)).as("a vanished node's publisher row is swept").isEqualTo(Option.empty());
+            assertThat(kvStore.get(vanishedSub)).as("a vanished node's subscription row is swept").isEqualTo(Option.empty());
+            assertThat(kvStore.get(selfPub).isPresent()).as("a live core node's row stays").isTrue();
+            assertThat(kvStore.get(workerSub).isPresent()).as("a live registered worker's row stays").isTrue();
+        }
+
+        /// The sweep is WIRED into the three paths that run the other stale sweeps: reconcile, the leader's KV rebuild and the deferred
+        /// topology recheck. A sweep nothing calls would pass the direct test above.
+        @Test
+        void staleTopicRows_areSweptByReconcile_theKvRebuild_andTheDeferredRecheck() {
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var ghost = new NodeId("node-ghost");
+            var key = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, ghost);
+            var value = TopicPublisherValue.topicPublisherValue(ghost, TopicTier.EPHEMERAL);
+
+            kvStore.put(key, value);
+            activeState().reconcile();
+            assertThat(kvStore.get(key)).as("reconcile() sweeps it").isEqualTo(Option.empty());
+
+            kvStore.put(key, value);
+            activeState().rebuildStateFromKVStore();
+            assertThat(kvStore.get(key)).as("the KV rebuild sweeps it").isEqualTo(Option.empty());
+
+            kvStore.put(key, value);
+            activeState().deferredTopologyRecheckForTest();
+            assertThat(kvStore.get(key)).as("the deferred recheck sweeps it").isEqualTo(Option.empty());
         }
 
         @Test
@@ -445,6 +531,155 @@ class ClusterDeploymentStateWorkerRemovalTest {
         }
     }
 
+    /// #1337 (v-2332 probe): a core node whose removal decision arrives while it is STILL in the counted set is not stale to the
+    /// reconcile sweep, so only `handleNodeRemoval` can clear its topic rows. Kills "removal does not clear topic rows" and "rows removed
+    /// for the wrong node", which the sweep otherwise masks.
+    @Nested
+    class CoreRemovalWhileStillCounted {
+        @Test
+        void coreRemoved_whileStillInTheCountedSet_itsTopicRowsGoViaHandleNodeRemoval_andAnotherNodesStay() {
+            countedCores.add(CORE_2);
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var departedPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, CORE_2);
+            var departedSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, CORE_2);
+            var survivingPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var survivingSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, SELF);
+
+            kvStore.put(departedPub, TopicPublisherValue.topicPublisherValue(CORE_2, TopicTier.EPHEMERAL));
+            kvStore.put(departedSub, TopicSubscriptionValue.topicSubscriptionValue(CORE_2, TopicTier.DURABLE));
+            kvStore.put(survivingPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(survivingSub, TopicSubscriptionValue.topicSubscriptionValue(SELF, TopicTier.DURABLE));
+            activeState().staleEntryCleaner().cleanupStaleTopicRows(activeState().placementNodes());
+            assertThat(kvStore.get(departedPub).isPresent()).as("control: the sweep leaves a still-counted node's rows alone").isTrue();
+
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeRemoved(CORE_2, List.of(SELF))));
+
+            assertThat(kvStore.get(departedPub)).as("handleNodeRemoval removes the departed publisher row").isEqualTo(Option.empty());
+            assertThat(kvStore.get(departedSub)).as("handleNodeRemoval removes the departed subscription row").isEqualTo(Option.empty());
+            assertThat(kvStore.get(survivingPub).isPresent()).as("another node's publisher row stays").isTrue();
+            assertThat(kvStore.get(survivingSub).isPresent()).as("another node's subscription row stays").isTrue();
+        }
+    }
+
+    /// #1337 (v-2332): the sweeps of ONE pass see ONE placement set. The counted-core supplier below answers `{SELF, GHOST}` to the
+    /// SECOND call only (the first is the membership guard); a sweep that read the set afresh would see `{SELF}` and remove GHOST's rows while another sweep kept GHOST's
+    /// slices, which silently stops delivery to a node that is still placing.
+    @Nested
+    class OnePlacementSnapshotPerPass {
+        @Test
+        void sweepsOfOnePass_allSeeTheFirstPlacementSet() {
+            var ghost = new NodeId("node-ghost");
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var routes = NodeRoutesKey.nodeRoutesKey(ghost, ARTIFACT);
+            var artifact = NodeArtifactKey.nodeArtifactKey(ghost, ARTIFACT);
+            var topicRow = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, ghost);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            kvStore.put(routes, NodeRoutesValue.empty());
+            kvStore.put(artifact, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            kvStore.put(topicRow, TopicPublisherValue.topicPublisherValue(ghost, TopicTier.EPHEMERAL));
+            var ghostSlice = SliceNodeKey.sliceNodeKey(ARTIFACT, ghost);
+
+            activeState().sliceStates().put(ghostSlice, SliceState.ACTIVE);
+            coreSource = () -> calls.getAndIncrement() == 1 ? Set.of(SELF, ghost) : Set.of(SELF);
+
+            activeState().sweepStaleEntries(false);
+
+            assertThat(activeState().sliceStates()).as("slice-entry sweep used the pass's snapshot").containsKey(ghostSlice);
+            assertThat(kvStore.get(routes).isPresent()).as("node-routes sweep used the pass's snapshot").isTrue();
+            assertThat(kvStore.get(artifact).isPresent()).as("node-artifact sweep used the pass's snapshot").isTrue();
+            assertThat(kvStore.get(topicRow).isPresent()).as("topic-row sweep used the pass's snapshot").isTrue();
+        }
+
+        /// The orphan sweep takes the same snapshot: a ghost's ACTIVE placement with no committed target is UNLOADed only because the
+        /// pass's set still names it.
+        @Test
+        void orphanSweepOfThePass_usesTheSnapshotToo() {
+            var ghost = new NodeId("node-ghost");
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(ghost, ARTIFACT), NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            coreSource = () -> calls.getAndIncrement() == 1 ? Set.of(SELF, ghost) : Set.of(SELF);
+            cluster.commands.clear();
+
+            activeState().sweepStaleEntries(true);
+
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.nodeId().equals(ghost)
+                                                            && put.value() instanceof NodeArtifactValue value
+                                                            && value.state() == SliceState.UNLOAD))
+                    .as("the orphan sweep acted on the node the pass's snapshot names").isTrue();
+        }
+
+        /// The orphan sweep is part of the reconcile pass and of the KV rebuild (the deferred recheck reaches it through its closing
+        /// reconcile): a live worker's ACTIVE placement with no committed target is UNLOADed by each.
+        @Test
+        void orphanSweep_runsInTheReconcilePass_andInTheKvRebuild() {
+            joinWorker(WORKER_1);
+            var key = NodeArtifactKey.nodeArtifactKey(WORKER_1, ARTIFACT);
+
+            kvStore.put(key, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            cluster.commands.clear();
+            activeState().reconcile();
+            assertThat(unloads(key)).as("reconcile() runs the orphan sweep").isTrue();
+
+            kvStore.put(key, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            cluster.commands.clear();
+            activeState().rebuildStateFromKVStore();
+            assertThat(unloads(key)).as("the KV rebuild runs the orphan sweep").isTrue();
+        }
+
+        private boolean unloads(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                        && put.key().equals(key)
+                                                        && put.value() instanceof NodeArtifactValue value
+                                                        && value.state() == SliceState.UNLOAD);
+        }
+
+        /// Guard BEFORE snapshot: the membership-resolved guard is consulted first and a pass that finds the membership unresolved reads no
+        /// placement set at all. The supplier answers "not wired" to the first call and `{SELF}` after; taking the snapshot first would read
+        /// the sentinel's empty set, pass the guard on the second call and sweep a live node's rows.
+        @Test
+        void unresolvedMembership_isCheckedBeforeThePlacementSnapshotIsTaken() {
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var topicRow = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var routes = NodeRoutesKey.nodeRoutesKey(SELF, ARTIFACT);
+            var artifact = NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            kvStore.put(topicRow, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(routes, NodeRoutesValue.empty());
+            kvStore.put(artifact, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            coreSource = () -> calls.getAndIncrement() == 0 ? org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.MEMBERSHIP_NOT_WIRED : Set.of(SELF);
+
+            activeState().sweepStaleEntries(true);
+
+            assertThat(kvStore.get(topicRow).isPresent()).as("a live node's topic row survives").isTrue();
+            assertThat(kvStore.get(routes).isPresent()).as("a live node's routes survive").isTrue();
+            assertThat(kvStore.get(artifact).isPresent()).as("a live node's node-artifact survives").isTrue();
+        }
+
+        /// Control for the instrument: with the supplier steady at `{SELF}` the same sweeps DO remove the ghost's rows.
+        @Test
+        void control_aSteadySetWithoutTheGhost_sweepsItsRows() {
+            var ghost = new NodeId("node-ghost");
+            var topicRow = TopicPublisherKey.topicPublisherKey(ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap(), ARTIFACT, ghost);
+            var routes = NodeRoutesKey.nodeRoutesKey(ghost, ARTIFACT);
+
+            kvStore.put(routes, NodeRoutesValue.empty());
+            kvStore.put(topicRow, TopicPublisherValue.topicPublisherValue(ghost, TopicTier.EPHEMERAL));
+
+            activeState().sweepStaleEntries(false);
+
+            assertThat(kvStore.get(routes)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(topicRow)).isEqualTo(Option.empty());
+        }
+    }
+
     /// #850: the three reconcile-time stale-entry sweeps (`StaleEntryCleaner`) classify a KV row as
     /// stale when its node is absent from the sweep's liveness set. That set was `activeNodes()` —
     /// the CORE counted membership, worker-free by construction — so every row a LIVE worker owns
@@ -493,21 +728,21 @@ class ClusterDeploymentStateWorkerRemovalTest {
 
         @Test
         void staleSliceEntrySweep_liveWorker_keepsItsSliceNodeRow() {
-            activeState().cleanupStaleSliceEntries();
+            activeState().staleEntryCleaner().cleanupStaleSliceEntries(activeState().placementNodes());
 
             assertFootprintIntact("cleanupStaleSliceEntries()");
         }
 
         @Test
         void staleNodeArtifactSweep_liveWorker_keepsItsNodeArtifactRow() {
-            activeState().cleanupStaleNodeArtifactEntries();
+            activeState().staleEntryCleaner().cleanupStaleNodeArtifactEntries(activeState().placementNodes());
 
             assertFootprintIntact("cleanupStaleNodeArtifactEntries()");
         }
 
         @Test
         void staleNodeRoutesSweep_liveWorker_keepsItsNodeRoutesRow() {
-            activeState().cleanupStaleNodeRoutes();
+            activeState().staleEntryCleaner().cleanupStaleNodeRoutes(activeState().placementNodes());
 
             assertFootprintIntact("cleanupStaleNodeRoutes()");
         }
@@ -564,7 +799,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.commit(List.of(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(ARTIFACT.base()))));
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(activeState().sliceStates())
                     .as("#850: a worker-hosted orphan leaves the CDM slice-state view")
@@ -591,9 +826,9 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
             activeState().sliceStates().put(sliceKey, SliceState.ACTIVE);
 
-            activeState().cleanupStaleSliceEntries();
-            activeState().cleanupStaleNodeArtifactEntries();
-            activeState().cleanupStaleNodeRoutes();
+            activeState().staleEntryCleaner().cleanupStaleSliceEntries(activeState().placementNodes());
+            activeState().staleEntryCleaner().cleanupStaleNodeArtifactEntries(activeState().placementNodes());
+            activeState().staleEntryCleaner().cleanupStaleNodeRoutes(activeState().placementNodes());
 
             assertThat(activeState().sliceStates()).doesNotContainKey(sliceKey);
             assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
