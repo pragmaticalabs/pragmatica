@@ -1083,7 +1083,7 @@ public final class PartitionBackfill {
         return transport.requestCatchup(owner,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
+                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response).withSuccess(_ -> markVerifiedIfCompared(streamName,
                                                                                                                                                                partition,
                                                                                                                                                                epoch,
                                                                                                                                                                !response.payloads()
@@ -1592,7 +1592,7 @@ public final class PartitionBackfill {
                                         request,
                                         () -> progress(streamName, partition))
                         .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
-                        .onSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
+                        .withSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
     }
 
     /// After a SUCCESSFUL owner catch-up the owner has just read `localWatermark + 1 .. survivorTail` FROM
@@ -1602,7 +1602,7 @@ public final class PartitionBackfill {
     /// watermarks are never propagated, {@link WatermarkStore#NOOP}) makes the replicas-view and any
     /// "a CAUGHT_UP non-owner exists" check see the survivor CAUGHT_UP@survivorTail immediately, without
     /// waiting for the survivor's next live ack or the #333 redrive. Fires ONLY on a successful pull
-    /// ({@link Promise#onSuccess}) and only for the survivor actually pulled from, at the tail actually
+    /// ({@link Promise#withSuccess}) and only for the survivor actually pulled from, at the tail actually
     /// applied. Guarded MONOTONIC-UP: {@link ReplicaRegistry#updateWatermark} overwrites unconditionally, so
     /// it is invoked only when `survivorTail` exceeds the survivor's currently-recorded offset — a concurrent
     /// higher live ack is never clobbered down. On the local-registry HIT path this is a no-op (the survivor's
@@ -2238,7 +2238,7 @@ public final class PartitionBackfill {
                         .flatMap(response -> response.payloads()
                                                      .isEmpty()
                                              ? handleNoSource(streamName, partition, replicas)
-                                             : applyAndPromote(streamName, partition, -1L, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
+                                             : applyAndPromote(streamName, partition, -1L, response).withSuccess(_ -> markVerifiedIfCompared(streamName,
                                                                                                                                            partition,
                                                                                                                                            epoch,
                                                                                                                                            true)));
