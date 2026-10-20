@@ -100,7 +100,7 @@ final class DefaultPromotionManager implements PromotionManager {
             return PromotionResult.NONE;
         }
 
-        var candidates = selectCandidates(sourceTier.level(), targetTier.level());
+        var candidates = selectCandidates(sourceTier.level(), targetTier);
 
         if (candidates.isEmpty()) {
             return PromotionResult.NONE;
@@ -118,29 +118,37 @@ final class DefaultPromotionManager implements PromotionManager {
                          .takeWhile(_ -> active)
                          .map(candidate -> promoteBlock(candidate.blockId(),
                                                         sourceTier,
-                                                        targetTier))
+                                                        targetFor(candidate, targetTier)))
                          .reduce(PromotionResult.NONE, PromotionResult::add);
     }
 
-    private List<BlockLifecycle> selectCandidates(TierLevel sourceLevel, TierLevel targetLevel) {
+    private List<BlockLifecycle> selectCandidates(TierLevel sourceLevel, StorageTier adjacentTarget) {
         var now = System.currentTimeMillis();
         var windowStart = now - config.windowMs();
 
         return metadataStore.listBlocksByTier(sourceLevel)
                             .stream()
-                            .filter(lc -> isPromotionCandidate(lc, windowStart, targetLevel))
+                            .filter(lc -> isPromotionCandidate(lc, windowStart, adjacentTarget))
                             .sorted(MOST_ACCESSED_FIRST)
                             .limit(config.batchSize())
                             .toList();
     }
 
-    /// A candidate for `source -> target` is a hot block that is not yet present in THAT target tier. Testing
-    /// "present in any faster tier" instead re-copies a block already on the disk from the DHT on every cycle.
-    private boolean isPromotionCandidate(BlockLifecycle lifecycle, long windowStart, TierLevel targetLevel) {
+    /// The tier a block is actually written to. Today every block goes to the adjacent faster tier; this is the ONE place
+    /// that decides it, and both the candidate test and the write go through it, so a block is a candidate exactly when
+    /// the tier it would be written to does not hold it yet.
+    private StorageTier targetFor(BlockLifecycle lifecycle, StorageTier adjacentTarget) {
+        return adjacentTarget;
+    }
+
+    /// A candidate for `source -> target` is a hot block that is not yet present in THE tier it would be written to
+    /// ([#targetFor]). Testing "present in any faster tier" instead re-copies a block already on the disk from the DHT on
+    /// every cycle.
+    private boolean isPromotionCandidate(BlockLifecycle lifecycle, long windowStart, StorageTier adjacentTarget) {
         return lifecycle.accessCount() > config.accessThreshold()
                && lifecycle.lastAccessedAt() >= windowStart
                && !lifecycle.presentIn()
-                            .contains(targetLevel);
+                            .contains(targetFor(lifecycle, adjacentTarget).level());
     }
 
     /// Synchronous block promotion. Uses .await() because promotion runs on a dedicated
