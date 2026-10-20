@@ -61,7 +61,7 @@ sealed interface ScriptGate {
     /// assertion about what the script printed.
     static Path requiredTool(String tool) {
         return onPath(tool).or(() -> fail("environment prerequisite missing: '" + tool
-                                          + "' is not on PATH; the script gate needs it installed and cannot stub it"));
+                                         + "' is not on PATH; the script gate needs it installed and cannot stub it"));
     }
 
     /// A directory holding symlinks to only the named tools, for running a script with everything else absent from

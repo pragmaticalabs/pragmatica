@@ -72,7 +72,7 @@ sealed interface ScriptRunner {
                                            List<String> command,
                                            boolean hermetic) {
         return Result.lift(() -> processBuilder(captured, workingDir, environment, command, hermetic).start()).flatMap(process -> settle(process,
-                                                                                                                               captured));
+                                                                                                                                         captured));
     }
 
     private static ProcessBuilder processBuilder(Path captured,

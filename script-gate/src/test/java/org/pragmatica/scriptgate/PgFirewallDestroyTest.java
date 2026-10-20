@@ -83,8 +83,7 @@ class PgFirewallDestroyTest {
         var execution = executed(runDestroy(stubDir + ":" + bareDir));
 
         assertThat(execution.exitCode()).as(execution.output()).isEqualTo(1);
-        assertThat(execution.output()).contains("missing dependency: jq")
-                  .doesNotContain("no firewall named");
+        assertThat(execution.output()).contains("missing dependency: jq").doesNotContain("no firewall named");
         assertThat(calls()).as("refused before any API call").isEmpty();
     }
 
