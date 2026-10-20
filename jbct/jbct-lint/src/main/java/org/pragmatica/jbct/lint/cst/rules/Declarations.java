@@ -68,11 +68,17 @@ sealed interface Declarations permits Declarations.unused {
     record FileFacts(Map<String, List<Decl>> names,
                      Set<String> promiseMethods,
                      Map<String, List<MethodDecl>> methods,
+                     List<MethodDecl> scopes,
                      Map<Integer, Option<MethodDecl>> innermostCache) {
         static FileFacts fileFacts(Map<String, List<Decl>> names,
                                    Set<String> promiseMethods,
-                                   Map<String, List<MethodDecl>> methods) {
-            return new FileFacts(names, promiseMethods, methods, new HashMap<>());
+                                   Map<String, List<MethodDecl>> methods,
+                                   List<MethodDecl> records) {
+            var scopes = new ArrayList<MethodDecl>(records);
+
+            methods.values()
+                   .forEach(scopes::addAll);
+            return new FileFacts(names, promiseMethods, methods, scopes, new HashMap<>());
         }
 
         /// The innermost method whose header or body covers `offset`.
@@ -81,10 +87,8 @@ sealed interface Declarations permits Declarations.unused {
         }
 
         private Option<MethodDecl> findInnermost(int offset) {
-            return methods.values()
-                          .stream()
-                          .flatMap(List::stream)
-                          .filter(method -> method.covers(offset))
+            return scopes.stream()
+                         .filter(method -> method.covers(offset))
                           .min(Comparator.comparingInt(MethodDecl::size))
                           .map(Option::some)
                           .orElseGet(Option::none);
@@ -99,10 +103,8 @@ sealed interface Declarations permits Declarations.unused {
                 return none();
             }
 
-            var enclosing = methods.values()
-                                   .stream()
-                                   .flatMap(List::stream)
-                                   .filter(method -> method.covers(offset))
+            var enclosing = scopes.stream()
+                                  .filter(method -> method.covers(offset))
                                    .sorted(Comparator.comparingInt(MethodDecl::size))
                                    .toList();
 
@@ -240,7 +242,7 @@ sealed interface Declarations permits Declarations.unused {
         promiseMethods.removeAll(otherMethods);
 
         var names = new HashMap<String, List<Decl>>();
-        var facts = FileFacts.fileFacts(names, promiseMethods, methods);
+        var facts = FileFacts.fileFacts(names, promiseMethods, methods, recordScopes(masked));
 
         pending.stream()
                .sorted(Comparator.comparingInt(Pending::offset))
@@ -316,6 +318,33 @@ sealed interface Declarations permits Declarations.unused {
     private static boolean insideRecordHeader(List<int[]> records, int offset) {
         return records.stream()
                       .anyMatch(span -> span[0] <= offset && offset < span[1]);
+    }
+
+    /// Each record is a scope of its own: its components are visible inside it and nowhere else. They are not callable methods.
+    private static List<MethodDecl> recordScopes(String masked) {
+        var scopes = new ArrayList<MethodDecl>();
+        var matcher = RECORD_HEAD.matcher(masked);
+
+        while (matcher.find()) {
+            var close = SourceText.closeOf(masked, matcher.end() - 1);
+            var bodyOpen = close < 0
+                           ? - 1
+                           : masked.indexOf('{', close);
+            var bodyClose = bodyOpen < 0
+                            ? - 1
+                            : SourceText.closeOf(masked, bodyOpen);
+
+            if (bodyClose > 0) {
+                scopes.add(MethodDecl.methodDecl("record",
+                                                 "record",
+                                                 SourceText.declaredNames(masked.substring(matcher.end(), close)),
+                                                 matcher.start(),
+                                                 bodyOpen + 1,
+                                                 bodyClose));
+            }
+        }
+
+        return scopes;
     }
 
     private static List<int[]> recordHeaders(String masked) {

@@ -61,6 +61,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
     Pattern SETTER_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(set[A-Z][A-Za-z0-9_$]*)\\s*\\(");
     Pattern PLAIN_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(" + IDENT + ")\\s*\\(");
     Pattern METHOD_REF = Pattern.compile("^\\s*(?:this|" + IDENT + ")\\s*::\\s*(" + IDENT + ")\\s*$");
+    Pattern NEW_BEFORE = Pattern.compile("\\bnew\\s+$");
     Pattern ARGUMENT_ROOT = Pattern.compile("(?:this\\s*\\.\\s*)?(" + IDENT + ")");
     Pattern LAMBDA = Pattern.compile("^\\s*(?:\\(([^()]*)\\)|(" + IDENT + "))\\s*->\\s*(.*)$", Pattern.DOTALL);
 
@@ -177,7 +178,9 @@ sealed interface SharedWrites permits SharedWrites.unused {
         var matcher = PLAIN_CALL.matcher(body);
 
         while (matcher.find()) {
-            var found = viaMethod(matcher.group(1), facts, masked, depth, sharedArguments(locals, body, matcher.end() - 1));
+            var found = isConstruction(body, matcher.start())
+                        ? Option.<Write> none()
+                        : viaMethod(matcher.group(1), facts, masked, depth, sharedArguments(locals, body, matcher.end() - 1));
 
             if (found.isPresent()) {
                 return found;
@@ -185,6 +188,11 @@ sealed interface SharedWrites permits SharedWrites.unused {
         }
 
         return none();
+    }
+
+    /// `new Foo(...)`: a constructor writes the object under construction, not state the callback shares.
+    private static boolean isConstruction(String body, int callStart) {
+        return NEW_BEFORE.matcher(body.substring(0, callStart)).find();
     }
 
     /// For each argument of the call whose `(` is at `open`: whether it is shared (rooted in a name the caller does not own).

@@ -395,6 +395,22 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
+        void clean_whenCallbackConstructsAnObjectWhoseConstructorAssignsFields() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private String value;
+                        void run(Promise<String> p) {
+                            p.onSuccess(v -> new Foo(v));
+                        }
+                        public Foo(String value) {
+                            this.value = value;
+                        }
+                    }
+                    """));
+        }
+
+        @Test
         void clean_whenDelegateOnlyLogs() {
             assertFalse(flags("""
                     package org.example;
@@ -865,15 +881,48 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
-        void clean_fieldNameDeclaredWithDifferentTypesInTwoTypes() {
+        void clean_fieldNameDeclaredWithDifferentTypesInTwoClasses() {
             assertFalse(flags("""
                     package org.example;
                     class Foo {
                         private boolean done;
-                        record A(Promise<String> value) {}
-                        record B(String value) {}
+                        class A {
+                            Promise<String> value;
+                        }
+                        class B {
+                            String value;
+                        }
                         void run() {
                             value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_recordComponentIsNotInScopeOutsideItsRecord() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        record Attempt(Promise<String> value) {}
+                        void run() {
+                            value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_recordComponentInsideItsRecordBody() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        record Attempt(Promise<String> value) {
+                            void watch() {
+                                value.onSuccess(_ -> done = true);
+                            }
                         }
                     }
                     """));
