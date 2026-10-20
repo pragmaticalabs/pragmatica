@@ -608,6 +608,9 @@ class ClusterDeploymentStateActiveTest {
             var router = MessageRouter.mutable();
             var localKv = new InMemoryKvStore(router);
             var localCluster = new RecordingClusterNode(SELF);
+
+            lastCluster = localCluster;
+            localKv.put(topicRowKey(), org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue.topicPublisherValue(NODE_A, org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier.EPHEMERAL));
             var artifactBase = ArtifactBase.artifactBase("org.example:slice-a").unwrap();
             localKv.put(SliceTargetKey.sliceTargetKey(artifactBase),
                         SliceTargetValue.sliceTargetValue(Version.version("1.0.0").unwrap(), 1));
@@ -632,6 +635,32 @@ class ClusterDeploymentStateActiveTest {
             var localHarness = FsmTestHarness.harness("m4-sentinel-" + SELF.id() + "-" + System.nanoTime(), factory);
             localHarness.dispatch(new Activate());
             return (ClusterDeploymentState.Active) localHarness.state();
+        }
+
+        private RecordingClusterNode lastCluster;
+
+        private AetherKey topicRowKey() {
+            return org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey.topicPublisherKey(
+                org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress("default", "orders", "1.0.0").unwrap(), ARTIFACT, NODE_A);
+        }
+
+        private boolean removedTopicRow() {
+            return lastCluster.commands.stream().anyMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key().equals(topicRowKey()));
+        }
+
+        /// #1337: the topic-row sweep honours the same guard as the other stale sweeps.
+        @Test
+        void cleanupStaleTopicRows_notYetWiredSentinel_isNoOp() {
+            activeWith(() -> MembershipFsm.MEMBERSHIP_NOT_WIRED).cleanupStaleTopicRows();
+
+            assertThat(removedTopicRow()).as("an unresolved member set must not classify every node's topic rows as stale").isFalse();
+        }
+
+        @Test
+        void cleanupStaleTopicRows_wiredEmptyMembers_removesTheRowOfANodeNoLongerPlacing() {
+            activeWith(Set::of).cleanupStaleTopicRows();
+
+            assertThat(removedTopicRow()).isTrue();
         }
 
         @Test
