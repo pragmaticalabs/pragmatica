@@ -29,7 +29,7 @@ public final class ClusterBootstrapConfigDiff {
 
         diffImmutableFields(stored, desired, immutable);
         diffClusterLevel(stored, desired, modifications);
-        if (!stored.communities().equals(desired.communities())) {
+        if (!stored.communities().equals(desired.communities()) || !stored.communityPolicy().equals(desired.communityPolicy())) {
             modifications.add(new DiffAction.CommunityPlacementChange());
         }
 

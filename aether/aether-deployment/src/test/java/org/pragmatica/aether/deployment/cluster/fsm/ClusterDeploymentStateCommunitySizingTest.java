@@ -113,6 +113,68 @@ class ClusterDeploymentStateCommunitySizingTest {
                 .isEmpty();
     }
 
+    /// #241: the policy is committed with the cluster config, so a leader whose node-level sizing differs reads the same floor.
+    @Test
+    void reconcile_committedPolicyFloor_overridesNodeSizing() {
+        var fixture = fixture(CommunitySizing.DEFAULT);
+
+        fixture.seedConfig(POLICY_FLOOR_2);
+        fixture.seedCommunity(COMMUNITY_EU, CommunityState.FORMING);
+        fixture.seedAnnouncement(COMMUNITY_EU, 2);
+
+        fixture.reconcile();
+
+        assertThat(fixture.communityPutsFor(COMMUNITY_EU))
+                .as("committed viability_floor 2 promotes a community of 2 although the node-level floor is 3")
+                .extracting(CommunityValue::state)
+                .containsExactly(CommunityState.ACTIVE);
+    }
+
+    @Test
+    void reconcile_committedPolicyFloor_winsOverADifferentlyConfiguredLeader() {
+        var strictLeader = fixture(CommunitySizing.communitySizing(100, 5));
+        var lenientLeader = fixture(CommunitySizing.communitySizing(100, 1));
+
+        for (var fixture : List.of(strictLeader, lenientLeader)) {
+            fixture.seedConfig(POLICY_FLOOR_2);
+            fixture.seedCommunity(COMMUNITY_EU, CommunityState.FORMING);
+            fixture.seedAnnouncement(COMMUNITY_EU, 2);
+            fixture.reconcile();
+        }
+
+        assertThat(strictLeader.communityPutsFor(COMMUNITY_EU)).extracting(CommunityValue::state)
+                                                               .containsExactly(CommunityState.ACTIVE);
+        assertThat(lenientLeader.communityPutsFor(COMMUNITY_EU)).extracting(CommunityValue::state)
+                                                                .containsExactly(CommunityState.ACTIVE);
+    }
+
+    @Test
+    void mint_committedPolicyMaxSize_overridesNodeSizing() {
+        var fixture = fixture(SMALL);
+
+        fixture.seedConfig(POLICY_FLOOR_2);
+        fixture.joinWorker(WORKER_1);
+
+        assertThat(fixture.communityPutsFor(COMMUNITY_EU)).extracting(CommunityValue::targetSize)
+                                                          .as("committed max_size 9 is stamped, not the node-level 7")
+                                                          .containsExactly(9);
+    }
+
+    private static final String POLICY_FLOOR_2 = """
+        config_version = "1.0.0"
+        [cluster]
+        name = "test"
+        version = "1.0.0"
+        [source.eu-west]
+        type = "forge"
+        [source.eu-west.worker]
+        count = 3
+        [community_policy]
+        max_size = 9
+        viability_floor = 2
+        allow_below_rf = true
+        """;
+
     private static Fixture fixture(CommunitySizing sizing) {
         var router = MessageRouter.mutable();
         var kvStore = new InMemoryKvStore(router);
@@ -150,6 +212,11 @@ class ClusterDeploymentStateCommunitySizingTest {
                            FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {
         void joinWorker(NodeId nodeId) {
             harness.dispatch(new ClusterDeploymentEvents.WorkerJoinReceived(new org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision(nodeId, "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
+        }
+
+        void seedConfig(String toml) {
+            kvStore.put(AetherKey.ClusterConfigKey.CURRENT,
+                        new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
         }
 
         void seedCommunity(String communityId, CommunityState state) {

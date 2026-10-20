@@ -91,13 +91,16 @@ public final class ClusterBootstrapConfigParser {
         var infrastructure = parseInfrastructure(doc);
         var operations = parseOperations(doc);
 
-        return Result.all(sources, operations).flatMap((s, ops) -> CommunityPlacementParser.parse(doc, s).map(communities -> ClusterBootstrapConfig.clusterBootstrapConfig(cluster,
-                                                                                                                                                                           coreTopology,
-                                                                                                                                                                           s,
-                                                                                                                                                                           runtimes,
-                                                                                                                                                                           infrastructure,
-                                                                                                                                                                           ops,
-                                                                                                                                                                           communities)));
+        return Result.all(sources, operations, CommunityPolicyParser.parse(doc))
+                     .flatMap((s, ops, policy) -> CommunityPlacementParser.parse(doc, s)
+                                                                          .map(communities -> ClusterBootstrapConfig.clusterBootstrapConfig(cluster,
+                                                                                                                                            coreTopology,
+                                                                                                                                            s,
+                                                                                                                                            runtimes,
+                                                                                                                                            infrastructure,
+                                                                                                                                            ops,
+                                                                                                                                            communities,
+                                                                                                                                            policy)));
     }
 
     /// W6 — document-level format gate (RFC-0016 §3.5). `config_version` is the version of the whole

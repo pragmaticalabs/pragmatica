@@ -80,6 +80,29 @@ no longer present in a community's desired placement. Core and spot capacity ret
 own role-specific control. Reactive application scaling continues to update slice demand;
 this specification does not introduce a competing predictive controller.
 
+## Community policy
+
+Sizing and growth are one cluster-wide policy, committed with the cluster config so that every leader reads the same
+numbers (#241). The node-level `CommunitySizing` knob is only the fallback for a cluster whose committed config has no
+`[community_policy]` table, and a test override.
+
+```toml
+[community_policy]
+max_size               = 100    # per-community worker cap; stamped as target_size on every derived community
+viability_floor        = 3      # live members a community needs to be ACTIVE; the DHT replication factor
+max_communities        = 20     # per-source bound on derived communities
+dissolve_grace_seconds = 300    # a derived community stays empty this long before the leader dissolves it
+growth                 = false  # OFF unless true: a source keeps its single <source>-w-0 community
+allow_below_rf         = false  # a floor below 3 weakens redundancy and must be allowed on purpose
+```
+
+`max_size` lies between `viability_floor` and 200, `max_communities` between 1 and 100, and a mistyped value or an
+unknown key refuses the whole apply. A declared `[community.<id>]` may not take an id of the shape `<source>-w-<number>`
+(the derived ids) and may not exceed 200.
+
+`max_size` and `viability_floor` are in force now. `max_communities`, `dissolve_grace_seconds` and `growth` are accepted and
+validated, and take effect with the growth policy; until then every source keeps its single `<source>-w-0` community.
+
 ## Facts and assignment
 
 `NodePlacementKey(node)` stores source, provider instance identity and observed zone. The

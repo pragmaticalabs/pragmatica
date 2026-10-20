@@ -1119,7 +1119,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 commitWorkerCommunity(node,
                                       source + WORKER_COMMUNITY_SUFFIX,
                                       source,
-                                      ctx.communitySizing().targetSize(),
+                                      ctx.communityPolicy().current().maxSize(),
                                       configuration.observed());
 
                 return;
@@ -2958,7 +2958,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void collectCommunityTransition(List<KVCommand<AetherKey>> batch,
                                                 CommunityKey key,
                                                 CommunityValue value) {
-            var floor = ctx.communitySizing().viabilityFloor();
+            var floor = ctx.communityPolicy().current().viabilityFloor();
             var liveMembers = communityLiveMembers(key.communityId());
             var next = nextCommunityState(value.state(), liveMembers, floor);
 
