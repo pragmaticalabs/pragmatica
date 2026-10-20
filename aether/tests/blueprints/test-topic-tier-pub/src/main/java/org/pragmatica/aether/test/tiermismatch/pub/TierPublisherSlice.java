@@ -25,12 +25,12 @@ public interface TierPublisherSlice {
         }
 
         public TierOrder event() {
-            return new TierOrder(orderId);
+            return TierOrder.tierOrder(orderId);
         }
     }
 
     record PublishResponse(String status) {
-        public static PublishResponse published() {
+        public static PublishResponse publishResponse() {
             return new PublishResponse("published");
         }
     }
@@ -47,7 +47,7 @@ public interface TierPublisherSlice {
         public Promise<PublishResponse> publishOrder(PublishOrder request) {
             return Promise.all(contextPublisher.publish(request.event()),
                                barePublisher.publish(request.event()))
-                          .map((_, _) -> PublishResponse.published());
+                          .map((_, _) -> PublishResponse.publishResponse());
         }
     }
 }

@@ -152,7 +152,7 @@ class TopicTierMismatchTest {
         assertThat(harness.failures()).isZero();
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().code()).isEqualTo(OperatorWarningCode.TOPIC_TIER_MISMATCH);
-        assertThat(events.getFirst().subject()).contains("org.example:order-sub").doesNotContain("1.0.0").contains("onOrderPlaced");
+        assertThat(events.getFirst().subject()).isEqualTo("default:orders:1.0.0/org.example:order-sub:onOrderPlaced");
         assertThat(events.getFirst().message()).contains("'orders'", PUBLISHER_SLICE, "org.example:order-sub:1.0.0", "onOrderPlaced");
     }
 
