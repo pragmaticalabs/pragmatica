@@ -107,7 +107,7 @@ public interface NodeReplacementReconciler {
                                        .map(entry -> Map.entry(entry.getKey(),
                                                                entry.getValue()))
                                        .toList(),
-                            0).onResultRun(() -> running.set(false));
+                            0).withResult(_ -> running.set(false));
             }
 
             private Promise<Unit> step(java.util.List<Map.Entry<NodeId, NodeReplacementValue>> live, int index) {
