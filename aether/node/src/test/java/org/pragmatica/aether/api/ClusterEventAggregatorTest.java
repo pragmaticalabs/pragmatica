@@ -2430,7 +2430,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_CONFIG_MISSING,
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
-                             OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING);
+                             OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                             OperatorWarningCode.STORAGE_PROMOTION_STALLED);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
