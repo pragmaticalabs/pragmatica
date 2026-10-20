@@ -116,6 +116,21 @@ class SwimSelfIsolationLatchAtomicityTest {
         assertThat(protocol.selfIsolatedForTest()).as("both peers FAULTY, so the latch is set").isTrue();
     }
 
+    @Test
+    void noPeers_neverLatches() {
+        assertThat(protocol.latchSelfIsolation(() -> true)).as("an empty membership is not an all-peers-FAULTY signature").isFalse();
+        assertThat(protocol.selfIsolatedForTest()).isFalse();
+    }
+
+    @Test
+    void alreadyLatched_secondCheckReportsNothingNew() {
+        protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
+
+        assertThat(protocol.latchSelfIsolation(this::allFaulty)).as("first check latches").isTrue();
+        assertThat(protocol.latchSelfIsolation(this::allFaulty)).as("the latch is already set").isFalse();
+        assertThat(protocol.selfIsolatedForTest()).isTrue();
+    }
+
     private void faultyThenCheck(NodeId peer, InetSocketAddress address, BooleanSupplier check) {
         protocol.putMemberForTest(peer, address, MemberState.FAULTY);
         protocol.latchSelfIsolation(check);
