@@ -70,6 +70,7 @@ class CommunityPlacementParkedTest {
     private final CopyOnWriteArrayList<String> messages = new CopyOnWriteArrayList<>();
     private final List<CommunityPlacementOperationValue> escalations = new CopyOnWriteArrayList<>();
     private Runnable beforeCommit = () -> {};
+    private Runnable beforeEveryCommit = () -> {};
 
     private volatile String binding = "binding";
     private final CommunityPlacementReconciler.Actuator actuator = new CommunityPlacementReconciler.Actuator() {
@@ -92,6 +93,7 @@ class CommunityPlacementParkedTest {
                                                                                     var hook = beforeCommit;
 
                                                                                     beforeCommit = () -> {};
+                                                                                    beforeEveryCommit.run();
                                                                                     hook.run();
 
                                                                                     return Promise.success(store.process(store.createBatch(commands)));
@@ -157,6 +159,14 @@ class CommunityPlacementParkedTest {
                                                                       List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(value)))));
     }
 
+    /// Another writer moves the operation on just before a commit that would park it: only a commit made while the drain is
+    /// still requested is raced, so the park attempt itself is the one refused.
+    private void moveOnWhileDraining() {
+        if (current().phase() == PlacementOperationPhase.DRAIN_REQUESTED) {
+            seedOperation(PlacementOperationPhase.DRAINED, now.get());
+        }
+    }
+
     private CommunityPlacementOperationValue current() {
         return store.getTyped(new AetherKey.CommunityPlacementOperationKey(COMMUNITY), CommunityPlacementOperationValue.class).unwrap();
     }
@@ -187,7 +197,7 @@ class CommunityPlacementParkedTest {
     void reconcile_aParkRefusedBecauseTheOperationChangedFirst_raisesNeitherTheWarningNorTheEscalation() {
         start();
         seedOperation(PlacementOperationPhase.DRAIN_REQUESTED, now.get() - 120_000L);
-        beforeCommit = () -> seedOperation(PlacementOperationPhase.DRAINED, now.get());
+        beforeEveryCommit = this::moveOnWhileDraining;
 
         reconciler.reconcile().await().unwrap();
         settle();
