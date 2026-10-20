@@ -682,7 +682,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
             var merged = new ArrayList<R>();
 
             foreign.forEach(result -> merged.add((R) result));
-            merged.addAll(own);
+            own.forEach(result -> merged.add((R) result));
 
             return Promise.success(merged);
         }
