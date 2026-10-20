@@ -78,9 +78,8 @@ sealed interface Declarations permits Declarations.unused {
                      Map<Integer, Option<MethodDecl>> innermostCache) {
         static FileFacts fileFacts(Map<String, List<Decl>> names,
                                    Set<String> promiseMethods,
-                                   Map<String, List<MethodDecl>> methods,
-                                   List<MethodDecl> records) {
-            var scopes = new ArrayList<MethodDecl>(records);
+                                   Map<String, List<MethodDecl>> methods) {
+            var scopes = new ArrayList<MethodDecl>();
 
             methods.values().forEach(scopes::addAll);
 
@@ -266,7 +265,7 @@ sealed interface Declarations permits Declarations.unused {
         scanVars(masked, pending);
         promiseMethods.removeAll(otherMethods);
         var names = new HashMap<String, List<Decl>>();
-        var facts = FileFacts.fileFacts(names, promiseMethods, methods, recordScopes(masked));
+        var facts = FileFacts.fileFacts(names, promiseMethods, methods);
 
         pending.stream().sorted(Comparator.comparingInt(Pending::offset)).forEach(entry -> resolve(entry, facts, names));
 
@@ -337,33 +336,6 @@ sealed interface Declarations permits Declarations.unused {
     private static boolean insideRecordHeader(List<int[]> records, int offset) {
         return records.stream()
                       .anyMatch(span -> span[0] <= offset && offset < span[1]);
-    }
-
-    /// Each record is a scope of its own: its components are visible inside it and nowhere else. They are not callable methods.
-    private static List<MethodDecl> recordScopes(String masked) {
-        var scopes = new ArrayList<MethodDecl>();
-        var matcher = RECORD_HEAD.matcher(masked);
-
-        while (matcher.find()) {
-            var close = SourceText.closeOf(masked, matcher.end() - 1);
-            var bodyOpen = close < 0
-                           ? -1
-                           : masked.indexOf('{', close);
-            var bodyClose = bodyOpen < 0
-                            ? -1
-                            : SourceText.closeOf(masked, bodyOpen);
-
-            if (bodyClose > 0) {
-                scopes.add(MethodDecl.methodDecl("record",
-                                                 "record",
-                                                 SourceText.declaredNames(masked.substring(matcher.end(), close)),
-                                                 matcher.start(),
-                                                 bodyOpen + 1,
-                                                 bodyClose));
-            }
-        }
-
-        return scopes;
     }
 
     private static List<int[]> recordHeaders(String masked) {
@@ -479,7 +451,9 @@ sealed interface Declarations permits Declarations.unused {
         }
     }
 
-    /// Methods with a body declared in this file, keyed by simple name (overloads share a key).
+    /// Methods declared in this file, keyed by simple name (overloads share a key), with or without a body. A record header
+    /// (`record Attempt(Promise<T> promise) {...}`) has the same shape and is kept on purpose: it is the one scope in which its
+    /// components are visible. It is never called by name, since `new Attempt(...)` is a construction.
     private static Map<String, List<MethodDecl>> methodTable(String masked) {
         var table = new HashMap<String, List<MethodDecl>>();
         var matcher = METHOD_HEAD.matcher(masked);
