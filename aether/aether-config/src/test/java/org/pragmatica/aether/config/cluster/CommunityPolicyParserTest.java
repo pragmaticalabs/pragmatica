@@ -61,6 +61,47 @@ class CommunityPolicyParserTest {
     }
 
     @Test
+    void parse_emptyTable_pinsTheDocumentedDefaultsByLiteral() {
+        var policy = ClusterBootstrapConfigParser.parse(BASE + "[community_policy]\n").unwrap().communityPolicy().unwrap();
+
+        assertThat(policy.maxCommunities()).isEqualTo(20);
+        assertThat(policy.dissolveGraceSeconds()).isEqualTo(300);
+        assertThat(CommunityPolicy.DEFAULT_MAX_COMMUNITIES).isEqualTo(20);
+        assertThat(CommunityPolicy.DEFAULT_DISSOLVE_GRACE_SECONDS).isEqualTo(300);
+    }
+
+    @Test
+    void withClusterName_keepsTheCommittedPolicy() {
+        var config = ClusterBootstrapConfigParser.parse(BASE + POLICY).unwrap();
+
+        assertThat(config.withClusterName("renamed").unwrap().communityPolicy()).isEqualTo(config.communityPolicy());
+        assertThat(config.communityPolicy().isPresent()).isTrue();
+    }
+
+    @Test
+    void sevenArgumentFactory_hasNoPolicy_andTheEightArgumentOneCarriesIt() {
+        var config = ClusterBootstrapConfigParser.parse(BASE + POLICY).unwrap();
+        var without = ClusterBootstrapConfig.clusterBootstrapConfig(config.cluster(), config.coreTopology(), config.sources(), config.runtimes(),
+                                                                     config.infrastructure(), config.operations(), config.communities());
+        var with = ClusterBootstrapConfig.clusterBootstrapConfig(config.cluster(), config.coreTopology(), config.sources(), config.runtimes(),
+                                                                  config.infrastructure(), config.operations(), config.communities(), config.communityPolicy());
+
+        assertThat(without.communityPolicy().isEmpty()).isTrue();
+        assertThat(with.communityPolicy()).isEqualTo(config.communityPolicy());
+    }
+
+    @Test
+    void parse_floorZeroIsRefusedEvenWithTheAllowance() {
+        assertRefused(POLICY.replace("viability_floor = 3", "viability_floor = 0\nallow_below_rf = true"), "viability_floor");
+    }
+
+    @Test
+    void parse_maxSizeEqualToTheFloor_isAccepted() {
+        assertThat(ClusterBootstrapConfigParser.parse(BASE + POLICY.replace("max_size = 50", "max_size = 3")).isSuccess()).isTrue();
+        assertRefused(POLICY.replace("max_size = 50", "max_size = 2"), "max_size");
+    }
+
+    @Test
     void parse_floorBelowReplicationFactor_needsExplicitAllowance() {
         assertRefused(POLICY.replace("viability_floor = 3", "viability_floor = 2"), "viability_floor");
         assertThat(ClusterBootstrapConfigParser.parse(BASE + POLICY.replace("viability_floor = 3", "viability_floor = 2\nallow_below_rf = true"))
