@@ -423,6 +423,18 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         assertThat(sliceFailedWith("topic tier mismatch")).isFalse();
     }
 
+    /// v-2339 F2: a bare subscriber works on either tier, so its standing row never refuses an ephemeral publisher.
+    @Test
+    void ephemeralPublisher_isAccepted_whileABareSubscriberRowStands() {
+        declarePublisherTopic(PUBLISHER_SLICE, EPHEMERAL_ORDERS);
+        seedSubscriberRow(OTHER_PUBLISHER, OTHER_NODE, TopicTier.ANY);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publisherTiers()).containsKey(PUBLISHER_SLICE.asString()));
+        assertThat(sliceFailedWith("topic tier mismatch")).isFalse();
+    }
+
     /// Rows are matched on the topic's address: an ephemeral publisher of ANOTHER topic is no reason to refuse.
     @Test
     void durableSubscriber_isAccepted_whenTheEphemeralPublisherIsOnAnotherTopic() {

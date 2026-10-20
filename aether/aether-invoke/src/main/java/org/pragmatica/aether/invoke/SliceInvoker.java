@@ -616,7 +616,10 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private final ConcurrentHashMap<String, TierMismatchLog> tierMismatchLogs = new ConcurrentHashMap<>();
 
-    private Unit logInvokeFailure(Artifact slice, MethodName method, Cause cause) {
+    /// The clock of the tier-mismatch log window; a test advances it instead of waiting a minute.
+    java.util.function.LongSupplier tierMismatchNanos = System::nanoTime;
+
+    Unit logInvokeFailure(Artifact slice, MethodName method, Cause cause) {
         return TopicTierMismatch.isTierMismatch(cause)
                ? logTierMismatch(slice, method, cause)
                : logFailure(slice, method, cause);
@@ -634,9 +637,9 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Unit logTierMismatch(Artifact slice, MethodName method, Cause cause) {
         var state = tierMismatchLogs.computeIfAbsent(slice.base().asString() + "/" + method.name(),
-                                                     _ -> new TierMismatchLog(new AtomicLong(System.nanoTime() - TIER_MISMATCH_LOG_PERIOD_NANOS),
+                                                     _ -> new TierMismatchLog(new AtomicLong(tierMismatchNanos.getAsLong() - TIER_MISMATCH_LOG_PERIOD_NANOS),
                                                                               new AtomicLong()));
-        var now = System.nanoTime();
+        var now = tierMismatchNanos.getAsLong();
         var last = state.lastLoggedNanos().get();
 
         if (now - last >= TIER_MISMATCH_LOG_PERIOD_NANOS && state.lastLoggedNanos().compareAndSet(last, now)) {
