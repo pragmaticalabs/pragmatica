@@ -15,8 +15,6 @@
  */
 package org.pragmatica.swim;
 
-package org.pragmatica.swim;
-
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
