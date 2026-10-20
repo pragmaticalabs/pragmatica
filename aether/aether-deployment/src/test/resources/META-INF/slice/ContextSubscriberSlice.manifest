@@ -1,0 +1,10 @@
+# Test fixture for NodeDeploymentStateTopicSubscriptionNamespaceTest (#1337).
+#
+# Shaped exactly as the slice processor generates a context-carrying subscription (#386 D5): the same binding as
+# TopicSubscriberSlice plus `context=message`, the marker that makes the handler need the durable tier.
+reactive.count=1
+reactive.0.category=subscription
+reactive.0.method=onMessage
+reactive.0.config=topics.orders
+reactive.0.topicName=orders
+reactive.0.context=message

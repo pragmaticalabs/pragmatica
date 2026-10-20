@@ -604,10 +604,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             sweepDeadRestoredWorkers();
             rebuildSliceStateFromKVStoreEntries();
             triggerLoadedSliceActivation();
-            cleanupStaleNodeRoutes();
-            cleanupStaleSliceEntries();
-            cleanupStaleNodeArtifactEntries();
-            cleanupOrphanedSliceEntries();
+            sweepStaleEntries(true);
             resumeDrainEvictions();
             recoverStalledSchemaMigrations();
         }
@@ -622,9 +619,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // 2s-deferred retry is what actually catches the dead-restored-worker case on a
             // freshly elected leader; see `sweepDeadRestoredWorkers`'s doc comment.
             sweepDeadRestoredWorkers();
-            cleanupStaleNodeRoutes();
-            cleanupStaleSliceEntries();
-            cleanupStaleNodeArtifactEntries();
+            sweepStaleEntries(false);
             reconcile();
         }
 
@@ -2735,6 +2730,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var previousDirective = ctx.kvStore().get(directiveKey);
 
             consensusCommands.addAll(nodeRouteCommands);
+            consensusCommands.addAll(topicRowCommandsForNode(removedNode));
             workerNodes.remove(removedNode);
             log.info("Removed {} slice states, {} node-artifact entries, {} node-routes updates, and the "
                     + "activation directive for departed node {}",
@@ -2781,6 +2777,39 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        /// #1337: the topic subscription and publisher rows of a departed node. Both are written by the node's own slice activation and
+        /// removed by its unload, which a dead node never runs; left standing they would refuse a legitimate deployment (a publisher or
+        /// subscriber of the opposite tier) on behalf of a node that no longer exists.
+        private List<KVCommand<AetherKey>> topicRowCommandsForNode(NodeId removedNode) {
+            var commands = new ArrayList<KVCommand<AetherKey>>();
+
+            ctx.kvStore()
+               .forEach(AetherKey.TopicSubscriptionKey.class,
+                        AetherValue.TopicSubscriptionValue.class,
+                        (key, _) -> collectTopicRowKeyForNode(commands,
+                                                              key,
+                                                              key.nodeId(),
+                                                              removedNode));
+            ctx.kvStore()
+               .forEach(AetherKey.TopicPublisherKey.class,
+                        AetherValue.TopicPublisherValue.class,
+                        (key, _) -> collectTopicRowKeyForNode(commands,
+                                                              key,
+                                                              key.nodeId(),
+                                                              removedNode));
+
+            return commands;
+        }
+
+        private void collectTopicRowKeyForNode(List<KVCommand<AetherKey>> commands,
+                                               AetherKey key,
+                                               NodeId rowNode,
+                                               NodeId removedNode) {
+            if (rowNode.equals(removedNode)) {
+                commands.add(new KVCommand.Remove<>(key));
+            }
+        }
+
         private List<KVCommand<AetherKey>> cleanupNodeRoutesForNode(NodeId removedNode) {
             var commands = new ArrayList<KVCommand<AetherKey>>();
 
@@ -2800,23 +2829,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        /// One reconcile / KV-rebuild / deferred-recheck pass: ONE placement snapshot for every stale-entry sweep (#1337). Each sweep
+        /// reading the set afresh could see different sets within a tick, and a node entering the set between two sweeps would lose its
+        /// topic rows while keeping its slices, a silent delivery stop.
         @Contract
-        public void cleanupStaleNodeRoutes() {
-            staleEntryCleaner().cleanupStaleNodeRoutes();
-        }
+        void sweepStaleEntries(boolean includeOrphans) {
+            if (!coreMembershipResolved()) {
+                return;
+            }
 
-        @Contract
-        public void cleanupStaleSliceEntries() {
-            staleEntryCleaner().cleanupStaleSliceEntries();
-        }
+            var placement = placementNodes();
+            var cleaner = staleEntryCleaner();
 
-        @Contract
-        public void cleanupStaleNodeArtifactEntries() {
-            staleEntryCleaner().cleanupStaleNodeArtifactEntries();
-        }
-
-        private void cleanupOrphanedSliceEntries() {
-            staleEntryCleaner().cleanupOrphanedSliceEntries();
+            cleaner.cleanupStaleNodeRoutes(placement);
+            cleaner.cleanupStaleTopicRows(placement);
+            cleaner.cleanupStaleSliceEntries(placement);
+            cleaner.cleanupStaleNodeArtifactEntries(placement);
+            if (includeOrphans) {
+                cleaner.cleanupOrphanedSliceEntries(placement);
+            }
         }
 
         private void issueAllocationCommands(Artifact artifact, int desiredInstances) {
@@ -2902,10 +2933,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.debug("Reconciliation complete: {} of {} blueprints required adjustment", reconciled, blueprints.size());
             resumeDrainEvictions();
             evaluateCommunityStates();
-            cleanupOrphanedSliceEntries();
-            cleanupStaleNodeRoutes();
-            cleanupStaleNodeArtifactEntries();
-            cleanupStaleSliceEntries();
+            sweepStaleEntries(true);
             detectStuckTransitionalStates();
             // A schema sweep does NOT belong here. It was added and reverted on 2026-08-31: sweeping
             // PENDING records on every reconcile re-dispatches a migration that is already running —

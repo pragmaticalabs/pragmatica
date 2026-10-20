@@ -64,6 +64,8 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
         // #1155: tag 1634 keeps decoding the shape ScheduledTaskStateValue had before `boundHolder`; the current shape is 2168.
         all.add(org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue.CODEC);
+        // #1337: tag 1655 keeps decoding the shape TopicSubscriptionValue had before `tier`; the current shape is 2169.
+        all.add(org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue.CODEC);
         all.addAll(org.pragmatica.aether.api.ApiCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
