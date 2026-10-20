@@ -30,6 +30,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// success, so "refused for the reason under test" cannot be confused with "the fixture never worked".
 class ProvisionTestPgDestroyTest {
     private static final String KEY_MISSING = "AETHER_SSH_KEY is not set";
+    /// The script's preflight demands `ssh` and `ssh-keygen` on PATH, but neither `--destroy` nor the
+    /// refusal before the first API call ever runs them; stubbed so a worker image without openssh cannot
+    /// change a verdict. `jq` is different - the script parses every API answer with it - so it stays real.
+    private static final String INERT = "#!/bin/bash\nexit 0\n";
 
     private Path state;
     private Path stubDir;
@@ -41,6 +45,8 @@ class ProvisionTestPgDestroyTest {
         stubDir = tempDir.resolve("stub");
         envFile = tempDir.resolve("aether-test-pg.env");
         given(ScriptRunner.writeExecutable(stubDir.resolve("curl"), HetznerCurlStub.SCRIPT).mapToUnit());
+        given(ScriptRunner.writeExecutable(stubDir.resolve("ssh"), INERT).mapToUnit());
+        given(ScriptRunner.writeExecutable(stubDir.resolve("ssh-keygen"), INERT).mapToUnit());
         given(write("servers.json", HetznerCurlStub.SERVERS));
         given(write("ssh_keys.json", HetznerCurlStub.SSH_KEYS));
         given(Result.lift(() -> Files.writeString(envFile, "export PG_URL=stub\n")).mapToUnit());
@@ -125,14 +131,6 @@ class ProvisionTestPgDestroyTest {
         environment.put("PG_ENV_FILE", envFile.toString());
         environment.putAll(extraEnvironment);
 
-        return ScriptRunner.run(ScriptRunner.repoRoot(), environment, command(extraEnvironment, flag));
-    }
-
-    /// The test JVM may itself carry `AETHER_SSH_KEY`; `env -u` is what makes "unset" true for the
-    /// script, since a process builder can add variables but a map of additions cannot remove one.
-    private List<String> command(Map<String, String> extraEnvironment, String flag) {
-        return extraEnvironment.containsKey("AETHER_SSH_KEY")
-               ? List.of("tools/provision-test-pg.sh", flag)
-               : List.of("env", "-u", "AETHER_SSH_KEY", "tools/provision-test-pg.sh", flag);
+        return ScriptRunner.run(ScriptRunner.repoRoot(), environment, List.of("tools/provision-test-pg.sh", flag));
     }
 }
