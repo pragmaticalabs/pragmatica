@@ -101,9 +101,13 @@ class ManagementServerTlsRotationTest {
             var applied = server.rotateCertificate(TlsProbe.validBundle("mgmt-rotation-node")).await(BOUND);
 
             assertThat(applied.isSuccess()).as("a valid bundle rotates").isTrue();
-            assertThat(TlsProbe.sameCertificate(original, TlsProbe.presentedCertificate(port)))
+            // An applied rotation re-binds the CONFIGURED port, which is 0 here: the rotated listener has a new port, read back.
+            int rotatedPort = server.boundPort().or(0);
+
+            assertThat(rotatedPort).as("the rotated listener reports its bound port").isPositive();
+            assertThat(TlsProbe.sameCertificate(original, TlsProbe.presentedCertificate(rotatedPort)))
                 .as("after the valid rotation the certificate changed").isFalse();
-            assertThat(TlsProbe.httpsStatus(port)).isPositive();
+            assertThat(TlsProbe.httpsStatus(rotatedPort)).isPositive();
             assertThat(TlsProbe.eventually(() -> TlsProbe.countOf(events, "http-tls-rotation-restored") == 1, EVENT_BUDGET_MS))
                 .as("the recovery event follows the later successful rotation").isTrue();
         } finally {
