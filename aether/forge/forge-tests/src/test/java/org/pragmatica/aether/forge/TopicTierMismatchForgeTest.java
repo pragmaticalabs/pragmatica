@@ -95,8 +95,8 @@ class TopicTierMismatchForgeTest {
                             .contains("\"status\":400")
                             .contains("topic tier mismatch")
                             .contains("tier-orders")
-                            .contains("test-topic-tier-pub")
-                            .contains("onContextOrder")
+                            .contains("TierPublisherSlice")
+                            .contains("TierSubscriberSlice.onContextOrder")
                             .contains("MessageContext");
         assertThat(response).describedAs("the control topic (ephemeral on both sides, bare handler) is not what is refused")
                             .doesNotContain("tier-bare")

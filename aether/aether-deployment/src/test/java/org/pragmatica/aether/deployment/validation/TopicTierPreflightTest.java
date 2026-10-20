@@ -20,7 +20,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// from its OWN `resources.toml`, so a publisher jar and a subscriber jar can disagree without either build or load noticing. The
 /// pre-flight compares them on the resolved address and refuses the deploy.
 class TopicTierPreflightTest {
-    private static final String ADDRESS = "orders-app:order-events:1.0.0";
+    /// Each slice's address is resolved against its OWN coordinates by the topology parser, so publisher and subscriber carry
+    /// DIFFERENT addresses for the one topic they share; only the declared `config` is common.
+    private static String address(String slice) {
+        return slice + ":order-events:1.0.0";
+    }
+
     private static final String EPHEMERAL_TOML = "[order-events]\ntopic_name = \"order-events\"\n";
     private static final String DURABLE_TOML = "[order-events]\ntopic_name = \"order-events\"\ndurability = \"durable\"\n";
 
@@ -29,7 +34,7 @@ class TopicTierPreflightTest {
         var outcome = validate(publisherJar("order-pub", EPHEMERAL_TOML), subscriberJar("order-sub", "onOrderPlaced", true, DURABLE_TOML));
 
         assertThat(message(outcome)).contains("topic tier mismatch")
-                                    .contains(ADDRESS)
+                                    .contains("order-events")
                                     .contains("EPHEMERAL")
                                     .contains("order-pub")
                                     .contains("order-sub.onOrderPlaced")
@@ -55,7 +60,7 @@ class TopicTierPreflightTest {
         assertThat(validate(publisherJar("order-pub", EPHEMERAL_TOML), subscriberJar("order-sub", "onOrderPlaced", false, DURABLE_TOML)).isSuccess()).isTrue();
     }
 
-    /// Topics are matched on the resolved address, so a context subscriber of ANOTHER topic is not a conflict.
+    /// Topics are matched on the declared config, so a context subscriber of ANOTHER topic is not a conflict.
     @Test
     void contextSubscriberOfAnotherTopic_isNotCompared() {
         var other = new SliceTopology("order-sub",
@@ -64,7 +69,7 @@ class TopicTierPreflightTest {
                                       List.of(),
                                       List.of(),
                                       List.of(),
-                                      List.of(new SliceTopology.TopicSub("audit", "orders-app:audit:1.0.0", "onAudit", "Audit", true)));
+                                      List.of(new SliceTopology.TopicSub("audit", "order-sub:audit:1.0.0", "onAudit", "Audit", true)));
         var subscriber = SliceJar.sliceJar(artifact("order-sub"), List.of(other), Option.some(DURABLE_TOML));
 
         assertThat(validate(publisherJar("order-pub", EPHEMERAL_TOML), subscriber).isSuccess()).isTrue();
@@ -116,7 +121,7 @@ class TopicTierPreflightTest {
                                  List.of(),
                                  List.of(),
                                  List.of(),
-                                 List.of(new SliceTopology.TopicPub("order-events", ADDRESS, "OrderPlaced")),
+                                 List.of(new SliceTopology.TopicPub("order-events", address(slice), "OrderPlaced")),
                                  List.of());
     }
 
@@ -127,7 +132,7 @@ class TopicTierPreflightTest {
                                          List.of(),
                                          List.of(),
                                          List.of(),
-                                         List.of(new SliceTopology.TopicSub("order-events", ADDRESS, method, "OrderPlaced", contextual)));
+                                         List.of(new SliceTopology.TopicSub("order-events", address(slice), method, "OrderPlaced", contextual)));
 
         return SliceJar.sliceJar(artifact(slice), List.of(topology), Option.some(toml));
     }

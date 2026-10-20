@@ -28,8 +28,11 @@ import org.pragmatica.lang.utils.Causes;
 ///
 /// The check runs over what the blueprint being published will load: for each publisher topic of each slice jar, its durability
 /// is read from [ConfigSectionPreflightValidator#bindingView], the view the slice loader binds that slice's sections from (the
-/// same view [ReplicationPreflight] reads), and topics are matched on the RESOLVED address, as [org.pragmatica.aether.slice.blueprint.PubSubValidator]
-/// matches them. Every conflict is reported, not the first.
+/// same view [ReplicationPreflight] reads), and topics are matched on the declared `config`, as [org.pragmatica.aether.slice.blueprint.PubSubValidator]
+/// matches them. Not on `SliceTopology.TopicPub#address`: the parser resolves that against each slice's OWN coordinates, so two slices of
+/// one blueprint carry different addresses for the topic they share, which the deployment later resolves against the blueprint they
+/// are both owned by (found by the Forge end-to-end test, where matching on the address silently matched nothing). Every conflict is
+/// reported, not the first.
 ///
 /// What it does not check: a publisher whose durability cannot be read (no [ConfigurationProvider] wired and a `resources.toml` that
 /// does not parse) is skipped, "not checked" rather than "checked and passed", as in [ConfigSectionPreflightValidator] (a jar with no
@@ -69,9 +72,7 @@ public sealed interface TopicTierPreflight {
         return topology.publishes()
                        .stream()
                        .filter(publisher -> !isDurable(view, publisher.config()))
-                       .map(publisher -> new EphemeralPublisher(topology.sliceName(),
-                                                                publisher.config(),
-                                                                publisher.address()));
+                       .map(publisher -> new EphemeralPublisher(topology.sliceName(), publisher.config()));
     }
 
     private static boolean isDurable(ConfigurationProvider view, String section) {
@@ -87,20 +88,20 @@ public sealed interface TopicTierPreflight {
                         .flatMap(topology -> topology.subscribes()
                                                      .stream()
                                                      .filter(SliceTopology.TopicSub::contextual)
-                                                     .filter(subscriber -> subscriber.address()
-                                                                                     .equals(publisher.address()))
+                                                     .filter(subscriber -> subscriber.config()
+                                                                                     .equals(publisher.config()))
                                                      .map(subscriber -> new Conflict(publisher,
                                                                                      topology.sliceName(),
                                                                                      subscriber.method())));
     }
 
-    record EphemeralPublisher(String slice, String section, String address) {}
+    record EphemeralPublisher(String slice, String config) {}
 
     record Conflict(EphemeralPublisher publisher, String subscriberSlice, String method) {
         String describe() {
-            return "topic " + publisher.address()
-                   + " is published on the EPHEMERAL tier by " + publisher.slice()
-                   + " (section [" + publisher.section()
+            return "topic '" + publisher.config()
+                   + "' is published on the EPHEMERAL tier by " + publisher.slice()
+                   + " (section [" + publisher.config()
                    + "] declares no durability = \"durable\") but subscribed by " + subscriberSlice
                    + "." + method
                    + ", whose handler takes a MessageContext and needs a durable topic";
