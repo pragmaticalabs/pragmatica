@@ -2826,26 +2826,46 @@ public interface AetherNode extends ManageableNode {
                 return formationUnlessSwimFails(startClusterAsync(), outcome);
             }
 
+            /// The in-process formation effects (event-loop metrics, the first election kick) are a DEPENDENT step
+            /// (`withSuccess`): whoever awaited the start proceeds with them in place. Discovery registration blocks on the
+            /// provider and the instance tag is an external signal bootstrap polls, so those two stay detached.
             private Promise<Unit> startClusterAsync() {
                 return clusterNode.start()
-                                  .onSuccess(_ -> {
-                                                 log.info("Aether node {} cluster formation complete",
-                                                          self());
-                                                 clusterNode.network()
-                                                            .server()
-                                                            .onPresent(server -> {
-                                                                           eventLoopMetricsCollector.register(server.bossGroup());
-                                                                           eventLoopMetricsCollector.register(server.workerGroup());
-                                                                           log.info("Registered EventLoopGroups for metrics collection");
-                                                                       });
-                                                 clusterNode.leaderManager()
-                                                            .triggerElection();
-                                                 discoveryProvider.onPresent(this::registerWithDiscovery);
-                                                 applyNodeIdTag();
-                                             })
+                                  .withSuccess(_ -> runFormationEffects())
+                                  .onSuccess(_ -> registerFormedNode())
                                   .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
+            }
+
+            // A dependent step must not fail the start it follows: a throw from the effects is logged, not propagated.
+            // FER (degrade forward): formation has succeeded, so a failed metrics registration or election kick is absorbed with a
+            // WARN. Guarantee earned: the start reports formation, not its by-products. Mechanism: a single run, the WARN is the record.
+            @Contract
+            private void runFormationEffects() {
+                Result.lift(this::onClusterFormed).onFailure(cause -> log.warn("Cluster formation effects failed: {}",
+                                                                               cause.message()));
+            }
+
+            @Contract
+            private void onClusterFormed() {
+                log.info("Aether node {} cluster formation complete", self());
+                clusterNode.network().server().onPresent(this::registerEventLoopGroups);
+                clusterNode.leaderManager().triggerElection();
+            }
+
+            private void registerEventLoopGroups(Server server) {
+                eventLoopMetricsCollector.register(server.bossGroup());
+                eventLoopMetricsCollector.register(server.workerGroup());
+                log.info("Registered EventLoopGroups for metrics collection");
+            }
+
+            // Detached on purpose: `registerSelf` is awaited (it blocks its thread) and the tag is an external signal;
+            // nothing in this process reads either after the start resolves.
+            @Contract
+            private void registerFormedNode() {
+                discoveryProvider.onPresent(this::registerWithDiscovery);
+                applyNodeIdTag();
             }
 
             private void registerWithDiscovery(DiscoveryProvider dp) {
@@ -4536,11 +4556,13 @@ public interface AetherNode extends ManageableNode {
                                         .toList();
         Runnable announceJoinTrigger = selfNodeInfo == null
                                        ? () -> {}
-                                       : () -> swimHealthDetector.announceJoin(selfNodeInfo,
-                                                                               swimConfig.clusterName(),
-                                                                               bootIncarnation,
-                                                                               bootToken,
-                                                                               swimSeeds);
+                                       : joinAnnouncement(config,
+                                                          swimHealthDetector,
+                                                          selfNodeInfo,
+                                                          swimConfig.clusterName(),
+                                                          bootIncarnation,
+                                                          bootToken,
+                                                          swimSeeds);
         // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
         // closes over the encryptor + announce trigger that are only in scope here. It fails the
@@ -7380,7 +7402,7 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReadyOnceDhtAdmitted(Promise<Unit> dhtAdmission,
                                                            Runnable signalReady,
                                                            NodeReportedStateHolder holder) {
-        dhtAdmission.onSuccess(_ -> markSubsystemsReady(signalReady, holder));
+        dhtAdmission.withSuccess(_ -> markSubsystemsReady(signalReady, holder));
     }
 
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
@@ -8703,21 +8725,53 @@ public interface AetherNode extends ManageableNode {
                                    Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
-
+        // `startOutcome::fail` and the announcement are dependent steps (`withFailure`/`withSuccess`), so they have run
+        // when `start` resolves for whoever awaits it. `failNode` may block (Ember awaits the node's own stop), so it stays
+        // a detached handler, registered on the DERIVED promise: it can run only after `startOutcome` was failed.
         return swimHealthDetector.start(workerGroup, guarded)
-                                 .onFailure(startOutcome::fail)
-                                 .onSuccessRun(() -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
+                                 .withFailure(startOutcome::fail)
+                                 .withSuccess(_ -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
                                  .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
                                                                             cause,
                                                                             failNode));
     }
 
+    /// The join announcement SWIM runs at transport-ready. A worker holds its ANNOUNCE to the seeds until its
+    /// activation directive is committed ([#handleActivationDirective] releases it): before that it has no
+    /// community, and the cores' membership scope admits no worker that is not a governor, so every round
+    /// was traffic they dropped (#1840). A core announces at once, as it must to be dialed by survivors.
+    static Runnable joinAnnouncement(AetherNodeConfig config,
+                                     CoreSwimHealthDetector swimHealthDetector,
+                                     NodeInfo self,
+                                     String clusterName,
+                                     long incarnation,
+                                     long bootToken,
+                                     List<InetSocketAddress> seeds) {
+        return configuredWorker(config)
+               ? () -> swimHealthDetector.announceJoinWhenAssigned(self,
+                                                                   clusterName,
+                                                                   incarnation,
+                                                                   bootToken,
+                                                                   seeds,
+                                                                   config.timeouts().cluster().communityAbsence())
+               : () -> swimHealthDetector.announceJoin(self, clusterName, incarnation, bootToken, seeds);
+    }
+
     /// A start refused because `stop()` already closed the detector resolves as a no-op success (it must
     /// not run `failNode`: in a single-JVM host a stale one could stop a same-id relaunch). There is no
     /// protocol to announce for, so the announcement is skipped.
+    ///
+    /// A dependent step of the start: a trigger that throws must not fail the start it follows (that would run `failNode`),
+    /// so a throw is logged instead.
+    ///
+    /// FER (degrade forward): SWIM is up, so a failed announcement is absorbed with a WARN rather than halting a node whose
+    /// failure detector runs. Guarantee earned: a lost announcement does not stop the node. Mechanism: a single attempt, no retry
+    /// here; the WARN is the only record of it.
+    @Contract
     private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
         if (!swimHealthDetector.isClosed()) {
-            announceJoinTrigger.run();
+            Result.lift(announceJoinTrigger::run).onFailure(cause -> LOG.warn("SWIM join announcement failed: {}",
+                                                                              cause.message()));
         }
     }
 
@@ -8743,22 +8797,22 @@ public interface AetherNode extends ManageableNode {
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
-    private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
-                                                  NodeId selfId,
-                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                  SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
-                                                  ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                                  AetherNodeConfig config,
-                                                  MessageRouter.DelegateRouter delegateRouter,
-                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                  SliceStore sliceStore,
-                                                  SliceInvoker sliceInvoker,
-                                                  Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
-                                                  org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
-                                                  AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
-                                                  GovernorAuthorityClient governorAuthorityClient,
-                                                  java.util.function.BooleanSupplier ready,
-                                                  Logger growthLog) {
+    static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
+                                          NodeId selfId,
+                                          RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                          SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                          ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                          AetherNodeConfig config,
+                                          MessageRouter.DelegateRouter delegateRouter,
+                                          KVStore<AetherKey, AetherValue> kvStore,
+                                          SliceStore sliceStore,
+                                          SliceInvoker sliceInvoker,
+                                          Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
+                                          org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
+                                          AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                                          GovernorAuthorityClient governorAuthorityClient,
+                                          java.util.function.BooleanSupplier ready,
+                                          Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
@@ -8777,6 +8831,7 @@ public interface AetherNode extends ManageableNode {
             clusterNode.authorizeActivation();
         } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
+            swimHealthDetectorSupplier.get().markAssigned();
             activateWorkerMode(selfId,
                                clusterNode,
                                switchableCluster,

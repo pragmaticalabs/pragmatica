@@ -53,6 +53,9 @@ class OwnerActivationTest {
     private final AtomicReference<Runnable> duringRound = new AtomicReference<>(() -> {});
     private final List<String> catchUps = new ArrayList<>();
     private final AtomicBoolean catchUpSucceeds = new AtomicBoolean(true);
+    /// The catch-up answers LATER, on another thread, when set (an inline answer hides every ordering defect between the
+    /// promise and its handlers).
+    private final AtomicBoolean lateCatchUp = new AtomicBoolean();
     private final AtomicBoolean consensusActive = new AtomicBoolean(true);
 
     private final List<OwnerActivation.ActivationBlock> alarms = new CopyOnWriteArrayList<>();
@@ -121,7 +124,7 @@ class OwnerActivationTest {
 
         localWatermark.set(tail);
 
-        return Promise.success(tail);
+        return lateCatchUp.get() ? LateResolution.later(tail) : Promise.success(tail);
     }
 
     private static StreamPartitionOwnershipValue ownedBy(NodeId owner, long term) {
@@ -621,6 +624,29 @@ class OwnerActivationTest {
         });
         assertThat(alarms).as("the partition is not waiting any more: no unreachable-members block").isEmpty();
         assertThat(gate.blockOf(STREAM, PARTITION)).isEqualTo(Option.none());
+    }
+
+    /// #2080: the pending escape is on record by the time the catch-up resolves, because the activation that follows it reads it to
+    /// report. Recorded by an `onSuccessRun` handler it landed after that read (the catch-up answers late), and the escape was lost.
+    @Test
+    void activate_isrCandidate_lateCatchUp_stillReportsTheEscape() {
+        var lost = 0;
+
+        lateCatchUp.set(true);
+        for (var trial = 0; trial < 40; trial++) {
+            escapes.clear();
+            var gate = gateReportingEscapes(TimeSpan.timeSpan(10).seconds(), TimeSpan.timeSpan(0).millis());
+
+            record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+            members.set(List.of(SELF, PEER_A, PEER_B));
+            unreachable.add(PEER_A);
+            peerWatermarks.put(PEER_B, 24L);
+            if (!activateAfterBound(gate) || escapes.size() != 1) {
+                lost++;
+            }
+        }
+
+        assertThat(lost).as("activations (of 40) that completed without reporting their escape").isZero();
     }
 
     /// #2080 (T1a): the escape is reported when the activation COMPLETES, not when the gate merely stopped waiting. While the catch-up
