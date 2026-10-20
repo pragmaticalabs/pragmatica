@@ -579,10 +579,14 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.put(routes, NodeRoutesValue.empty());
             kvStore.put(artifact, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
             kvStore.put(topicRow, TopicPublisherValue.topicPublisherValue(ghost, TopicTier.EPHEMERAL));
+            var ghostSlice = SliceNodeKey.sliceNodeKey(ARTIFACT, ghost);
+
+            activeState().sliceStates().put(ghostSlice, SliceState.ACTIVE);
             coreSource = () -> calls.getAndIncrement() == 0 ? Set.of(SELF, ghost) : Set.of(SELF);
 
             activeState().sweepStaleEntries(false);
 
+            assertThat(activeState().sliceStates()).as("slice-entry sweep used the pass's snapshot").containsKey(ghostSlice);
             assertThat(kvStore.get(routes).isPresent()).as("node-routes sweep used the pass's snapshot").isTrue();
             assertThat(kvStore.get(artifact).isPresent()).as("node-artifact sweep used the pass's snapshot").isTrue();
             assertThat(kvStore.get(topicRow).isPresent()).as("topic-row sweep used the pass's snapshot").isTrue();
