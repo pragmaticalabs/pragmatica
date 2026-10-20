@@ -21,7 +21,6 @@ sealed interface SourceText permits SourceText.unused {
     }
 
     String IDENT = "[A-Za-z_$][A-Za-z0-9_$]*";
-
     Pattern ELSE = Pattern.compile("^\\s*else\\b");
     Pattern HEADER = Pattern.compile("^\\s*(?:if|while|for|switch)\\s*(?=\\()");
     Pattern RETURN = Pattern.compile("^\\s*return\\b");
@@ -37,14 +36,13 @@ sealed interface SourceText permits SourceText.unused {
                 depth++;
             } else if (c == ')' || c == ']' || c == '}') {
                 depth--;
-
                 if (depth == 0) {
                     return i;
                 }
             }
         }
 
-        return - 1;
+        return -1;
     }
 
     /// Offset of the `>` closing the `<` at `open`; `-1` when the span is not a type-argument list.
@@ -58,16 +56,15 @@ sealed interface SourceText permits SourceText.unused {
                 depth++;
             } else if (c == '>') {
                 depth--;
-
                 if (depth == 0) {
                     return i;
                 }
             } else if (depth > 0 && isNotInTypeArguments(c)) {
-                return - 1;
+                return -1;
             }
         }
 
-        return - 1;
+        return -1;
     }
 
     private static boolean isNotInTypeArguments(char c) {
@@ -85,7 +82,6 @@ sealed interface SourceText permits SourceText.unused {
                 depth++;
             } else if (c == '<') {
                 depth--;
-
                 if (depth == 0) {
                     return i;
                 }
@@ -112,7 +108,7 @@ sealed interface SourceText permits SourceText.unused {
                 depth++;
             } else if (c == ')' || c == ']' || c == '}') {
                 if (depth == 0) {
-                    return - 1;
+                    return -1;
                 }
 
                 depth--;
@@ -121,7 +117,7 @@ sealed interface SourceText permits SourceText.unused {
             }
         }
 
-        return - 1;
+        return -1;
     }
 
     /// Start of the call chain whose last link ends at `dot`: scanned backward over balanced brackets to the first statement or
@@ -155,8 +151,7 @@ sealed interface SourceText permits SourceText.unused {
     private static boolean isBoundary(String s, int i) {
         var c = s.charAt(i);
 
-        return c == ';' || c == ',' || c == '=' && !isComparison(s, i) || c == '?' || c == ':' && !isDoubleColon(s, i)
-               || c == '>' && i > 0 && s.charAt(i - 1) == '-';
+        return c == ';' || c == ',' || c == '=' && !isComparison(s, i) || c == '?' || c == ':' && !isDoubleColon(s, i) || c == '>' && i > 0 && s.charAt(i - 1) == '-';
     }
 
     private static boolean isComparison(String s, int i) {
@@ -187,7 +182,8 @@ sealed interface SourceText permits SourceText.unused {
         var ret = RETURN.matcher(text);
 
         return ret.find()
-               ? Chain.chain(text.substring(ret.end()), true)
+               ? Chain.chain(text.substring(ret.end()),
+                             true)
                : Chain.chain(text, false);
     }
 
@@ -231,6 +227,7 @@ sealed interface SourceText permits SourceText.unused {
         }
 
         pieces.add(list.substring(from));
+
         return pieces.stream()
                      .filter(piece -> !piece.isBlank())
                      .toList();

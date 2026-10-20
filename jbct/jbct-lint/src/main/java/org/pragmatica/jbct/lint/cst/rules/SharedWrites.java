@@ -22,15 +22,17 @@ import static org.pragmatica.lang.Option.some;
 /// - a call to a mutating verb on such a root (`pending.put(k, v)`, `running.set(false)`, `epoch.incrementAndGet()`,
 ///   `claimed.compareAndSet(a, b)`, `index.remove(k)`), or a setter-named call (`setPhase(p)`) with no receiver;
 /// - the same two shapes inside a method of this file that the callback calls or references (`this::landed`,
-///   `_ -> reapConfirmed(id)`), followed to a depth of three.
+///   `_ -> reapConfirmed(id)`), followed to a depth of three. A callee's parameter counts as local only when the call hands it a
+///   value the callback owns; a constructor (`new Foo(v)`) is not followed, it writes the object being built.
 ///
 /// **Not a write**, on purpose: logging, scheduling, and resolving another promise (`succeed`/`fail`/`resolve`/`complete`) — the
 /// three effects the rule's contract exempts. Metric recording and other verbs outside the catalog are not scanned for either.
 ///
 /// **Limits.** The catalog is by verb name, not by receiver type, so a non-mutating method that shares a catalog name on a
-/// shared receiver is a false positive (`cache.remove` on a copy, `buffer.set` on a thread-confined structure). A write made
-/// by a method declared in another file (`context.dispatch(...)`, `tlsRotation::applied`) is not seen: that is the second source
-/// of missed sites.
+/// shared receiver is a false positive (`cache.remove` on a copy, `buffer.set` on a thread-confined structure). Locals are
+/// recognized by declaration shape (`Type name =`, `var`, a lambda parameter), so a local declared with a lowercase type name is
+/// read as shared. A write made by a method declared in another file (`context.dispatch(...)`, `tlsRotation::applied`) is not
+/// seen: that is the second source of missed sites.
 sealed interface SharedWrites permits SharedWrites.unused {
     record unused() implements SharedWrites {}
 
@@ -42,35 +44,40 @@ sealed interface SharedWrites permits SharedWrites.unused {
     }
 
     int MAX_DEPTH = 3;
-
     String IDENT = "[A-Za-z_$][A-Za-z0-9_$]*";
     String PATH = "(?:" + IDENT + "\\s*\\.\\s*)*" + IDENT;
 
-    Pattern ASSIGNMENT = Pattern.compile("(?<![\\w$=!<>+\\-*/%&|^.])(?:(this)\\s*\\.\\s*)?(" + PATH + ")\\s*(?:\\[[^\\]]*\\]\\s*)?"
-                                         + "(=|\\+=|-=|\\*=|/=|%=|\\|=|&=|\\^=|<<=|>>=|>>>=|\\+\\+|--)(?!=)");
+    Pattern ASSIGNMENT = Pattern.compile("(?<![\\w$=!<>+\\-*/%&|^.])(?:(this)\\s*\\.\\s*)?(" + PATH
+                                        + ")\\s*(?:\\[[^\\]]*\\]\\s*)?"
+                                        + "(=|\\+=|-=|\\*=|/=|%=|\\|=|&=|\\^=|<<=|>>=|>>>=|\\+\\+|--)(?!=)");
+
     Pattern PREFIX = Pattern.compile("(\\+\\+|--)\\s*(" + PATH + ")");
 
     String VERBS = "put|putAll|putIfAbsent|add|addAll|addFirst|addLast|remove|removeIf|removeAll|retainAll|clear|set|lazySet"
-                   + "|getAndSet|incrementAndGet|getAndIncrement|decrementAndGet|getAndDecrement|addAndGet|getAndAdd"
-                   + "|compareAndSet|compareAndExchange|weakCompareAndSet\\w*|updateAndGet|getAndUpdate|accumulateAndGet"
-                   + "|getAndAccumulate|compute|computeIfAbsent|computeIfPresent|merge|replace|replaceAll|offer|offerFirst"
-                   + "|offerLast|push|pop|poll|pollFirst|pollLast|append|increment|decrement|reset|setRelease|setPlain"
-                   + "|setVolatile|setOpaque|accumulate";
-    Pattern QUALIFIED_CALL = Pattern.compile("((?:" + IDENT + "(?:\\s*\\([^()]*(?:\\([^()]*\\)[^()]*)*\\))?\\s*\\.\\s*)+)(?:"
-                                             + VERBS + ")\\s*\\(");
+                 + "|getAndSet|incrementAndGet|getAndIncrement|decrementAndGet|getAndDecrement|addAndGet|getAndAdd"
+                 + "|compareAndSet|compareAndExchange|weakCompareAndSet\\w*|updateAndGet|getAndUpdate|accumulateAndGet"
+                 + "|getAndAccumulate|compute|computeIfAbsent|computeIfPresent|merge|replace|replaceAll|offer|offerFirst"
+                 + "|offerLast|push|pop|poll|pollFirst|pollLast|append|increment|decrement|reset|setRelease|setPlain"
+                 + "|setVolatile|setOpaque|accumulate";
+
+    Pattern QUALIFIED_CALL = Pattern.compile("((?:" + IDENT
+                                            + "(?:\\s*\\([^()]*(?:\\([^()]*\\)[^()]*)*\\))?\\s*\\.\\s*)+)(?:" + VERBS
+                                            + ")\\s*\\(");
+
     Pattern SETTER_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(set[A-Z][A-Za-z0-9_$]*)\\s*\\(");
     Pattern PLAIN_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(" + IDENT + ")\\s*\\(");
     Pattern METHOD_REF = Pattern.compile("^\\s*(?:this|" + IDENT + ")\\s*::\\s*(" + IDENT + ")\\s*$");
     Pattern NEW_BEFORE = Pattern.compile("\\bnew\\s+$");
     Pattern ARGUMENT_ROOT = Pattern.compile("(?:this\\s*\\.\\s*)?(" + IDENT + ")");
-    Pattern LAMBDA = Pattern.compile("^\\s*(?:\\(([^()]*)\\)|(" + IDENT + "))\\s*->\\s*(.*)$", Pattern.DOTALL);
+    Pattern LAMBDA = Pattern.compile("^\\s*(?:\\(([^()]*)\\)|(" + IDENT + "))\\s*->\\s*(.*)$",
+                                     Pattern.DOTALL);
 
     Pattern LOCAL_DECL = Pattern.compile("(?:\\b(?:final|var)\\s+|\\b[A-Z][\\w$]*(?:\\.[A-Z][\\w$]*)*(?:<[^;(){}=]*>)?(?:\\[\\])*\\s+"
-                                         + "|\\b(?:int|long|boolean|double|byte|short|char|float)(?:\\[\\])*\\s+)(" + IDENT
-                                         + ")\\s*(?:=|;|:|,|\\))");
+                                        + "|\\b(?:int|long|boolean|double|byte|short|char|float)(?:\\[\\])*\\s+)(" + IDENT
+                                        + ")\\s*(?:=|;|:|,|\\))");
+
     Pattern LAMBDA_PARAM = Pattern.compile("(" + IDENT + ")\\s*->");
     Pattern LAMBDA_PARAMS = Pattern.compile("\\(([^()]*)\\)\\s*->");
-
     /// Roots whose mutating-looking calls touch nothing shared: `MDC.put` is thread-local, `String.format(..).replace(..)` is a value.
     Set<String> NOT_SHARED_ROOTS = Set.of("MDC", "String");
     Set<String> LITERALS = Set.of("new", "true", "false", "null");
@@ -84,7 +91,11 @@ sealed interface SharedWrites permits SharedWrites.unused {
                          ? lambda.group(1)
                          : lambda.group(2);
 
-            return inBody(Set.copyOf(SourceText.declaredNames(params)), lambda.group(3), facts, masked, MAX_DEPTH);
+            return inBody(Set.copyOf(SourceText.declaredNames(params)),
+                          lambda.group(3),
+                          facts,
+                          masked,
+                          MAX_DEPTH);
         }
 
         var reference = METHOD_REF.matcher(argument);
@@ -108,8 +119,8 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
     private static Option<Write> direct(Set<String> locals, String body) {
         return assignment(locals, body).orElse(() -> prefixStep(locals, body))
-                                       .orElse(() -> mutatingCall(locals, body))
-                                       .orElse(() -> setterCall(body));
+                         .orElse(() -> mutatingCall(locals, body))
+                         .orElse(() -> setterCall(body));
     }
 
     private static Option<Write> assignment(Set<String> locals, String body) {
@@ -119,7 +130,8 @@ sealed interface SharedWrites permits SharedWrites.unused {
             var root = root(matcher.group(2));
 
             if (matcher.group(1) != null || !locals.contains(root)) {
-                return some(Write.write("assigns " + target(matcher.group(1), matcher.group(2)), List.of()));
+                return some(Write.write("assigns " + target(matcher.group(1), matcher.group(2)),
+                                        List.of()));
             }
         }
 
@@ -131,7 +143,8 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         while (matcher.find()) {
             if (!locals.contains(root(matcher.group(2)))) {
-                return some(Write.write("updates " + matcher.group(2).replaceAll("\\s+", ""), List.of()));
+                return some(Write.write("updates " + matcher.group(2).replaceAll("\\s+", ""),
+                                        List.of()));
             }
         }
 
@@ -180,7 +193,11 @@ sealed interface SharedWrites permits SharedWrites.unused {
         while (matcher.find()) {
             var found = isConstruction(body, matcher.start())
                         ? Option.<Write> none()
-                        : viaMethod(matcher.group(1), facts, masked, depth, sharedArguments(locals, body, matcher.end() - 1));
+                        : viaMethod(matcher.group(1),
+                                    facts,
+                                    masked,
+                                    depth,
+                                    sharedArguments(locals, body, matcher.end() - 1));
 
             if (found.isPresent()) {
                 return found;
@@ -216,7 +233,9 @@ sealed interface SharedWrites permits SharedWrites.unused {
         var text = argument.strip();
         var matcher = ARGUMENT_ROOT.matcher(text);
 
-        return matcher.lookingAt() && !LITERALS.contains(matcher.group(1)) && !locals.contains(matcher.group(1));
+        return matcher.lookingAt()
+               && !LITERALS.contains(matcher.group(1))
+               && !locals.contains(matcher.group(1));
     }
 
     private static Option<Write> viaMethod(String name,
@@ -265,6 +284,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         via.add(method);
         via.addAll(write.via());
+
         return Write.write(write.description(), List.copyOf(via));
     }
 
@@ -273,7 +293,6 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         collect(LOCAL_DECL, body, names, 1);
         collect(LAMBDA_PARAM, body, names, 1);
-
         var multi = LAMBDA_PARAMS.matcher(body);
 
         while (multi.find()) {

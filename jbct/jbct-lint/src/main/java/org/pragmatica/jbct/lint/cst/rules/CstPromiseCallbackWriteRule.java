@@ -49,6 +49,7 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ASYNC-01";
 
     private static final Pattern CALLBACK = Pattern.compile("\\.\\s*(on(?:Success|Failure|Result)(?:Run)?(?:Async)?)\\s*\\(");
+
     private static final Pattern DETACHED_TAG = Pattern.compile("\\bdetached\\s*[:\\-–—]\\s*\\S[^\\n]{2,}",
                                                                 Pattern.CASE_INSENSITIVE);
 
@@ -65,13 +66,11 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
 
         var masked = MapperSafety.blankNonCode(source);
 
-        if (!CALLBACK.matcher(masked)
-                     .find()) {
+        if (!CALLBACK.matcher(masked).find()) {
             return Stream.empty();
         }
 
         var found = findings(masked, source, ctx);
-
         // Classifying the file walks the whole CST, so it is deferred until there is something to report.
         return found.isEmpty() || FileTypeClassifier.classify(root) == FileType.TEST_CLASS
                ? Stream.empty()
@@ -97,9 +96,15 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
             var start = firstCode(masked, SourceText.chainStart(masked, dot));
 
             if (isPromise(masked, facts, start, dot, close)) {
-                SharedWrites.inCallback(masked.substring(open + 1, close), facts, masked)
+                SharedWrites.inCallback(masked.substring(open + 1, close),
+                                        facts,
+                                        masked)
                             .filter(_ -> !isDetached(comments, lines, start, close))
-                            .onPresent(write -> result.add(diagnostic(matcher.group(1), matcher.start(1), write, lines, ctx)));
+                            .onPresent(write -> result.add(diagnostic(matcher.group(1),
+                                                                      matcher.start(1),
+                                                                      write,
+                                                                      lines,
+                                                                      ctx)));
             }
         }
 
@@ -120,13 +125,22 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
     private boolean isPromise(String masked, Declarations.FileFacts facts, int start, int dot, int close) {
         var chain = SourceText.chain(masked.substring(start, dot));
 
-        return PromiseCarrier.isPromise(chain.text(), facts, start)
-               || returnsPromise(masked, facts, chain.isReturn(), start, close);
+        return PromiseCarrier.isPromise(chain.text(), facts, start) || returnsPromise(masked,
+                                                                                      facts,
+                                                                                      chain.isReturn(),
+                                                                                      start,
+                                                                                      close);
     }
 
     /// `return <chain>.onX(...);` in a method declared to return `Promise<...>`: `onX` returns the carrier it is called on.
-    private boolean returnsPromise(String masked, Declarations.FileFacts facts, boolean isReturn, int start, int close) {
-        return isReturn && endsStatement(masked, close) && "Promise".equals(PromiseCarrier.enclosingReturnType(masked, start, facts));
+    private boolean returnsPromise(String masked,
+                                   Declarations.FileFacts facts,
+                                   boolean isReturn,
+                                   int start,
+                                   int close) {
+        return isReturn
+               && endsStatement(masked, close)
+               && "Promise".equals(PromiseCarrier.enclosingReturnType(masked, start, facts));
     }
 
     private static boolean endsStatement(String masked, int close) {
@@ -164,29 +178,33 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
         var text = new StringBuilder();
 
         for (var i = first - 1; i < last && i < all.length; i++) {
-            text.append(all[i])
-                .append('\n');
+            text.append(all[i]).append('\n');
         }
 
         return text.toString();
     }
 
-    private Diagnostic diagnostic(String callback, int offset, SharedWrites.Write write, LineIndex lines, LintContext ctx) {
+    private Diagnostic diagnostic(String callback,
+                                  int offset,
+                                  SharedWrites.Write write,
+                                  LineIndex lines,
+                                  LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
                                      lines.lineAt(offset),
                                      lines.columnAt(offset),
-                                     "Promise." + callback + " callback " + write.description() + describeVia(write)
-                                     + " but runs on its own thread, concurrently with the promise's dependents: use "
-                                     + "withSuccess/withFailure/withResult (or a chain step), or record a deliberately detached "
-                                     + "effect with '// detached: <reason>'",
+                                     "Promise." + callback
+                                    + " callback " + write.description() + describeVia(write)
+                                    + " but runs on its own thread, concurrently with the promise's dependents: use "
+                                    + "withSuccess/withFailure/withResult (or a chain step), or record a deliberately detached "
+                                    + "effect with '// detached: <reason>'",
                                      "Promise on*/on*Run/on*Async callbacks run on a separate virtual thread, concurrently with the "
-                                     + "promise's dependents (the awaiting caller, the next map/flatMap), in no order relative to them. "
-                                     + "If anything after this promise can observe the state, use withSuccess/withFailure/withResult "
-                                     + "(chain order, before any dependent) or a plain chain step. If the effect is deliberately "
-                                     + "detached, keep the callback and record why in a comment on the statement: "
-                                     + "'// detached: <reason>'.");
+                                    + "promise's dependents (the awaiting caller, the next map/flatMap), in no order relative to them. "
+                                    + "If anything after this promise can observe the state, use withSuccess/withFailure/withResult "
+                                    + "(chain order, before any dependent) or a plain chain step. If the effect is deliberately "
+                                    + "detached, keep the callback and record why in a comment on the statement: "
+                                    + "'// detached: <reason>'.");
     }
 
     private static String describeVia(SharedWrites.Write write) {

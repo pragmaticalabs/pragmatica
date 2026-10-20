@@ -37,7 +37,6 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
     }
 
     String IDENT = SourceText.IDENT;
-
     Pattern HEAD = Pattern.compile("\\s*(?:this\\s*\\.\\s*)?(" + IDENT + ")");
     Pattern MEMBER = Pattern.compile(IDENT);
 
@@ -55,7 +54,17 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
                                       "onResultRunAsync");
 
     /// Names too common across types to infer a promise from a method of the same name declared in this file.
-    Set<String> GENERIC_NAMES = Set.of("get", "apply", "call", "run", "accept", "test", "of", "put", "add", "remove", "map");
+    Set<String> GENERIC_NAMES = Set.of("get",
+                                       "apply",
+                                       "call",
+                                       "run",
+                                       "accept",
+                                       "test",
+                                       "of",
+                                       "put",
+                                       "add",
+                                       "remove",
+                                       "map");
 
     /// Whether the receiver expression that starts at `offset` is proven to be a `Promise`, read left to right: the head fixes the
     /// starting state, then each `.name(...)` keeps it, switches it, or leaves it.
@@ -82,7 +91,8 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
     }
 
     private static State callHeadState(String name, FileFacts facts) {
-        return facts.promiseMethods().contains(name)
+        return facts.promiseMethods()
+                    .contains(name)
                ? State.PROMISE
                : State.UNKNOWN;
     }
@@ -114,7 +124,6 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
 
         while (i < text.length()) {
             i = skipBlanks(text, i + 1);
-
             if (i < text.length() && text.charAt(i) == '<') {
                 var close = SourceText.closeAngle(text, i);
 
@@ -125,15 +134,13 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
                 i = skipBlanks(text, close + 1);
             }
 
-            var member = MEMBER.matcher(text)
-                               .region(i, text.length());
+            var member = MEMBER.matcher(text).region(i, text.length());
 
             if (!member.lookingAt()) {
                 return State.UNKNOWN;
             }
 
             i = skipBlanks(text, member.end());
-
             if (i >= text.length() || text.charAt(i) != '(') {
                 state = State.UNKNOWN;
                 continue;
@@ -181,14 +188,17 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
     }
 
     private static boolean isPromiseMethod(String member, FileFacts facts) {
-        return facts.promiseMethods().contains(member) && !GENERIC_NAMES.contains(member);
+        return facts.promiseMethods()
+                    .contains(member) && !GENERIC_NAMES.contains(member);
     }
 
     /// Declared return type of the method whose body encloses `offset` through plain blocks only. A lambda body in between
     /// returns for the lambda, not the method, so it makes the enclosing declaration irrelevant.
     static String enclosingReturnType(String masked, int offset, FileFacts facts) {
         return facts.innermostAt(offset)
-                    .filter(method -> !crossesLambda(masked, method.bodyStart(), offset))
+                    .filter(method -> !crossesLambda(masked,
+                                                     method.bodyStart(),
+                                                     offset))
                     .map(Declarations.MethodDecl::returnType)
                     .or("");
     }
@@ -220,6 +230,8 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
             i--;
         }
 
-        return i >= 1 && masked.charAt(i) == '>' && masked.charAt(i - 1) == '-';
+        return i >= 1
+               && masked.charAt(i) == '>'
+               && masked.charAt(i - 1) == '-';
     }
 }

@@ -43,9 +43,15 @@ sealed interface Declarations permits Declarations.unused {
         }
     }
 
-    /// A method with a body: simple name, declared return type's simple name, parameter names in order, and the spans of its header
-    /// (name through closing brace) and body (inside the braces).
-    record MethodDecl(String name, String returnType, List<String> params, int headerStart, int bodyStart, int bodyEnd) {
+    /// A scope that opens names: a method (with or without a body) or a record. Holds the simple name, the declared return type's
+    /// simple name (`record` for a record), parameter or component names in order, and the spans of its header (name through
+    /// closing brace) and body (inside the braces; empty for a method without one).
+    record MethodDecl(String name,
+                      String returnType,
+                      List<String> params,
+                      int headerStart,
+                      int bodyStart,
+                      int bodyEnd) {
         static MethodDecl methodDecl(String name,
                                      String returnType,
                                      List<String> params,
@@ -64,7 +70,7 @@ sealed interface Declarations permits Declarations.unused {
         }
     }
 
-    /// Names, method return carriers and method bodies of one file.
+    /// Names, promise-returning methods, method bodies and scopes of one file.
     record FileFacts(Map<String, List<Decl>> names,
                      Set<String> promiseMethods,
                      Map<String, List<MethodDecl>> methods,
@@ -76,8 +82,8 @@ sealed interface Declarations permits Declarations.unused {
                                    List<MethodDecl> records) {
             var scopes = new ArrayList<MethodDecl>(records);
 
-            methods.values()
-                   .forEach(scopes::addAll);
+            methods.values().forEach(scopes::addAll);
+
             return new FileFacts(names, promiseMethods, methods, scopes, new HashMap<>());
         }
 
@@ -89,9 +95,9 @@ sealed interface Declarations permits Declarations.unused {
         private Option<MethodDecl> findInnermost(int offset) {
             return scopes.stream()
                          .filter(method -> method.covers(offset))
-                          .min(Comparator.comparingInt(MethodDecl::size))
-                          .map(Option::some)
-                          .orElseGet(Option::none);
+                         .min(Comparator.comparingInt(MethodDecl::size))
+                         .map(Option::some)
+                         .orElseGet(Option::none);
         }
 
         /// What `name` holds at `offset`: the nearest earlier declaration within the innermost enclosing method, then each
@@ -105,18 +111,17 @@ sealed interface Declarations permits Declarations.unused {
 
             var enclosing = scopes.stream()
                                   .filter(method -> method.covers(offset))
-                                   .sorted(Comparator.comparingInt(MethodDecl::size))
-                                   .toList();
+                                  .sorted(Comparator.comparingInt(MethodDecl::size))
+                                  .toList();
 
             for (var method : enclosing) {
                 var local = declared.stream()
                                     .filter(decl -> decl.offset() < offset && innermostAt(decl.offset()).filter(method::equals)
-                                                                                                        .isPresent())
+                                                                                         .isPresent())
                                     .reduce((_, later) -> later);
 
                 if (local.isPresent()) {
-                    return some(local.get()
-                                     .slot());
+                    return some(local.get().slot());
                 }
             }
 
@@ -212,7 +217,6 @@ sealed interface Declarations permits Declarations.unused {
                                     "EnumMap");
 
     String IDENT = SourceText.IDENT;
-
     Pattern DECLARED = Pattern.compile("(?<![.\\w$])((?:" + IDENT + "\\.)*)(" + IDENT + ")\\s*(<)?");
     Pattern DECLARED_NAME = Pattern.compile("\\s*(?:\\[\\]\\s*)*(" + IDENT + ")\\s*(\\(|=|;|,|\\)|:)");
     Pattern VAR_DECL = Pattern.compile("\\bvar\\s+(" + IDENT + ")\\s*=");
@@ -224,10 +228,39 @@ sealed interface Declarations permits Declarations.unused {
     Pattern LAMBDA_PARAMS = Pattern.compile("\\(([^()]*)\\)\\s*->");
     Pattern PROMISE_FACTORY_BEFORE = Pattern.compile("\\bPromise\\s*\\.\\s*(?:<[^>]*>\\s*)?promise\\s*\\(\\s*$");
 
-    Set<String> NOT_A_TYPE = Set.of("return", "new", "else", "case", "throw", "import", "package", "instanceof", "extends",
-                                    "implements", "throws", "yield", "assert", "var", "record", "class", "interface", "enum");
-    Set<String> CONTROL = Set.of("if", "for", "while", "switch", "catch", "synchronized", "try", "do", "return", "new", "else",
-                                 "throw", "super", "this");
+    Set<String> NOT_A_TYPE = Set.of("return",
+                                    "new",
+                                    "else",
+                                    "case",
+                                    "throw",
+                                    "import",
+                                    "package",
+                                    "instanceof",
+                                    "extends",
+                                    "implements",
+                                    "throws",
+                                    "yield",
+                                    "assert",
+                                    "var",
+                                    "record",
+                                    "class",
+                                    "interface",
+                                    "enum");
+
+    Set<String> CONTROL = Set.of("if",
+                                 "for",
+                                 "while",
+                                 "switch",
+                                 "catch",
+                                 "synchronized",
+                                 "try",
+                                 "do",
+                                 "return",
+                                 "new",
+                                 "else",
+                                 "throw",
+                                 "super",
+                                 "this");
 
     static FileFacts facts(String masked) {
         var methods = methodTable(masked);
@@ -240,27 +273,22 @@ sealed interface Declarations permits Declarations.unused {
         scanLambdaParams(masked, pending);
         scanVars(masked, pending);
         promiseMethods.removeAll(otherMethods);
-
         var names = new HashMap<String, List<Decl>>();
         var facts = FileFacts.fileFacts(names, promiseMethods, methods, recordScopes(masked));
 
-        pending.stream()
-               .sorted(Comparator.comparingInt(Pending::offset))
-               .forEach(entry -> resolve(entry, facts, names));
+        pending.stream().sorted(Comparator.comparingInt(Pending::offset)).forEach(entry -> resolve(entry, facts, names));
+
         return facts;
     }
 
     private static void resolve(Pending entry, FileFacts facts, Map<String, List<Decl>> names) {
-        var slot = entry.slot()
-                        .or(() -> slotOfInitializer(entry, facts));
+        var slot = entry.slot().or(() -> slotOfInitializer(entry, facts));
 
-        names.computeIfAbsent(entry.name(), _ -> new ArrayList<>())
-             .add(Decl.decl(entry.offset(), slot));
+        names.computeIfAbsent(entry.name(), _ -> new ArrayList<>()).add(Decl.decl(entry.offset(), slot));
     }
 
     private static Slot slotOfInitializer(Pending entry, FileFacts facts) {
-        return PromiseCarrier.isPromise(entry.initializer()
-                                             .or(""),
+        return PromiseCarrier.isPromise(entry.initializer().or(""),
                                         facts,
                                         entry.offset())
                ? Slot.PROMISE
@@ -301,7 +329,6 @@ sealed interface Declarations permits Declarations.unused {
                 methodBucket(slot, promiseMethods, otherMethods).add(name);
             } else {
                 pending.add(Pending.typed(named.start(1), name, slot));
-
                 if (insideRecordHeader(records, named.start(1))) {
                     methodBucket(slot, promiseMethods, otherMethods).add(name);
                 }
@@ -328,10 +355,10 @@ sealed interface Declarations permits Declarations.unused {
         while (matcher.find()) {
             var close = SourceText.closeOf(masked, matcher.end() - 1);
             var bodyOpen = close < 0
-                           ? - 1
+                           ? -1
                            : masked.indexOf('{', close);
             var bodyClose = bodyOpen < 0
-                            ? - 1
+                            ? -1
                             : SourceText.closeOf(masked, bodyOpen);
 
             if (bodyClose > 0) {
@@ -371,7 +398,7 @@ sealed interface Declarations permits Declarations.unused {
         var close = SourceText.closeAngle(masked, matcher.end() - 1);
 
         return close < 0
-               ? - 1
+               ? -1
                : close + 1;
     }
 
@@ -433,8 +460,7 @@ sealed interface Declarations permits Declarations.unused {
     private static Slot lambdaSlot(String masked, int paramStart) {
         var before = masked.substring(Math.max(0, paramStart - 60), paramStart);
 
-        return PROMISE_FACTORY_BEFORE.matcher(before)
-                                     .find()
+        return PROMISE_FACTORY_BEFORE.matcher(before).find()
                ? Slot.PROMISE
                : Slot.OTHER;
     }
@@ -446,7 +472,9 @@ sealed interface Declarations permits Declarations.unused {
             var end = SourceText.statementEnd(masked, matcher.end());
 
             if (end > 0) {
-                pending.add(Pending.inferred(matcher.start(1), matcher.group(1), masked.substring(matcher.end(), end)));
+                pending.add(Pending.inferred(matcher.start(1),
+                                             matcher.group(1),
+                                             masked.substring(matcher.end(), end)));
             }
         }
     }
@@ -473,14 +501,16 @@ sealed interface Declarations permits Declarations.unused {
 
             var bodyOpen = bodyOpenAfter(masked, close + 1);
             var bodyClose = bodyOpen < 0
-                            ? - 1
+                            ? -1
                             : SourceText.closeOf(masked, bodyOpen);
             var params = SourceText.declaredNames(masked.substring(open + 1, close));
 
             if (bodyClose > 0) {
-                add(table, MethodDecl.methodDecl(name, returnType, params, matcher.start(1), bodyOpen + 1, bodyClose));
+                add(table,
+                    MethodDecl.methodDecl(name, returnType, params, matcher.start(1), bodyOpen + 1, bodyClose));
             } else if (endsWithSemicolon(masked, close + 1)) {
-                add(table, MethodDecl.methodDecl(name, returnType, params, matcher.start(1), close + 1, close + 1));
+                add(table,
+                    MethodDecl.methodDecl(name, returnType, params, matcher.start(1), close + 1, close + 1));
             }
         }
 
@@ -488,8 +518,7 @@ sealed interface Declarations permits Declarations.unused {
     }
 
     private static void add(Map<String, List<MethodDecl>> table, MethodDecl method) {
-        table.computeIfAbsent(method.name(), _ -> new ArrayList<>())
-             .add(method);
+        table.computeIfAbsent(method.name(), _ -> new ArrayList<>()).add(method);
     }
 
     /// A method declared without a body (interface or abstract): `)` then optional `throws ...` then `;`.
@@ -514,7 +543,7 @@ sealed interface Declarations permits Declarations.unused {
 
         return i < masked.length() && masked.charAt(i) == '{'
                ? i
-               : - 1;
+               : -1;
     }
 
     /// Simple name of the type that precedes a method name (`Promise<Unit> run(` gives `Promise`), or empty when the token before
@@ -528,7 +557,6 @@ sealed interface Declarations permits Declarations.unused {
 
         if (end >= 0 && masked.charAt(end) == '>') {
             end = SourceText.openAngle(masked, end) - 1;
-
             while (end >= 0 && Character.isWhitespace(masked.charAt(end))) {
                 end--;
             }

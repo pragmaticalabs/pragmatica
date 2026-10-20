@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+
 /// JBCT-ASYNC-01: a Promise on* callback that writes shared state (WARNING).
 class CstPromiseCallbackWriteRuleTest {
     private static final String RULE_ID = "JBCT-ASYNC-01";
@@ -94,7 +95,10 @@ class CstPromiseCallbackWriteRuleTest {
 
         @Test
         void flags_collectionMutationsOnField() {
-            for (var call : List.of("seen.add(v)", "seen.remove(v)", "seen.clear()", "seen.addAll(List.of(v))")) {
+            for (var call : List.of("seen.add(v)",
+                                    "seen.remove(v)",
+                                    "seen.clear()",
+                                    "seen.addAll(List.of(v))")) {
                 assertTrue(flags("""
                         package org.example;
                         class Foo {
@@ -103,7 +107,8 @@ class CstPromiseCallbackWriteRuleTest {
                                 p.onSuccess(v -> %s);
                             }
                         }
-                        """.formatted(call)), call);
+                        """.formatted(call)),
+                           call);
             }
         }
 
@@ -124,14 +129,24 @@ class CstPromiseCallbackWriteRuleTest {
                                 p.onResultRun(() -> %s);
                             }
                         }
-                        """.formatted(call)), call);
+                        """.formatted(call)),
+                           call);
             }
         }
 
         @Test
         void flags_everyCallbackForm() {
-            for (var form : List.of("onSuccess", "onFailure", "onResult", "onSuccessRun", "onFailureRun", "onResultRun",
-                                    "onSuccessAsync", "onFailureAsync", "onResultAsync", "onSuccessRunAsync", "onFailureRunAsync",
+            for (var form : List.of("onSuccess",
+                                    "onFailure",
+                                    "onResult",
+                                    "onSuccessRun",
+                                    "onFailureRun",
+                                    "onResultRun",
+                                    "onSuccessAsync",
+                                    "onFailureAsync",
+                                    "onResultAsync",
+                                    "onSuccessRunAsync",
+                                    "onFailureRunAsync",
                                     "onResultRunAsync")) {
                 assertTrue(flags("""
                         package org.example;
@@ -141,7 +156,8 @@ class CstPromiseCallbackWriteRuleTest {
                                 p.%s(%s);
                             }
                         }
-                        """.formatted(form, argumentFor(form))), form);
+                        """.formatted(form, argumentFor(form))),
+                           form);
             }
         }
 
@@ -171,11 +187,8 @@ class CstPromiseCallbackWriteRuleTest {
                     """);
 
             assertEquals(1, found.size());
-            assertTrue(found.getFirst()
-                            .message()
-                            .contains("updates failures"),
-                       found.getFirst()
-                            .message());
+            assertTrue(found.getFirst().message().contains("updates failures"),
+                       found.getFirst().message());
         }
 
         @Test
@@ -252,13 +265,12 @@ class CstPromiseCallbackWriteRuleTest {
                     """);
 
             assertEquals(1, found.size());
-            assertEquals(7, found.getFirst()
-                                 .line());
-            assertEquals(12, found.getFirst()
-                                 .column());
+            assertEquals(7,
+                         found.getFirst().line());
+            assertEquals(12,
+                         found.getFirst().column());
             assertEquals(DiagnosticSeverity.WARNING,
-                         found.getFirst()
-                              .severity());
+                         found.getFirst().severity());
         }
     }
 
@@ -341,11 +353,8 @@ class CstPromiseCallbackWriteRuleTest {
                     """);
 
             assertEquals(1, found.size());
-            assertTrue(found.getFirst()
-                            .message()
-                            .contains("via outer"),
-                       found.getFirst()
-                            .message());
+            assertTrue(found.getFirst().message().contains("via outer"),
+                       found.getFirst().message());
         }
 
         @Test
@@ -1208,7 +1217,8 @@ class CstPromiseCallbackWriteRuleTest {
                                 p.onSuccess(v -> { %s });
                             }
                         }
-                        """.formatted(local)), local);
+                        """.formatted(local)),
+                            local);
             }
         }
 
@@ -1329,7 +1339,8 @@ class CstPromiseCallbackWriteRuleTest {
             var excluding = CstLinter.cstLinter(LintContext.lintContext(List.of("org.example.**")));
 
             assertTrue(flags(WRITER));
-            assertFalse(excluding.lint(SourceFile.sourceFile(Path.of("Test.java"), WRITER))
+            assertFalse(excluding.lint(SourceFile.sourceFile(Path.of("Test.java"),
+                                                             WRITER))
                                  .or(List.of())
                                  .stream()
                                  .anyMatch(diagnostic -> diagnostic.ruleId()
@@ -1354,17 +1365,13 @@ class CstPromiseCallbackWriteRuleTest {
         void message_namesTheFixAndTheEscapeHatch() {
             var found = lint(WRITER).getFirst();
 
-            assertTrue(found.message()
-                            .contains("assigns done"),
+            assertTrue(found.message().contains("assigns done"),
                        found.message());
-            assertTrue(found.message()
-                            .contains("withSuccess/withFailure/withResult"),
+            assertTrue(found.message().contains("withSuccess/withFailure/withResult"),
                        found.message());
-            assertTrue(found.message()
-                            .contains("// detached: <reason>"),
+            assertTrue(found.message().contains("// detached: <reason>"),
                        found.message());
-            assertTrue(found.details()
-                            .contains("separate virtual thread"),
+            assertTrue(found.details().contains("separate virtual thread"),
                        found.details());
         }
 
@@ -1393,6 +1400,7 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         methods.append("private void m%d() { done = true; }%n".formatted(depth));
+
         return """
                 package org.example;
                 class Foo {
@@ -1427,12 +1435,13 @@ class CstPromiseCallbackWriteRuleTest {
 
     private boolean flags(String source) {
         return lint(source).stream()
-                           .anyMatch(diagnostic -> diagnostic.ruleId()
-                                                             .equals(RULE_ID));
+                   .anyMatch(diagnostic -> diagnostic.ruleId()
+                                                     .equals(RULE_ID));
     }
 
     private List<Diagnostic> lint(String source) {
-        return linter.lint(SourceFile.sourceFile(Path.of("Test.java"), source))
+        return linter.lint(SourceFile.sourceFile(Path.of("Test.java"),
+                                                 source))
                      .onFailure(cause -> fail("Parse failed: " + cause.message()))
                      .or(List.of())
                      .stream()
