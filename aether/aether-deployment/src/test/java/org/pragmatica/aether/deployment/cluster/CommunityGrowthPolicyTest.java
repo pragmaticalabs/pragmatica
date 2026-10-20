@@ -110,9 +110,9 @@ class CommunityGrowthPolicyTest {
 
     @Test
     void pick_dissolvedAndDissolving_doNotCountTowardTheBound() {
-        assertThat(pick(community(0, ACTIVE, 10), community(1, DISSOLVED, 0), community(2, DISSOLVING, 0)))
-            .as("one live community of three allowed: a new one is minted past the dead numbers")
-            .isEqualTo(Decision.Mint.mint("eu-w-3"));
+        assertThat(pick(community(0, ACTIVE, 10), community(1, ACTIVE, 10), community(2, DISSOLVING, 0), community(3, DISSOLVED, 0)))
+            .as("two live communities of three allowed: a new one is minted past the dead numbers")
+            .isEqualTo(Decision.Mint.mint("eu-w-4"));
     }
 
     @Test
