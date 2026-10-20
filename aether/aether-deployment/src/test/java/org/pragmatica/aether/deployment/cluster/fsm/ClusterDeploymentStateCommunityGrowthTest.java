@@ -215,16 +215,18 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
-    void join_growthOn_foreignRefusedResultsInTheMergedList_doNotCountAgainstAPlacedJoin() {
+    void join_growthOn_aForeignRefusedResultInTheMergedList_doesNotAdvanceTheRefusalCount() {
         var fixture = fixture(config(true, 2, 5));
         var codes = fixture.captureWarnings();
 
-        fixture.foreignResults(false, false, false);
+        fixture.seedCommunity(FIRST);
+        fixture.alwaysRace(() -> fixture.toggleCommunityState(FIRST));
+        fixture.foreignResults(false, false);
+        fixture.limitCommits(10);
         fixture.joinAll(1);
 
-        assertThat(fixture.hasDirective(1)).isTrue();
-        org.awaitility.Awaitility.await().pollDelay(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(2)).until(() -> true);
-        assertThat(codes).as("three refusals that belong to other submitters are not this worker's refusals").doesNotContain("community-assignment-unplaced");
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
+        assertThat(fixture.cluster().applies.get()).as("refusals of other submitters' transactions do not count as this worker's").isEqualTo(CommunityAdmissionLedger.MAX_ATTEMPTS);
     }
 
     @Test
