@@ -60,6 +60,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
+import org.pragmatica.aether.deployment.validation.TopicTierPreflight;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -69,6 +71,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
@@ -77,6 +80,7 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.resource.TopicConfig;
+import org.pragmatica.aether.resource.TopicDurability;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -1244,21 +1248,110 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private Promise<Unit> doPublishTopicSubscriptions(Artifact artifact, Slice slice) {
             var entries = readSubscriptionsFromManifest(artifact, slice);
+            var publishers = readPublishersFromManifest(artifact, slice);
 
-            if (entries.isEmpty()) {
+            if (entries.isEmpty() && publishers.isEmpty()) {
                 return Promise.unitPromise();
             }
 
-            var commands = entries.stream()
-                                  .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact, entry))
-                                  .toList();
+            var commands = Stream.concat(entries.stream()
+                                                .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact, entry)),
+                                         publishers.stream()
+                                                   .filter(publisher -> publisher.tier() != TopicTier.UNDECLARED)
+                                                   .<KVCommand<AetherKey>> map(publisher -> buildTopicPublisherPutCommand(artifact,
+                                                                                                                          publisher)))
+                                 .toList();
 
-            return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} topic subscriptions for {}",
-                                                                        entries.size(),
-                                                                        artifact))
-                                 .onFailure(cause -> log.error("Failed to publish topic subscriptions for {}: {}",
-                                                               artifact,
-                                                               cause.message()));
+            return refuseTierConflicts(artifact, entries, publishers).async()
+                                      .flatMap(_ -> applyWithRetry(commands, 0))
+                                      .onSuccess(_ -> log.debug("Published {} topic subscriptions and {} topic publishers for {}",
+                                                                entries.size(),
+                                                                publishers.size(),
+                                                                artifact))
+                                      .onFailure(cause -> log.error("Failed to publish topic subscriptions for {}: {}",
+                                                                    artifact,
+                                                                    cause.message()));
+        }
+
+        /// #1337: the cross-deployment half of the tier check, in BOTH orders. A subscriber whose handler needs the durable tier is
+        /// refused while an ephemeral publisher of its topic is registered; a publisher that delivers ephemerally is refused while a
+        /// subscriber that needs the durable tier is registered. A row of the same slice at ANOTHER version does not count: an upgrade
+        /// replaces its predecessor, and must not be blocked by it. The rows are the ones the owning slices wrote at activation and
+        /// remove at unload, and the leader removes a dead node's, so a conflict here is a live one. Two slices activating at the same
+        /// instant can each miss the other's row; the runtime refusal in `TopicPublisher` is the backstop for that.
+        private Result<Unit> refuseTierConflicts(Artifact artifact,
+                                                 List<SubscriptionManifestEntry> subscriptions,
+                                                 List<PublisherManifestEntry> publishers) {
+            var conflicts = new ArrayList<String>();
+
+            subscriptions.stream()
+                         .filter(subscription -> subscription.tier().requiresDurable())
+                         .forEach(subscription -> ephemeralPublishersAt(subscription.address(), artifact)
+                                                      .forEach(publisher -> conflicts.add("topic " + subscription.address().asString()
+                                                                                          + " is subscribed by " + artifact.asString() + "." + subscription.methodName().name()
+                                                                                          + ", whose handler takes a MessageContext and needs a durable topic, but " + publisher
+                                                                                          + " publishes it on the EPHEMERAL tier")));
+            publishers.stream()
+                      .filter(publisher -> publisher.tier().deliversEphemeral())
+                      .forEach(publisher -> durableSubscribersAt(publisher.address(), artifact)
+                                                .forEach(subscriber -> conflicts.add("topic " + publisher.address().asString()
+                                                                                     + " is published on the EPHEMERAL tier by " + artifact.asString()
+                                                                                     + " but subscribed by " + subscriber
+                                                                                     + ", whose handler takes a MessageContext and needs a durable topic")));
+
+            return conflicts.isEmpty()
+                   ? Result.unitResult()
+                   : TopicTierPreflight.TopicTierMismatchRefused.FACTORY.apply(String.join("; ", conflicts)).result();
+        }
+
+        private List<String> ephemeralPublishersAt(ResourceAddress address, Artifact self) {
+            var found = new ArrayList<String>();
+
+            ctx.kvStore()
+               .forEach(TopicPublisherKey.class,
+                        TopicPublisherValue.class,
+                        (key, value) -> collectConflictingRow(found, key.address(), key.artifact(), key.nodeId(), value.tier().deliversEphemeral(), address, self));
+
+            return found;
+        }
+
+        private List<String> durableSubscribersAt(ResourceAddress address, Artifact self) {
+            var found = new ArrayList<String>();
+
+            ctx.kvStore()
+               .forEach(TopicSubscriptionKey.class,
+                        TopicSubscriptionValue.class,
+                        (key, value) -> collectConflictingRow(found,
+                                                              key.address(),
+                                                              key.artifact(),
+                                                              key.nodeId(),
+                                                              value.tier().requiresDurable(),
+                                                              address,
+                                                              self));
+
+            return found;
+        }
+
+        private static void collectConflictingRow(List<String> found,
+                                                  ResourceAddress rowAddress,
+                                                  Artifact rowArtifact,
+                                                  NodeId rowNode,
+                                                  boolean conflicting,
+                                                  ResourceAddress address,
+                                                  Artifact self) {
+            if (conflicting && rowAddress.equals(address) && !rowArtifact.base().equals(self.base())) {
+                var description = rowArtifact.asString() + " (on " + rowNode.id() + ")";
+
+                if (!found.contains(description)) {
+                    found.add(description);
+                }
+            }
+        }
+
+        private KVCommand<AetherKey> buildTopicPublisherPutCommand(Artifact artifact, PublisherManifestEntry entry) {
+            var key = TopicPublisherKey.topicPublisherKey(entry.address(), artifact, ctx.self());
+
+            return new KVCommand.Put<>(key, TopicPublisherValue.topicPublisherValue(ctx.self(), entry.tier()));
         }
 
         /// #1448: the key is node-scoped, so this node's subscription record is its own row. Before the
@@ -1286,18 +1379,24 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private Promise<Unit> doUnpublishTopicSubscriptions(Artifact artifact, Slice slice) {
             var entries = readSubscriptionsFromManifest(artifact, slice);
+            var publishers = readPublishersFromManifest(artifact, slice);
 
-            if (entries.isEmpty()) {
+            if (entries.isEmpty() && publishers.isEmpty()) {
                 return Promise.unitPromise();
             }
 
-            var commands = entries.stream()
-                                  .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
-                                                                                                           entry))
-                                  .toList();
+            var commands = Stream.concat(entries.stream()
+                                                .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
+                                                                                                                         entry)),
+                                         publishers.stream()
+                                                   .<KVCommand<AetherKey>> map(publisher -> new KVCommand.Remove<>(TopicPublisherKey.topicPublisherKey(publisher.address(),
+                                                                                                                                                       artifact,
+                                                                                                                                                       ctx.self()))))
+                                 .toList();
 
-            return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} topic subscriptions for {}",
+            return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} topic subscriptions and {} topic publishers for {}",
                                                                         entries.size(),
+                                                                        publishers.size(),
                                                                         artifact))
                                  .onFailure(cause -> log.error("Failed to unpublish topic subscriptions for {}: {}",
                                                                artifact,
@@ -1321,6 +1420,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// `tier` is what the handler requires of delivery (#1337): [TopicTier#DURABLE] for the context-carrying shape, which the
         /// slice processor marks `context=message` in the manifest, [TopicTier#ANY] for a bare handler.
         private record SubscriptionManifestEntry(ResourceAddress address, MethodName methodName, TopicTier tier) {}
+
+        /// A topic the slice publishes and the tier it delivers on (#1337): [TopicTier#DURABLE] / [TopicTier#EPHEMERAL] from the topic's
+        /// declared durability, [TopicTier#UNDECLARED] when that could not be read (no row is written then, so nothing is refused on a guess).
+        private record PublisherManifestEntry(ResourceAddress address, TopicTier tier) {}
 
         private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
 
@@ -1392,6 +1495,71 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                      requiredTier(entry))))
                                               .option()
                                               .onPresent(result::add);
+                }
+            }
+
+            return result;
+        }
+
+        private List<PublisherManifestEntry> readPublishersFromManifest(Artifact artifact, Slice slice) {
+            return readPublishBindingsFromManifest(artifact, slice).stream()
+                                                                   .flatMap(entry -> publisherEntry(artifact, entry).stream())
+                                                                   .toList();
+        }
+
+        private Option<PublisherManifestEntry> publisherEntry(Artifact artifact, ReactiveManifestEntry entry) {
+            return resolveSubscriptionAddress(artifact, entry).option()
+                                                              .map(address -> new PublisherManifestEntry(address,
+                                                                                                         declaredPublisherTier(artifact,
+                                                                                                                               entry.config())));
+        }
+
+        /// What the publisher's topic section declares, read through the same slice composite the publisher factory binds from. An ABSENT
+        /// section is the ephemeral default, exactly as at provisioning; a section that exists but cannot be bound, or no config service
+        /// at all, is [TopicTier#UNDECLARED].
+        private TopicTier declaredPublisherTier(Artifact artifact, String section) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                               .map(service -> publisherTierIn(service, section))
+                                               .or(TopicTier.UNDECLARED);
+        }
+
+        private static TopicTier publisherTierIn(ConfigService service, String section) {
+            return service.hasSection(section)
+                   ? service.config(section, TopicConfig.class)
+                            .map(config -> config.durability() == TopicDurability.DURABLE
+                                           ? TopicTier.DURABLE
+                                           : TopicTier.EPHEMERAL)
+                            .or(TopicTier.UNDECLARED)
+                   : TopicTier.EPHEMERAL;
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private List<ReactiveManifestEntry> readPublishBindingsFromManifest(Artifact artifact, Slice slice) {
+            var result = new ArrayList<ReactiveManifestEntry>();
+            var classLoader = slice.getClass().getClassLoader();
+
+            for (var iface : slice.getClass().getInterfaces()) {
+                if (iface == Slice.class) {
+                    continue;
+                }
+
+                var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+
+                try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                    if (is != null) {
+                        var props = new Properties();
+
+                        props.load(is);
+                        var count = Integer.parseInt(props.getProperty("publish.topics.count", "0"));
+
+                        for (int i = 0; i < count; i++) {
+                            var prefix = "publish.topic." + i + ".";
+
+                            result.add(new ReactiveManifestEntry("publisher", "", props.getProperty(prefix + "config", ""), props, prefix));
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("Could not read publisher manifest {} of {}: {}", manifestPath, artifact, e.toString());
                 }
             }
 

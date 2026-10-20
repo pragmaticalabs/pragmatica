@@ -705,7 +705,8 @@ public sealed interface AetherValue {
         }
     }
 
-    /// The delivery tier a topic subscriber's handler requires (#1337).
+    /// The delivery tier recorded on a topic row (#1337): on a [TopicSubscriptionValue] what the subscriber's handler REQUIRES, on a
+    /// [TopicPublisherValue] what the publisher DELIVERS on.
     ///
     /// Only [#DURABLE] constrains anything: it is a handler that takes the delivery context
     /// ([org.pragmatica.aether.slice.topic.ContextualEvent]), which an ephemeral delivery cannot build because it carries no
@@ -717,14 +718,34 @@ public sealed interface AetherValue {
         UNDECLARED,
         /// A bare handler: works on either tier.
         ANY,
-        /// A context-carrying handler: needs the envelope only durable delivery carries.
+        /// A context-carrying handler: needs the envelope only durable delivery carries. For a PUBLISHER row: a durable topic.
         DURABLE,
+        /// PUBLISHER rows only: the topic is delivered on the ephemeral tier (RPC fan-out, no envelope).
+        EPHEMERAL,
         /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing. Imposes no requirement.
         /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as UNKNOWN by an older node either way.
         UNKNOWN;
         /// Whether a subscriber recording this tier cannot be served by an ephemeral publisher.
         public boolean requiresDurable() {
             return this == DURABLE;
+        }
+
+        /// Whether a publisher recording this tier delivers on the ephemeral tier.
+        public boolean deliversEphemeral() {
+            return this == EPHEMERAL;
+        }
+    }
+
+    /// The row one instance of a topic PUBLISHER writes while its slice is deployed (#1337): the topic it publishes (the key's
+    /// address) and the tier it delivers on. It is what lets a durable-needing subscriber that arrives AFTER an ephemeral publisher be
+    /// refused at activation, and a publisher that arrives after such a subscriber be refused too.
+    ///
+    /// It lives exactly as long as the publishing slice instance: written when the slice activates, removed when it unloads
+    /// ([org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey] is node-scoped, like the subscription row, so one instance's
+    /// unload removes only its own row), and removed for a node that is gone with the rest of its per-deployment rows.
+    record TopicPublisherValue(NodeId nodeId, TopicTier tier) implements AetherValue {
+        public static TopicPublisherValue topicPublisherValue(NodeId nodeId, TopicTier tier) {
+            return new TopicPublisherValue(nodeId, tier);
         }
     }
 

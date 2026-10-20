@@ -650,10 +650,14 @@ public interface SystemTags {
         pin(table, 2167, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue");
         // #1155: ScheduledTaskStateValue with `boundHolder`; 2168 is free on every origin branch and open PR head (scanned 2026-10-19).
         pin(table, 2168, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue");
-        // #1337: TopicSubscriptionValue with `tier`, and the tier enum; 2169 and 2170 are free on every origin branch (159 tips) and
+        // #1337: TopicSubscriptionValue with `tier`, and the tier enum; 2169 and 2170 were free on every origin branch (159 tips) and
         // every open PR head (10), scanned 2026-10-20. 1655 keeps decoding the old shape.
         pin(table, 2169, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue");
         pin(table, 2170, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier");
+        // #1337: the topic PUBLISHER row. 2171..2173 are taken by origin/feat/storage-prefetch-over-swim (found by the 2026-10-20 scan,
+        // which also found them free on every open PR head), so these two start at 2174.
+        pin(table, 2174, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey");
+        pin(table, 2175, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue");
         // ---- 2143..16383 RESERVED ----
         rejectDuplicateTags(table);
 

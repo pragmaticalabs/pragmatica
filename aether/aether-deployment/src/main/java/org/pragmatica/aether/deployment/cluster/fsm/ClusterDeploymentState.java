@@ -2735,6 +2735,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var previousDirective = ctx.kvStore().get(directiveKey);
 
             consensusCommands.addAll(nodeRouteCommands);
+            consensusCommands.addAll(topicRowCommandsForNode(removedNode));
             workerNodes.remove(removedNode);
             log.info("Removed {} slice states, {} node-artifact entries, {} node-routes updates, and the "
                     + "activation directive for departed node {}",
@@ -2778,6 +2779,33 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void collectNodeArtifactKeyForNode(List<NodeArtifactKey> result, NodeArtifactKey key, NodeId nodeId) {
             if (key.nodeId().equals(nodeId)) {
                 result.add(key);
+            }
+        }
+
+        /// #1337: the topic subscription and publisher rows of a departed node. Both are written by the node's own slice activation and
+        /// removed by its unload, which a dead node never runs; left standing they would refuse a legitimate deployment (a publisher or
+        /// subscriber of the opposite tier) on behalf of a node that no longer exists.
+        private List<KVCommand<AetherKey>> topicRowCommandsForNode(NodeId removedNode) {
+            var commands = new ArrayList<KVCommand<AetherKey>>();
+
+            ctx.kvStore()
+               .forEach(AetherKey.TopicSubscriptionKey.class,
+                        AetherValue.TopicSubscriptionValue.class,
+                        (key, _) -> collectTopicRowKeyForNode(commands, key, key.nodeId(), removedNode));
+            ctx.kvStore()
+               .forEach(AetherKey.TopicPublisherKey.class,
+                        AetherValue.TopicPublisherValue.class,
+                        (key, _) -> collectTopicRowKeyForNode(commands, key, key.nodeId(), removedNode));
+
+            return commands;
+        }
+
+        private void collectTopicRowKeyForNode(List<KVCommand<AetherKey>> commands,
+                                               AetherKey key,
+                                               NodeId rowNode,
+                                               NodeId removedNode) {
+            if (rowNode.equals(removedNode)) {
+                commands.add(new KVCommand.Remove<>(key));
             }
         }
 
