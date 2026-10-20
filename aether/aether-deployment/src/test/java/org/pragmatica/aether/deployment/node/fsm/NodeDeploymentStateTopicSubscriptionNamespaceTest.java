@@ -5,7 +5,9 @@
 package org.pragmatica.aether.deployment.node.fsm;
 
 import java.net.SocketAddress;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -25,13 +27,17 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -39,6 +45,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumEstablished;
@@ -87,9 +94,15 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final Artifact SLICE = Artifact.artifact("org.example:order-audit:1.0.0").unwrap();
     private static final Artifact CONTEXT_SLICE = Artifact.artifact("org.example:order-context:1.0.0").unwrap();
+    private static final Artifact PUBLISHER_SLICE = Artifact.artifact("org.example:order-pub:1.0.0").unwrap();
+    /// A publisher of the same topic that is not any slice under test, for seeding rows another deployment wrote.
+    private static final Artifact OTHER_PUBLISHER = Artifact.artifact("org.example:other-pub:1.0.0").unwrap();
+    private static final NodeId OTHER_NODE = NodeId.nodeId("other-node").unwrap();
     private static final Artifact BLUEPRINT = Artifact.artifact("org.example:orders-app:1.0.0").unwrap();
     private static final MethodName EXECUTE = MethodName.methodName("execute").unwrap();
 
+    private KVStore<AetherKey, AetherValue> kvStore;
+    private final Map<Artifact, ConfigurationProvider> composites = new HashMap<>();
     private RecordingClusterNode cluster;
     private SubscribingSliceStore store;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> harness;
@@ -97,12 +110,16 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     @BeforeEach
     void setUp() {
         var router = MessageRouter.mutable();
-        var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+        kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
         var ctxHolder = new AtomicReference<NodeDeploymentContext>();
 
         // The deploy-time fact both ends read: this slice is OWNED by BLUEPRINT (#698).
         kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(SLICE.base()),
                                                                        SliceTargetValue.sliceTargetValue(SLICE.version(),
+                                                                                                          1,
+                                                                                                          Option.some(BlueprintId.blueprintId(BLUEPRINT)))),
+                                                    new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(PUBLISHER_SLICE.base()),
+                                                                       SliceTargetValue.sliceTargetValue(PUBLISHER_SLICE.version(),
                                                                                                           1,
                                                                                                           Option.some(BlueprintId.blueprintId(BLUEPRINT)))),
                                                     new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(CONTEXT_SLICE.base()),
@@ -227,6 +244,207 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
                                                                      .isEqualTo(TopicTier.DURABLE);
     }
 
+    // --- #1337: the publisher row and the symmetric refusal -----------------------------------------------------------------
+
+    private static final String EPHEMERAL_ORDERS = "ephemeral";
+    private static final String DURABLE_ORDERS = "durable";
+
+    /// A slice composite whose `orders` section is `durable`, `ephemeral`, or ABSENT (any other value of `kind`).
+    private void declarePublisherTopic(Artifact slice, String kind) {
+        var values = new HashMap<String, String>();
+
+        switch (kind) {
+            case DURABLE_ORDERS -> {
+                values.put("orders.topic_name", "orders");
+                values.put("orders.durability", "durable");
+            }
+            case EPHEMERAL_ORDERS -> values.put("orders.topic_name", "orders");
+            default -> values.put("unrelated.key", "value");
+        }
+
+        composites.put(slice, ConfigurationProvider.builder().withSource(MapConfigSource.mapConfigSource("test", values).unwrap()).build());
+    }
+
+    private ResourceAddress orders() {
+        return TopicAddressResolver.resolve(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders").unwrap();
+    }
+
+    private void seedPublisherRow(Artifact slice, NodeId node, TopicTier tier) {
+        kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(TopicPublisherKey.topicPublisherKey(orders(), slice, node),
+                                                                                             TopicPublisherValue.topicPublisherValue(node, tier)))));
+    }
+
+    private void seedSubscriberRow(Artifact slice, NodeId node, TopicTier tier) {
+        kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(TopicSubscriptionKey.topicSubscriptionKey(orders(),
+                                                                                                                                     slice,
+                                                                                                                                     MethodName.methodName("onMessage").unwrap(),
+                                                                                                                                     node),
+                                                                                             TopicSubscriptionValue.topicSubscriptionValue(node, tier)))));
+    }
+
+    /// Commits what the node submitted into the store the way consensus would: the checks read committed rows.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void commitRecordedCommands() {
+        var batch = cluster.commands().stream().filter(command -> command instanceof KVCommand.Put<?, ?> put && (put.key() instanceof TopicPublisherKey || put.key() instanceof TopicSubscriptionKey)
+                                                                  || command instanceof KVCommand.Remove<?> remove && (remove.key() instanceof TopicPublisherKey || remove.key() instanceof TopicSubscriptionKey)).toList();
+
+        if (!batch.isEmpty()) {
+            kvStore.process(kvStore.createBatch((List) batch));
+        }
+
+        cluster.clear();
+    }
+
+    private Map<String, TopicTier> publisherTiers() {
+        var tiers = new HashMap<String, TopicTier>();
+
+        cluster.commands()
+               .stream()
+               .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put && put.key() instanceof TopicPublisherKey)
+               .map(command -> (KVCommand.Put<AetherKey, ?>) command)
+               .forEach(put -> tiers.put(((TopicPublisherKey) put.key()).artifact().asString(), ((TopicPublisherValue) put.value()).tier()));
+
+        return tiers;
+    }
+
+    private boolean sliceFailedWith(String text) {
+        return cluster.commands()
+                      .stream()
+                      .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                           && put.value() instanceof AetherValue.SliceNodeValue value
+                                           && value.state() == SliceState.FAILED
+                                           && value.failureReason().map(reason -> reason.contains(text)).or(false));
+    }
+
+    @Test
+    void publishedPublisherRow_recordsTheTierTheTopicSectionDeclares() {
+        declarePublisherTopic(PUBLISHER_SLICE, DURABLE_ORDERS);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publisherTiers()).containsKey(PUBLISHER_SLICE.asString()));
+
+        assertThat(publisherTiers().get(PUBLISHER_SLICE.asString())).isEqualTo(TopicTier.DURABLE);
+    }
+
+    @Test
+    void publishedPublisherRow_forAnEphemeralSection_recordsEphemeral() {
+        declarePublisherTopic(PUBLISHER_SLICE, EPHEMERAL_ORDERS);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publisherTiers()).containsKey(PUBLISHER_SLICE.asString()));
+
+        assertThat(publisherTiers().get(PUBLISHER_SLICE.asString())).isEqualTo(TopicTier.EPHEMERAL);
+    }
+
+    /// An ABSENT section is the ephemeral default at provisioning, so it is what the row records; this is the case that motivated the
+    /// ticket (a publisher that simply never declares durability).
+    @Test
+    void publishedPublisherRow_forAnAbsentSection_recordsEphemeral() {
+        declarePublisherTopic(PUBLISHER_SLICE, "absent");
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publisherTiers()).containsKey(PUBLISHER_SLICE.asString()));
+
+        assertThat(publisherTiers().get(PUBLISHER_SLICE.asString())).isEqualTo(TopicTier.EPHEMERAL);
+    }
+
+    /// The row lives exactly as long as the deployment: the unload removes the key the activation wrote, node component included.
+    @Test
+    void unloadRemovesExactlyThePublisherRowThisNodeWrote() {
+        declarePublisherTopic(PUBLISHER_SLICE, EPHEMERAL_ORDERS);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publisherTiers()).containsKey(PUBLISHER_SLICE.asString()));
+        var written = TopicPublisherKey.topicPublisherKey(orders(), PUBLISHER_SLICE, SELF);
+
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.UNLOAD)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(cluster.commands()).anyMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key().equals(written)));
+    }
+
+    @Test
+    void durableSubscriber_isRefused_whileAnEphemeralPublisherRowStands() {
+        seedPublisherRow(OTHER_PUBLISHER, OTHER_NODE, TopicTier.EPHEMERAL);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, CONTEXT_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(sliceFailedWith("topic tier mismatch")).isTrue());
+
+        assertThat(subscriptionTiers()).as("a refused activation writes no subscription row").doesNotContainKey(CONTEXT_SLICE.asString());
+        assertThat(cluster.commands().stream().filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof AetherValue.SliceNodeValue value && value.failureReason().map(r -> r.contains("other-pub") && r.contains("EPHEMERAL")).or(false)).count())
+            .as("the refusal names the conflicting publisher").isPositive();
+    }
+
+    @Test
+    void ephemeralPublisher_isRefused_whileADurableSubscriberRowStands() {
+        declarePublisherTopic(PUBLISHER_SLICE, EPHEMERAL_ORDERS);
+        seedSubscriberRow(OTHER_PUBLISHER, OTHER_NODE, TopicTier.DURABLE);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(sliceFailedWith("topic tier mismatch")).isTrue());
+
+        assertThat(publisherTiers()).as("a refused activation writes no publisher row").isEmpty();
+    }
+
+    /// Controls: the rows that do NOT conflict are accepted, so the refusals above key on the tiers and not on the mere presence of a row.
+    @Test
+    void durableSubscriber_isAccepted_whenThePublisherRowIsDurable() {
+        seedPublisherRow(OTHER_PUBLISHER, OTHER_NODE, TopicTier.DURABLE);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, CONTEXT_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(subscriptionTiers()).containsKey(CONTEXT_SLICE.asString()));
+        assertThat(sliceFailedWith("topic tier mismatch")).isFalse();
+    }
+
+    @Test
+    void bareSubscriber_isAccepted_whileAnEphemeralPublisherRowStands() {
+        seedPublisherRow(OTHER_PUBLISHER, OTHER_NODE, TopicTier.EPHEMERAL);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(subscriptionTiers()).containsKey(SLICE.asString()));
+        assertThat(sliceFailedWith("topic tier mismatch")).isFalse();
+    }
+
+    /// An upgrade replaces its predecessor: the same slice's rows at ANOTHER version are not a conflict.
+    @Test
+    void rowsOfTheSameSliceAtAnotherVersion_doNotBlockItsUpgrade() {
+        seedPublisherRow(Artifact.artifact("org.example:order-context:0.9.0").unwrap(), OTHER_NODE, TopicTier.EPHEMERAL);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, CONTEXT_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(subscriptionTiers()).containsKey(CONTEXT_SLICE.asString()));
+    }
+
+    /// LIFECYCLE: the real publisher's own rows, committed as consensus would, block the durable subscriber while the publisher is
+    /// deployed and stop blocking it once the publisher is undeployed. A stale row blocking a legitimate deployment is a defect.
+    @Test
+    void undeployThenDurableSubscriber_succeeds() {
+        declarePublisherTopic(PUBLISHER_SLICE, EPHEMERAL_ORDERS);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publisherTiers()).containsKey(PUBLISHER_SLICE.asString()));
+        commitRecordedCommands();
+        assertThat(kvStore.get(TopicPublisherKey.topicPublisherKey(orders(), PUBLISHER_SLICE, SELF)).isPresent()).as("precondition: the row stands").isTrue();
+
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.UNLOAD)));
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(cluster.commands()).anyMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof TopicPublisherKey));
+        commitRecordedCommands();
+        assertThat(kvStore.get(TopicPublisherKey.topicPublisherKey(orders(), PUBLISHER_SLICE, SELF)).isPresent()).as("the unload removed the row").isFalse();
+
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, CONTEXT_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(subscriptionTiers()).containsKey(CONTEXT_SLICE.asString()));
+        assertThat(sliceFailedWith("topic tier mismatch")).isFalse();
+    }
+
     private java.util.Map<String, TopicTier> subscriptionTiers() {
         var tiers = new java.util.HashMap<String, TopicTier>();
 
@@ -305,6 +523,11 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     /// The same slice with the context-carrying binding (#1337); its manifest is `ContextSubscriberSlice.manifest`.
     interface ContextSubscriberSlice extends Slice {}
 
+    /// A slice that only PUBLISHES `orders` (#1337); its manifest is `PublisherSlice.manifest`.
+    interface PublisherSlice extends Slice {}
+
+    private static final class PublishingSlice extends SubscribingSlice implements PublisherSlice {}
+
     private static final class ContextSubscribingSlice extends SubscribingSlice implements ContextSubscriberSlice {}
 
     private static class SubscribingSlice implements TopicSubscriberSlice {
@@ -318,13 +541,15 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         }
     }
 
-    private static final class SubscribingSliceStore implements SliceStore {
+    private final class SubscribingSliceStore implements SliceStore {
         private final List<LoadedSlice> loadedSlices = new CopyOnWriteArrayList<>();
 
         private static LoadedSlice loadedSlice(Artifact artifact) {
             Slice slice = artifact.equals(CONTEXT_SLICE)
                           ? new ContextSubscribingSlice()
-                          : new SubscribingSlice();
+                          : artifact.equals(PUBLISHER_SLICE)
+                            ? new PublishingSlice()
+                            : new SubscribingSlice();
 
             return new LoadedSlice() {
                 @Override public Artifact artifact() {
@@ -362,7 +587,7 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         }
 
         @Override public Option<ConfigurationProvider> sliceComposite(Artifact artifact) {
-            return Option.none();
+            return Option.option(composites.get(artifact));
         }
     }
 
@@ -376,6 +601,10 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
 
         List<KVCommand<AetherKey>> commands() {
             return List.copyOf(commands);
+        }
+
+        void clear() {
+            commands.clear();
         }
 
         @Override public NodeId self() {return self;}
