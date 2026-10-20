@@ -426,7 +426,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                 bootstrapAttempts.get(),
                                                 BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
                                                 cause.message()))
-                   .onSuccess(_ -> bootstrapComplete.set(true));
+                   .withSuccess(_ -> bootstrapComplete.set(true));
     }
 
     private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {

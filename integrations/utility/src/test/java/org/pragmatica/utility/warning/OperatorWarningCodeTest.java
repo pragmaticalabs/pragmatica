@@ -111,6 +111,17 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.code()).isEqualTo("community-growth-blocked");
     }
 
+    /// #1337: the tier-mismatch refusal is closed by an INFO recovery of its own subsystem, so it needs no place on the frozen list.
+    @Test
+    void topicTierMismatch_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED.recoveryOf()
+                                                                   .unwrap()).isEqualTo(OperatorWarningCode.TOPIC_TIER_MISMATCH);
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH.hasRecovery()).isTrue();
+        assertThat(UNCLOSED_BEFORE_THE_RULE).doesNotContain(OperatorWarningCode.TOPIC_TIER_MISMATCH);
+    }
+
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
         OperatorWarningCode.SWIM_KILL_GATE_HELD,
         OperatorWarningCode.CORE_ABSENCE_FENCE,
