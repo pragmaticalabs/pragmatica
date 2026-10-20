@@ -240,6 +240,18 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aWorkerSilentInsideTheJoinGrace_stillHoldsItsSlot() {
+        var fixture = fixture(config(true, 1, 5));
+
+        fixture.joinAll(1);
+        fixture.markEveryoneAbsent();
+        fixture.passMillis(59_000L);
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(2)).as("59 s after its assignment the silent worker is still presumed live, so w-0 is full").isEqualTo(SECOND);
+    }
+
+    @Test
     void join_growthOn_aWorkerSilentPastTheJoinGrace_noLongerHoldsItsSlot() {
         var fixture = fixture(config(true, 1, 5));
 
@@ -402,7 +414,11 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         /// Time passes for the leader: past the join grace a silent worker is no longer given the benefit of the doubt.
         void passTheJoinGrace() {
-            clock.addAndGet(61_000L);
+            passMillis(61_000L);
+        }
+
+        void passMillis(long millis) {
+            clock.addAndGet(millis);
         }
 
         void markAbsent(int number) {
