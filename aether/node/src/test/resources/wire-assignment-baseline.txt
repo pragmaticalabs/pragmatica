@@ -38,6 +38,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$PlacementOperationPhase RES
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSource CTM=0,MANUAL=1,UNRECOGNISED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$SchemaStatus PENDING=0,MIGRATING=1,COMPLETED=2,FAILED=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus ASSIGNED=0,ACTIVE=1,FAILED=2,UNKNOWN=3
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$TopicTier UNDECLARED=0,ANY=1,DURABLE=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunState RUNNING=0,PAUSED=1,COMPLETED=2,ABORTED=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeStop NONE=0,PAUSE=1,ABORT=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.CommunityState FORMING=0,ACTIVE=1,DEGRADED=2,DISSOLVING=3,DISSOLVED=4,UNKNOWN=5
@@ -278,13 +279,14 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipVa
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue (state:org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryState,reasons:java.util.Set<org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReason>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue (nodeId:org.pragmatica.consensus.NodeId,consumerGroup:java.lang.String,batchMode:boolean,eventType:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryValue (entry:org.pragmatica.aether.slice.stream.StreamRegistryEntry)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$TopicSubscriptionValue (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$TopicSubscriptionValue (nodeId:org.pragmatica.consensus.NodeId,tier:org.pragmatica.aether.slice.kvstore.AetherValue$TopicTier)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$TopologyEntry (sourceName:java.lang.String,role:java.lang.String,count:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$UnconfirmedTerminationValue (cause:java.lang.String,seen:boolean,absent:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunValue (targetVersion:java.lang.String,order:java.util.List<org.pragmatica.consensus.NodeId>,index:int,inFlight:java.lang.String,state:org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunState,stop:org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeStop,reason:java.lang.String,startedAtMs:long,updatedAtMs:long,epoch:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$VersionRoutingValue (oldVersion:org.pragmatica.aether.artifact.Version,newVersion:org.pragmatica.aether.artifact.Version,newWeight:int,oldWeight:int,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$WorkerSliceDirectiveValue (artifact:org.pragmatica.aether.artifact.Artifact,targetInstances:int,placement:java.lang.String,targetCommunity:org.pragmatica.lang.Option<java.lang.String>,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue (lastExecutionAt:long,nextFireAt:long,consecutiveFailures:int,totalExecutions:int,lastFailureMessage:java.lang.String,updatedAt:long,skippedOverlaps:int,lastOutcome:java.lang.String,fireSeq:int,newestFireAt:long,completionTimeouts:int,lateResolutions:int)
+SHAPE org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.stream.StreamRegistryEntry (address:org.pragmatica.aether.slice.resource.ResourceAddress,retention:org.pragmatica.aether.slice.RetentionPolicy,registeredAtEpochMillis:long,registeredBy:org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind,refCount:int)
 SHAPE org.pragmatica.aether.stream.consensus.StreamConsensusCommand (streamName:java.lang.String,partition:int,payload:byte[],timestamp:long)
 SHAPE org.pragmatica.aether.stream.forward.RawEventDto (offset:long,timestamp:long,data:byte[])
@@ -674,7 +676,8 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipVal
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue 1714
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue 1653
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryValue 1654
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$TopicSubscriptionValue 1655
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$TopicSubscriptionValue 2169
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$TopicTier 2170
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$TopologyEntry 1656
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$UnconfirmedTerminationValue 2133
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunState 2134
@@ -684,6 +687,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$VersionRoutingValue 1657
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$WorkerSliceDirectiveValue 1658
 TAG  org.pragmatica.aether.slice.kvstore.CommunityState 1659
 TAG  org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue 1634
+TAG  org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue 1655
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry 1071062
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind 1762131
 TAG  org.pragmatica.aether.stream.consensus.StreamConsensusCommand 91
