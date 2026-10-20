@@ -225,6 +225,16 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
+                <artifactId>serialization-json</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>serialization-json-codegen</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-async-check</artifactId>
                 <version>${project.version}</version>
             </dependency>

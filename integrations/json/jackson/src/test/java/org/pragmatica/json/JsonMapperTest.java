@@ -25,6 +25,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -188,6 +189,19 @@ class JsonMapperTest {
                 });
         }
 
+        record Tagged(List<Option<String>> tags, Map<String, Option<String>> byKey) {}
+
+        // A container element is not an Option-typed property: its Option serializer must not be derived from
+        // the container's content type (that crashed with String -> Option ClassCastException).
+        @Test
+        void writeAsString_writesOptionsInsideContainers_asValueOrNull() {
+            var tagged = new Tagged(List.of(Option.some("a"), Option.none()), Map.of("k", Option.some("v")));
+
+            mapper.writeAsString(tagged)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(json -> assertEquals("{\"tags\":[\"a\",null],\"byKey\":{\"k\":\"v\"}}", json));
+        }
+
         @Test
         void writeAsString_succeeds_forOptionNone() {
             var user = new User("Bob", Option.none());
@@ -231,6 +245,23 @@ class JsonMapperTest {
         record Amount(long minor, String currency) {}
         record Refund(String id, Option<Long> partialAmount, Option<Amount> amount) {}
         record Outcome(String id, Result<Amount> settlement) {}
+
+        record Nested(List<Option<Amount>> amounts, Map<String, Option<Long>> counts, Option<Option<Long>> twice) {}
+
+        // An Option inside a container (or inside another Option) is resolved for its own type, not through an
+        // Option-typed property: pre-fix it arrived untyped, a record as LinkedHashMap and a number as Integer.
+        @Test
+        void readString_deserializesTypedElements_forOptionsInsideContainers() {
+            var json = "{\"amounts\":[{\"minor\":5,\"currency\":\"EUR\"},null],\"counts\":{\"k\":7},\"twice\":3}";
+
+            mapper.readString(json, Nested.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(nested -> {
+                    assertEquals(List.of(Option.some(new Amount(5, "EUR")), Option.none()), nested.amounts());
+                    assertEquals(Option.some(Long.class), nested.counts().get("k").map(Object::getClass));
+                    assertEquals(Option.some(Option.some(3L)), nested.twice());
+                });
+        }
 
         // Option<String> works even without contextualization, so these tests pin non-String
         // elements: pre-#696 a declared Option<Long> arrived as Integer and a record element as
