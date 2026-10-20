@@ -22,11 +22,14 @@ import static org.pragmatica.lang.Result.unitResult;
 
 
 public final class RabiaMetricsCollector implements ConsensusMetrics {
+    /// The engine stopped taking the Round-2-skipping fast path in #1390, so nothing counts it any more.
+    /// The wire field stays (constant zero) so the management API and Prometheus vocabularies do not change.
+    private static final long NO_FAST_PATH = 0L;
+
     private final AtomicLong decisionsCount = new AtomicLong();
     private final AtomicLong proposalsCount = new AtomicLong();
     private final AtomicLong voteRound1Count = new AtomicLong();
     private final AtomicLong voteRound2Count = new AtomicLong();
-    private final AtomicLong fastPathCount = new AtomicLong();
     private final AtomicLong syncSuccessCount = new AtomicLong();
     private final AtomicLong syncFailureCount = new AtomicLong();
     private final AtomicInteger pendingBatches = new AtomicInteger();
@@ -74,12 +77,6 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
 
     @Override
     @Contract
-    public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {
-        fastPathCount.incrementAndGet();
-    }
-
-    @Override
-    @Contract
     public void recordSyncAttempt(NodeId nodeId, boolean success) {
         if (success) {
             syncSuccessCount.incrementAndGet();
@@ -123,7 +120,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 proposalsCount.get(),
                                 voteRound1Count.get(),
                                 voteRound2Count.get(),
-                                fastPathCount.get(),
+                                NO_FAST_PATH,
                                 syncSuccessCount.get(),
                                 syncFailureCount.get(),
                                 totalDecisionLatencyNs.sum(),
@@ -139,7 +136,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 proposalsCount.getAndSet(0),
                                 voteRound1Count.getAndSet(0),
                                 voteRound2Count.getAndSet(0),
-                                fastPathCount.getAndSet(0),
+                                NO_FAST_PATH,
                                 syncSuccessCount.getAndSet(0),
                                 syncFailureCount.getAndSet(0),
                                 totalDecisionLatencyNs.sumThenReset(),

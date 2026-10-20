@@ -29,7 +29,8 @@ import org.pragmatica.messaging.Message;
 /// `Paused`, `Stopped`, `Observing`). The one exception is demotion: moving from `Active` into
 /// `Observing` because a voter reconfiguration removed this node while the cluster kept quorum
 /// emits `ConsensusDemoted` instead (#1790) — the node is still passive, but it did not lose quorum
-/// and keeps applying committed decisions. Leaving `Observing` for any other non-active state
+/// and keeps applying committed decisions. The reverse edge, an observer returning to `Observing` from `Passive`, emits
+/// `ConsensusObserving`. Leaving `Observing` for any other non-active state
 /// (`Paused`, `Syncing`, `Stopped`) emits `ConsensusPassive`.
 public sealed interface ConsensusEvent extends Message.Local {
     NodeId self();
@@ -39,4 +40,9 @@ public sealed interface ConsensusEvent extends Message.Local {
     record ConsensusPassive(NodeId self) implements ConsensusEvent {}
 
     record ConsensusDemoted(NodeId self) implements ConsensusEvent {}
+
+    /// An observer is observing again after a stretch outside `Observing` (a catch-up resync, a quorum-loss pause): it
+    /// applies committed decisions once more (#2306). Fires on `Passive -> Observing`, the edge `ConsensusDemoted` leaves
+    /// alone because it was not preceded by `Active`.
+    record ConsensusObserving(NodeId self) implements ConsensusEvent {}
 }

@@ -6,16 +6,6 @@
 package org.pragmatica.aether.node;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,11 +21,11 @@ import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,20 +48,11 @@ class AetherNodeAntiEntropyCycleBootTest {
     private static final String ROUND_MARKER = "DHT anti-entropy round:";
 
     private AetherNode node;
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("AntiEntropyCycleCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.DEBUG, null);
-        loggerConfig.setLevel(Level.DEBUG);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.DEBUG, false);
     }
 
     @AfterEach
@@ -79,11 +60,7 @@ class AetherNodeAntiEntropyCycleBootTest {
         if (node != null) {
             node.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
         }
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
         org.pragmatica.config.ConfigService.clear();
         org.pragmatica.aether.resource.ResourceProvider.clear();
     }
@@ -95,26 +72,26 @@ class AetherNodeAntiEntropyCycleBootTest {
                           .onFailure(cause -> fail("construction must succeed: " + cause.message()))
                           .unwrap();
 
-        assertThat(appender.rounds()).as("a created-but-unstarted node performs no periodic work (#644)").isZero();
+        assertThat(rounds()).as("a created-but-unstarted node performs no periodic work (#644)").isZero();
 
         node.start().await(timeSpan(30).seconds())
             .onFailure(cause -> fail("start() must resolve on the single-node formation: " + cause.message()));
 
         var deadline = System.nanoTime() + timeSpan(15).seconds().nanos();
 
-        while (appender.rounds() < 2 && System.nanoTime() < deadline) {
+        while (rounds() < 2 && System.nanoTime() < deadline) {
             Thread.sleep(200);
         }
 
-        assertThat(appender.rounds()).as("the cycle runs on the configured 1s interval after formation").isGreaterThanOrEqualTo(2);
+        assertThat(rounds()).as("the cycle runs on the configured 1s interval after formation").isGreaterThanOrEqualTo(2);
 
         node.stop().await(timeSpan(10).seconds()).onFailure(cause -> fail("stop must succeed: " + cause.message()));
         node = null;
-        var afterStop = appender.rounds();
+        var afterStop = rounds();
 
         Thread.sleep(2_500);
 
-        assertThat(appender.rounds()).as("no round fires after stop() — the cycle is cancelled with the node").isEqualTo(afterStop);
+        assertThat(rounds()).as("no round fires after stop() — the cycle is cancelled with the node").isEqualTo(afterStop);
     }
 
     private static AetherNodeConfig minimalConfig(Path storageRoot) {
@@ -134,34 +111,7 @@ class AetherNodeAntiEntropyCycleBootTest {
                                .withTimeouts(timeouts);
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.DEBUG, false);
-        configuration.addLogger(LOGGER_NAME, fresh);
-        return fresh;
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        long rounds() {
-            return messages.stream().filter(m -> m.startsWith(ROUND_MARKER)).count();
-        }
+    private long rounds() {
+        return capture.messages().stream().filter(m -> m.startsWith(ROUND_MARKER)).count();
     }
 }

@@ -181,6 +181,13 @@ public final class SliceTestKit {
     /// Provision a resource via a testcontainer instead of a fake (see §5.2).
     SliceTestKit<T> withContainer(Class<?> resourceType, String configSection, ContainerResource<?> spec);
 
+    /// Supply configuration for `@ResourceQualifier(type = ConfigurationSection.class)` parameters (#897):
+    /// flat `section.key` entries, or any `ConfigurationProvider` (e.g. a TOML document layered over defaults).
+    /// Read through `ConfigFacade.configFacade(..)`, the facade a deployed slice gets, so typed parsing and
+    /// `requireStringList` match production. A repeated call replaces the earlier source (last wins).
+    SliceTestKit<T> withConfig(Map<String, String> values);
+    SliceTestKit<T> withConfig(ConfigurationProvider provider);
+
     /// Override the interceptor stack (default = Aspect.identity()).
     SliceTestKit<T> withAspect(Aspect<T> aspect);
 

@@ -1094,6 +1094,157 @@ class StorageFactoryEncryptionTest {
                                                               .isEmpty();
     }
 
+    /// #1170: `AetherNode.start()` runs the DHT marker check AFTER `createAll` has committed every
+    /// disk marker, so a definite DHT refusal used to leave the sibling's fresh `.encryption-enabled`
+    /// behind: the operator's back-out to `encrypted = false` then tripped that instance's reverse
+    /// guard on a stamp no ciphertext justified (#852's symptom, one boundary out). `plain` is
+    /// marked encrypted in the DHT by a prior boot and then booted without a keyring for it, which is
+    /// the refusal; `vault` is the sibling whose disk marker this boot stamps.
+    private Map<String, StorageFactory.StorageSetup> bootRefusedByDht(DHTClient dhtClient,
+                                                                       Path plainDisk,
+                                                                       Path vaultDisk) throws IOException {
+        Files.writeString(plainDisk, "a plain file here forces LocalDiskTier construction to fail");
+
+        var prior = createAllOrFail(Map.of("plain", storageConfigAt(plainDisk, true)),
+                                    Option.some(dhtClient),
+                                    Option.some(singleKeyRing("key-1")));
+
+        admitDhtMarker(prior.get("plain"), dhtClient);
+
+        return createAllOrFail(Map.of("plain", storageConfigAt(plainDisk, false),
+                                      "vault", storageConfigAt(vaultDisk, true)),
+                               Option.some(dhtClient),
+                               Option.some(singleKeyRing("key-1")));
+    }
+
+    @Test
+    void admitDhtMarkers_removesFreshDiskMarker_whenTheDhtCheckRefusesTheBoot() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var vaultDisk = tempDir.resolve("vault-disk-1170");
+        var boot = bootRefusedByDht(dhtClient, tempDir.resolve("plain-disk-1170"), vaultDisk);
+
+        assertThat(Files.exists(vaultDisk.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("precondition: createAll stamped the sibling before the post-formation check ran")
+                .isTrue();
+
+        var admission = StorageFactory.admitDhtMarkers(dhtClient, boot, () -> false).await();
+
+        admission.onSuccess(_ -> fail("the DHT check must refuse a boot without a keyring over an encrypted namespace"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+        assertThat(Files.exists(vaultDisk.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("a boot refused after formation must not leave the marker it stamped")
+                .isFalse();
+    }
+
+    @Test
+    void admitDhtMarkers_allowsBackOut_afterTheDhtCheckRefusedTheBoot() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var vaultDisk = tempDir.resolve("vault-disk-1170-backout");
+        var plainDisk = tempDir.resolve("plain-disk-1170-backout");
+        var boot = bootRefusedByDht(dhtClient, plainDisk, vaultDisk);
+
+        StorageFactory.admitDhtMarkers(dhtClient, boot, () -> false).await();
+
+        var backedOut = StorageFactory.createAll(Map.of("plain", storageConfigAt(plainDisk, false),
+                                                        "vault", storageConfigAt(vaultDisk, false)),
+                                                 NODE_ID,
+                                                 Option.some(dhtClient),
+                                                 Option.none(),
+                                                 synthesisDefaults());
+
+        assertThat(backedOut.isSuccess()).as("the sibling, backed out to encrypted = false, must start")
+                                         .isTrue();
+    }
+
+    /// #1170 round 2: the DHT side of the same boundary. `vault`'s check WRITES its namespace marker; if
+    /// that lands before `plain`'s check refuses, the refused boot has stamped the DHT and backing
+    /// `vault` out to `encrypted = false` is then refused by the very marker the refused boot left.
+    /// The marker writes therefore wait until every refusing check has passed.
+    @Test
+    void admitDhtMarkers_writesNoDhtMarker_whenAnotherInstanceRefusesTheBoot() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var boot = bootRefusedByDht(dhtClient, tempDir.resolve("plain-disk-1170-dht"), tempDir.resolve("vault-disk-1170-dht"));
+
+        StorageFactory.admitDhtMarkers(dhtClient, boot, () -> false).await();
+
+        assertThat(dhtClient.get("vault-blocks/" + EncryptingStorageTier.MARKER_FILE_NAME).await().unwrap().isPresent())
+                .as("a refused boot must not stamp the DHT namespace of a sibling")
+                .isFalse();
+        boot.get("vault").dhtMarkerCheck().onPresent(check -> assertThat(check.readGate().isResolved())
+                .as("the sibling's gate is resolved with the refusal, not left to the admission timeout")
+                .isTrue());
+    }
+
+    @Test
+    void admitDhtMarkers_bootsAfterBackOut_whenTheRefusedBootWouldHaveStampedTheDht() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var plainDisk = tempDir.resolve("plain-disk-1170-dht-backout");
+        var vaultDisk = tempDir.resolve("vault-disk-1170-dht-backout");
+        var refused = bootRefusedByDht(dhtClient, plainDisk, vaultDisk);
+
+        StorageFactory.admitDhtMarkers(dhtClient, refused, () -> false).await();
+
+        var backedOut = createAllOrFail(Map.of("plain", storageConfigAt(plainDisk, true),
+                                               "vault", storageConfigAt(vaultDisk, false)),
+                                        Option.some(dhtClient),
+                                        Option.some(singleKeyRing("key-1")));
+
+        StorageFactory.admitDhtMarkers(dhtClient, backedOut, () -> false)
+                      .await()
+                      .onFailure(cause -> fail("backing the sibling out to encrypted = false must boot: " + cause.message()));
+    }
+
+    @Test
+    void admitDhtMarkers_keepsDiskMarker_whenCiphertextAlreadyLandedBesideIt() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var vaultDisk = tempDir.resolve("vault-disk-1170-blocks");
+        var boot = bootRefusedByDht(dhtClient, tempDir.resolve("plain-disk-1170-blocks"), vaultDisk);
+
+        admitDhtMarker(boot.get("vault"), dhtClient);
+        writeThrough(boot.get("vault"));
+        StorageFactory.admitDhtMarkers(dhtClient, boot, () -> false).await();
+
+        assertThat(Files.exists(vaultDisk.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("the marker is what stops a plain boot reading framed ciphertext as content; "
+                    + "never remove it from a directory that already holds blocks")
+                .isTrue();
+    }
+
+    @Test
+    void admitDhtMarkers_keepsDiskMarker_thatAnEarlierBootStamped() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var vaultDisk = tempDir.resolve("vault-disk-1170-earlier");
+
+        createAllOrFail(Map.of("vault", storageConfigAt(vaultDisk, true)),
+                        Option.some(dhtClient),
+                        Option.some(singleKeyRing("key-1")));
+
+        var boot = bootRefusedByDht(dhtClient, tempDir.resolve("plain-disk-1170-earlier"), vaultDisk);
+
+        StorageFactory.admitDhtMarkers(dhtClient, boot, () -> false).await();
+
+        assertThat(Files.exists(vaultDisk.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("a marker this boot did not stamp is not this boot's to remove")
+                .isTrue();
+    }
+
+    @Test
+    void admitDhtMarkers_keepsDiskMarker_whenTheDhtCheckAdmitsTheBoot() {
+        var dhtClient = new InMemoryDHTClient();
+        var vaultDisk = tempDir.resolve("vault-disk-1170-admitted");
+        var boot = createAllOrFail(Map.of("vault", storageConfigAt(vaultDisk, true)),
+                                   Option.some(dhtClient),
+                                   Option.some(singleKeyRing("key-1")));
+
+        StorageFactory.admitDhtMarkers(dhtClient, boot, () -> false)
+                      .await()
+                      .onFailure(cause -> fail("an admissible boot must be admitted: " + cause.message()));
+
+        assertThat(Files.exists(vaultDisk.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("an admitted boot keeps its marker")
+                .isTrue();
+    }
+
     /// Test mirror of the check list `AetherNode.verifyDhtMarkers` builds (every setup's
     /// `dhtMarkerCheck`, present ones only) -- that loop is private to the node record, so it is
     /// re-stated here, not called.

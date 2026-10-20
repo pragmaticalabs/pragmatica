@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
@@ -41,7 +40,13 @@ public class CheckCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // Load configuration
-        var config = ConfigLoader.load(Option.option(configPath), Option.none());
+        var loadedConfig = CliConfig.load(Option.option(configPath));
+
+        if (loadedConfig.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        var config = loadedConfig.unwrap();
         var formatter = JbctFormatter.jbctFormatter(config.formatter());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);

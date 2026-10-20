@@ -19,8 +19,10 @@ import java.util.function.Consumer;
 
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusDemoted;
+import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusObserving;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.messaging.MessageRouter;
 
@@ -58,6 +60,7 @@ public final class ConsensusBridge {
             case ConsensusActive active -> publishActive(active);
             case ConsensusPassive passive -> publishPassive(passive);
             case ConsensusDemoted demoted -> publishDemoted(demoted);
+            case ConsensusObserving observing -> publishObserving(observing);
         }
     }
 
@@ -77,5 +80,11 @@ public final class ConsensusBridge {
     private void publishDemoted(ConsensusDemoted event) {
         log.info("ConsensusBridge: DEMOTED (observer of a live quorum) for {}", event.self());
         router.route(ClusterStateNotification.demotion());
+    }
+
+    @Contract
+    private void publishObserving(ConsensusObserving event) {
+        log.info("ConsensusBridge: OBSERVING (observer applies decisions again) for {}", event.self());
+        router.route(ObserverResumedNotification.observerResumed(event.self()));
     }
 }

@@ -13,7 +13,7 @@
 #   - confirmation_factor = 3  -> owner + 2 per write: a publish acks only after BOTH replicas hold the
 #     event, so every acked event is on every replica (CF == RF; raises the deploy warning, #1564).
 #     The test asserts the committed config carries it.
-#   - retention  = count     -> count-based eviction (never time-based); retention-value is far larger
+#   - retention  = count     -> count-based eviction (never time-based); retention_value is far larger
 #     than any test event count, so nothing is ever dropped.
 
 [streams.acked-events]
@@ -21,5 +21,5 @@ partitions = 1
 replication_factor = 3
 confirmation_factor = 3
 retention = "count"
-retention-value = "100000"
-max-event-size = "64KB"
+retention_value = "100000"
+max_event_size = "64KB"

@@ -235,6 +235,31 @@ volumes:
   aether-config-1:
 ```
 
+### Node state directory (volume sentinels)
+
+The node keeps a small state directory, `/var/lib/aether` in the image (override with `AETHER_STATE_DIR` or
+`-Daether.state.dir`), on the **boot filesystem, not under `/data`**. It holds one sentinel file per guarded
+data volume, which is how a node tells an unmounted data volume from a genuine first boot: with a sentinel
+present and the volume's marker missing, it refuses to start on empty metadata and names the path.
+
+It guards only while it outlives the data volume. Recommended: give it a small separate volume or a bind
+mount, which survives container recreation:
+
+```yaml
+services:
+  aether-node-1:
+    volumes:
+      - aether-data-1:/data
+      - aether-state-1:/var/lib/aether
+
+volumes:
+  aether-state-1:
+```
+
+With **no mount** the state directory lives in the container layer and covers restarts only: a recreated
+container has no sentinel and reads an empty `/data` as a first boot. If the state directory is on the same
+filesystem as a guarded volume, the node logs one WARN at boot that the guard is inactive, naming both paths.
+
 ### TLS Configuration
 
 For production, enable TLS. There are no `TLS_*` environment variables — TLS is a TOML setting

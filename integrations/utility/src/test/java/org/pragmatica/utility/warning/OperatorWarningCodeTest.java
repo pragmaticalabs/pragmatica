@@ -17,6 +17,7 @@ package org.pragmatica.utility.warning;
 
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -60,6 +61,70 @@ class OperatorWarningCodeTest {
                          .map(OperatorWarningCode::subsystem))
             .allMatch(subsystem -> subsystem.matches("[a-z][a-z0-9]*(-[a-z0-9]+)*"));
     }
+
+    /// Every operator-attention event has a recovery event (owner rule, 2026-10-03/05). A WARNING or CRITICAL code that is
+    /// not itself a recovery must therefore be closed by some recovery code. The codes in [#UNCLOSED_BEFORE_THE_RULE] were
+    /// shipped as point events before the rule was enforced: the list is frozen, so a NEW unclosed code fails here and must
+    /// either gain a recovery or be added to the list on purpose, in review.
+    @Test
+    void everyWarningOrCriticalCode_hasARecovery_unlessListedAsUnclosedBeforeTheRule() {
+        var closed = Arrays.stream(OperatorWarningCode.values())
+                           .flatMap(code -> code.recoveryOf().stream())
+                           .collect(Collectors.toSet());
+        var unclosed = Arrays.stream(OperatorWarningCode.values())
+                             .filter(code -> code.level() != WarningLevel.INFO)
+                             .filter(code -> code.recoveryOf().isEmpty())
+                             .filter(code -> !closed.contains(code))
+                             .collect(Collectors.toSet());
+
+        assertThat(unclosed).as("WARNING/CRITICAL codes without a recovery code that are not on the frozen list")
+                            .isSubsetOf(UNCLOSED_BEFORE_THE_RULE);
+    }
+
+    /// The frozen list may only shrink: a listed code that has gained a recovery (or been removed) must leave the list.
+    @Test
+    void unclosedBeforeTheRule_listsOnlyCodesThatAreStillUnclosed() {
+        var closed = Arrays.stream(OperatorWarningCode.values())
+                           .flatMap(code -> code.recoveryOf().stream())
+                           .collect(Collectors.toSet());
+
+        assertThat(UNCLOSED_BEFORE_THE_RULE).noneMatch(closed::contains);
+        assertThat(UNCLOSED_BEFORE_THE_RULE).noneMatch(code -> code.level() == WarningLevel.INFO);
+    }
+
+    /// #2306: the observer lag warning is closed by an INFO recovery of its own subsystem.
+    @Test
+    void observerConsensusLagging_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED.recoveryOf()
+                                                                 .unwrap()).isEqualTo(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING);
+        assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
+    private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
+        OperatorWarningCode.SWIM_KILL_GATE_HELD,
+        OperatorWarningCode.CORE_ABSENCE_FENCE,
+        OperatorWarningCode.REPLICA_FSYNC_FAILED,
+        OperatorWarningCode.REPLICATION_POLICY_WARNING,
+        OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE,
+        OperatorWarningCode.DEPLOY_WARNING,
+        OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED,
+        OperatorWarningCode.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED,
+        OperatorWarningCode.BACKUP_FORKED,
+        OperatorWarningCode.NODE_NEVER_JOINED,
+        OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
+        OperatorWarningCode.NODE_DRAIN_CANCELLED_REJOINED,
+        OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED,
+        OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED,
+        OperatorWarningCode.STREAM_DIVERGENT_TAIL_TRUNCATED,
+        OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED,
+        OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS,
+        OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
+        OperatorWarningCode.STREAM_CONSUMER_REWOUND,
+        OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
+        OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
+        OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT,
+        OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT);
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.

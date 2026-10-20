@@ -75,10 +75,10 @@ public final class EmberH2Server {
                                 try (Connection conn = DriverManager.getConnection(jdbcUrl(),
                                                                                    "sa",
                                                                                    "")) {
-                                var statement = conn.createStatement();
+                                    var statement = conn.createStatement();
 
-                                statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
-                            }
+                                    statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
+                                }
                             })
                       .mapToUnit()
                       .onSuccess(_ -> log.info("H2 init script completed"))

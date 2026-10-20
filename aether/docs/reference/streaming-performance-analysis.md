@@ -206,7 +206,7 @@ Retention is driven by `RetentionPolicy`: `ANY` evicts when any configured limit
 
 `OffHeapRingBuffer.notifyAndEvict` calls `SegmentSealer.onEviction` on the thread that triggered eviction. That thread builds and serialises the segment and calls `StorageSegmentSink.seal`. The node's sink neither compresses nor encrypts (§2), so `seal` goes straight to `putRef`. The sealer then **discards** the `Promise` returned by `sink.seal`, so it does not wait for the storage write `[mechanism: SegmentSealer.onEviction does not use the Promise from sink.seal]`. Any at-rest encryption happens below `putRef`, in the storage tier. Which thread runs it, and whether `putRef` blocks before returning its `Promise`, was not traced `[design intent — unverified]`. Segment serialisation therefore lands on the append path (**analytical**).
 
-A sink built with an encryptor (not the node's today) writes **plaintext** if encryption fails `[mechanism: StorageSegmentSink.encryptData falls back via .or(ProcessedData.unencrypted(data))]`. Both this fallback and the node's uncompressed, unencrypted sealing are tracked as #1261. They are latent, because blueprint validation rejects the `compression` and non-default `encryption-key-id` stream keys (#576; see `streaming-spec.md` header).
+A sink built with an encryptor (not the node's today) writes **plaintext** if encryption fails `[mechanism: StorageSegmentSink.encryptData falls back via .or(ProcessedData.unencrypted(data))]`. Both this fallback and the node's uncompressed, unencrypted sealing are tracked as #1261. They are latent, because blueprint validation rejects the `compression` and non-default `encryption_key_id` stream keys (#576; see `streaming-spec.md` header).
 
 ---
 
