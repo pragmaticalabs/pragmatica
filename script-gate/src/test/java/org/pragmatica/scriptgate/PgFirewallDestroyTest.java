@@ -87,6 +87,18 @@ class PgFirewallDestroyTest {
         assertThat(calls()).as("refused before any API call").isEmpty();
     }
 
+    /// curl is the other tool the preflight names; same refusal, before any API call (the curl stub is not on PATH
+    /// here, so a call could not be recorded either - the empty `calls` file is backed by the exit code and message).
+    @Test
+    void destroy_refusesNamingCurl_whenCurlIsNotInstalled() {
+        given(ScriptGate.linkTools(bareDir, List.of("bash", "jq")));
+        var execution = executed(runDestroy(bareDir.toString()));
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(1);
+        assertThat(execution.output()).contains("missing dependency: curl").doesNotContain("no firewall named");
+        assertThat(calls()).as("refused before any API call").isEmpty();
+    }
+
     private Result<Unit> write(String name, String content) {
         return Result.lift(() -> Files.createDirectories(state))
                      .flatMap(directory -> Result.lift(() -> Files.writeString(directory.resolve(name),
@@ -109,6 +121,6 @@ class PgFirewallDestroyTest {
         environment.put("STUB_STATE", state.toString());
         environment.put("HCLOUD_TOKEN", "stub-token-not-real");
 
-        return ScriptRunner.runHermetic(ScriptRunner.repoRoot(), environment, List.of("tools/pg-firewall.sh", "destroy"));
+        return ScriptRunner.run(ScriptRunner.repoRoot(), environment, List.of("tools/pg-firewall.sh", "destroy"));
     }
 }

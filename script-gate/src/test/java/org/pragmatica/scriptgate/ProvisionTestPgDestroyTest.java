@@ -149,8 +149,6 @@ class ProvisionTestPgDestroyTest {
         environment.put("PG_ENV_FILE", envFile.toString());
         environment.putAll(extraEnvironment);
 
-        return ScriptRunner.runHermetic(ScriptRunner.repoRoot(),
-                                        environment,
-                                        List.of("tools/provision-test-pg.sh", flag));
+        return ScriptRunner.run(ScriptRunner.repoRoot(), environment, List.of("tools/provision-test-pg.sh", flag));
     }
 }
