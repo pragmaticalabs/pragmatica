@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory;
 /// slice-state, and node-artifact entries against the nodes that still own placements — the
 /// resolved core membership plus the registered workers ({@link #placementNodes()}) — and removes
 /// entries for departed nodes; also unloads/removes orphaned slice entries that have no matching
-/// blueprint. All cleanups gate on {@link Active#coreMembershipResolved()} so a sweep racing the
+/// blueprint. Every pass gates on {@link Active#coreMembershipResolved()} (before it reads the placement snapshot) so a sweep racing the
 /// membership wiring never mass-classifies KV-known members as departed.
 record StaleEntryCleaner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(StaleEntryCleaner.class);
@@ -41,10 +41,6 @@ record StaleEntryCleaner(Active active) {
     /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
     @Contract
     void cleanupStaleNodeRoutes(Set<NodeId> currentNodes) {
-        if (!active.coreMembershipResolved()) {
-            return;
-        }
-
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
@@ -157,10 +153,6 @@ record StaleEntryCleaner(Active active) {
     /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
     @Contract
     void cleanupStaleNodeArtifactEntries(Set<NodeId> currentNodes) {
-        if (!active.coreMembershipResolved()) {
-            return;
-        }
-
         var staleKeys = new ArrayList<NodeArtifactKey>();
 
         active.ctx()
@@ -192,13 +184,20 @@ record StaleEntryCleaner(Active active) {
         }
     }
 
-    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
-    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
+    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome;
+    // issueUnloadCommand / removeNodeArtifactKey each report their own failure internally.
+    //
+    // #1068: the sweep walks the COMMITTED `NodeArtifactKey` entries, not `active.sliceStates()`, and
+    // re-issues on every tick until the key is absent from the store. The projection walk dropped the
+    // entry BEFORE issuing the UNLOAD, so one consensus timeout (measured: 30s, during a rollback in
+    // CI run 34772700962) left the key in the store for good — and a node then healed its ACTIVE
+    // claim into a running slice with no owning blueprint. Keys of departed nodes are left to
+    // cleanupStaleNodeArtifactEntries, which removes them outright.
+    //
+    // One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    // single tick. The membership-resolved guard is the pass's (`Active#sweepStaleEntries`), taken before the snapshot.
     @Contract
     void cleanupOrphanedSliceEntries(Set<NodeId> currentNodes) {
-        if (!active.coreMembershipResolved()) {
-            return;
-        }
         // #850: the inclusion filter is the placement set (core ∪ registered workers), not the core
         // set alone — a worker-hosted orphan must be unloaded too, and the stale-entry sweeps no longer
         // remove a live worker's key for it.

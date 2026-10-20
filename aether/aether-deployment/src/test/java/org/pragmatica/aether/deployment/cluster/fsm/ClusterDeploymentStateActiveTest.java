@@ -468,7 +468,7 @@ class ClusterDeploymentStateActiveTest {
 
             localHarness.dispatch(new Activate());
             var activeLocal = (ClusterDeploymentState.Active) localHarness.state();
-            activeLocal.staleEntryCleaner().cleanupOrphanedSliceEntries(activeLocal.placementNodes());
+            activeLocal.sweepStaleEntries(true);
 
             assertThat(localCluster.commands.stream()
                                             .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(orphanKey))
