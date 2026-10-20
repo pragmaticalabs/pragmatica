@@ -1396,7 +1396,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                             .filter(result -> !result.accepted())
                                             .forEach(_ -> releaseRefusedAssignment(targetNode)))
                .onFailure(cause -> {
-                              ctx.communityAdmission().forget(targetNode);
+                              ctx.communityAdmission()
+                                 .forget(targetNode);
                               log.error("Failed to submit activation directive for {}: {}",
                                         targetNode,
                                         cause.message());

@@ -186,6 +186,17 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aJoinerWhoseCommitFailsOutright_doesNotKeepHoldingItsSlot() {
+        var fixture = fixture(config(true, 1, 5));
+
+        fixture.failNext();
+        fixture.joinAll(1);
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(2)).as("nothing was committed for the first joiner, so the second takes the first community").isEqualTo(FIRST);
+    }
+
+    @Test
     void join_growthOn_aRefusedJoiner_doesNotKeepHoldingItsSlot() {
         var fixture = fixture(config(true, 1, 5));
 
@@ -335,6 +346,11 @@ class ClusterDeploymentStateCommunityGrowthTest {
             cluster.beforeApply = change;
         }
 
+        /// The next commit fails outright, as when consensus is unreachable.
+        void failNext() {
+            cluster.failNext = true;
+        }
+
         void rejoin(int number) {
             harness.dispatch(new ClusterDeploymentEvents.WorkerJoinReceived(
                 new org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision(worker(number), "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
@@ -452,6 +468,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
         final List<List<KVCommand<AetherKey>>> held = Collections.synchronizedList(new ArrayList<>());
         volatile boolean hold;
+        volatile boolean failNext;
         volatile Runnable beforeApply = () -> {};
         private final InMemoryKvStore committed;
 
@@ -471,6 +488,12 @@ class ClusterDeploymentStateCommunityGrowthTest {
         // Mirror the real consensus → KV replication loop: an applied batch is recorded AND committed
         // into the shared KV store, so a subsequent community read observes it.
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            if (failNext) {
+                failNext = false;
+
+                return org.pragmatica.lang.utils.Causes.cause("consensus unavailable").promise();
+            }
+
             var change = beforeApply;
 
             beforeApply = () -> {};
