@@ -25,6 +25,7 @@ import org.pragmatica.swim.GossipChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
 
@@ -83,7 +84,7 @@ public final class StoragePrefetchChannel implements GossipChannel {
     @Override
     public Option<byte[]> outgoing(int budgetBytes) {
         if (instances.isEmpty()) {
-            return Option.none();
+            return none();
         }
 
         var start = Math.floorMod(rotation.getAndIncrement(), instances.size());

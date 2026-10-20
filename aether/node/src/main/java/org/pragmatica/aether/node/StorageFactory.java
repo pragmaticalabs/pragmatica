@@ -60,6 +60,7 @@ import org.pragmatica.storage.WritePolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -1473,7 +1474,7 @@ public final class StorageFactory {
                                                        tiers,
                                                        metadataStore,
                                                        WritePolicy.WRITE_THROUGH,
-                                                       Option.none(),
+                                                       none(),
                                                        AppendLog.TornTailSink.logOnly(),
                                                        id -> prefetchHolder.get()
                                                                            .recordAccess(id));
@@ -1526,11 +1527,16 @@ public final class StorageFactory {
     public static Map<String, PrefetchManager> prefetchManagers(Map<String, StorageSetup> setups) {
         return setups.entrySet()
                      .stream()
-                     .filter(entry -> entry.getValue()
-                                           .prefetchManager() != PrefetchManager.NOOP)
-                     .collect(Collectors.toMap(Map.Entry::getKey,
-                                               entry -> entry.getValue()
-                                                             .prefetchManager()));
+                     .filter(StorageFactory::hasRealPrefetch)
+                     .collect(Collectors.toMap(Map.Entry::getKey, StorageFactory::prefetchManagerOf));
+    }
+
+    private static boolean hasRealPrefetch(Map.Entry<String, StorageSetup> setup) {
+        return prefetchManagerOf(setup) != PrefetchManager.NOOP;
+    }
+
+    private static PrefetchManager prefetchManagerOf(Map.Entry<String, StorageSetup> setup) {
+        return setup.getValue().prefetchManager();
     }
 
     /// Wakes every instance's prefetch manager: a node that reports ready starts to gossip hints and act on them.
