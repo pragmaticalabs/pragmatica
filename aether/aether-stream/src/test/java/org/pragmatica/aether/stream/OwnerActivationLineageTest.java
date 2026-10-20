@@ -360,9 +360,10 @@ class OwnerActivationLineageTest {
     }
 
     /// A landed lineage commit is on record (`activatedIncarnation`) by the time the activation resolves: the next activation of the
-    /// same ring commits nothing. Recorded by an `onSuccess` handler it was not yet, and the same ring was treated as restarted. The
-    /// second activation is requested from a dependent of the first, which runs right after the activation's own steps: awaiting first
-    /// leaves the handler time to land and hides the defect.
+    /// same ring commits nothing, and is not turned away. This pins the end-to-end contract. It does NOT isolate the `landed` step:
+    /// reverting only that step to an `onSuccess` handler is not caught here, because the rest of the activation chain
+    /// (`recordActivation` logs) outlasts the handler's start, so nothing can read `activatedIncarnation` ahead of it on this path.
+    /// The in-flight gate (`activateRightAfterAwait_isNotTurnedAwayAsInProgress`) is what reverting the gate release turns red.
     @Test
     void activateRightAfterAwait_ofTheSameRing_commitsNothingAgain() {
         var extraCommits = 0;
