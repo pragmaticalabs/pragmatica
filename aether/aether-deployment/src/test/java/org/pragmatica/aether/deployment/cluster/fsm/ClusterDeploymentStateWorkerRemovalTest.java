@@ -282,7 +282,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.put(selfPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
             kvStore.put(workerSub, TopicSubscriptionValue.topicSubscriptionValue(WORKER_1, TopicTier.DURABLE));
 
-            activeState().cleanupStaleTopicRows();
+            activeState().staleEntryCleaner().cleanupStaleTopicRows(activeState().placementNodes());
 
             assertThat(kvStore.get(vanishedPub)).as("a vanished node's publisher row is swept").isEqualTo(Option.empty());
             assertThat(kvStore.get(vanishedSub)).as("a vanished node's subscription row is swept").isEqualTo(Option.empty());
@@ -550,7 +550,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.put(departedSub, TopicSubscriptionValue.topicSubscriptionValue(CORE_2, TopicTier.DURABLE));
             kvStore.put(survivingPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
             kvStore.put(survivingSub, TopicSubscriptionValue.topicSubscriptionValue(SELF, TopicTier.DURABLE));
-            activeState().cleanupStaleTopicRows();
+            activeState().staleEntryCleaner().cleanupStaleTopicRows(activeState().placementNodes());
             assertThat(kvStore.get(departedPub).isPresent()).as("control: the sweep leaves a still-counted node's rows alone").isTrue();
 
             harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeRemoved(CORE_2, List.of(SELF))));
@@ -640,6 +640,29 @@ class ClusterDeploymentStateWorkerRemovalTest {
                                                         && value.state() == SliceState.UNLOAD);
         }
 
+        /// Guard BEFORE snapshot: the membership-resolved guard is consulted first and a pass that finds the membership unresolved reads no
+        /// placement set at all. The supplier answers "not wired" to the first call and `{SELF}` after; taking the snapshot first would read
+        /// the sentinel's empty set, pass the guard on the second call and sweep a live node's rows.
+        @Test
+        void unresolvedMembership_isCheckedBeforeThePlacementSnapshotIsTaken() {
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var topicRow = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var routes = NodeRoutesKey.nodeRoutesKey(SELF, ARTIFACT);
+            var artifact = NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            kvStore.put(topicRow, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(routes, NodeRoutesValue.empty());
+            kvStore.put(artifact, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            coreSource = () -> calls.getAndIncrement() == 0 ? org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.MEMBERSHIP_NOT_WIRED : Set.of(SELF);
+
+            activeState().sweepStaleEntries(true);
+
+            assertThat(kvStore.get(topicRow).isPresent()).as("a live node's topic row survives").isTrue();
+            assertThat(kvStore.get(routes).isPresent()).as("a live node's routes survive").isTrue();
+            assertThat(kvStore.get(artifact).isPresent()).as("a live node's node-artifact survives").isTrue();
+        }
+
         /// Control for the instrument: with the supplier steady at `{SELF}` the same sweeps DO remove the ghost's rows.
         @Test
         void control_aSteadySetWithoutTheGhost_sweepsItsRows() {
@@ -705,21 +728,21 @@ class ClusterDeploymentStateWorkerRemovalTest {
 
         @Test
         void staleSliceEntrySweep_liveWorker_keepsItsSliceNodeRow() {
-            activeState().cleanupStaleSliceEntries();
+            activeState().staleEntryCleaner().cleanupStaleSliceEntries(activeState().placementNodes());
 
             assertFootprintIntact("cleanupStaleSliceEntries()");
         }
 
         @Test
         void staleNodeArtifactSweep_liveWorker_keepsItsNodeArtifactRow() {
-            activeState().cleanupStaleNodeArtifactEntries();
+            activeState().staleEntryCleaner().cleanupStaleNodeArtifactEntries(activeState().placementNodes());
 
             assertFootprintIntact("cleanupStaleNodeArtifactEntries()");
         }
 
         @Test
         void staleNodeRoutesSweep_liveWorker_keepsItsNodeRoutesRow() {
-            activeState().cleanupStaleNodeRoutes();
+            activeState().staleEntryCleaner().cleanupStaleNodeRoutes(activeState().placementNodes());
 
             assertFootprintIntact("cleanupStaleNodeRoutes()");
         }
@@ -776,7 +799,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.commit(List.of(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(ARTIFACT.base()))));
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(activeState().sliceStates())
                     .as("#850: a worker-hosted orphan leaves the CDM slice-state view")
@@ -803,9 +826,9 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
             activeState().sliceStates().put(sliceKey, SliceState.ACTIVE);
 
-            activeState().cleanupStaleSliceEntries();
-            activeState().cleanupStaleNodeArtifactEntries();
-            activeState().cleanupStaleNodeRoutes();
+            activeState().staleEntryCleaner().cleanupStaleSliceEntries(activeState().placementNodes());
+            activeState().staleEntryCleaner().cleanupStaleNodeArtifactEntries(activeState().placementNodes());
+            activeState().staleEntryCleaner().cleanupStaleNodeRoutes(activeState().placementNodes());
 
             assertThat(activeState().sliceStates()).doesNotContainKey(sliceKey);
             assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());

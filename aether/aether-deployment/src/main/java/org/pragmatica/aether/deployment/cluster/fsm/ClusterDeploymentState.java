@@ -2834,6 +2834,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// topic rows while keeping its slices, a silent delivery stop.
         @Contract
         void sweepStaleEntries(boolean includeOrphans) {
+            if (!coreMembershipResolved()) {
+                return;
+            }
+
             var placement = placementNodes();
             var cleaner = staleEntryCleaner();
 
@@ -2844,30 +2848,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (includeOrphans) {
                 cleaner.cleanupOrphanedSliceEntries(placement);
             }
-        }
-
-        @Contract
-        public void cleanupStaleNodeRoutes() {
-            staleEntryCleaner().cleanupStaleNodeRoutes();
-        }
-
-        @Contract
-        public void cleanupStaleTopicRows() {
-            staleEntryCleaner().cleanupStaleTopicRows();
-        }
-
-        @Contract
-        public void cleanupStaleSliceEntries() {
-            staleEntryCleaner().cleanupStaleSliceEntries();
-        }
-
-        @Contract
-        public void cleanupStaleNodeArtifactEntries() {
-            staleEntryCleaner().cleanupStaleNodeArtifactEntries();
-        }
-
-        private void cleanupOrphanedSliceEntries() {
-            staleEntryCleaner().cleanupOrphanedSliceEntries();
         }
 
         private void issueAllocationCommands(Artifact artifact, int desiredInstances) {

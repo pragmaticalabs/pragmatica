@@ -37,15 +37,6 @@ import org.slf4j.LoggerFactory;
 record StaleEntryCleaner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(StaleEntryCleaner.class);
 
-    // Fire-and-forget cleanup sweep: only callers are the reconcile/KV-rebuild paths in
-    // ClusterDeploymentState (rebuildStateFromKVStore / deferredTopologyRecheck), which ignore the
-    // outcome. The KV apply already reports its own failure via .onFailure(log.error) below, so void
-    // is the correct contract — propagating Promise<Unit> would just be discarded one level up.
-    @Contract
-    void cleanupStaleNodeRoutes() {
-        cleanupStaleNodeRoutes(placementNodes());
-    }
-
     /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
     /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
     @Contract
@@ -69,15 +60,6 @@ record StaleEntryCleaner(Active active) {
                   .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                 cause.message()));
         }
-    }
-
-    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes). #1337: topic publisher and subscription rows of a node that is no
-    // longer a placement node. The removal decision (`handleNodeRemoval`) clears them when the leader sees the departure; after a leader
-    // failover, or when no removal decision is ever delivered, this sweep is what stops a vanished node's row from refusing an
-    // opposite-tier activation forever.
-    @Contract
-    void cleanupStaleTopicRows() {
-        cleanupStaleTopicRows(placementNodes());
     }
 
     /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
@@ -140,13 +122,6 @@ record StaleEntryCleaner(Active active) {
         }
     }
 
-    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome; the
-    // KV apply reports its own failure via .onFailure(log.error).
-    @Contract
-    void cleanupStaleSliceEntries() {
-        cleanupStaleSliceEntries(placementNodes());
-    }
-
     /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
     /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
     @Contract
@@ -176,13 +151,6 @@ record StaleEntryCleaner(Active active) {
               .apply(commands)
               .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
                                             cause.message()));
-    }
-
-    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome; the
-    // KV apply reports its own failure via .onFailure(log.error).
-    @Contract
-    void cleanupStaleNodeArtifactEntries() {
-        cleanupStaleNodeArtifactEntries(placementNodes());
     }
 
     /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
@@ -222,20 +190,6 @@ record StaleEntryCleaner(Active active) {
         if (!currentNodes.contains(key.nodeId())) {
             result.add(key);
         }
-    }
-
-    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome;
-    // issueUnloadCommand / removeNodeArtifactKey each report their own failure internally.
-    //
-    // #1068: the sweep walks the COMMITTED `NodeArtifactKey` entries, not `active.sliceStates()`, and
-    // re-issues on every tick until the key is absent from the store. The projection walk dropped the
-    // entry BEFORE issuing the UNLOAD, so one consensus timeout (measured: 30s, during a rollback in
-    // CI run 34772700962) left the key in the store for good — and a node then healed its ACTIVE
-    // claim into a running slice with no owning blueprint. Keys of departed nodes are left to
-    // cleanupStaleNodeArtifactEntries, which removes them outright.
-    @Contract
-    void cleanupOrphanedSliceEntries() {
-        cleanupOrphanedSliceEntries(placementNodes());
     }
 
     /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
