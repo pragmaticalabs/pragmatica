@@ -360,7 +360,9 @@ class OwnerActivationLineageTest {
     }
 
     /// A landed lineage commit is on record (`activatedIncarnation`) by the time the activation resolves: the next activation of the
-    /// same ring commits nothing. Recorded by an `onSuccess` handler it was not yet, and the same ring was treated as restarted.
+    /// same ring commits nothing. Recorded by an `onSuccess` handler it was not yet, and the same ring was treated as restarted. The
+    /// second activation is requested from a dependent of the first, which runs right after the activation's own steps: awaiting first
+    /// leaves the handler time to land and hides the defect.
     @Test
     void activateRightAfterAwait_ofTheSameRing_commitsNothingAgain() {
         var extraCommits = 0;
@@ -371,8 +373,7 @@ class OwnerActivationLineageTest {
             lateCommit.set(true);
             commits.clear();
             record.set(Option.some(committed(List.of(new EpochStart(Epoch.epoch(1L, 2L, 2L), 0L)))));
-            gate.activate(STREAM, PARTITION).await();
-            var second = gate.activate(STREAM, PARTITION).await();
+            var second = gate.activate(STREAM, PARTITION).flatMap(_ -> gate.activate(STREAM, PARTITION)).await();
 
             if (second.isFailure() || commits.size() != 1) {
                 extraCommits++;

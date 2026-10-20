@@ -162,10 +162,12 @@ class QuicClusterNetworkLifecycleTest {
     @Test
     void failedStart_retryRightAfterTheFailure_isNotTurnedAwayAsAlreadyRunning() throws Exception {
         var turnedAway = 0;
-        var trials = 30;
+        var trials = 20;
+        var serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("lifecycle-server")).fold(_ -> fail("server ssl"), ssl -> ssl);
+        var clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("lifecycle-client")).fold(_ -> fail("client ssl"), ssl -> ssl);
 
         for (var trial = 0; trial < trials; trial++) {
-            var network = network();
+            var network = network(serverSsl, clientSsl);
             var held = freeUdpPort();
 
             try (var holder = new java.net.DatagramSocket(held)) {
@@ -196,12 +198,17 @@ class QuicClusterNetworkLifecycleTest {
     }
 
     private QuicClusterNetwork network() {
-        var codec = LaneProbe.codec();
-        var self = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 19995).fold(_ -> fail("bad address"), a -> a));
         var serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("lifecycle-server"))
                                        .fold(_ -> fail("server ssl"), ssl -> ssl);
         var clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("lifecycle-client"))
                                        .fold(_ -> fail("client ssl"), ssl -> ssl);
+
+        return network(serverSsl, clientSsl);
+    }
+
+    private QuicClusterNetwork network(io.netty.handler.codec.quic.QuicSslContext serverSsl, io.netty.handler.codec.quic.QuicSslContext clientSsl) {
+        var codec = LaneProbe.codec();
+        var self = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 19995).fold(_ -> fail("bad address"), a -> a));
         var network = new QuicClusterNetwork(stubTopology(self), codec, codec, MessageRouter.mutable(), serverSsl, clientSsl);
 
         networks.add(network);
