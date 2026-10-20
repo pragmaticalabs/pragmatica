@@ -2685,9 +2685,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Close the per-peer ephemeral UDP socket. Without this, every reconnect leaks
         // one datagram channel because the client previously held a single volatile field
         // and overwrote it on each `bind(0)`. See QuicClusterClient#closeDatagramChannel.
+        // The socket carries only the connections THIS node dialed, and the map holds the newest dial's socket per
+        // peer: evicting a connection the PEER dialed (the loser of a dual dial, closed by its dialer before our own
+        // dial was decided) must leave it alone, or it closes the socket under the surviving link and evicts that too
+        // (#2138).
         var clientRef = client;
 
-        if (clientRef != null) {
+        if (clientRef != null && dialedByThisNode(connection)) {
             clientRef.closeDatagramChannel(peerId);
         }
 
@@ -2710,6 +2714,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     private void registerCloseListener(NodeId peerId, QuicPeerConnection connection) {
         connection.connection().closeFuture().addListener(_ -> onChannelClosed(peerId, connection));
+    }
+
+    private boolean dialedByThisNode(QuicPeerConnection connection) {
+        return connection.initiator().filter(self.id()::equals).isPresent();
+    }
+
+    /// Package-private test seam (#2138) — the eviction a closed bound connection triggers.
+    @Contract
+    void evictStaleConnectionForTests(NodeId peerId, QuicPeerConnection connection) {
+        evictStaleConnection(peerId, connection);
+    }
+
+    /// Package-private test seam (#2138) — datagram sockets the dial client currently holds.
+    int datagramChannelCountForTests() {
+        return Option.option(client).map(QuicClusterClient::datagramChannelCount).or(0);
     }
 
     private void onChannelClosed(NodeId peerId, QuicPeerConnection closed) {
