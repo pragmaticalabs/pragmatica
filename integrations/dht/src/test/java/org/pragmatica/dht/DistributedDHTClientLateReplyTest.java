@@ -98,6 +98,57 @@ class DistributedDHTClientLateReplyTest {
     }
 
     @Test
+    void put_recordsStaleWriterClockBeforeContinuation_whenRefusalArrivesLaterOnAnotherThread() {
+        var node = remoteOnlyNode();
+        var client = distributedDHTClient(node, network(), SINGLE_REPLICA);
+        var notStale = 0;
+
+        for (var trial = 0; trial < TRIALS; trial++) {
+            node.clearStaleRefusal();
+            var op = client.put(keyOf(trial), new byte[]{9});
+
+            replyLater(() -> client.onPutResponse(new DHTMessage.PutResponse(lastRequest(DHTMessage.PutRequest.class).requestId(),
+                                                                             REPLICA,
+                                                                             false,
+                                                                             false,
+                                                                             false,
+                                                                             true,
+                                                                             false,
+                                                                             false)));
+            assertThat(op.await().isFailure()).as("a replica that refuses the write as stale fails it").isTrue();
+            notStale += node.staleRefusal().isPresent() ? 0 : 1;
+        }
+
+        assertThat(notStale).as("trials where the caller saw the refused write before the stale-writer clock started")
+                            .isZero();
+    }
+
+    @Test
+    void remove_recordsStaleWriterClockBeforeContinuation_whenRefusalArrivesLaterOnAnotherThread() {
+        var node = remoteOnlyNode();
+        var client = distributedDHTClient(node, network(), SINGLE_REPLICA);
+        var notStale = 0;
+
+        for (var trial = 0; trial < TRIALS; trial++) {
+            node.clearStaleRefusal();
+            var op = client.remove(keyOf(trial));
+
+            replyLater(() -> client.onRemoveResponse(new DHTMessage.RemoveResponse(lastRequest(DHTMessage.RemoveRequest.class).requestId(),
+                                                                                   REPLICA,
+                                                                                   false,
+                                                                                   false,
+                                                                                   true,
+                                                                                   false,
+                                                                                   false)));
+            assertThat(op.await().isFailure()).as("a replica that refuses the remove as stale fails it").isTrue();
+            notStale += node.staleRefusal().isPresent() ? 0 : 1;
+        }
+
+        assertThat(notStale).as("trials where the caller saw the refused remove before the stale-writer clock started")
+                            .isZero();
+    }
+
+    @Test
     void put_endsWritePendingMarkBeforeContinuation_whenRepliesArriveLaterOnAnotherThread() {
         var node = localInRingNode();
         var client = distributedDHTClient(node, network(), ALL_THREE);
