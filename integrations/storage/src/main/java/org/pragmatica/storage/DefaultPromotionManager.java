@@ -6,12 +6,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -96,10 +98,6 @@ final class DefaultPromotionManager implements PromotionManager {
     }
 
     private PromotionResult promoteTier(StorageTier sourceTier, StorageTier targetTier) {
-        if (isAtTargetWatermark(targetTier)) {
-            return PromotionResult.NONE;
-        }
-
         var candidates = selectCandidates(sourceTier.level(), targetTier);
 
         if (candidates.isEmpty()) {
@@ -116,10 +114,17 @@ final class DefaultPromotionManager implements PromotionManager {
                                               StorageTier targetTier) {
         return candidates.stream()
                          .takeWhile(_ -> active)
-                         .map(candidate -> promoteBlock(candidate.blockId(),
-                                                        sourceTier,
-                                                        targetFor(candidate, targetTier)))
+                         .map(candidate -> promoteToTargetOf(candidate, sourceTier, targetTier))
                          .reduce(PromotionResult.NONE, PromotionResult::add);
+    }
+
+    private PromotionResult promoteToTargetOf(BlockLifecycle candidate,
+                                              StorageTier sourceTier,
+                                              StorageTier adjacentTier) {
+        return targetFor(candidate, adjacentTier).map(target -> promoteBlock(candidate.blockId(),
+                                                                             sourceTier,
+                                                                             target))
+                        .or(PromotionResult.NONE);
     }
 
     private List<BlockLifecycle> selectCandidates(TierLevel sourceLevel, StorageTier adjacentTarget) {
@@ -134,21 +139,35 @@ final class DefaultPromotionManager implements PromotionManager {
                             .toList();
     }
 
-    /// The tier a block is actually written to. Today every block goes to the adjacent faster tier; this is the ONE place
-    /// that decides it, and both the candidate test and the write go through it, so a block is a candidate exactly when
-    /// the tier it would be written to does not hold it yet.
-    private StorageTier targetFor(BlockLifecycle lifecycle, StorageTier adjacentTarget) {
-        return adjacentTarget;
+    /// The tier a block is actually written to; this is the ONE place that decides it, and both the candidate test and
+    /// the write go through it, so a block is a candidate exactly when the tier it would be written to does not hold it
+    /// yet. A block this node owns goes to the adjacent faster tier. A cache-only block ([BlockLifecycle#cacheOnly])
+    /// goes to the nearest tier at or above that one which is not durable: a copy of a block some other node wrote must
+    /// never land on this node's durable disk, where nothing would ever collect it. None -> not promoted.
+    private Option<StorageTier> targetFor(BlockLifecycle lifecycle, StorageTier adjacentTarget) {
+        return lifecycle.cacheOnly()
+               ? nearestCacheTierFrom(tiers.indexOf(adjacentTarget))
+               : some(adjacentTarget);
+    }
+
+    private Option<StorageTier> nearestCacheTierFrom(int index) {
+        return Option.from(IntStream.iterate(index, i -> i >= 0, i -> i - 1)
+                                    .mapToObj(tiers::get)
+                                    .filter(tier -> !tier.isDurable())
+                                    .findFirst());
     }
 
     /// A candidate for `source -> target` is a hot block that is not yet present in THE tier it would be written to
-    /// ([#targetFor]). Testing "present in any faster tier" instead re-copies a block already on the disk from the DHT on
-    /// every cycle.
+    /// ([#targetFor]), and whose tier is not at its watermark. Testing "present in any faster tier" instead re-copies a
+    /// block already on the disk from the DHT on every cycle; testing the ADJACENT tier's fullness instead of the real
+    /// target's would starve a redirected block while its own target has room (or read it for nothing when it has none).
     private boolean isPromotionCandidate(BlockLifecycle lifecycle, long windowStart, StorageTier adjacentTarget) {
         return lifecycle.accessCount() > config.accessThreshold()
                && lifecycle.lastAccessedAt() >= windowStart
-               && !lifecycle.presentIn()
-                            .contains(targetFor(lifecycle, adjacentTarget).level());
+               && targetFor(lifecycle, adjacentTarget).filter(target -> !lifecycle.presentIn()
+                                                                                  .contains(target.level()))
+                           .filter(target -> !isAtTargetWatermark(target))
+                           .isPresent();
     }
 
     /// Synchronous block promotion. Uses .await() because promotion runs on a dedicated
