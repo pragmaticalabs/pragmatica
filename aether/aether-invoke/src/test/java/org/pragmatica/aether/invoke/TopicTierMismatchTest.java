@@ -210,12 +210,15 @@ class TopicTierMismatchTest {
 
             clock.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(61));
             invoker.logInvokeFailure(v2, METHOD, cause);
+            clock.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(61));
+            invoker.logInvokeFailure(v1, METHOD, cause);
         } finally {
             detach.run();
         }
 
-        assertThat(warnings).hasSize(2);
+        assertThat(warnings).hasSize(3);
         assertThat(warnings.get(1)).contains("(2 more tier-mismatch refusals since the previous line)");
+        assertThat(warnings.get(2)).as("the count restarts after each line").contains("(0 more");
         assertThat(warnings.getFirst()).contains("(0 more");
     }
 
