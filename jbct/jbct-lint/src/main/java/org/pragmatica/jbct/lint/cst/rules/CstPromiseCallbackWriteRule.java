@@ -181,7 +181,9 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
                                      lines.lineAt(offset),
                                      lines.columnAt(offset),
                                      "Promise." + callback + " callback " + write.description() + describeVia(write)
-                                     + ": it runs on its own thread, so a dependent can run before the write lands",
+                                     + " but runs on its own thread, concurrently with the promise's dependents: use "
+                                     + "withSuccess/withFailure/withResult (or a chain step), or record a deliberately detached "
+                                     + "effect with '// detached: <reason>'",
                                      "Promise on*/on*Run/on*Async callbacks run on a separate virtual thread, concurrently with the "
                                      + "promise's dependents (the awaiting caller, the next map/flatMap), in no order relative to them. "
                                      + "If anything after this promise can observe the state, use withSuccess/withFailure/withResult "

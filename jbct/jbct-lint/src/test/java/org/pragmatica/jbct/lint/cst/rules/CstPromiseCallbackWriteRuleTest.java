@@ -1004,11 +1004,14 @@ class CstPromiseCallbackWriteRuleTest {
             assertTrue(found.message()
                             .contains("assigns done"),
                        found.message());
-            assertTrue(found.details()
+            assertTrue(found.message()
                             .contains("withSuccess/withFailure/withResult"),
-                       found.details());
-            assertTrue(found.details()
+                       found.message());
+            assertTrue(found.message()
                             .contains("// detached: <reason>"),
+                       found.message());
+            assertTrue(found.details()
+                            .contains("separate virtual thread"),
                        found.details());
         }
 
