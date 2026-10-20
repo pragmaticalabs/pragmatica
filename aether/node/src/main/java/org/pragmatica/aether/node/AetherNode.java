@@ -4555,11 +4555,13 @@ public interface AetherNode extends ManageableNode {
                                         .toList();
         Runnable announceJoinTrigger = selfNodeInfo == null
                                        ? () -> {}
-                                       : () -> swimHealthDetector.announceJoin(selfNodeInfo,
-                                                                               swimConfig.clusterName(),
-                                                                               bootIncarnation,
-                                                                               bootToken,
-                                                                               swimSeeds);
+                                       : joinAnnouncement(config,
+                                                          swimHealthDetector,
+                                                          selfNodeInfo,
+                                                          swimConfig.clusterName(),
+                                                          bootIncarnation,
+                                                          bootToken,
+                                                          swimSeeds);
         // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
         // closes over the encryptor + announce trigger that are only in scope here. It fails the
@@ -8733,6 +8735,27 @@ public interface AetherNode extends ManageableNode {
                                                                             failNode));
     }
 
+    /// The join announcement SWIM runs at transport-ready. A worker holds its ANNOUNCE to the seeds until its
+    /// activation directive is committed ([#handleActivationDirective] releases it): before that it has no
+    /// community, and the cores' membership scope admits no worker that is not a governor, so every round
+    /// was traffic they dropped (#1840). A core announces at once, as it must to be dialed by survivors.
+    static Runnable joinAnnouncement(AetherNodeConfig config,
+                                     CoreSwimHealthDetector swimHealthDetector,
+                                     NodeInfo self,
+                                     String clusterName,
+                                     long incarnation,
+                                     long bootToken,
+                                     List<InetSocketAddress> seeds) {
+        return configuredWorker(config)
+               ? () -> swimHealthDetector.announceJoinWhenAssigned(self,
+                                                                   clusterName,
+                                                                   incarnation,
+                                                                   bootToken,
+                                                                   seeds,
+                                                                   config.timeouts().cluster().communityAbsence())
+               : () -> swimHealthDetector.announceJoin(self, clusterName, incarnation, bootToken, seeds);
+    }
+
     /// A start refused because `stop()` already closed the detector resolves as a no-op success (it must
     /// not run `failNode`: in a single-JVM host a stale one could stop a same-id relaunch). There is no
     /// protocol to announce for, so the announcement is skipped.
@@ -8773,22 +8796,22 @@ public interface AetherNode extends ManageableNode {
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
-    private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
-                                                  NodeId selfId,
-                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                  SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
-                                                  ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                                  AetherNodeConfig config,
-                                                  MessageRouter.DelegateRouter delegateRouter,
-                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                  SliceStore sliceStore,
-                                                  SliceInvoker sliceInvoker,
-                                                  Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
-                                                  org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
-                                                  AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
-                                                  GovernorAuthorityClient governorAuthorityClient,
-                                                  java.util.function.BooleanSupplier ready,
-                                                  Logger growthLog) {
+    static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
+                                          NodeId selfId,
+                                          RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                          SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                          ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                          AetherNodeConfig config,
+                                          MessageRouter.DelegateRouter delegateRouter,
+                                          KVStore<AetherKey, AetherValue> kvStore,
+                                          SliceStore sliceStore,
+                                          SliceInvoker sliceInvoker,
+                                          Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
+                                          org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
+                                          AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                                          GovernorAuthorityClient governorAuthorityClient,
+                                          java.util.function.BooleanSupplier ready,
+                                          Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
@@ -8807,6 +8830,7 @@ public interface AetherNode extends ManageableNode {
             clusterNode.authorizeActivation();
         } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
+            swimHealthDetectorSupplier.get().markAssigned();
             activateWorkerMode(selfId,
                                clusterNode,
                                switchableCluster,

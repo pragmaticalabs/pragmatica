@@ -9,6 +9,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -33,6 +35,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -49,7 +53,9 @@ import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -117,6 +123,18 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
 
     private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
+    /// Guards [#assigned] and [#heldAnnounce]: a worker's seed announcement waits for its committed directive (#1840).
+    private final Object assignmentGate = new Object();
+    private boolean assigned;
+    private Option<AnnounceJoinCall> heldAnnounce = none();
+    private long heldSinceNanos;
+    private boolean overdueRaised;
+    private Option<ScheduledFuture<?>> overdueTimer = none();
+
+    /// Test seam (#1840): runs inside the hold, after the decision to hold and before the call is stored, so a
+    /// test can park the holder while an assignment arrives. Production never replaces it.
+    private volatile Runnable afterHoldDecision = () -> {};
+
     private final MembershipResyncPolicy resync = MembershipResyncPolicy.membershipResyncPolicy();
     /// Test seam (#1308): runs on the starting thread once the SWIM port is bound and before the
     /// protocol is created, so a test can hold the detector in Starting or fail a start after a
@@ -369,7 +387,16 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     @Contract
     public void stop() {
+        cancelOverdueTimer();
         context.dispatch(new SwimHealthEvents.StopRequested());
+    }
+
+    /// A stopped node must not raise an overdue warning for a hold nobody will release.
+    private void cancelOverdueTimer() {
+        synchronized (assignmentGate) {
+            overdueTimer.onPresent(timer -> timer.cancel(false));
+            overdueTimer = none();
+        }
     }
 
     public SwimHealthState lifecycleState() {
@@ -452,6 +479,124 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                              List<InetSocketAddress> seeds) {
         pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, bootToken, seeds));
         protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, bootToken, seeds));
+    }
+
+    /// The worker form of [#announceJoin] (#1840): the node's identity is seeded at once, but the ANNOUNCE to
+    /// `seeds` is held until [#markAssigned] says its activation directive is committed. Before that the node
+    /// has no community, and the cores' membership scope admits no worker that is not a governor, so every round
+    /// of the announce loop was traffic they dropped. Once assigned, the held announcement is released
+    /// unchanged; a node already assigned announces at once.
+    ///
+    /// A hold is never silent: it is logged, and a hold still in place after `overdueAfter` raises
+    /// [OperatorWarningCode#WORKER_ASSIGNMENT_OVERDUE], closed by [OperatorWarningCode#WORKER_ASSIGNED] when the
+    /// directive finally commits. The hold itself is kept (the join does not depend on the announce).
+    @Contract
+    public void announceJoinWhenAssigned(NodeInfo self,
+                                         String clusterName,
+                                         long incarnation,
+                                         long bootToken,
+                                         List<InetSocketAddress> seeds,
+                                         TimeSpan overdueAfter) {
+        synchronized (assignmentGate) {
+            var call = new AnnounceJoinCall(self, clusterName, incarnation, bootToken, seeds);
+
+            if (assigned) {
+                announceJoin(self, clusterName, incarnation, bootToken, seeds);
+            } else {
+                holdAnnounce(call, overdueAfter);
+            }
+        }
+    }
+
+    private void holdAnnounce(AnnounceJoinCall call, TimeSpan overdueAfter) {
+        afterHoldDecision.run();
+        heldAnnounce = option(call);
+        heldSinceNanos = System.nanoTime();
+        overdueTimer = option(SharedScheduler.schedule(this::raiseOverdueIfHeld, overdueAfter));
+        log.info("SWIM ANNOUNCE for {} held until its activation directive is committed (overdue warning after {} ms)",
+                 call.self().id().id(),
+                 overdueAfter.millis());
+        announceJoin(call.self(), call.clusterName(), call.incarnation(), call.bootToken(), List.of());
+    }
+
+    private void raiseOverdueIfHeld() {
+        synchronized (assignmentGate) {
+            if (heldAnnounce.isPresent()) {
+                overdueRaised = true;
+                OperatorWarnings.raise(log,
+                                       warningSink(),
+                                       OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
+                                       selfIdText(),
+                                       "Worker {} has no committed activation directive after {} ms: its SWIM ANNOUNCE is held and "
+                                      + "the cluster's SWIM scope does not include it. Check that the leader admitted it (capacity "
+                                      + "reservation or admission authorisation; the leader logs 'Cannot assign worker') and that its "
+                                      + "directive was committed; otherwise replace the node with a fresh NodeId",
+                                       selfIdText(),
+                                       heldMillis());
+            }
+        }
+    }
+
+    /// This node's activation directive is committed: releases an announcement held by
+    /// [#announceJoinWhenAssigned], once, and closes the overdue warning if one was raised. Idempotent; a later
+    /// [#announceJoinWhenAssigned] announces at once.
+    @Contract
+    public void markAssigned() {
+        synchronized (assignmentGate) {
+            var held = heldAnnounce;
+            var wasOverdue = overdueRaised;
+
+            assigned = true;
+            heldAnnounce = none();
+            cancelOverdueTimer();
+            held.onPresent(call -> releaseHeld(call, wasOverdue));
+        }
+    }
+
+    private void releaseHeld(AnnounceJoinCall call, boolean wasOverdue) {
+        var millis = heldMillis();
+
+        log.info("SWIM ANNOUNCE for {} released after {} ms: its activation directive is committed",
+                 call.self().id().id(),
+                 millis);
+        announceJoin(call.self(), call.clusterName(), call.incarnation(), call.bootToken(), call.seeds());
+        if (wasOverdue) {
+            OperatorWarnings.raise(log,
+                                   warningSink(),
+                                   OperatorWarningCode.WORKER_ASSIGNED,
+                                   selfIdText(),
+                                   "Worker {} received its activation directive after {} ms; its SWIM ANNOUNCE is released",
+                                   selfIdText(),
+                                   millis);
+        }
+    }
+
+    private long heldMillis() {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - heldSinceNanos);
+    }
+
+    private OperatorWarningSink warningSink() {
+        return operatorWarningSink.or(OperatorWarningSink.logOnly());
+    }
+
+    private String selfIdText() {
+        return context.topologyConfig()
+                      .self()
+                      .id();
+    }
+
+    /// Test seam (#1840): runs `action` while holding the assignment gate, so a test can show that a hold or a
+    /// release started meanwhile waits for it.
+    @Contract
+    void underAssignmentGateForTest(Runnable action) {
+        synchronized (assignmentGate) {
+            action.run();
+        }
+    }
+
+    @Contract
+    void afterHoldDecisionForTest(Runnable hook) {
+        afterHoldDecision = hook;
     }
 
     /// Asks the peers for the committed electorate's members this node's SWIM view still lacks (#1803).
