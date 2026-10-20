@@ -430,18 +430,17 @@ class StorageInstanceCacheMarkerTest {
         }
 
         @Test
-        void warm_createsItsRecordEvenWhenTheMarkerTableIsFull() {
+        void warm_whenTheMarkerTableIsFull_isRefusedRatherThanCopyingUntracked() {
             var clock = new AtomicLong(System.currentTimeMillis());
             var bounded = readerInstance(DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(1, 600_000L, 60_000L), clock, _ -> {});
             var first = writeElsewhere("fills-the-table");
             var second = writeElsewhere("warmed-when-full");
 
             bounded.get(first).await().unwrap();
-            assertThat(bounded.warm(second).await().unwrap()).isTrue();
 
-            assertThat(readerStore.getLifecycle(second).unwrap().presentIn())
-                .as("a copy with no record would be invisible to demotion")
-                .contains(TierLevel.MEMORY);
+            assertThat(bounded.warm(second).await().unwrap()).as("a copy that could not be tracked is not made").isFalse();
+            assertThat(readerMemory.exists(second).await().unwrap()).isFalse();
+            assertThat(readerStore.getLifecycle(second).isPresent()).isFalse();
         }
     }
 
