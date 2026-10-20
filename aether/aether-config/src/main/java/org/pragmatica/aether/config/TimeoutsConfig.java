@@ -62,6 +62,26 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   storageMaintenance);
     }
 
+    /// The storage maintenance cadence replaced, the rest kept; lets a boot test tick demotion and promotion every
+    /// second instead of every five minutes.
+    public TimeoutsConfig withStorageMaintenance(StorageMaintenanceTimeouts storageMaintenance) {
+        return new TimeoutsConfig(invocation,
+                                  forwarding,
+                                  deployment,
+                                  rollingUpdate,
+                                  cluster,
+                                  consensus,
+                                  election,
+                                  swim,
+                                  observability,
+                                  dht,
+                                  worker,
+                                  security,
+                                  repository,
+                                  scaling,
+                                  storageMaintenance);
+    }
+
     public record InvocationTimeouts(TimeSpan timeout,
                                      TimeSpan invokerTimeout,
                                      TimeSpan retryBaseDelay,

@@ -101,6 +101,7 @@ import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.concurrent.PublishSlot;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.consensus.NodeId;
@@ -118,6 +119,7 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.aether.http.TlsRotation;
+import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
@@ -745,6 +747,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                  .consensusSnapshot()
                                                                  .counterMap());
         registerStreamMemoryMetrics();
+        registerStoragePromotionMetrics();
         registerDhtCatchUpMetrics();
         var transport = tls.isPresent()
                         ? "HTTPS"
@@ -760,6 +763,35 @@ class ManagementServerImpl implements ManagementServer {
 
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
+    }
+
+    /// Promotion of each storage instance that promotes (an inert one has nothing to report), cumulative since boot, read
+    /// from the instance's own manager. `failed` rising while `blocks` stands still is the condition behind the
+    /// `storage-promotion-stalled` operator event.
+    private void registerStoragePromotionMetrics() {
+        nodeSupplier.get().storageSetups().forEach(this::registerPromotionGauges);
+    }
+
+    private void registerPromotionGauges(String instance, StorageSetup setup) {
+        var manager = setup.promotionManager();
+
+        if (manager == PromotionManager.NOOP) {
+            return;
+        }
+
+        Supplier<Number> blocks = () -> manager.stats()
+                                               .blocksPromoted();
+        Supplier<Number> bytes = () -> manager.stats()
+                                              .bytesMoved();
+        Supplier<Number> failed = () -> manager.stats()
+                                               .failed();
+        Supplier<Number> cycles = () -> manager.stats()
+                                               .cycles();
+
+        observability.gauge("aether.storage.promotion.blocks", blocks, "instance", instance);
+        observability.gauge("aether.storage.promotion.bytes", bytes, "instance", instance);
+        observability.gauge("aether.storage.promotion.failed", failed, "instance", instance);
+        observability.gauge("aether.storage.promotion.cycles", cycles, "instance", instance);
     }
 
     /// #1777: DHT partitions still catching up after `DHTAntiEntropy.STUCK_AFTER_ROUNDS` rounds — non-zero means a
