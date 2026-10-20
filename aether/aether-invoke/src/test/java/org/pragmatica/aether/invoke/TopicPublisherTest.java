@@ -275,12 +275,110 @@ class TopicPublisherTest {
         }
     }
 
+    /// #1337: what the publisher does with a delivery a subscriber refused or failed. The ephemeral result stays `Success`
+    /// (pinned above); the loss is counted per reason, and only a tier mismatch is raised as an operator event, once per
+    /// subscriber, with a recovery when a later delivery reaches it.
+    @Nested
+    class PerSubscriberOutcome {
+        private final java.util.concurrent.atomic.AtomicReference<Option<Cause>> outcome = new java.util.concurrent.atomic.AtomicReference<>(Option.none());
+        private final java.util.List<org.pragmatica.utility.warning.OperatorWarning> events = new CopyOnWriteArrayList<>();
+        private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+
+        private TopicPublisher<String> publisherUnderTest() {
+            registerSubscription("orders", artifact, method, nodeA);
+
+            return TopicPublisher.topicPublisher("orders",
+                                                 routingKey("orders"),
+                                                 PUBLISHER_SLICE,
+                                                 registry,
+                                                 new StubSliceInvoker(invocations, outcome::get),
+                                                 Option.some(meters),
+                                                 org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+        }
+
+        private double count(String reason) {
+            return Option.option(meters.find(TopicPublisher.DELIVERY_UNDELIVERED_COUNTER).tag("reason", reason).counter())
+                         .map(counter -> counter.count())
+                         .or(0.0);
+        }
+
+        private java.util.List<org.pragmatica.utility.warning.OperatorWarningCode> codesAfter(int expected) {
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+
+            while (events.size() < expected && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            return events.stream().map(org.pragmatica.utility.warning.OperatorWarning::code).toList();
+        }
+
+        /// A refusal from a subscriber on ANOTHER node arrives as text in a `RemoteInvocationError`, never as the typed cause.
+        @Test
+        void publish_remoteTierMismatch_isRecognisedFromTheRelayedText() {
+            var relayed = SliceInvokerError.RemoteInvocationError.remoteInvocationError(
+                org.pragmatica.aether.slice.TopicTierMismatch.FACTORY.apply("onMessage").message());
+
+            outcome.set(Option.some(relayed));
+
+            var result = publisherUnderTest().publish("order-1").await();
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(count(TopicPublisher.REASON_TIER_MISMATCH)).isEqualTo(1.0);
+            assertThat(codesAfter(1)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH);
+        }
+
+        /// A subscriber that failed for its own reasons is counted, but is not a tier mismatch and raises no event.
+        @Test
+        void publish_otherSubscriberFailure_isCountedAsFailed_andRaisesNoEvent() {
+            outcome.set(Option.some(SUBSCRIBER_FAILED));
+
+            var result = publisherUnderTest().publish("order-1").await();
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(count(TopicPublisher.REASON_FAILED)).isEqualTo(1.0);
+            assertThat(count(TopicPublisher.REASON_TIER_MISMATCH)).isZero();
+            assertThat(events).isEmpty();
+        }
+
+        /// The recovery: once the subscriber is reachable again, exactly one RESOLVED follows the MISMATCH, and a further
+        /// success raises nothing.
+        @Test
+        void publish_afterAMismatch_aLaterDeliveryRaisesTheRecoveryOnce() {
+            var publisher = publisherUnderTest();
+
+            outcome.set(Option.some(org.pragmatica.aether.slice.TopicTierMismatch.FACTORY.apply("onMessage")));
+            publisher.publish("order-1").await();
+            outcome.set(Option.none());
+            publisher.publish("order-2").await();
+            publisher.publish("order-3").await();
+
+            assertThat(codesAfter(2)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                                                      org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
+        }
+
+        /// A subscriber that was never refused publishes no recovery.
+        @Test
+        void publish_withoutAMismatch_raisesNothing() {
+            var publisher = publisherUnderTest();
+
+            publisher.publish("order-1").await();
+
+            assertThat(events).isEmpty();
+            assertThat(count(TopicPublisher.REASON_FAILED)).isZero();
+            assertThat(count(TopicPublisher.REASON_TIER_MISMATCH)).isZero();
+        }
+    }
+
     /// Minimal stub implementing only the invoke method used by TopicPublisher.
     private static final class StubSliceInvoker implements SliceInvoker {
         private final CopyOnWriteArrayList<InvocationRecord> invocations;
-        private final Option<Cause> failureCause;
+        private final java.util.function.Supplier<Option<Cause>> failureCause;
 
         StubSliceInvoker(CopyOnWriteArrayList<InvocationRecord> invocations, Option<Cause> failureCause) {
+            this(invocations, () -> failureCause);
+        }
+
+        StubSliceInvoker(CopyOnWriteArrayList<InvocationRecord> invocations, java.util.function.Supplier<Option<Cause>> failureCause) {
             this.invocations = invocations;
             this.failureCause = failureCause;
         }
@@ -289,8 +387,8 @@ class TopicPublisherTest {
         @SuppressWarnings("unchecked")
         public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
             invocations.add(new InvocationRecord(slice, method, request));
-            return failureCause.fold(() -> (Promise<R>) Promise.unitPromise(),
-                                     Cause::promise);
+            return failureCause.get().fold(() -> (Promise<R>) Promise.unitPromise(),
+                                           Cause::promise);
         }
 
         // --- Unused methods below — minimal stubs for compilation ---

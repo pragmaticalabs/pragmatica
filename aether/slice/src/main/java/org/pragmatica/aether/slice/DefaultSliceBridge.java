@@ -69,7 +69,8 @@ public record DefaultSliceBridge(Artifact artifact,
 
     @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
-        return lookupMethod(methodName).async()
+        return lookupMethod(methodName).flatMap(DefaultSliceBridge::acceptingBareEvent)
+                           .async()
                            .flatMap(method -> invokeWithSerialization(method, input));
     }
 
@@ -130,9 +131,23 @@ public record DefaultSliceBridge(Artifact artifact,
     /// A generated context-carrying adapter declares [ContextualEvent] as its parameter; every other
     /// method declares the event type itself and keeps receiving the bare event.
     private static Object argumentFor(InternalMethod method, Object event, MessageContext context) {
-        return ContextualEvent.class.equals(method.parameterType().rawType())
+        return takesContext(method)
                ? ContextualEvent.contextualEvent(event, context)
                : event;
+    }
+
+    private static boolean takesContext(InternalMethod method) {
+        return ContextualEvent.class.equals(method.parameterType().rawType());
+    }
+
+    /// #1337: [#invoke] hands the method the bare decoded event — the ephemeral RPC fan-out has no envelope. A
+    /// context-taking method (a durable-topic handler) cannot be given one, so it is refused here with a typed
+    /// non-defect [TopicTierMismatch], before decoding, instead of reaching the generated adapter as a
+    /// `ClassCastException` tagged [SliceDefect.MethodThrew].
+    private static Result<InternalMethod> acceptingBareEvent(InternalMethod method) {
+        return takesContext(method)
+               ? TopicTierMismatch.FACTORY.apply(method.method().name().name()).<InternalMethod> result()
+               : Result.success(method);
     }
 
     private Result<InternalMethod> lookupMethod(String methodName) {

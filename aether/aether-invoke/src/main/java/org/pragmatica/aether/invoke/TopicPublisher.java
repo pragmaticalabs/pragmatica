@@ -5,18 +5,26 @@
 package org.pragmatica.aether.invoke;
 
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.TopicSubscriber;
 import org.pragmatica.aether.slice.Publisher;
+import org.pragmatica.aether.slice.TopicTierMismatch;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.RateLimiter;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -36,6 +44,10 @@ import org.slf4j.LoggerFactory;
 /// placeholder when provisioned outside a deployment) exist only for the empty-subscriber WARN and
 /// counter below; routing uses `topicAddress` alone. `undelivered`, `warnLimiter` and `suppressedWarns`
 /// are the observability state behind that branch — build instances through [#topicPublisher].
+///
+/// `meters`, `sink` and `openRefusals` are the state behind the per-subscriber branch (#1337): a delivery
+/// that a subscriber refused or failed is counted on [#DELIVERY_UNDELIVERED_COUNTER], and a tier-mismatch
+/// refusal also raises an operator event, once per subscriber until a delivery to it succeeds again.
 public record TopicPublisher<T>(String topicName,
                                 String topicAddress,
                                 String publisherSlice,
@@ -43,7 +55,10 @@ public record TopicPublisher<T>(String topicName,
                                 SliceInvoker invoker,
                                 Option<Counter> undelivered,
                                 RateLimiter warnLimiter,
-                                AtomicLong suppressedWarns) implements Publisher<T> {
+                                AtomicLong suppressedWarns,
+                                Option<MeterRegistry> meters,
+                                OperatorWarningSink sink,
+                                Set<String> openRefusals) implements Publisher<T> {
     private static final Logger log = LoggerFactory.getLogger(TopicPublisher.class);
 
     private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
@@ -51,6 +66,12 @@ public record TopicPublisher<T>(String topicName,
     /// Counter name for undelivered publishes; tags `topic`, `address`, `slice` — bounded by deployed
     /// slices × declared topics.
     public static final String UNDELIVERED_COUNTER = "aether.topic.publish.undelivered";
+    /// Counter name for a delivery to ONE subscriber that did not happen (#1337); tags `topic`, `address`, `slice` and
+    /// `reason` (`tier-mismatch` or `failed`). Distinct from [#UNDELIVERED_COUNTER], which counts publishes that found
+    /// no subscriber at all.
+    public static final String DELIVERY_UNDELIVERED_COUNTER = "aether.topic.delivery.undelivered";
+    static final String REASON_TIER_MISMATCH = "tier-mismatch";
+    static final String REASON_FAILED = "failed";
     /// One WARN per publisher per this period; every other undelivered publish in the window is
     /// counted and reported in the next line (rev1421 MEDIUM-1: 10,000 publishes produced 10,000
     /// identical lines in 366 ms, burying the line that was meant to be found).
@@ -62,7 +83,24 @@ public record TopicPublisher<T>(String topicName,
                                                        TopicSubscriptionRegistry registry,
                                                        SliceInvoker invoker,
                                                        Option<MeterRegistry> meters) {
-        return topicPublisher(topicName, topicAddress, publisherSlice, registry, invoker, meters, TimeSource.system());
+        return topicPublisher(topicName,
+                              topicAddress,
+                              publisherSlice,
+                              registry,
+                              invoker,
+                              meters,
+                              OperatorWarningSink.logOnly());
+    }
+
+    /// `sink` is the node's operator-event port; [OperatorWarningSink#logOnly] when the publisher is built outside a node.
+    public static <T> TopicPublisher<T> topicPublisher(String topicName,
+                                                       String topicAddress,
+                                                       String publisherSlice,
+                                                       TopicSubscriptionRegistry registry,
+                                                       SliceInvoker invoker,
+                                                       Option<MeterRegistry> meters,
+                                                       OperatorWarningSink sink) {
+        return topicPublisher(topicName, topicAddress, publisherSlice, registry, invoker, meters, sink, TimeSource.system());
     }
 
     /// The clock is an input so the rate limit can be pinned without waiting a minute.
@@ -72,6 +110,24 @@ public record TopicPublisher<T>(String topicName,
                                                 TopicSubscriptionRegistry registry,
                                                 SliceInvoker invoker,
                                                 Option<MeterRegistry> meters,
+                                                TimeSource timeSource) {
+        return topicPublisher(topicName,
+                              topicAddress,
+                              publisherSlice,
+                              registry,
+                              invoker,
+                              meters,
+                              OperatorWarningSink.logOnly(),
+                              timeSource);
+    }
+
+    static <T> TopicPublisher<T> topicPublisher(String topicName,
+                                                String topicAddress,
+                                                String publisherSlice,
+                                                TopicSubscriptionRegistry registry,
+                                                SliceInvoker invoker,
+                                                Option<MeterRegistry> meters,
+                                                OperatorWarningSink sink,
                                                 TimeSource timeSource) {
         var undelivered = meters.map(registry_ -> registry_.counter(UNDELIVERED_COUNTER,
                                                                     "topic",
@@ -91,7 +147,10 @@ public record TopicPublisher<T>(String topicName,
                                     invoker,
                                     undelivered,
                                     warnLimiter,
-                                    new AtomicLong());
+                                    new AtomicLong(),
+                                    meters,
+                                    sink,
+                                    ConcurrentHashMap.newKeySet());
     }
 
     /// #1216: a publish that finds no subscriber still SUCCEEDS with zero deliveries — that contract is
@@ -102,6 +161,13 @@ public record TopicPublisher<T>(String topicName,
     /// increments [#UNDELIVERED_COUNTER] (when the node supplied its `MeterRegistry`), and at most one
     /// WARN per [#WARN_PERIOD] names all three plus how many publishes the previous window suppressed,
     /// so an operator can set the address against the `topic-sub/` keys without the log drowning.
+    ///
+    /// #1337: the same holds per subscriber. The ephemeral tier is documented at-most-once, "dispatch is attempted to
+    /// currently-registered subscriber groups, nothing is persisted or queued" ([org.pragmatica.aether.resource.TopicDurability]),
+    /// and `TopicPublisherTest.publish_subscriberFailure_completesSuccessfully` pins that one subscriber's failure does not
+    /// fail the publish. So the result stays `Success`, and a delivery a subscriber refused or failed is made visible instead:
+    /// counted on [#DELIVERY_UNDELIVERED_COUNTER], and, when the subscriber refused the delivery as a tier mismatch (its
+    /// handler is a durable-topic handler), raised as a `topic-tier-mismatch` operator event.
     @Override
     public Promise<Unit> publish(T message) {
         var subscribers = registry.findSubscribers(topicAddress);
@@ -140,6 +206,95 @@ public record TopicPublisher<T>(String topicName,
     }
 
     private Promise<Unit> deliverToSubscriber(TopicSubscriber subscriber, T message) {
-        return invoker.invoke(subscriber.artifact(), subscriber.methodName(), message, UNIT_TYPE_TOKEN);
+        return invoker.invoke(subscriber.artifact(), subscriber.methodName(), message, UNIT_TYPE_TOKEN)
+                      .replaceResult(result -> settle(subscriber, result));
+    }
+
+    /// FER (degrade forward): a failed delivery is absorbed here into a counter and, for a tier mismatch, an operator
+    /// event, because the ephemeral contract is at-most-once and the publish must not fail for one subscriber (see
+    /// [#publish]). The guarantee it earns is visibility, not delivery: the loss is counted per topic and reason, and a
+    /// mismatch is named once per subscriber; nothing is retried.
+    private Result<Unit> settle(TopicSubscriber subscriber, Result<Unit> result) {
+        return result.onSuccess(_ -> reportDelivered(subscriber))
+                     .onFailure(cause -> reportRefused(subscriber, cause))
+                     .recover(_ -> Unit.unit());
+    }
+
+    private Unit reportDelivered(TopicSubscriber subscriber) {
+        return openRefusals.remove(subjectOf(subscriber))
+               ? raiseResolved(subscriber)
+               : Unit.unit();
+    }
+
+    private Unit reportRefused(TopicSubscriber subscriber, Cause cause) {
+        return TopicTierMismatch.isTierMismatch(cause)
+               ? reportTierMismatch(subscriber, cause)
+               : countUndelivered(REASON_FAILED);
+    }
+
+    private Unit reportTierMismatch(TopicSubscriber subscriber, Cause cause) {
+        countUndelivered(REASON_TIER_MISMATCH);
+        return openRefusals.add(subjectOf(subscriber))
+               ? raiseMismatch(subscriber)
+               : logRepeatedMismatch(subscriber, cause);
+    }
+
+    private Unit countUndelivered(String reason) {
+        meters.map(registry_ -> registry_.counter(DELIVERY_UNDELIVERED_COUNTER,
+                                                  "topic",
+                                                  topicName,
+                                                  "address",
+                                                  topicAddress,
+                                                  "slice",
+                                                  publisherSlice,
+                                                  "reason",
+                                                  reason))
+              .onPresent(Counter::increment);
+        return Unit.unit();
+    }
+
+    private Unit raiseMismatch(TopicSubscriber subscriber) {
+        return OperatorWarnings.raise(log,
+                                      sink,
+                                      OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                                      subjectOf(subscriber),
+                                      "Topic '{}' published by {} was refused by subscriber {}.{} at address {}: the handler takes a ContextualEvent (a durable-topic handler) but this publisher delivers on the ephemeral tier, so the event was NOT delivered to it (#1337). Declare the topic durable in the publisher slice's resources.toml, or drop the MessageContext parameter from the subscriber",
+                                      topicName,
+                                      publisherSlice,
+                                      subscriber.artifact(),
+                                      subscriber.methodName()
+                                                .name(),
+                                      topicAddress);
+    }
+
+    private Unit raiseResolved(TopicSubscriber subscriber) {
+        return OperatorWarnings.raise(log,
+                                      sink,
+                                      OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
+                                      subjectOf(subscriber),
+                                      "Topic '{}' published by {} reached subscriber {}.{} at address {} again after a tier-mismatch refusal",
+                                      topicName,
+                                      publisherSlice,
+                                      subscriber.artifact(),
+                                      subscriber.methodName()
+                                                .name(),
+                                      topicAddress);
+    }
+
+    private Unit logRepeatedMismatch(TopicSubscriber subscriber, Cause cause) {
+        log.debug("Topic '{}' published by {} was refused again by {}.{}: {}",
+                  topicName,
+                  publisherSlice,
+                  subscriber.artifact(),
+                  subscriber.methodName()
+                            .name(),
+                  cause.message());
+        return Unit.unit();
+    }
+
+    private String subjectOf(TopicSubscriber subscriber) {
+        return topicAddress + "/" + subscriber.artifact()
+                                              .asString() + ":" + subscriber.methodName()
+                                                                            .name();
     }
 }
