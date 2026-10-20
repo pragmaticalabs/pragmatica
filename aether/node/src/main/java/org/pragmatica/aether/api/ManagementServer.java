@@ -54,6 +54,7 @@ import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.NodeReplacementRoutes;
 import org.pragmatica.aether.api.routes.UpgradeRunRoutes;
+import org.pragmatica.aether.api.routes.CommunityPlacementRoutes;
 import org.pragmatica.aether.api.routes.UnconfirmedMarkRoutes;
 import org.pragmatica.aether.api.routes.ObservabilityRoutes;
 import org.pragmatica.aether.api.routes.AbTestRoutes;
@@ -381,6 +382,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(NodeReplacementRoutes.nodeReplacementRoutes(nodeSupplier));
         routeSources.add(UpgradeRunRoutes.upgradeRunRoutes(nodeSupplier));
         routeSources.add(UnconfirmedMarkRoutes.unconfirmedMarkRoutes(nodeSupplier));
+        routeSources.add(CommunityPlacementRoutes.communityPlacementRoutes(nodeSupplier));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,

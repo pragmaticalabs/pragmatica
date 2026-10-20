@@ -388,7 +388,27 @@ public enum OperatorWarningCode {
     COMMUNITY_GROWTH_BLOCKED("community-growth-blocked", "community-growth", WarningLevel.WARNING),
     /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
     /// was raised, or a community has room). INFO, published only after a published blocked event for the source (#752 mechanism).
-    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED);
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED),
+    /// A community placement operation (a worker replacement, a scale-down, a community retirement) is parked and needs an operator (#241): its
+    /// drain acknowledgement deadline passed (DRAIN_UNCERTAIN), so the previous worker may or may not be drained, or it is BLOCKED by a
+    /// conflict the reconciler cannot resolve by itself. Subject is the community; the message names the operation, the phase, both nodes
+    /// and the command that clears it. Closed by [#COMMUNITY_PLACEMENT_RESUMED] or [#COMMUNITY_PLACEMENT_CLEARED].
+    COMMUNITY_PLACEMENT_PARKED("community-placement-parked", "community-placement", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_PLACEMENT_PARKED], same subject (#241): the operation left its parked phase by itself (a late drain
+    /// acknowledgement, the target observed). INFO. It closes a warning another node may have raised: a leader change keeps the operation.
+    COMMUNITY_PLACEMENT_RESUMED("community-placement-resumed",
+                                "community-placement",
+                                WarningLevel.INFO,
+                                COMMUNITY_PLACEMENT_PARKED,
+                                true),
+    /// The other recovery of [#COMMUNITY_PLACEMENT_PARKED], same subject (#241): an OPERATOR cleared the parked operation (`aether cluster
+    /// clear-placement`). Nothing was terminated or removed by the clear: the event names the operator, the reason the operator gave, the phase
+    /// the operation was parked in and both nodes, which are left as they were. Closes the warning another node may have raised.
+    COMMUNITY_PLACEMENT_CLEARED("community-placement-cleared",
+                                "community-placement",
+                                WarningLevel.INFO,
+                                COMMUNITY_PLACEMENT_PARKED,
+                                true);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

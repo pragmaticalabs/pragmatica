@@ -2405,7 +2405,9 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                              OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
                              OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
-                             OperatorWarningCode.COMMUNITY_GROWTH_RESUMED);
+                             OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                              OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
@@ -2431,7 +2433,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                              OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
-                             OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED);
+                             OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
