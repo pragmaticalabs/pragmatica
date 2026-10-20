@@ -563,7 +563,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
     }
 
     /// #1337 (v-2332): the sweeps of ONE pass see ONE placement set. The counted-core supplier below answers `{SELF, GHOST}` to the
-    /// first call only; a sweep that read the set afresh would see `{SELF}` and remove GHOST's rows while another sweep kept GHOST's
+    /// SECOND call only (the first is the membership guard); a sweep that read the set afresh would see `{SELF}` and remove GHOST's rows while another sweep kept GHOST's
     /// slices, which silently stops delivery to a node that is still placing.
     @Nested
     class OnePlacementSnapshotPerPass {
@@ -582,7 +582,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
             var ghostSlice = SliceNodeKey.sliceNodeKey(ARTIFACT, ghost);
 
             activeState().sliceStates().put(ghostSlice, SliceState.ACTIVE);
-            coreSource = () -> calls.getAndIncrement() == 0 ? Set.of(SELF, ghost) : Set.of(SELF);
+            coreSource = () -> calls.getAndIncrement() == 1 ? Set.of(SELF, ghost) : Set.of(SELF);
 
             activeState().sweepStaleEntries(false);
 
@@ -600,7 +600,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
             var calls = new java.util.concurrent.atomic.AtomicInteger();
 
             kvStore.put(NodeArtifactKey.nodeArtifactKey(ghost, ARTIFACT), NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
-            coreSource = () -> calls.getAndIncrement() == 0 ? Set.of(SELF, ghost) : Set.of(SELF);
+            coreSource = () -> calls.getAndIncrement() == 1 ? Set.of(SELF, ghost) : Set.of(SELF);
             cluster.commands.clear();
 
             activeState().sweepStaleEntries(true);
