@@ -210,7 +210,7 @@ class AppHttpServerSecurityModeTest {
 
     @Nested
     class NoSecurityServerTests {
-        private static final int OPEN_PORT = 19092;
+        private static int port;
         private static AppHttpServer server;
         private static HttpClient httpClient;
 
@@ -219,7 +219,7 @@ class AppHttpServerSecurityModeTest {
             httpClient = HttpClient.newBuilder()
                                    .connectTimeout(Duration.ofSeconds(5))
                                    .build();
-            var config = AppHttpConfig.insecureAppHttpConfig(OPEN_PORT);
+            var config = AppHttpConfig.insecureAppHttpConfig(0);
             server = AppHttpServer.appHttpServer(config,
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
@@ -245,7 +245,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void allowsUnauthenticatedHealthRequest() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + OPEN_PORT + "/health"))
+                                     .uri(URI.create("http://localhost:" + port + "/health"))
                                      .GET()
                                      .build();
 
