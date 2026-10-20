@@ -254,6 +254,8 @@ final class DefaultPrefetchManager implements PrefetchManager {
         storage.warm(id).withResult(result -> finishPrefetch(result, id));
     }
 
+    /// FER: a failed prefetch is absorbed (logged at debug) because it costs only a later read of the block from the
+    /// shared tier; the slot is already given back and the cooldown stays, so a dead hint is not retried every round.
     private void finishPrefetch(Result<Boolean> result, BlockId id) {
         inFlight.decrementAndGet();
         result.onSuccess(copied -> countWarmed(copied, id))

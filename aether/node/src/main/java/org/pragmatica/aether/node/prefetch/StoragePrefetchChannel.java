@@ -125,6 +125,8 @@ public final class StoragePrefetchChannel implements GossipChannel {
         }
     }
 
+    /// FER: bytes that do not decode are dropped and counted, never propagated -- hints are advisory, and a peer
+    /// speaking a different build must not be able to fail the transport thread this runs on.
     @Override
     @Contract
     public void incoming(NodeId from, byte[] payload) {

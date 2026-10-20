@@ -1004,7 +1004,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// A payload longer than the budget it was offered is a channel defect, not a reason to send a datagram that
-    /// may not fit: it is dropped and counted.
+    /// may not fit: it is dropped and counted. FER: a datagram that fails to send is absorbed (logged at debug) --
+    /// application gossip is best effort, and the next probe round sends a fresh payload.
     private void sendAppGossip(SwimMember peer, int channel, byte[] payload) {
         if (payload.length > piggybackBudgetBytes) {
             appGossipDropped.incrementAndGet();
