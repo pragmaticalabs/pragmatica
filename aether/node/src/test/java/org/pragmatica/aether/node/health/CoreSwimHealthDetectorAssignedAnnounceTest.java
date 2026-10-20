@@ -262,6 +262,28 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
         }
     }
 
+    /// Release wins: the assignment lands while the hold is waiting at the gate. The hold must read the assignment
+    /// after it enters the gate; a hold that read `assigned` before waiting would store the call and be held forever.
+    @Test
+    void markAssigned_landingWhileTheHoldWaitsAtTheGate_endsAnnounced() throws Exception {
+        var pool = Executors.newSingleThreadExecutor();
+
+        try {
+            var call = new AtomicReference<Future<?>>();
+
+            detector.underAssignmentGateForTest(() -> {
+                submitAndCheck(pool, () -> detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE), call);
+                detector.markAssigned();
+            });
+            call.get().get(5, TimeUnit.SECONDS);
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(announcesToSeed()).as("release won: announced, not held forever").isNotEmpty());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     /// Submits `task`, gives it time to run if it could, and reports whether it finished while the gate was held.
     private static boolean submitAndCheck(ExecutorService pool, Runnable task, AtomicReference<Future<?>> submitted) {
         submitted.set(pool.submit(task));
