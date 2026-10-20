@@ -131,7 +131,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
             var root = root(matcher.group(2));
 
             if (matcher.group(1) != null || !locals.contains(root)) {
-                return some(Write.write("assigns " + target(matcher.group(1), matcher.group(2)),
+                return some(Write.write("assigns " + target(matcher.group(1) != null, matcher.group(2)),
                                         List.of()));
             }
         }
@@ -322,10 +322,10 @@ sealed interface SharedWrites permits SharedWrites.unused {
         return stripped.substring(0, end);
     }
 
-    private static String target(String qualifier, String path) {
-        return (qualifier == null
-                ? ""
-                : "this.") + path.replaceAll("\\s+", "");
+    private static String target(boolean viaThis, String path) {
+        return (viaThis
+                ? "this."
+                : "") + path.replaceAll("\\s+", "");
     }
 
     private static String compact(String call) {

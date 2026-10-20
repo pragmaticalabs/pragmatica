@@ -82,7 +82,7 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
         if (i < text.length() && text.charAt(i) == '(') {
             var close = SourceText.closeOf(text, i);
 
-            return close > 0 && walk(text, close + 1, callHeadState(name, facts), false, facts) == State.PROMISE;
+            return walk(text, close + 1, callHeadState(name, facts), false, facts) == State.PROMISE;
         }
 
         var viaType = Character.isUpperCase(name.charAt(0));

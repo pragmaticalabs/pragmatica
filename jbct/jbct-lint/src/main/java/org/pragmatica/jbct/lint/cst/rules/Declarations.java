@@ -143,12 +143,8 @@ sealed interface Declarations permits Declarations.unused {
 
     /// A declaration found while scanning, before it gets a slot (a `var` takes the carrier of its initializer).
     record Pending(int offset, String name, Option<Slot> slot, Option<String> initializer) {
-        static Pending typed(int offset, String name, Slot slot) {
-            return new Pending(offset, name, some(slot), none());
-        }
-
-        static Pending inferred(int offset, String name, String initializer) {
-            return new Pending(offset, name, none(), some(initializer));
+        static Pending pending(int offset, String name, Option<Slot> slot, Option<String> initializer) {
+            return new Pending(offset, name, slot, initializer);
         }
     }
 
@@ -241,11 +237,7 @@ sealed interface Declarations permits Declarations.unused {
                                     "throws",
                                     "yield",
                                     "assert",
-                                    "var",
-                                    "record",
-                                    "class",
-                                    "interface",
-                                    "enum");
+                                    "var");
 
     Set<String> CONTROL = Set.of("if",
                                  "for",
@@ -328,7 +320,7 @@ sealed interface Declarations permits Declarations.unused {
             if ("(".equals(named.group(2))) {
                 methodBucket(slot, promiseMethods, otherMethods).add(name);
             } else {
-                pending.add(Pending.typed(named.start(1), name, slot));
+                pending.add(Pending.pending(named.start(1), name, some(slot), none()));
                 if (insideRecordHeader(records, named.start(1))) {
                     methodBucket(slot, promiseMethods, otherMethods).add(name);
                 }
@@ -430,28 +422,35 @@ sealed interface Declarations permits Declarations.unused {
             return false;
         }
 
-        var held = HOLDS_FIRST.contains(typeName)
-                   ? pieces.getFirst()
-                   : HOLDS_LAST.contains(typeName)
-                     ? pieces.getLast()
-                     : "";
+        return heldArgument(typeName, pieces).strip()
+                           .matches("(?s)Promise\\b.*");
+    }
 
-        return held.strip()
-                   .matches("(?s)Promise\\b.*");
+    private static String heldArgument(String typeName, List<String> pieces) {
+        if (HOLDS_FIRST.contains(typeName)) {
+            return pieces.getFirst();
+        }
+
+        return HOLDS_LAST.contains(typeName)
+               ? pieces.getLast()
+               : "";
     }
 
     private static void scanLambdaParams(String masked, List<Pending> pending) {
         var single = LAMBDA_PARAM.matcher(masked);
 
         while (single.find()) {
-            pending.add(Pending.typed(single.start(1), single.group(1), lambdaSlot(masked, single.start(1))));
+            pending.add(Pending.pending(single.start(1),
+                                        single.group(1),
+                                        some(lambdaSlot(masked, single.start(1))),
+                                        none()));
         }
 
         var several = LAMBDA_PARAMS.matcher(masked);
 
         while (several.find()) {
             for (var name : SourceText.declaredNames(several.group(1))) {
-                pending.add(Pending.typed(several.start(1), name, Slot.OTHER));
+                pending.add(Pending.pending(several.start(1), name, some(Slot.OTHER), none()));
             }
         }
     }
@@ -472,9 +471,10 @@ sealed interface Declarations permits Declarations.unused {
             var end = SourceText.statementEnd(masked, matcher.end());
 
             if (end > 0) {
-                pending.add(Pending.inferred(matcher.start(1),
-                                             matcher.group(1),
-                                             masked.substring(matcher.end(), end)));
+                pending.add(Pending.pending(matcher.start(1),
+                                            matcher.group(1),
+                                            none(),
+                                            some(masked.substring(matcher.end(), end))));
             }
         }
     }
