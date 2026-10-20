@@ -117,6 +117,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
 
     private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
+    /// Guards [#assigned] and [#heldAnnounce]: a worker's seed announcement waits for its committed directive (#1840).
+    private final Object assignmentGate = new Object();
+    private boolean assigned;
+    private Option<AnnounceJoinCall> heldAnnounce = none();
     private final MembershipResyncPolicy resync = MembershipResyncPolicy.membershipResyncPolicy();
     /// Test seam (#1308): runs on the starting thread once the SWIM port is bound and before the
     /// protocol is created, so a test can hold the detector in Starting or fail a start after a
@@ -452,6 +456,46 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                              List<InetSocketAddress> seeds) {
         pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, bootToken, seeds));
         protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, bootToken, seeds));
+    }
+
+    /// The worker form of [#announceJoin] (#1840): the node's identity is seeded at once, but the ANNOUNCE to
+    /// `seeds` is held until [#markAssigned] says its activation directive is committed. Before that the node
+    /// has no community, and the cores' membership scope admits no worker that is not a governor, so every
+    /// round of the announce loop was traffic they dropped. Once assigned, the held announcement is released
+    /// unchanged; a node already assigned announces at once.
+    @Contract
+    public void announceJoinWhenAssigned(NodeInfo self,
+                                         String clusterName,
+                                         long incarnation,
+                                         long bootToken,
+                                         List<InetSocketAddress> seeds) {
+        synchronized (assignmentGate) {
+            var call = new AnnounceJoinCall(self, clusterName, incarnation, bootToken, seeds);
+
+            if (assigned) {
+                announceJoin(self, clusterName, incarnation, bootToken, seeds);
+            } else {
+                heldAnnounce = option(call);
+                announceJoin(self, clusterName, incarnation, bootToken, List.of());
+            }
+        }
+    }
+
+    /// This node's activation directive is committed: releases an announcement held by
+    /// [#announceJoinWhenAssigned], once. Idempotent; a later [#announceJoinWhenAssigned] announces at once.
+    @Contract
+    public void markAssigned() {
+        synchronized (assignmentGate) {
+            var held = heldAnnounce;
+
+            assigned = true;
+            heldAnnounce = none();
+            held.onPresent(call -> announceJoin(call.self(),
+                                                call.clusterName(),
+                                                call.incarnation(),
+                                                call.bootToken(),
+                                                call.seeds()));
+        }
     }
 
     /// Asks the peers for the committed electorate's members this node's SWIM view still lacks (#1803).

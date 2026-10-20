@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.node;
+
+import java.net.InetSocketAddress;
+import java.util.List;
+
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.net.tcp.NodeAddress;
+
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+
+/// #1840: which announcement a node runs at transport-ready. A worker holds its ANNOUNCE to the seeds until
+/// its activation directive is committed; a core announces at once. The trigger does nothing until run.
+class AetherNodeJoinAnnouncementTest {
+    private static final NodeInfo SELF = NodeInfo.nodeInfo(new NodeId("node-1"), NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
+    private static final List<InetSocketAddress> SEEDS = List.of(new InetSocketAddress("127.0.0.2", 9101));
+
+    private final CoreSwimHealthDetector detector = Mockito.mock(CoreSwimHealthDetector.class);
+
+    @Test
+    void joinAnnouncement_worker_holdsTheAnnounceUntilAssigned() {
+        var trigger = AetherNode.joinAnnouncement(true, detector, SELF, "c", 5L, 7L, SEEDS);
+
+        verifyNoInteractions(detector);
+        trigger.run();
+
+        verify(detector).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS);
+        verify(detector, never()).announceJoin(SELF, "c", 5L, 7L, SEEDS);
+    }
+
+    @Test
+    void joinAnnouncement_core_announcesAtOnce() {
+        var trigger = AetherNode.joinAnnouncement(false, detector, SELF, "c", 5L, 7L, SEEDS);
+
+        verifyNoInteractions(detector);
+        trigger.run();
+
+        verify(detector).announceJoin(SELF, "c", 5L, 7L, SEEDS);
+        verify(detector, never()).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS);
+    }
+}

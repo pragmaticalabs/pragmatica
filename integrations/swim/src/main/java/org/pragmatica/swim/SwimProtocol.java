@@ -2287,6 +2287,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.
     ///
     /// Runs on the shared scheduler. Stops once this node is acknowledged by a peer (inbound probe) or after 60 attempts (30s).
+    ///
+    /// With no seeds the call only seeds this node's identity (incarnation, boot token, labels) and arms no
+    /// loop: there is nobody to announce to, and a node that holds its announcement back until it is assigned
+    /// (#1840) still answers probes under its real identity meanwhile.
     @Contract
     public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
         announceJoin(self, clusterName, incarnation, 0L, seeds);
@@ -2318,6 +2322,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
             selfLabels = gossipLabels(self.labels());
+            if (seeds.isEmpty()) {
+                return;
+            }
+
             var attempts = new AtomicInteger(0);
             var future = new AtomicReference<ScheduledFuture<?>>();
             var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
