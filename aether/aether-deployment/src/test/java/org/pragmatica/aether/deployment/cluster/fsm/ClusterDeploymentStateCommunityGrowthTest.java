@@ -207,6 +207,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
         fixture.seedCommunity(FIRST);
         fixture.alwaysRace(() -> fixture.toggleCommunityState(FIRST));
         fixture.foreignResults(true);
+        fixture.limitCommits(10);
         fixture.joinAll(1);
 
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
@@ -498,6 +499,11 @@ class ClusterDeploymentStateCommunityGrowthTest {
             cluster.failNext = true;
         }
 
+        /// The commit after the `limit`-th fails, so a retry loop that should have been bounded ends in a failed assertion, not a hang.
+        void limitCommits(int limit) {
+            cluster.applyLimit = limit;
+        }
+
         /// Every commit lands after `change` ran: another writer keeps changing the community.
         void alwaysRace(Runnable change) {
             cluster.beforeEveryApply = change;
@@ -644,6 +650,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
         volatile Runnable beforeEveryApply = () -> {};
         final java.util.concurrent.atomic.AtomicInteger applies = new java.util.concurrent.atomic.AtomicInteger();
         volatile boolean failNext;
+        volatile int applyLimit = Integer.MAX_VALUE;
         volatile List<KVCommand.TransactionResult> foreign = List.of();
         volatile Runnable beforeApply = () -> {};
         private final InMemoryKvStore committed;
@@ -671,7 +678,10 @@ class ClusterDeploymentStateCommunityGrowthTest {
                 return org.pragmatica.lang.utils.Causes.cause("consensus unavailable").promise();
             }
 
-            applies.incrementAndGet();
+            if (applies.incrementAndGet() > applyLimit) {
+                return org.pragmatica.lang.utils.Causes.cause("apply limit reached").promise();
+            }
+
             beforeEveryApply.run();
             var change = beforeApply;
 
