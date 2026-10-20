@@ -89,6 +89,19 @@ class PromotionManagerSafetyTest {
         }
 
         @Test
+        void promote_blockLandingExactlyOnTheWatermark_isCopied() {
+            fill(memory, 1000);
+            var id = storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(1));
+            var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
+
+            pm.activate();
+
+            assertThat(pm.promote()).as("1000 + 400 bytes is exactly the 70% target of 2000: at the ceiling, not past it")
+                                    .isEqualTo(1);
+            assertThat(memory.exists(id).await().unwrap()).isTrue();
+        }
+
+        @Test
         void promote_thenDemote_noBlockMovesBothWays() {
             var demotion = DemotionManager.demotionManager(List.of(memory, disk),
                                                            metadata,
@@ -158,6 +171,25 @@ class PromotionManagerSafetyTest {
             assertThat(pm.stats().failed()).isEqualTo(1);
             assertThat(metadata.getLifecycle(id).unwrap().presentIn()).as("no record of a copy that failed")
                                                                       .containsExactly(TierLevel.LOCAL_DISK);
+        }
+
+        @Test
+        void stats_failedAccumulatesAcrossCycles() {
+            var faulty = new FaultyTier(memory, () -> Option.some(DISK_ERROR));
+
+            storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(1));
+            storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(2));
+
+            var pm = promotionManager(List.of(faulty, disk), metadata, promotionConfig(5, 300_000L, 10));
+
+            pm.activate();
+            pm.promote();
+
+            assertThat(pm.stats().failed()).as("both candidates failed in the one cycle").isEqualTo(2);
+
+            pm.promote();
+
+            assertThat(pm.stats().failed()).as("the next cycle adds to the running total").isEqualTo(4);
         }
 
         @Test
