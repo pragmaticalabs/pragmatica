@@ -23,9 +23,12 @@ import org.pragmatica.lang.Verify;
 ///   it off a source keeps its single `<source>-w-0` community exactly as before.
 public record CommunityPolicy(int maxSize,
                               int viabilityFloor,
-                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows") int maxCommunities,
-                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows") int dissolveGraceSeconds,
-                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows") boolean growth) {
+                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows")
+                              int maxCommunities,
+                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows")
+                              int dissolveGraceSeconds,
+                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows")
+                              boolean growth) {
     /// Hard ceiling on a community's size (worker-membership-spec section 8: the SWIM view of one community stays below it).
     public static final int CEILING = 200;
     public static final int MAX_COMMUNITIES_LIMIT = 100;
