@@ -60,6 +60,26 @@ class PromotionManagerSafetyTest {
         }
     }
 
+    /// Every promotion step writes to the tier `targetFor` names, and only that step's target: a block that exists only on the
+    /// remote tier is copied to the DISK tier, not to memory, and not past it. Memory sits above its watermark, so the disk to
+    /// memory step is skipped and the block's landing place is unambiguous.
+    @Nested
+    class TargetTier {
+        @Test
+        void promote_remoteBlock_landsInTheDiskTier_notInMemory() {
+            fill(memory, 1900);
+            var id = storeHot(remote, EnumSet.of(TierLevel.REMOTE), block(1));
+            var pm = promotionManager(List.of(memory, disk, remote), metadata, promotionConfig(5, 300_000L, 10));
+
+            pm.activate();
+
+            assertThat(pm.promote()).isEqualTo(1);
+            assertThat(disk.exists(id).await().unwrap()).as("the copy is in the DISK tier").isTrue();
+            assertThat(memory.exists(id).await().unwrap()).as("and not in memory").isFalse();
+            assertThat(metadata.getLifecycle(id).unwrap().presentIn()).containsExactlyInAnyOrder(TierLevel.LOCAL_DISK, TierLevel.REMOTE);
+        }
+    }
+
     @Nested
     class TargetWatermark {
         @Test

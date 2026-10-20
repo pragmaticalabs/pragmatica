@@ -125,10 +125,26 @@ final class PromotionBootFixture {
         return ids;
     }
 
+    /// Reads `id` `times` times through the instance and returns once every read has been COUNTED. The access is recorded in an
+    /// observer of the read's promise, which can run after `await()` has returned, so the last reads may not be in the
+    /// block's `accessCount` yet; promotion's threshold (`accessCount > 50`) would then be missed by one or two and a test that
+    /// ticks straight away fails about one run in twenty. The observable condition is awaited, not slept for.
     static void readRepeatedly(StorageFactory.StorageSetup setup, BlockId id, int times) {
+        var before = accessCount(setup, id);
+
         for (var i = 0; i < times; i++) {
-            setup.instance().get(id).await().onFailure(cause -> fail("read failed: " + cause.message()));
+            setup.instance()
+                 .get(id)
+                 .await()
+                 .onFailure(cause -> fail("read failed: " + cause.message()))
+                 .onSuccess(opt -> assertThat(opt.isPresent()).as("the block must be readable from its slow tier").isTrue());
         }
+
+        await(() -> accessCount(setup, id) >= before + times, "every read was counted in the block's accessCount");
+    }
+
+    static int accessCount(StorageFactory.StorageSetup setup, BlockId id) {
+        return setup.metadataStore().getLifecycle(id).map(lc -> lc.accessCount()).or(0);
     }
 
     private static byte[] distinctBlock(int index) {

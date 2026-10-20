@@ -43,6 +43,13 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).contains("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector);");
     }
 
+    /// The ready signal can fire again after a drain began; the node tells it whether it is draining from the drain procedure's own
+    /// state. `StoragePromotionWiringTest` tests the guard with a supplied predicate, so binding a constant here left it green.
+    @Test
+    void assembly_tellsTheStorageReadySignalWhetherTheDrainProcedureHasStarted() {
+        assertThat(assemblyCode()).contains("signalReadyActivatingStorage(nodeLifecycle::signalReady,storageSetups,()->drainProcedure.state()!=DrainProcedure.DrainState.INACTIVE)");
+    }
+
     @Test
     void assembly_givesTheSinkToTheStreamConsumerManager() {
         assertThat(assemblyCode()).contains("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");

@@ -110,24 +110,39 @@ public final class StorageMaintenanceDriver {
         }
     }
 
+    /// FER (degrade forward): if the cycle cannot even be started (a thread that will not start, a refusing executor), the
+    /// guard is released and the failure logged, and the next tick tries again; promotion is an optimization, so one lost
+    /// cycle costs nothing but that cycle. Without the release the guard would stay set and promotion on this node would
+    /// stop for good, silently. `Throwable`, not `Exception`: a thread that cannot be created is an `OutOfMemoryError`.
     @Contract
+    @SuppressWarnings("JBCT-EX-01")
     private void startPromotionUnlessRunning() {
         if (promoting.compareAndSet(false, true)) {
-            promotionExecutor.execute(this::runPromotionCycle);
+            try {
+                promotionExecutor.execute(this::runPromotionCycle);
+            } catch (Throwable t) {
+                promoting.set(false);
+                log.warn("Storage promotion cycle could not be started: {} -- the next tick tries again", t.toString());
+            }
         }
     }
 
     /// One promotion cycle, then the stall check on what it did. FER (degrade forward): a failed cycle is logged and
-    /// dropped, and the next tick starts a fresh one; nothing waits on a cycle having run, and the guard is released
-    /// either way, or one bad cycle would stop promotion on this node for good. The guarantee is only that promotion
-    /// retries every tick; a cycle that keeps failing is surfaced by the stall watch, not by this log line.
+    /// dropped, and the next tick starts a fresh one; nothing waits on a cycle having run. The guard is released in a
+    /// `finally`, so it is released however the cycle ends, including by an `Error` that `Result.lift` rethrows
+    /// (a `VirtualMachineError`); otherwise one such cycle would stop promotion on this node for good. The guarantee is only
+    /// that promotion retries every tick; a cycle that keeps failing is surfaced by the stall watch, not by this log line.
     @Contract
+    @SuppressWarnings("JBCT-EX-01")
     private void runPromotionCycle() {
-        Result.lift(Causes::fromThrowable, this::promoteAndObserve)
-              .onFailure(cause -> log.warn("Storage promotion cycle failed: {}",
-                                           cause.message()))
-              .onSuccess(StorageMaintenanceDriver::logPromoted);
-        promoting.set(false);
+        try {
+            Result.lift(Causes::fromThrowable, this::promoteAndObserve)
+                  .onFailure(cause -> log.warn("Storage promotion cycle failed: {}",
+                                               cause.message()))
+                  .onSuccess(StorageMaintenanceDriver::logPromoted);
+        } finally {
+            promoting.set(false);
+        }
     }
 
     private int promoteAndObserve() {

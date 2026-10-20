@@ -6823,7 +6823,8 @@ public interface AetherNode extends ManageableNode {
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
                                                                                           () -> signalReadyActivatingStorage(nodeLifecycle::signalReady,
-                                                                                                                             storageSetups),
+                                                                                                                             storageSetups,
+                                                                                                                             () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE),
                                                                                           nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
@@ -7388,11 +7389,28 @@ public interface AetherNode extends ManageableNode {
     /// a manager that cannot start is logged and the node still becomes ready, with that instance's tiers unmaintained;
     /// promotion is an optimization, not a dependency.
     @Contract
-    private static void signalReadyActivatingStorage(Runnable signalReady,
-                                                     Map<String, StorageFactory.StorageSetup> storageSetups) {
+    static void signalReadyActivatingStorage(Runnable signalReady,
+                                             Map<String, StorageFactory.StorageSetup> storageSetups,
+                                             BooleanSupplier draining) {
+        activateStorageUnlessDraining(storageSetups, draining);
+        signalReady.run();
+    }
+
+    /// The ready signal fires on EVERY entry of the node-deployment state machine to Active, so it can fire again after
+    /// the node began draining (a quorum-loss drain, then quorum comes back before the process exits). Drain is one-way and
+    /// single-shot (`DrainProcedure`: INACTIVE -> DRAINING -> EXITED, nothing leads back), so a draining node's maintenance
+    /// must stay off: re-activating it would resume promotion and demotion on a node that is leaving.
+    @Contract
+    private static void activateStorageUnlessDraining(Map<String, StorageFactory.StorageSetup> storageSetups,
+                                                      BooleanSupplier draining) {
+        if (draining.getAsBoolean()) {
+            LOG.info("Node is draining: storage maintenance stays off");
+
+            return;
+        }
+
         StorageFactory.activateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}",
                                                                                           cause.message()));
-        signalReady.run();
     }
 
     /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed

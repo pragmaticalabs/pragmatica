@@ -64,8 +64,8 @@ class StoragePromotionTwoNodeTest {
 
         deleteResidentBlocks(contentA, idsA, 3);
         deleteResidentBlocks(contentB, idsB, 3);
-        readRepeatedly(contentA, coldA, HOT_READS);
-        readRepeatedly(contentB, coldB, HOT_READS);
+        PromotionBootFixture.readRepeatedly(contentA, coldA, HOT_READS);
+        PromotionBootFixture.readRepeatedly(contentB, coldB, HOT_READS);
         driverA.tick();
         driverB.tick();
 
@@ -150,16 +150,6 @@ class StoragePromotionTwoNodeTest {
            .filter(id -> isResidentInMemory(setup, id))
            .limit(count)
            .forEach(id -> setup.instance().delete(id).await().onFailure(cause -> fail("delete failed: " + cause.message())));
-    }
-
-    private static void readRepeatedly(StorageFactory.StorageSetup setup, BlockId id, int times) {
-        for (var i = 0; i < times; i++) {
-            setup.instance()
-                 .get(id)
-                 .await()
-                 .onFailure(cause -> fail("read failed: " + cause.message()))
-                 .onSuccess(opt -> assertThat(opt.isPresent()).as("the block must be readable from its slow tier").isTrue());
-        }
     }
 
     private static byte[] distinctBlock(int index) {

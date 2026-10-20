@@ -129,6 +129,33 @@ class StoragePromotionWiringTest {
     }
 
     @Test
+    void signalReady_activatesMaintenanceBeforeSignalling_whenTheNodeIsNotDraining() {
+        var setups = createAll(true, true);
+        var activeWhenSignalled = new java.util.concurrent.atomic.AtomicBoolean();
+
+        AetherNode.signalReadyActivatingStorage(() -> activeWhenSignalled.set(setups.get(CONTENT).promotionManager().isActive()),
+                                                setups,
+                                                () -> false);
+
+        assertThat(activeWhenSignalled.get()).as("the node reports ready with maintenance already running").isTrue();
+        assertThat(maintenanceActive(setups.get(ARTIFACTS))).isTrue();
+    }
+
+    /// The ready signal fires on every entry of the node-deployment machine to Active, which can be after the node began
+    /// draining (a quorum-loss drain, then quorum returns). A draining node must stay off, and still signal.
+    @Test
+    void signalReady_afterTheNodeBeganDraining_keepsMaintenanceOff_butStillSignals() {
+        var setups = createAll(true, true);
+        var signalled = new java.util.concurrent.atomic.AtomicInteger();
+
+        AetherNode.signalReadyActivatingStorage(signalled::incrementAndGet, setups, () -> true);
+
+        assertThat(signalled.get()).isEqualTo(1);
+        assertThat(maintenanceActive(setups.get(ARTIFACTS))).isFalse();
+        assertThat(maintenanceActive(setups.get(CONTENT))).isFalse();
+    }
+
+    @Test
     void tick_promotesAHotBlockOutOfASlowTierIntoMemory_onTheRealFactoryPath() {
         var setups = createAll(true, true);
         var content = setups.get(CONTENT);
@@ -147,7 +174,7 @@ class StoragePromotionWiringTest {
         var cold = ids.stream().filter(id -> !isResidentInMemory(content, id)).findFirst().orElseThrow();
 
         deleteResidentBlocks(content, ids, 3);
-        readRepeatedly(content, cold, HOT_READS);
+        PromotionBootFixture.readRepeatedly(content, cold, HOT_READS);
 
         driver.tick();
 
@@ -175,7 +202,7 @@ class StoragePromotionWiringTest {
         var cold = ids.stream().filter(id -> !isResidentInMemory(content, id)).findFirst().orElseThrow();
 
         deleteResidentBlocks(content, ids, 3);
-        readRepeatedly(content, cold, HOT_READS);
+        PromotionBootFixture.readRepeatedly(content, cold, HOT_READS);
         driver.tick();
 
         assertThat(isResidentInMemory(content, cold)).as("promotion is dormant until activated").isFalse();
@@ -262,16 +289,6 @@ class StoragePromotionWiringTest {
            .filter(id -> isResidentInMemory(setup, id))
            .limit(count)
            .forEach(id -> setup.instance().delete(id).await().onFailure(cause -> fail("delete failed: " + cause.message())));
-    }
-
-    private static void readRepeatedly(StorageFactory.StorageSetup setup, BlockId id, int times) {
-        for (var i = 0; i < times; i++) {
-            setup.instance()
-                 .get(id)
-                 .await()
-                 .onFailure(cause -> fail("read failed: " + cause.message()))
-                 .onSuccess(opt -> assertThat(opt.isPresent()).as("the block must be readable from its slow tier").isTrue());
-        }
     }
 
     private static byte[] distinctBlock(int index) {

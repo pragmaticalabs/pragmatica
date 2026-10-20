@@ -76,6 +76,39 @@ class StorageMaintenanceDriverPromotionTest {
         assertThat(attempts.get()).as("one failed cycle must not leave the guard set for good").isEqualTo(2);
     }
 
+    /// A thread that will not start (`OutOfMemoryError`) or a refusing executor must not leave the skip-if-running guard set:
+    /// the next tick still runs a cycle.
+    @Test
+    void tick_afterTheExecutorRefusedToStartACycle_theNextTickStillRunsOne() {
+        var refusals = new AtomicInteger();
+        var cycles = new AtomicInteger();
+
+        when(promotion.promote()).thenAnswer(invocation -> cycles.incrementAndGet());
+
+        var driver = driver(cycle -> refuseOnce(refusals, cycle));
+
+        driver.tick();
+        assertThat(cycles.get()).as("control: the refused tick ran no cycle").isZero();
+
+        driver.tick();
+        assertThat(cycles.get()).as("the guard was released, so the next tick ran a cycle").isEqualTo(1);
+    }
+
+    @Test
+    void tick_afterACycleDiedWithAnErrorThatEscapesTheLift_theNextTickStillRunsOne() {
+        var cycles = new AtomicInteger();
+
+        when(promotion.promote()).thenAnswer(invocation -> dieOnTheFirstCycle(cycles));
+
+        var driver = driver(StorageMaintenanceDriverPromotionTest::runAsADyingThread);
+
+        driver.tick();
+        driver.tick();
+
+        assertThat(cycles.get()).as("a StackOverflowError is rethrown by Result.lift; the guard must still be released")
+                                .isEqualTo(2);
+    }
+
     @Test
     void tick_runsThePromotionCycleOnItsOwnDaemonThread() throws InterruptedException {
         var ran = new CountDownLatch(1);
@@ -152,6 +185,31 @@ class StorageMaintenanceDriverPromotionTest {
         calls.add(call);
 
         return 0;
+    }
+
+    private static void refuseOnce(AtomicInteger refusals, Runnable cycle) {
+        if (refusals.getAndIncrement() == 0) {
+            throw new OutOfMemoryError("unable to create native thread (simulated)");
+        }
+
+        cycle.run();
+    }
+
+    private static int dieOnTheFirstCycle(AtomicInteger cycles) {
+        if (cycles.incrementAndGet() == 1) {
+            throw new StackOverflowError("simulated");
+        }
+
+        return 0;
+    }
+
+    /// What a thread does with an `Error` nobody catches: the cycle ends there, and nothing after the `finally` runs.
+    private static void runAsADyingThread(Runnable cycle) {
+        try {
+            cycle.run();
+        } catch (Throwable ignored) {
+            // the thread dies; the driver's guard is not told
+        }
     }
 
     private static int failFirstTime(AtomicInteger attempts) {
