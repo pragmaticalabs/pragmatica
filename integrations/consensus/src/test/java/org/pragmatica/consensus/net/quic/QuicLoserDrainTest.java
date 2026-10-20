@@ -88,7 +88,7 @@ class QuicLoserDrainTest {
                                                      (_, _) -> {});
 
         var port = server.boundPort().fold(() -> fail("server not bound"), bound -> bound);
-        var loser = client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port), 1L)
+        var loser = client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
                           .await(AWAIT)
                           .fold(cause -> fail("connect: " + cause.message()), conn -> conn);
         var lane = loser.stream(StreamType.KV).fold(() -> fail("no KV lane"), stream -> stream);
