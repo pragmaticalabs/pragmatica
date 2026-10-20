@@ -4,4 +4,8 @@
 package org.pragmatica.aether.test.tiermismatch;
 
 /// The event both topics carry. Shared by the publisher and subscriber slices.
-public record TierOrder(String orderId) {}
+public record TierOrder(String orderId) {
+    public static TierOrder tierOrder(String orderId) {
+        return new TierOrder(orderId);
+    }
+}
