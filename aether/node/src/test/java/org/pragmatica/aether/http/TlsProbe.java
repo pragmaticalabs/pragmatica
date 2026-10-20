@@ -25,6 +25,8 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -34,6 +36,12 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 /// every certificate (the question is WHICH certificate the listener presents and whether it speaks TLS at all, not trust).
 public final class TlsProbe {
     private TlsProbe() {}
+
+    /// Fails the test AT the start, naming the cause. A listener that did not start (a stolen port, #2152) otherwise
+    /// surfaces only later as an unrelated "control" assertion with no cause.
+    public static void requireStarted(Result<Unit> outcome, String listener) {
+        outcome.onFailure(cause -> org.assertj.core.api.Assertions.fail("%s did not start: %s", listener, cause.message()));
+    }
 
 
     public static CertificateBundle validBundle(String nodeId) {

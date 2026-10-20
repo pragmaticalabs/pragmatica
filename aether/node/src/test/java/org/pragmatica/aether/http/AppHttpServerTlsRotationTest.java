@@ -35,7 +35,7 @@ class AppHttpServerTlsRotationTest {
 
         server.setOperatorWarningSink(TlsProbe.recordingSink(events));
         try {
-            assertThat(server.start().await(timeSpan(30).seconds()).isSuccess()).as("control: TLS server started").isTrue();
+            TlsProbe.requireStarted(server.start().await(timeSpan(30).seconds()), "app TLS listener");
             var original = TlsProbe.presentedCertificate(port);
 
             var refused = server.rotateCertificate(TlsProbe.garbageBundle()).await(timeSpan(30).seconds());

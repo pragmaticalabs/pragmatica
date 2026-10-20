@@ -150,6 +150,11 @@ public interface ManagementServer {
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
 
+    /// The port the listener actually bound: the HTTP/1.1 listener's when there is one, else the HTTP/3 one. Empty until a
+    /// listener has bound, again after `stop()`, and for the instant a certificate rotation swaps the listener. For tests and diagnostics: a server configured with port 0 learns its
+    /// real port here, so a test never probes a free port and then loses the race to rebind it.
+    Option<Integer> boundPort();
+
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
     /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
@@ -458,6 +463,13 @@ class ManagementServerImpl implements ManagementServer {
                     .appHttpServer()
                     .httpRoutePublisher()
                     .onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
+    }
+
+    @Override
+    public Option<Integer> boundPort() {
+        return serverSlot.current()
+                         .orElse(h3ServerSlot::current)
+                         .map(HttpServer::port);
     }
 
     @Override

@@ -61,13 +61,15 @@ class ManagementServerTlsRotationTest {
     @Test
     @Timeout(120)
     void rotate_unbuildableBundle_keepsServingCurrentCertificateAndRaisesOnceThenRecovers() throws Exception {
-        var port = TlsProbe.freeTcpPort();
         var events = TlsProbe.newEventList();
-        var server = managementServerWithTls(port);
+        // Port 0: the listener binds a port nobody else can hold and reports it back, so no probe-then-rebind race (#2152).
+        var server = managementServerWithTls(0);
 
         server.setOperatorWarningSink(TlsProbe.recordingSink(events));
         try {
-            server.start().await(BOUND);
+            TlsProbe.requireStarted(server.start().await(BOUND), "management TLS listener");
+            int port = server.boundPort().or(0);
+            assertThat(port).as("control: the started listener reports its bound port").isPositive();
             assertThat(TlsProbe.eventually(() -> reachable(port), EVENT_BUDGET_MS)).as("control: TLS listener is up").isTrue();
             var original = TlsProbe.presentedCertificate(port);
 
