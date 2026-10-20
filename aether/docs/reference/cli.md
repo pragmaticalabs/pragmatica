@@ -108,7 +108,7 @@ authorization_role = "VIEWER"
 | **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, config, alerts |
 | **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
-When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
+When `authorization_role` is omitted, the key defaults to `VIEWER`; grant `OPERATOR` or `ADMIN` explicitly. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
 ### Commands
 

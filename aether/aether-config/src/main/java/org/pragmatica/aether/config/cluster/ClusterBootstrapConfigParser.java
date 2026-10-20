@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -33,10 +34,10 @@ import static org.pragmatica.lang.parse.TimeSpan.timeSpan;
 public final class ClusterBootstrapConfigParser {
     private ClusterBootstrapConfigParser() {}
 
+    private static final Pattern TIMEOUT_PATTERN = Pattern.compile("[0-9]+[smh]");
     private static final String REQUIRED_CONFIG_VERSION = "1.0.0";
     private static final String CLUSTER_SECTION = "cluster";
     private static final String CLUSTER_CORE_SECTION = "cluster.core";
-    private static final String INFRA_NETWORKING_SECTION = "infrastructure.networking";
     private static final String INFRA_SSH_SECTION = "infrastructure.ssh";
     private static final String OPERATIONS_SECTION = "operations";
     private static final String OPERATIONS_AUTO_HEAL_SECTION = "operations.auto_heal";
@@ -72,25 +73,25 @@ public final class ClusterBootstrapConfigParser {
     /// reads it back through [RollbackPolicyParser#fromClusterToml]. #1564: the `[replication]` defaults the same
     /// way, read back through [ReplicationDefaultsParser#fromClusterToml].
     public static Result<ClusterBootstrapConfig> fromDocument(TomlDocument doc) {
+        // #1455: typed reads answer Option and default a present-but-wrong-typed value; the document
+        // records those reads and the parse refuses here naming every one.
         return RollbackPolicyParser.parse(doc)
                                    .flatMap(_ -> ReplicationDefaultsParser.parse(doc))
                                    .flatMap(_ -> parseConfigVersion(doc))
-                                   .flatMap(version -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc,
-                                                                                                                version,
-                                                                                                                cluster)));
+                                   .flatMap(_ -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc, cluster)))
+                                   .flatMap(config -> doc.requireNoTypeMismatches()
+                                                         .mapError(ClusterBootstrapConfigParser::wrapError)
+                                                         .map(_ -> config));
     }
 
-    private static Result<ClusterBootstrapConfig> buildConfig(TomlDocument doc,
-                                                              String version,
-                                                              ClusterIdentity cluster) {
+    private static Result<ClusterBootstrapConfig> buildConfig(TomlDocument doc, ClusterIdentity cluster) {
         var coreTopology = parseCoreTopology(doc);
         var sources = parseSources(doc);
         var runtimes = parseRuntimes(doc);
         var infrastructure = parseInfrastructure(doc);
         var operations = parseOperations(doc);
 
-        return Result.all(sources, operations).flatMap((s, ops) -> CommunityPlacementParser.parse(doc, s).map(communities -> ClusterBootstrapConfig.clusterBootstrapConfig(version,
-                                                                                                                                                                           cluster,
+        return Result.all(sources, operations).flatMap((s, ops) -> CommunityPlacementParser.parse(doc, s).map(communities -> ClusterBootstrapConfig.clusterBootstrapConfig(cluster,
                                                                                                                                                                            coreTopology,
                                                                                                                                                                            s,
                                                                                                                                                                            runtimes,
@@ -415,8 +416,10 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static LoadBalancerMode parseLoadBalancerMode(TomlDocument doc, String section, SourceType type) {
-        return doc.getString(section, "load_balancer")
-                  .flatMap(raw -> LoadBalancerMode.loadBalancerMode(raw).option())
+        return doc.getParsed(section,
+                             "load_balancer",
+                             "one of: none, external, elected",
+                             raw -> LoadBalancerMode.loadBalancerMode(raw).option())
                   .or(defaultLoadBalancerMode(type));
     }
 
@@ -460,21 +463,20 @@ public final class ClusterBootstrapConfigParser {
                 continue;
             }
 
-            NodeRole.nodeRole(roleName).onSuccess(role -> roles.put(role,
-                                                                    parseRoleSubTable(doc, roleSection, role, type)));
+            NodeRole.nodeRole(roleName).onSuccess(role -> roles.put(role, parseRoleSubTable(doc, roleSection, type)));
         }
 
         return roles;
     }
 
-    private static RoleSubTable parseRoleSubTable(TomlDocument doc, String section, NodeRole role, SourceType type) {
+    private static RoleSubTable parseRoleSubTable(TomlDocument doc, String section, SourceType type) {
         var count = doc.getInt(section, "count");
         var hosts = doc.getStringList(section, "hosts");
         var instanceType = doc.getString(section, "instance_type");
         var image = doc.getString(section, "image");
         var runtimeRef = doc.getString(section, "runtime").or(defaultRuntimeRef(type));
 
-        return RoleSubTable.roleSubTable(role, count, hosts, instanceType, image, runtimeRef);
+        return RoleSubTable.roleSubTable(count, hosts, instanceType, image, runtimeRef);
     }
 
     private static String defaultRuntimeRef(SourceType type) {
@@ -573,34 +575,30 @@ public final class ClusterBootstrapConfigParser {
                 continue;
             }
 
-            parseOneRuntime(doc, section, name).onSuccess(profile -> runtimes.put(name, profile));
+            parseOneRuntime(doc, section).onSuccess(profile -> runtimes.put(name, profile));
         }
 
         return runtimes;
     }
 
-    private static Result<RuntimeProfile> parseOneRuntime(TomlDocument doc, String section, String name) {
+    private static Result<RuntimeProfile> parseOneRuntime(TomlDocument doc, String section) {
         return doc.getString(section, "type")
                   .toResult(parseFailed("Missing required field: " + section + ".type"))
                   .flatMap(RuntimeType::runtimeType)
                   .mapError(cause -> parseFailed(cause.message()))
-                  .map(type -> buildRuntimeProfile(doc, section, name, type));
+                  .map(type -> buildRuntimeProfile(doc, section, type));
     }
 
-    private static RuntimeProfile buildRuntimeProfile(TomlDocument doc, String section, String name, RuntimeType type) {
+    private static RuntimeProfile buildRuntimeProfile(TomlDocument doc, String section, RuntimeType type) {
         var image = doc.getString(section, "image");
         var jvmArgs = doc.getString(section, "jvm_args");
         var jarUrl = doc.getString(section, "jar_url");
 
-        return RuntimeProfile.runtimeProfile(name, type, image, jvmArgs, jarUrl);
+        return RuntimeProfile.runtimeProfile(type, image, jvmArgs, jarUrl);
     }
 
     private static InfrastructureConfig parseInfrastructure(TomlDocument doc) {
-        var networkingType = doc.getString(INFRA_NETWORKING_SECTION, "type")
-                                .flatMap(raw -> NetworkingType.networkingType(raw).option())
-                                .or(NetworkingType.MANUAL);
-
-        return InfrastructureConfig.infrastructureConfig(networkingType, parseSshConfig(doc));
+        return InfrastructureConfig.infrastructureConfig(parseSshConfig(doc));
     }
 
     private static Option<SshDeploymentConfig> parseSshConfig(TomlDocument doc) {
@@ -710,9 +708,17 @@ public final class ClusterBootstrapConfigParser {
         }
 
         var autoGenerate = doc.getBoolean(OPERATIONS_TLS_SECTION, "auto_generate").or(true);
-        var certTtl = doc.getString(OPERATIONS_TLS_SECTION, "cert_ttl").or("720h");
 
-        return TlsDeploymentConfig.tlsDeploymentConfig(autoGenerate, certTtl);
+        return TlsDeploymentConfig.tlsDeploymentConfig(autoGenerate);
+    }
+
+    /// #1455: the bootstrap orchestrator reads these as a whole number with an `s`, `m` or `h` suffix and takes its default
+    /// for anything else, so `"soon"` or `"10d"` was accepted here and silently replaced by the default there.
+    private static Option<String> timeout(TomlDocument doc, String key) {
+        return doc.getParsed(OPERATIONS_TIMEOUTS_SECTION,
+                             key,
+                             "a whole number with an s, m or h suffix, such as 300s, 5m or 1h",
+                             raw -> option(raw).filter(TIMEOUT_PATTERN.asMatchPredicate()));
     }
 
     private static TimeoutsConfig parseTimeoutsConfig(TomlDocument doc) {
@@ -720,11 +726,10 @@ public final class ClusterBootstrapConfigParser {
             return TimeoutsConfig.defaultTimeoutsConfig();
         }
 
-        var healthCheck = doc.getString(OPERATIONS_TIMEOUTS_SECTION, "health_check").or("300s");
-        var quorumFormation = doc.getString(OPERATIONS_TIMEOUTS_SECTION, "quorum_formation").or("600s");
-        var drain = doc.getString(OPERATIONS_TIMEOUTS_SECTION, "drain").or("120s");
+        var healthCheck = timeout(doc, "health_check").or("300s");
+        var quorumFormation = timeout(doc, "quorum_formation").or("600s");
 
-        return TimeoutsConfig.timeoutsConfig(healthCheck, quorumFormation, drain);
+        return TimeoutsConfig.timeoutsConfig(healthCheck, quorumFormation);
     }
 
     private static PortMapping parsePortMapping(TomlDocument doc) {

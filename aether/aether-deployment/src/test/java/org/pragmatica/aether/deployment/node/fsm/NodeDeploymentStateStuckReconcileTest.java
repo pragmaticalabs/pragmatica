@@ -59,14 +59,9 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -104,8 +99,7 @@ class NodeDeploymentStateStuckReconcileTest {
     private StreamStubStore store;
     private KVStore<AetherKey, AetherValue> kvStore;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> harness;
-    private final List<String> warnings = Collections.synchronizedList(new ArrayList<>());
-    private Runnable detachLog = () -> {};
+    private LogCapture warnLog;
 
     @BeforeEach
     void setUp() {
@@ -129,12 +123,12 @@ class NodeDeploymentStateStuckReconcileTest {
         harness.dispatch(new QuorumEstablished());
         store.loaded.add(StreamStubStore.loadedSlice(ARTIFACT));
         cluster.batches.clear();
-        detachLog = capturingWarnings(warnings);
+        warnLog = LogCapture.capture(NodeDeploymentState.Active.class, Level.WARN, true);
     }
 
     @org.junit.jupiter.api.AfterEach
     void tearDown() {
-        detachLog.run();
+        warnLog.close();
     }
 
     @Test
@@ -205,7 +199,7 @@ class NodeDeploymentStateStuckReconcileTest {
 
         assertThat(activePuts()).as("ACTIVE must never be written over a committed %s", beyond).isEmpty();
         assertAdopted(key, beyond);
-        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+        assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING")
                                                                 .contains("COMMITTED state is " + beyond)
                                                                 .contains("NOT writing ACTIVE"));
@@ -232,7 +226,7 @@ class NodeDeploymentStateStuckReconcileTest {
 
         assertThat(cluster.batches).as("an absent entry is a removed slice: nothing may be written").isEmpty();
         assertThat(activeState().deployments()).as("the local entry goes with it").doesNotContainKey(key);
-        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+        assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING")
                                                                 .contains("ABSENT"));
     }
@@ -257,7 +251,7 @@ class NodeDeploymentStateStuckReconcileTest {
         activeState().remediateStuckRouting(key);
 
         assertThat(cluster.batches).as("a rolled-back or replaced version must not be started again (#1068)").isEmpty();
-        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+        assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING")
                                                                 .contains("committed state is ROUTING")
                                                                 .contains("NOT re-driving"));
@@ -272,13 +266,13 @@ class NodeDeploymentStateStuckReconcileTest {
         commit(SliceState.ACTIVATING);
         activeState().remediateStuckActivating(servingSeed(SliceState.ACTIVATING));
 
-        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+        assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING locally")
                                                                 .contains("COMMITTED state is ACTIVE — adopting the committed ACTIVE into local state, no write"));
-        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+        assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING locally")
                                                                 .contains("committed state is ROUTING — re-driving"));
-        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+        assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ACTIVATING locally")
                                                                 .contains("committed state is ACTIVATING — re-driving"));
     }
@@ -290,7 +284,7 @@ class NodeDeploymentStateStuckReconcileTest {
 
         activeState().remediateStuckActivating(key);
 
-        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+        assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ACTIVATING locally")
                                                                 .contains("committed state ACTIVATING")
                                                                 .contains("NOT registered for invocation"));
@@ -362,30 +356,6 @@ class NodeDeploymentStateStuckReconcileTest {
                                                  && value.state() == SliceState.ACTIVE)
                               .map(command -> (NodeArtifactValue) ((KVCommand.Put<AetherKey, ?>) command).value())
                               .toList();
-    }
-
-    /// Capture the WARN lines of the ACTIVE state's logger; the returned runnable detaches the appender.
-    private static Runnable capturingWarnings(List<String> sink) {
-        var context = (LoggerContext) LogManager.getContext(false);
-        var loggerConfig = context.getConfiguration().getLoggerConfig(NodeDeploymentState.Active.class.getName());
-        var appender = new AbstractAppender("stuck-reconcile-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && NodeDeploymentState.Active.class.getName().equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
     }
 
     private void assertFullLastWrite() {

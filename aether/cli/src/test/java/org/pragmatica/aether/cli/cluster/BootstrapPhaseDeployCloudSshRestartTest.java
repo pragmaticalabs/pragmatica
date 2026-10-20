@@ -15,7 +15,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
@@ -77,8 +76,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(3),
+                                                  RoleSubTable.roleSubTable(Option.some(3),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -104,8 +102,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(3),
+                                                  RoleSubTable.roleSubTable(Option.some(3),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -129,8 +126,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(3),
+                                                  RoleSubTable.roleSubTable(Option.some(3),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -152,8 +148,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(3),
+                                                  RoleSubTable.roleSubTable(Option.some(3),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -182,8 +177,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                            Option.empty(),
                                            Map.of(),
                                            Map.of(NodeRole.CORE,
-                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                            Option.some(2),
+                                                  RoleSubTable.roleSubTable(Option.some(2),
                                                                             Option.empty(),
                                                                             Option.empty(),
                                                                             "default")),
@@ -192,25 +186,23 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     private static ClusterBootstrapConfig configWithShortTimeout(SourceProfile source,
                                                                  Map<String, RuntimeProfile> runtimes) {
-        var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s", "10s");
+        var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s");
         var ports = PortMapping.defaultPortMapping();
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
                                                     timeouts,
                                                     ports);
-        return ClusterBootstrapConfig.clusterBootstrapConfig(CLUSTER_VERSION,
-                                                             ClusterIdentity.clusterIdentity(CLUSTER_NAME.value(), CLUSTER_VERSION).unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity(CLUSTER_NAME.value(), CLUSTER_VERSION).unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", source, "dc-1", legacyGateSshSource()),
                                                              runtimes,
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              ops, java.util.Map.of());
     }
 
     private static BootstrapContext contextWithRuntimeImage(SourceProfile source, String image) {
         var runtimes = Map.of("default",
-                              RuntimeProfile.runtimeProfile("default",
-                                                            RuntimeType.CONTAINER,
+                              RuntimeProfile.runtimeProfile(RuntimeType.CONTAINER,
                                                             Option.some(image),
                                                             Option.empty()));
         var config = configWithShortTimeout(source, runtimes);
@@ -229,8 +221,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     private static BootstrapContext contextWithJvmRuntime(SourceProfile source) {
         var runtimes = Map.of("default",
-                              RuntimeProfile.runtimeProfile("default",
-                                                            RuntimeType.JVM,
+                              RuntimeProfile.runtimeProfile(RuntimeType.JVM,
                                                             Option.empty(),
                                                             Option.empty()));
         var config = configWithShortTimeout(source, runtimes);
@@ -1447,7 +1438,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     @Test
     void deployCloudSource_jvmRestart_envsEachNodeWithItsOwnRole() {
         var runtimes = Map.of("default",
-                              RuntimeProfile.runtimeProfile("default", RuntimeType.JVM, Option.empty(), Option.empty()));
+                              RuntimeProfile.runtimeProfile(RuntimeType.JVM, Option.empty(), Option.empty()));
         var commands = restartCommandsByHost(contextWithOneNodePerRole(cloudSource(), runtimes));
 
         assertTrue(commands.get("203.0.113.10").contains("'AETHER_ROLE=core'"), commands.get("203.0.113.10"));

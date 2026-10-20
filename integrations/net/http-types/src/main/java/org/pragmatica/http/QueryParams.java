@@ -41,8 +41,7 @@ public interface QueryParams {
             @Override
             public Option<String> get(String name) {
                 return Option.option(params.get(name))
-                             .filter(values -> !values.isEmpty())
-                             .map(List::getFirst);
+                             .flatMap(values -> Option.from(values.stream().findFirst()));
             }
 
             @Override

@@ -5,18 +5,12 @@
 package org.pragmatica.aether.resource.db.async;
 
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.lang.Result;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.databaseConnectorConfigBuilder;
@@ -55,52 +49,9 @@ class DatasourceProvisioningLoggingTest {
     }
 
     private static List<String> captureProviderLogLines(Runnable action) {
-        var attachment = attachAppender();
-        try {
+        try (var capture = LogCapture.capture(PROVIDER_LOGGER, Level.TRACE, true)) {
             action.run();
-            return List.copyOf(attachment.appender().messages());
-        } finally {
-            detachAppender(attachment);
-        }
-    }
-
-    private static Attachment attachAppender() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var config = ctx.getConfiguration();
-        var appender = new CapturingAppender();
-        appender.start();
-        config.addAppender(appender);
-        var loggerConfig = config.getLoggerConfig(PROVIDER_LOGGER);
-        var previousLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.TRACE);
-        ctx.updateLoggers();
-        return new Attachment(ctx, appender, loggerConfig, previousLevel);
-    }
-
-    private static void detachAppender(Attachment attachment) {
-        attachment.loggerConfig().removeAppender(attachment.appender().getName());
-        attachment.loggerConfig().setLevel(attachment.previousLevel());
-        attachment.ctx().updateLoggers();
-        attachment.appender().stop();
-    }
-
-    private record Attachment(LoggerContext ctx, CapturingAppender appender, LoggerConfig loggerConfig, Level previousLevel) {}
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender() {
-            super("db-async-provisioning-test-capture", null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> messages() {
-            return messages;
+            return capture.messages();
         }
     }
 }

@@ -7,11 +7,7 @@ package org.pragmatica.aether.stream;
 
 import org.junit.jupiter.api.Test;
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -77,25 +73,16 @@ class OffHeapRingBufferIndexCorruptionTest {
     /// partition and carries the out-of-bounds exception, at ERROR — never WARN, never absent.
     @Test
     void read_corruptedIndexEntry_logsOneErrorNamingStreamAndPartition() {
-        var appender = new CapturingAppender();
-        var context = (LoggerContext) LogManager.getContext(false);
-        var loggerConfig = context.getConfiguration().getLoggerConfig(OffHeapRingBuffer.class.getName());
+        List<LogEvent> events;
 
-        appender.start();
-        loggerConfig.addAppender(appender, Level.TRACE, null);
-        context.updateLoggers();
-
-        try {
+        try (var ringLog = org.pragmatica.testlogging.LogCapture.capture(OffHeapRingBuffer.class, Level.TRACE, true)) {
             corruptedRing(EvictionListener.NOOP).read(0, 1);
-        } finally {
-            loggerConfig.removeAppender(appender.getName());
-            appender.stop();
-            context.updateLoggers();
+            events = ringLog.events();
         }
 
-        assertThat(appender.events()).hasSize(1);
+        assertThat(events).hasSize(1);
 
-        var event = appender.events().getFirst();
+        var event = events.getFirst();
 
         assertThat(event.getLevel()).isEqualTo(Level.ERROR);
         assertThat(event.getMessage().getFormattedMessage()).contains("corrupt[3]")
@@ -121,24 +108,6 @@ class OffHeapRingBufferIndexCorruptionTest {
         controlSegment(buffer).set(ValueLayout.JAVA_LONG, HEADER_SIZE, CORRUPT_DATA_POS);
 
         return buffer;
-    }
-
-    /// Captures every event of the ring's logger; immutable snapshots, so no event object is reused.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender() {
-            super("ring-index-corruption-capture", null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(event.toImmutable());
-        }
-
-        List<LogEvent> events() {
-            return List.copyOf(events);
-        }
     }
 
     private static MemorySegment controlSegment(OffHeapRingBuffer buffer) {

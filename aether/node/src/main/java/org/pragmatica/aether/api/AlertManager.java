@@ -766,22 +766,22 @@ public class AlertManager {
                                         source -> source.get()
                                                         .map(events -> {
                                                                  for (var event : events) {
-                                                                 if (! (event instanceof AlertInjected)) {
-                                                                 continue;
-                                                             }
+                                                                     if (! (event instanceof AlertInjected)) {
+                                                                         continue;
+                                                                     }
 
-                                                                 var view = projectClusterEventToAlertView(event);
+                                                                     var view = projectClusterEventToAlertView(event);
 
-                                                                 if (view == null) {
-                                                                 continue;
-                                                             }
+                                                                     if (view == null) {
+                                                                         continue;
+                                                                     }
 
-                                                                 if (view.alertId() != null && !seenIds.add(view.alertId())) {
-                                                                 continue;
-                                                             }
+                                                                     if (view.alertId() != null && !seenIds.add(view.alertId())) {
+                                                                         continue;
+                                                                     }
 
-                                                                 sink.add(view);
-                                                             }
+                                                                     sink.add(view);
+                                                                 }
 
                                                                  return Unit.unit();
                                                              }));

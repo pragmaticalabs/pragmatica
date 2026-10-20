@@ -104,7 +104,7 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
-    /// A value above its key's maximum (#1937): a `max-event-size` that cannot travel in one replication or catch-up frame.
+    /// A value above its key's maximum (#1937): a `max_event_size` that cannot travel in one replication or catch-up frame.
     record ValueAboveMaximum(String alias, String key, String value, long maximum) implements StreamDeclarationError {
         @Override
         public String message() {

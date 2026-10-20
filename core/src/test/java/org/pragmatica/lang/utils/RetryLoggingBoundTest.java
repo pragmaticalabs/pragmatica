@@ -17,25 +17,15 @@
 package org.pragmatica.lang.utils;
 
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -81,31 +71,13 @@ class RetryLoggingBoundTest {
     private static final String TERMINAL_FRAGMENT = "TERMINAL cause";
     private static final String SENTINEL = "positive control: RetryLoggingBoundTest appender is attached";
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
-
-    @BeforeEach
-    void setUp() {
-        appender = CapturingAppender.create("RetryLoggingBoundCapture");
-        appender.start();
-
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, null, null);
-        ctx.updateLoggers();
-    }
+    private LogCapture capture;
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        if (capture != null) {
+            capture.close();
+        }
     }
 
     /// THE pin, at the level an operator actually runs. A 50-attempt budget that is fully spent emits
@@ -281,10 +253,10 @@ class RetryLoggingBoundTest {
     }
 
     private void useLevel(Level level) {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.setLevel(level);
-        ctx.updateLoggers();
+        if (capture != null) {
+            capture.close();
+        }
+        capture = LogCapture.capture(LOGGER_NAME, level, false);
     }
 
     /// Emits [#SENTINEL] on exactly [#LOGGER_NAME], at WARN so it survives every level this class
@@ -296,14 +268,14 @@ class RetryLoggingBoundTest {
     /// Paired with every assertion, and load-bearing for the three that assert ABSENCE: without it an
     /// empty capture list would satisfy them.
     private void assertSentinelWasCaptured() {
-        assertThat(appender.messages())
+        assertThat(capture.messages())
             .describedAs("the appender must be attached to %s and the logger must be emitting, or "
                          + "these assertions examine nothing", LOGGER_NAME)
             .anyMatch(message -> message.contains(SENTINEL));
     }
 
-    private List<CapturedEvent> eventsContaining(String fragment) {
-        return appender.events()
+    private List<LogCapture.Entry> eventsContaining(String fragment) {
+        return capture.entries()
                        .stream()
                        .filter(event -> event.message().contains(fragment))
                        .toList();
@@ -311,70 +283,24 @@ class RetryLoggingBoundTest {
 
     private List<String> messagesContaining(String fragment) {
         return eventsContaining(fragment).stream()
-                                         .map(CapturedEvent::message)
+                                         .map(LogCapture.Entry::message)
                                          .toList();
     }
 
     private List<String> warnsContaining(String fragment) {
         return eventsContaining(fragment).stream()
                                          .filter(event -> event.level() == Level.WARN)
-                                         .map(CapturedEvent::message)
+                                         .map(LogCapture.Entry::message)
                                          .toList();
     }
 
     /// WARN count with the sentinel discounted — the sentinel is itself a WARN, so a raw count would
     /// never be zero.
     private long warnCountExcludingSentinel() {
-        return appender.events()
+        return capture.entries()
                        .stream()
                        .filter(event -> event.level() == Level.WARN)
                        .filter(event -> !event.message().contains(SENTINEL))
                        .count();
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.INFO, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
-    private record CapturedEvent(Level level, String message) {}
-
-    /// In-memory log4j2 appender retaining the LEVEL alongside the message. Every level is captured;
-    /// what actually reaches here is decided by the logger config the test sets, because the appender
-    /// is attached with a `null` level and so adds no filter of its own.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<CapturedEvent> captured = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            captured.add(new CapturedEvent(event.getLevel(), event.getMessage().getFormattedMessage()));
-        }
-
-        List<CapturedEvent> events() {
-            return List.copyOf(captured);
-        }
-
-        List<String> messages() {
-            return captured.stream()
-                           .map(CapturedEvent::message)
-                           .toList();
-        }
     }
 }

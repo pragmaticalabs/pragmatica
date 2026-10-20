@@ -100,32 +100,32 @@ public final class ContainerLabelInspector {
         return Result.lift(Causes::fromThrowable,
                            () -> {
                                try (var channel = SocketChannel.open(UnixDomainSocketAddress.of(socketPath))) {
-                               channel.configureBlocking(true);
-                               var request = "GET /containers/" + containerId
-                                           + "/json HTTP/1.1\r\nHost: docker\r\nConnection: close\r\nAccept: application/json\r\n\r\n";
+                                   channel.configureBlocking(true);
+                                   var request = "GET /containers/" + containerId
+                                               + "/json HTTP/1.1\r\nHost: docker\r\nConnection: close\r\nAccept: application/json\r\n\r\n";
 
-                               channel.write(ByteBuffer.wrap(request.getBytes(StandardCharsets.UTF_8)));
-                               var buf = ByteBuffer.allocate(8192);
-                               var out = new ByteArrayOutputStream();
-                               var deadline = System.currentTimeMillis() + READ_TIMEOUT_MS;
+                                   channel.write(ByteBuffer.wrap(request.getBytes(StandardCharsets.UTF_8)));
+                                   var buf = ByteBuffer.allocate(8192);
+                                   var out = new ByteArrayOutputStream();
+                                   var deadline = System.currentTimeMillis() + READ_TIMEOUT_MS;
 
-                               while (System.currentTimeMillis() < deadline) {
-                               var read = channel.read(buf);
+                                   while (System.currentTimeMillis() < deadline) {
+                                       var read = channel.read(buf);
 
-                               if (read < 0) {
-                               break;
-                           }
+                                       if (read < 0) {
+                                           break;
+                                       }
 
-                               if (read == 0) {
-                               continue;
-                           }
+                                       if (read == 0) {
+                                           continue;
+                                       }
 
-                               out.write(buf.array(), 0, buf.position());
-                               buf.clear();
-                           }
+                                       out.write(buf.array(), 0, buf.position());
+                                       buf.clear();
+                                   }
 
-                               return out.toString(StandardCharsets.UTF_8);
-                           }
+                                   return out.toString(StandardCharsets.UTF_8);
+                               }
                            });
     }
 

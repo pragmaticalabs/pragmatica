@@ -1270,7 +1270,8 @@ class DockerComputeProviderTest {
 
     /// Test stub for DockerCommandRunner that returns canned responses and captures arguments.
     private static String hostEnvWithoutSecret(String name) {
-        return org.pragmatica.aether.environment.ClusterSecretSource.FILE_DELIVERED_ENVS.stream()
+        // #2149: AETHER_CLUSTER_NAME is the cluster fallback; a machine that exports it must not change what these tests see.
+        return "AETHER_CLUSTER_NAME".equals(name) || org.pragmatica.aether.environment.ClusterSecretSource.FILE_DELIVERED_ENVS.stream()
                                                                                         .anyMatch(var -> name.equals(var) || name.equals(var + "_FILE"))
                ? null
                : System.getenv(name);

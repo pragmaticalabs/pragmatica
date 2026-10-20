@@ -562,6 +562,12 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(lists.get() + terminates.get()).as("no provider call").isZero();
     }
 
+    /// The reservation is released by the confirming listing INSIDE the reap chain; the chain then lists once more and records the confirmation. A count taken at
+    /// the release is a count taken mid-chain. The grace handler clears the DRAIN command only after the chain returned.
+    private void reapChainHasEnded() {
+        within(10, () -> assertThat(clearedDrains).as("the reap chain has ended").contains(OLD));
+    }
+
     private static void within(int seconds, Runnable assertion) {
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(seconds)).untilAsserted(assertion::run);
     }
@@ -584,6 +590,7 @@ class NodeReplacementRealRegistryReapTest {
 
         retire(OLD);
         within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        reapChainHasEnded();
         var calls = lists.get() + terminates.get();
 
         retire(OLD);
@@ -660,6 +667,7 @@ class NodeReplacementRealRegistryReapTest {
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
         retire(OLD);
         within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        reapChainHasEnded();
         var calls = terminates.get() + lists.get();
         listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
         states.put(OLD, "Member");
@@ -1840,6 +1848,7 @@ class NodeReplacementRealRegistryReapTest {
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
         retire(OLD);
         within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        reapChainHasEnded();
         var calls = lists.get() + terminates.get();
 
         ctmUnderTest.markUnconfirmed(OLD, "a chain that lost the race");

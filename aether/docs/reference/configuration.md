@@ -112,7 +112,7 @@ SliceActionConfig.sliceActionConfig(frameworkJarsPath);
 Controls automatic scaling behavior.
 
 ```java
-ControllerConfig.DEFAULT;  // Pre-validated production defaults
+var defaults = ControllerConfig.DEFAULT;  // Pre-validated production defaults
 ControllerConfig.controllerConfig(
     cpuScaleUpThreshold,       // double - CPU % to trigger scale up
     cpuScaleDownThreshold,     // double - CPU % to trigger scale down
@@ -168,7 +168,9 @@ Cluster topology and node discovery.
 Peers are specified as `NodeInfo` objects:
 
 ```java
-NodeInfo.nodeInfo(NodeId.nodeId("node-1"), "192.168.1.1", 8090);
+// NodeId.nodeId and NodeAddress.nodeAddress return Result; unwrap() is for brevity in this example
+var node1 = NodeInfo.nodeInfo(NodeId.nodeId("node-1").unwrap(),
+                              NodeAddress.nodeAddress("192.168.1.1", 8090).unwrap());
 ```
 
 Or in string format for CLI/Podman:
@@ -200,9 +202,9 @@ ProtocolConfig.testConfig();      // Faster sync retry for tests
 Distributed hash table for artifact storage.
 
 ```java
-DHTConfig.DEFAULT;      // 3 replicas, quorum of 2
-DHTConfig.FULL;         // Full replication (all nodes)
-DHTConfig.SINGLE_NODE;  // Single-node testing
+var standard = DHTConfig.DEFAULT;      // 3 replicas, quorum of 2
+var full = DHTConfig.FULL;             // Full replication (all nodes)
+var single = DHTConfig.SINGLE_NODE;    // Single-node testing
 ```
 
 | Parameter | Default | Description |
@@ -287,7 +289,7 @@ directory, whose disk tier counts everything under it. A section that sets only 
 default. Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are refused
 at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
 
-**Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
+**Not the same as `[streams.X].encryption_key_id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
 `StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not
 change that. `streams_encrypted` above only affects the generic storage-tier framework's `streams`
@@ -551,13 +553,13 @@ java -jar aether-node.jar \
 
 ```java
 var peers = List.of(
-    NodeInfo.nodeInfo(NodeId.nodeId("node-1"), "192.168.1.1", 8090),
-    NodeInfo.nodeInfo(NodeId.nodeId("node-2"), "192.168.1.2", 8090),
-    NodeInfo.nodeInfo(NodeId.nodeId("node-3"), "192.168.1.3", 8090)
+    NodeInfo.nodeInfo(NodeId.nodeId("node-1").unwrap(), NodeAddress.nodeAddress("192.168.1.1", 8090).unwrap()),
+    NodeInfo.nodeInfo(NodeId.nodeId("node-2").unwrap(), NodeAddress.nodeAddress("192.168.1.2", 8090).unwrap()),
+    NodeInfo.nodeInfo(NodeId.nodeId("node-3").unwrap(), NodeAddress.nodeAddress("192.168.1.3", 8090).unwrap())
 );
 
 var config = AetherNodeConfig.builder()
-    .self(NodeId.nodeId("node-1"))
+    .self(NodeId.nodeId("node-1").unwrap())
     .coreNodes(peers)
     .managementPort(8090)
     .sliceConfig(SliceConfig.sliceConfig())
@@ -573,7 +575,7 @@ var config = AetherNodeConfig.builder()
 
 ```java
 var config = AetherNodeConfig.builder()
-    .self(NodeId.nodeId("node-1"))
+    .self(NodeId.nodeId("node-1").unwrap())
     .coreNodes(peers)
     .managementPort(8080)
     .sliceConfig(SliceConfig.sliceConfig())
@@ -611,6 +613,16 @@ var config = AetherNodeConfig.builder()
     .appHttp(AppHttpConfig.appHttpConfig())
     .tls(Option.none())
     .quicTls(quicTlsConfig)
+    // Stages are positional: each one before sliceAction takes its default here.
+    .certificateProvider(Option.none())
+    .configProvider(Option.none())
+    .environment(Option.none())
+    .managementHttpProtocol(HttpProtocol.H1)
+    .storageConfig(Map.of())
+    .backupConfig(Option.none())
+    .membership(Option.none())
+    .streaming(StreamingConfig.streamingConfig())
+    .protocol(ProtocolConfig.defaultConfig())
     .sliceAction(sliceActionConfig)
     .build();
 ```

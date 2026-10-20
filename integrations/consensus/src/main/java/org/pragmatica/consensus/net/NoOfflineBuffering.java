@@ -17,7 +17,9 @@ package org.pragmatica.consensus.net;
 
 /// Marker for an outbound message that must NEVER be held in a peer's offline buffer for delivery after a reconnect.
 ///
-/// The offline buffer re-delivers a frame on reattach with no time limit. That is right for state-convergence traffic
+/// The offline buffer re-delivers a buffered frame on reattach until its expiry: the offline-buffer cap (30 s by
+/// default, #1996), or the caller's deadline if that is sooner; it holds at most 10,000 frames per peer and drops the
+/// oldest first. Re-delivery within that time is right for state-convergence traffic
 /// that tolerates a late or repeated frame (SWIM, DHT anti-entropy, consensus proposals and votes, which are keyed by
 /// slot). It is wrong for a request whose caller is told the outcome at send time and then gives up: a late delivery
 /// applies a command after the caller was told it was not sent (#1973, the entity owner-forward). It is also wrong for

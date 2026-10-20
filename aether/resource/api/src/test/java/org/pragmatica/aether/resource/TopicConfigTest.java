@@ -371,7 +371,7 @@ class TopicConfigTest {
     }
 
     /// Team-lead condition 2: the strict check is scoped to exactly the keys [TopicConfig] itself
-    /// binds — a nested sub-section (owned by the dashed-by-convention `StreamConfigParser`) is
+    /// binds — a nested sub-section (owned by the `StreamConfigParser`) is
     /// never inspected, however it is spelled. `provider.keys()` returns one flat merged key set
     /// for the whole document, so nested-table isolation has to be filtered explicitly rather than
     /// falling out of a per-section data structure — this is the test that would catch a regression

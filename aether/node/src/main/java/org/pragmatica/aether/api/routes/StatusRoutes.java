@@ -364,10 +364,10 @@ public final class StatusRoutes implements RouteSource {
         return Result.lift(Causes::fromThrowable,
                            () -> {
                                try (var socket = new Socket()) {
-                               socket.connect(new InetSocketAddress(host, port), PROBE_TIMEOUT_MS);
+                                   socket.connect(new InetSocketAddress(host, port), PROBE_TIMEOUT_MS);
 
-                               return Unit.unit();
-                           }
+                                   return Unit.unit();
+                               }
                            });
     }
 

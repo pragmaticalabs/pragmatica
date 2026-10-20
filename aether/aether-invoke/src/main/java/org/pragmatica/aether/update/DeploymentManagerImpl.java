@@ -384,12 +384,12 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                       var commands = new ArrayList<KVCommand<AetherKey>>();
 
                                       for (var base : finalized.artifacts()) {
-                                      addSliceTargetCommand(commands,
-                                                            base,
-                                                            finalized.oldVersion(),
-                                                            finalized.newInstances());
-                                      commands.add(new KVCommand.Remove<>(VersionRoutingKey.versionRoutingKey(base)));
-                                  }
+                                          addSliceTargetCommand(commands,
+                                                                base,
+                                                                finalized.oldVersion(),
+                                                                finalized.newInstances());
+                                          commands.add(new KVCommand.Remove<>(VersionRoutingKey.versionRoutingKey(base)));
+                                      }
 
                                       addDeploymentCommand(commands, finalized);
 

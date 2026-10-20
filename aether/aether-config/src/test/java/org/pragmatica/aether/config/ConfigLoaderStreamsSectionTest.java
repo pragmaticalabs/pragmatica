@@ -3,20 +3,11 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,43 +15,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// silently, so an operator setting `disk_path` there believed it applied. The loader now WARNs, naming them.
 /// Mutation that reddens it: drop the `warnIgnoredStreamsKeys` call.
 class ConfigLoaderStreamsSectionTest {
-    private static final String LOGGER = ConfigLoader.class.getName();
-
-    private final List<String> warnings = new CopyOnWriteArrayList<>();
-    private final AbstractAppender appender = new AbstractAppender("streams-section", (Filter) null, null, true, Property.EMPTY_ARRAY) {
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel() == Level.WARN) {
-                warnings.add(event.getMessage().getFormattedMessage());
-            }
-        }
-    };
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        var existing = configuration.getLoggerConfig(LOGGER);
-        if (!LOGGER.equals(existing.getName())) {
-            existing = new LoggerConfig(LOGGER, Level.WARN, false);
-            configuration.addLogger(LOGGER, existing);
-        }
-        loggerConfig = existing;
-        originalLevel = existing.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(ConfigLoader.class, Level.WARN, false);
     }
 
     @AfterEach
     void tearDown() {
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ((LoggerContext) LogManager.getContext(false)).updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     @Test
@@ -72,8 +36,8 @@ class ConfigLoaderStreamsSectionTest {
             encrypted = true
             """);
 
-        assertThat(warnings).as("the keys that have no effect are named")
-                            .anyMatch(message -> message.contains("[disk_path, encrypted]"));
+        assertThat(capture.messages(Level.WARN)).as("the keys that have no effect are named")
+                                                .anyMatch(message -> message.contains("[disk_path, encrypted]"));
     }
 
     /// CONTROL — wal_path alone, and other storage sections, produce no such WARN.
@@ -87,6 +51,6 @@ class ConfigLoaderStreamsSectionTest {
             disk_path = "/tmp/vault"
             """);
 
-        assertThat(warnings).noneMatch(message -> message.contains("[storage.streams]"));
+        assertThat(capture.messages(Level.WARN)).noneMatch(message -> message.contains("[storage.streams]"));
     }
 }

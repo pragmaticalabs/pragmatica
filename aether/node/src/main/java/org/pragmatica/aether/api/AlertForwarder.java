@@ -146,7 +146,7 @@ public class AlertForwarder implements AsyncCloseable {
     }
 
     static long jitteredBackoff(int attempt) {
-        var base = Math.min(RETRY_BASE_MS * (1L<< attempt), RETRY_CAP_MS);
+        var base = Math.min(RETRY_BASE_MS * (1L << attempt), RETRY_CAP_MS);
 
         return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }

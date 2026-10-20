@@ -494,9 +494,9 @@ public final class NodeReplacementWiring {
                                                       record,
                                                       Set.copyOf(members))
                                         .<EffectResult> map(disposition -> switch (disposition) {
-                case ProvisionDisposition.Dispatched _ -> provisionDispatched(record);
-                case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
-            })
+                                                                case ProvisionDisposition.Dispatched _ -> provisionDispatched(record);
+                                                                case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
+                                                            })
                                         .recover(cause -> provisionFailed(record, cause));
         }
 
@@ -589,8 +589,8 @@ public final class NodeReplacementWiring {
                                         .instanceListed(node, source)
                                         .onSuccess(listed -> {
                                   if (listed) {
-                                  seen.add(node);
-                              }
+                                      seen.add(node);
+                                  }
                               })
                                         .<Unit> map(_ -> Unit.unit())
                                         .recover(_ -> Unit.unit()))
@@ -617,10 +617,10 @@ public final class NodeReplacementWiring {
                                              in.ctm()
                                                .instanceListed(node, source)
                                                .onSuccess(listed -> {
-                                             if (listed) {
-                                             seen.add(node);
-                                         }
-                                         })
+                                                 if (listed) {
+                                                     seen.add(node);
+                                                 }
+                                             })
                                                .onResultRun(() -> observing.remove(node));
 
                                              return Unit.unit();

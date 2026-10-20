@@ -3,5 +3,5 @@
 [streams.notifications]
 partitions = 4
 retention = "time"
-retention-value = "5m"
-max-event-size = "64KB"
+retention_value = "5m"
+max_event_size = "64KB"

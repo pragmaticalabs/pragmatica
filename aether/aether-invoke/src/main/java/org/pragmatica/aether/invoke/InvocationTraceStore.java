@@ -257,26 +257,26 @@ public final class InvocationTraceStore {
                                                                  var seenRequestIds = new java.util.HashSet<String>();
 
                                                                  for (var node : local) {
-                                                                 seenRequestIds.add(node.requestId());
-                                                             }
+                                                                     seenRequestIds.add(node.requestId());
+                                                                 }
 
                                                                  var combined = new ArrayList<>(local);
 
                                                                  for (var event : events) {
-                                                                 if (combined.size() >= limit) {
-                                                                 break;
-                                                             }
+                                                                     if (combined.size() >= limit) {
+                                                                         break;
+                                                                     }
 
-                                                                 if (event.requestId() == null || !seenRequestIds.add(event.requestId())) {
-                                                                 continue;
-                                                             }
+                                                                     if (event.requestId() == null || !seenRequestIds.add(event.requestId())) {
+                                                                         continue;
+                                                                     }
 
-                                                                 var projected = projectClusterTraceEvent(event);
+                                                                     var projected = projectClusterTraceEvent(event);
 
-                                                                 if (predicate.test(projected)) {
-                                                                 combined.add(projected);
-                                                             }
-                                                             }
+                                                                     if (predicate.test(projected)) {
+                                                                         combined.add(projected);
+                                                                     }
+                                                                 }
 
                                                                  return (List<InvocationNode>) combined;
                                                              }));

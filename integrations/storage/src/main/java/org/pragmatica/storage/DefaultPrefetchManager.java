@@ -1,12 +1,12 @@
 package org.pragmatica.storage;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -19,19 +19,52 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
+/// Bookkeeping is bounded (#1325). An observation counter lives while it keeps being touched: one idle
+/// for longer than `observationWindowMs` is reclaimed, and at most `maxTrackedBlocks` blocks are
+/// observed at once (a soft cap: concurrent first sightings can overshoot it by the number of racing
+/// threads). Past the cap new blocks are NOT observed until idle counters are reclaimed -- a stream of
+/// once-read blocks cannot grow the table, at the price of not seeing a newly hot block while the table
+/// is full of fresh once-read ones. A cooldown entry lives for `cooldownMs` and is reclaimed after that
+/// during normal operation, not only on deactivation. Reclaiming scans the table, so it runs from
+/// [#collectHints]/[#processHints] and, when the table is full, from [#recordAccess] at most once per
+/// [#RECLAIM_INTERVAL_MS].
 final class DefaultPrefetchManager implements PrefetchManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultPrefetchManager.class);
+    private static final long RECLAIM_INTERVAL_MS = 1_000L;
 
     private final StorageInstance storage;
     private final PrefetchConfig config;
-    private final ConcurrentHashMap<String, AtomicInteger> accessCounts = new ConcurrentHashMap<>();
+    private final LongSupplier clockMillis;
+    private final ConcurrentHashMap<String, Observation> observations = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> cooldowns = new ConcurrentHashMap<>();
+    private final AtomicLong lastReclaimMillis = new AtomicLong();
+    private final AtomicInteger reclaimPasses = new AtomicInteger();
     private volatile boolean active = false;
 
     DefaultPrefetchManager(StorageInstance storage, PrefetchConfig config) {
+        this(storage, config, System::currentTimeMillis);
+    }
+
+    /// Test seam: the clock the observation window and cooldown are measured on.
+    DefaultPrefetchManager(StorageInstance storage, PrefetchConfig config, LongSupplier clockMillis) {
         this.storage = storage;
         this.config = config;
+        this.clockMillis = clockMillis;
     }
+
+    private static final class Observation {
+        private final AtomicInteger count = new AtomicInteger();
+        private volatile long lastSeenMillis;
+
+        int touch(long now) {
+            lastSeenMillis = now;
+
+            return count.incrementAndGet();
+        }
+    }
+
+    /// An immutable reading of one counter: ranking sorts these, never the live counters.
+    private record Candidate(String blockIdHex, int count) {}
 
     @Override
     @Contract
@@ -40,7 +73,36 @@ final class DefaultPrefetchManager implements PrefetchManager {
             return;
         }
 
-        accessCounts.computeIfAbsent(blockId.hexString(), _ -> new AtomicInteger()).incrementAndGet();
+        var key = blockId.hexString();
+
+        if (hasRoomFor(key)) {
+            observations.computeIfAbsent(key, _ -> new Observation()).touch(clockMillis.getAsLong());
+        }
+    }
+
+    private boolean hasRoomFor(String key) {
+        return observations.containsKey(key) || observations.size() < config.maxTrackedBlocks() || reclaimWhenDue();
+    }
+
+    private boolean reclaimWhenDue() {
+        var now = clockMillis.getAsLong();
+        var last = lastReclaimMillis.get();
+
+        return now - last >= RECLAIM_INTERVAL_MS
+               && lastReclaimMillis.compareAndSet(last, now)
+               && reclaimExpired() > 0;
+    }
+
+    /// Drops idle observation counters and elapsed cooldowns; returns how many counters were dropped.
+    private int reclaimExpired() {
+        var now = clockMillis.getAsLong();
+        var before = observations.size();
+
+        reclaimPasses.incrementAndGet();
+        observations.values().removeIf(observation -> now - observation.lastSeenMillis >= config.observationWindowMs());
+        cooldowns.values().removeIf(attemptedAt -> now - attemptedAt >= config.cooldownMs());
+
+        return before - observations.size();
     }
 
     @Override
@@ -49,12 +111,20 @@ final class DefaultPrefetchManager implements PrefetchManager {
             return List.of();
         }
 
-        var snapshot = new ArrayList<>(accessCounts.entrySet());
-        var hints = selectTopHints(snapshot);
+        reclaimExpired();
+        var hints = selectTopHints(snapshotCandidates());
 
-        hints.forEach(h -> accessCounts.remove(h.blockIdHex()));
+        hints.forEach(h -> observations.remove(h.blockIdHex()));
 
         return Collections.unmodifiableList(hints);
+    }
+
+    private List<Candidate> snapshotCandidates() {
+        return observations.entrySet()
+                           .stream()
+                           .map(entry -> new Candidate(entry.getKey(),
+                                                       entry.getValue().count.get()))
+                           .toList();
     }
 
     @Override
@@ -64,6 +134,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
             return;
         }
 
+        reclaimExpired();
         hints.stream().filter(this::aboveThreshold).filter(this::notOnCooldown).forEach(this::attemptPrefetch);
     }
 
@@ -78,7 +149,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     @Override
     public Result<Unit> deactivate() {
         active = false;
-        accessCounts.clear();
+        observations.clear();
         cooldowns.clear();
         log.info("PrefetchManager deactivated for storage '{}'", storage.name());
 
@@ -91,25 +162,23 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     // --- Hint selection ---
-    private List<PrefetchHint> selectTopHints(List<Map.Entry<String, AtomicInteger>> snapshot) {
+    private List<PrefetchHint> selectTopHints(List<Candidate> snapshot) {
         return snapshot.stream()
-                       .filter(e -> e.getValue()
-                                     .get() >= config.accessThreshold())
+                       .filter(candidate -> candidate.count() >= config.accessThreshold())
                        .sorted(descendingByCount())
                        .limit(config.maxHintsPerGossip())
                        .map(DefaultPrefetchManager::toHint)
                        .toList();
     }
 
-    private static Comparator<Map.Entry<String, AtomicInteger>> descendingByCount() {
-        return Comparator.<Map.Entry<String, AtomicInteger>> comparingInt(e -> e.getValue()
-                                                                                .get()).reversed();
+    private static Comparator<Candidate> descendingByCount() {
+        return Comparator.comparingInt(Candidate::count)
+                         .reversed()
+                         .thenComparing(Candidate::blockIdHex);
     }
 
-    private static PrefetchHint toHint(Map.Entry<String, AtomicInteger> entry) {
-        return PrefetchHint.prefetchHint(entry.getKey(),
-                                         entry.getValue().get(),
-                                         TierLevel.MEMORY.name());
+    private static PrefetchHint toHint(Candidate candidate) {
+        return PrefetchHint.prefetchHint(candidate.blockIdHex(), candidate.count(), TierLevel.MEMORY.name());
     }
 
     // --- Hint processing ---
@@ -118,7 +187,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     private boolean notOnCooldown(PrefetchHint hint) {
-        var now = System.currentTimeMillis();
+        var now = clockMillis.getAsLong();
 
         return option(cooldowns.get(hint.blockIdHex())).map(lastAttempt -> (now - lastAttempt) >= config.cooldownMs())
                      .or(true);
@@ -137,12 +206,25 @@ final class DefaultPrefetchManager implements PrefetchManager {
             return;
         }
 
-        cooldowns.put(blockIdHex, System.currentTimeMillis());
+        cooldowns.put(blockIdHex, clockMillis.getAsLong());
         log.debug("Prefetching block {} from remote tier", id);
         storage.get(id)
                .onSuccess(opt -> opt.onPresent(_ -> log.debug("Prefetch complete for block {}", id)))
                .onFailure(cause -> log.debug("Prefetch failed for block {}: {}",
                                              id,
                                              cause.message()));
+    }
+
+    // --- Test observation ---
+    int trackedBlocks() {
+        return observations.size();
+    }
+
+    int reclaimPasses() {
+        return reclaimPasses.get();
+    }
+
+    int cooldownEntries() {
+        return cooldowns.size();
     }
 }

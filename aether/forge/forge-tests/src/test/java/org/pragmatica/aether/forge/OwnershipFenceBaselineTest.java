@@ -210,23 +210,51 @@ class OwnershipFenceBaselineTest {
 
         var spm = ownerNode.streamPartitionManager();
         // #1555: the owner appends only once its promotion completes; the first check starts it.
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> spm.mayServeAsOwner(THROUGHPUT_STREAM, PARTITION));
+        // #1406: and the timed loop starts only once the owner's own replica row is CAUGHT_UP, so initial
+        // ownership establishment cannot overlap the measurement. Bounded observable state, not a sleep.
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> ownerSteady(ownerNode));
         var payload = new byte[THROUGHPUT_PAYLOAD_BYTES];
-        var successes = new int[]{0};
 
         var startNanos = System.nanoTime();
-        for (var i = 0; i < THROUGHPUT_APPENDS; i++) {
-            appendOnce(spm, THROUGHPUT_STREAM, payload).onSuccess(offset -> successes[0]++);
-        }
+        var measured = SteadyEpochAppends.measureWhenReady(() -> ownerSteady(ownerNode),
+                                                           () -> partitionOwnerEpoch(ownerNode),
+                                                           THROUGHPUT_APPENDS,
+                                                           _ -> appendOnce(spm, THROUGHPUT_STREAM, payload));
         var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
         var writesPerSec = THROUGHPUT_APPENDS * 1000.0 / Math.max(1L, elapsedMs);
 
         log.info("OWNERSHIP-FENCE-BASELINE throughput: {} appends in {} ms = {} writes/sec",
                  THROUGHPUT_APPENDS, elapsedMs, writesPerSec);
 
-        assertThat(successes[0])
-            .as("all %d within-epoch appends on the owned partition must succeed", THROUGHPUT_APPENDS)
-            .isEqualTo(THROUGHPUT_APPENDS);
+        measured.onFailure(OwnershipFenceBaselineTest::failScenario)
+                .onSuccess(OwnershipFenceBaselineTest::assertEveryAppendAccepted);
+    }
+
+    /// The committed ownership epoch of the measured partition: a change means ownership of THIS partition moved.
+    /// Not `currentGenerationEpoch()`, which is the cluster generation epoch and advances on a non-leader node as
+    /// pings arrive, with no ownership change (#1406: it false-rejected two of three Heavy runs).
+    private static Epoch partitionOwnerEpoch(AetherNode ownerNode) {
+        return ownerNode.kvStore()
+                        .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(THROUGHPUT_STREAM, PARTITION),
+                                  StreamPartitionOwnershipValue.class)
+                        .map(StreamPartitionOwnershipValue::ownerEpoch)
+                        .or(Epoch.ZERO);
+    }
+
+    /// The owner serves as owner AND its own replica row is CAUGHT_UP: initial ownership is established.
+    private boolean ownerSteady(AetherNode ownerNode) {
+        var view = ownerNode.streamReadRouter().replicaSnapshot(THROUGHPUT_STREAM, PARTITION);
+
+        return ownerNode.streamPartitionManager().mayServeAsOwner(THROUGHPUT_STREAM, PARTITION)
+               && view.servedByOwner()
+               && view.replicas().stream().anyMatch(r -> r.hrwOwner() && "CAUGHT_UP".equals(r.state()));
+    }
+
+    private static void assertEveryAppendAccepted(SteadyEpochAppends.Outcome outcome) {
+        assertThat(outcome.refusals())
+            .as("all %d within-epoch appends on the owned partition must succeed; %s", THROUGHPUT_APPENDS, outcome.report())
+            .isEmpty();
+        assertThat(outcome.successes()).isEqualTo(THROUGHPUT_APPENDS);
     }
 
     private NodeId ownerOf(String stream, List<NodeId> members, int rf) {

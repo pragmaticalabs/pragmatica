@@ -5,16 +5,6 @@
 package org.pragmatica.aether.http;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,10 +15,10 @@ import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `buildSecurityValidator` runs. The server is never started: the validator is built at
 /// construction, so no port is bound.
 ///
-/// The appender captures EVERY level on `AppHttpServerAdapter`'s own logger, so a demotion to WARN
+/// The capture records EVERY level on `AppHttpServerAdapter`'s own logger, so a demotion to WARN
 /// fails the level assertion by name rather than by silent absence. Message fragments are literal
 /// here, not read back from production, so a reworded message that drops the key or the consequence
 /// is a change to this file.
@@ -53,36 +43,23 @@ class AppHttpServerJwtMissingConfigLogTest {
     private static final String UNREACHABLE_JWKS = "http://127.0.0.1:1/.well-known/jwks.json";
     private static final int PORT = 19095;
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("AppHttpServerJwtMissingConfigCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.ALL);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.ALL, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     @Test
     void jwtModeWithoutJwksUrl_logsErrorNamingTheKeyAndTheConsequence_atConstruction() {
         construct(appHttp(true, SecurityMode.JWT, Option.empty()));
 
-        var events = appender.eventsMentioning("jwks_url");
+        var events = eventsMentioning("jwks_url");
 
         assertThat(events).as("exactly one startup message about the missing jwks_url").hasSize(1);
 
@@ -101,14 +78,14 @@ class AppHttpServerJwtMissingConfigLogTest {
     void jwtModeWithJwksUrl_logsNothingAboutMissingConfig() {
         construct(appHttp(true, SecurityMode.JWT, Option.some(JwtConfig.jwtConfig(UNREACHABLE_JWKS).unwrap())));
 
-        assertThat(appender.eventsMentioning("jwks_url")).as("with jwks_url set the fallback is never built").isEmpty();
+        assertThat(eventsMentioning("jwks_url")).as("with jwks_url set the fallback is never built").isEmpty();
     }
 
     @Test
     void jwtModeWithoutJwksUrl_onDisabledServer_logsNothing() {
         construct(appHttp(false, SecurityMode.JWT, Option.empty()));
 
-        assertThat(appender.eventsMentioning("jwks_url")).as("a server that never starts refuses nothing").isEmpty();
+        assertThat(eventsMentioning("jwks_url")).as("a server that never starts refuses nothing").isEmpty();
     }
 
     @Test
@@ -116,7 +93,7 @@ class AppHttpServerJwtMissingConfigLogTest {
         construct(appHttp(true, SecurityMode.API_KEY, Option.empty()));
         construct(appHttp(true, SecurityMode.NONE, Option.empty()));
 
-        assertThat(appender.eventsMentioning("jwks_url")).isEmpty();
+        assertThat(eventsMentioning("jwks_url")).isEmpty();
     }
 
     private static void construct(AppHttpConfig config) {
@@ -146,38 +123,7 @@ class AppHttpServerJwtMissingConfigLogTest {
                             .unwrap();
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.ALL, false);
-        configuration.addLogger(LOGGER_NAME, fresh);
-        return fresh;
-    }
-
-    record Captured(Level level, String message) {}
-
-    /// In-memory log4j2 appender capturing every event with its level, so a level change is
-    /// observable rather than filtered away.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<Captured> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(new Captured(event.getLevel(), event.getMessage().getFormattedMessage()));
-        }
-
-        List<Captured> eventsMentioning(String fragment) {
-            return events.stream().filter(captured -> captured.message().contains(fragment)).toList();
-        }
+    private List<LogCapture.Entry> eventsMentioning(String fragment) {
+        return capture.entries().stream().filter(entry -> entry.message().contains(fragment)).toList();
     }
 }
