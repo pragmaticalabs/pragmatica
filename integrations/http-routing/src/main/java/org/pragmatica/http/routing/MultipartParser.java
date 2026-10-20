@@ -196,10 +196,8 @@ public sealed interface MultipartParser {
 
     private static Option<String> extractContentType(Map<String, List<String>> headers) {
         return Option.option(headers.get("content-type"))
-                     .filter(values -> !values.isEmpty())
-                     .map(List::getFirst)
+                     .flatMap(values -> Option.from(values.stream().findFirst()))
                      .orElse(() -> Option.option(headers.get("Content-Type"))
-                                         .filter(values -> !values.isEmpty())
-                                         .map(List::getFirst));
+                                         .flatMap(values -> Option.from(values.stream().findFirst())));
     }
 }

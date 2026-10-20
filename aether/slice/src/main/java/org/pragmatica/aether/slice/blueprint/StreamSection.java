@@ -18,7 +18,7 @@ import org.pragmatica.lang.Result;
 /// The section is read in two places: deploy validation parses the blueprint's `resources.toml` text,
 /// and slice activation binds the stream resource from the slice's configuration provider. Until #1549
 /// the second place used the generic record binder, which reads snake_case component names and falls
-/// back to `StreamConfig.DEFAULT` for anything it does not find — so a validated `min-sync-replicas = 3`
+/// back to `StreamConfig.DEFAULT` for anything it does not find — so a validated `confirmation_factor = 3`
 /// was provisioned as `0`. Both places now run [StreamConfigParser#parseStreamConfig] over this view,
 /// so the key set, the value formats and the defaults have one authority.
 ///

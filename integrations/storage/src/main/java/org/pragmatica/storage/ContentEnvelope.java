@@ -25,12 +25,13 @@ sealed interface ContentEnvelope {
 
     /// The ref under which the content store keeps `name`'s value: `|` + name.
     ///
-    /// Why no legacy value can be found under it: ref names reach disk only in metadata snapshots, and a snapshot
-    /// written before the escaped ref-name encoding stored names raw and was read back by splitting each line at its
-    /// FIRST `|` (see `DefaultSnapshotManager.parseRefLine`), so a name containing `|` never survived a restart (its
-    /// line failed to parse, and its snapshot failed its integrity hash). An upgrade is a restart, so after it every
-    /// ref whose name contains `|` was written by this code. A raw [StorageInstance] user can write any ref; the
-    /// guarantee is about values that arrived through the content store.
+    /// Why no legacy value can be found under it: ref names reach disk only in metadata snapshots. A snapshot in the
+    /// layout before the `format=2` encoding stored names raw and is read back by splitting each line at its FIRST `|`
+    /// (see `DefaultSnapshotManager.parseRefLine`), so a name containing `|` never survives a restart from it. An
+    /// upgrade is a restart, so after it every ref whose name contains `|` was written by this code. The exception: a
+    /// `format=2` snapshot written by a build that has that encoding but not this namespace round-trips any name, so a
+    /// bare name beginning with `|` stored by such a build is restored as if it were a trusted ref. A raw
+    /// [StorageInstance] user can write any ref; the guarantee is about values that arrived through the content store.
     static String trustedRef(String name) {
         return TRUSTED_REF_PREFIX + name;
     }

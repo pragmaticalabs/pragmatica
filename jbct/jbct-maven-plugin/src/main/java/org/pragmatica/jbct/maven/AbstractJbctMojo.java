@@ -11,9 +11,11 @@ import org.pragmatica.jbct.config.FilesConfig;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.shared.FileCollector;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 
@@ -33,10 +35,21 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     protected boolean skip;
 
     /// Load JBCT configuration from project directory.
-    protected JbctConfig loadConfig() {
+    ///
+    /// A layer that cannot be used (syntax error, unreadable file, wrong-typed key) fails the goal
+    /// with a message naming the file and the offending key or line (#1455); the build log shows it.
+    @Contract
+    protected JbctConfig loadConfig() throws MojoExecutionException {
         var projectDir = project.getBasedir().toPath();
+        var loaded = ConfigLoader.load(Option.none(), Option.option(projectDir));
+        var refusal = loaded.fold(cause -> Option.some(cause.message()),
+                                  _ -> Option.<String> none());
 
-        return ConfigLoader.load(Option.none(), Option.option(projectDir));
+        if (refusal.isPresent()) {
+            throw new MojoExecutionException(refusal.unwrap());
+        }
+
+        return loaded.unwrap();
     }
 
     /// Create lint context from configuration.

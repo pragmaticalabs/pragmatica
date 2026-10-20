@@ -5,22 +5,13 @@
 package org.pragmatica.aether.node.logging;
 
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,31 +29,16 @@ import static org.junit.jupiter.api.Assertions.fail;
 class SystemLoggerBridgeTest {
     private static final String LOGGER_NAME = ResourceFactory.class.getName();
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("SystemLoggerBridgeCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.ALL);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.ALL, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     /// The producer is the real default dispatch on a resource that implements no close
@@ -72,7 +48,7 @@ class SystemLoggerBridgeTest {
         new NothingToCloseFactory().close(new Object())
                                    .await()
                                    .onFailure(cause -> fail("close should succeed: " + cause.message()));
-        var events = appender.eventsMentioning("No close convention");
+        var events = eventsMentioning("No close convention");
 
         assertThat(events).as("System.Logger must be bridged into log4j on the node classpath (log4j-jpl)").hasSize(1);
         assertThat(events.getFirst().level()).isEqualTo(Level.DEBUG);
@@ -83,21 +59,15 @@ class SystemLoggerBridgeTest {
     @Test
     void log4jLoggerOfTheSameName_isCaptured() {
         LogManager.getLogger(LOGGER_NAME).debug("control line through log4j directly");
-        assertThat(appender.eventsMentioning("control line")).hasSize(1);
+        assertThat(eventsMentioning("control line")).hasSize(1);
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.ALL, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
+    private List<LogCapture.Entry> eventsMentioning(String fragment) {
+        return capture.entries()
+                      .stream()
+                      .filter(entry -> entry.message()
+                                            .contains(fragment))
+                      .toList();
     }
 
     /// Provisions nothing; exists to reach the interface's default `close` with a plain object.
@@ -115,33 +85,6 @@ class SystemLoggerBridgeTest {
         @Override
         public Promise<Object> provision(Object config) {
             return Promise.success(new Object());
-        }
-    }
-
-    record Captured(Level level, String message) {}
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<Captured> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(new Captured(event.getLevel(),
-                                    event.getMessage().getFormattedMessage()));
-        }
-
-        List<Captured> eventsMentioning(String fragment) {
-            return events.stream()
-                         .filter(captured -> captured.message()
-                                                     .contains(fragment))
-                         .toList();
         }
     }
 }

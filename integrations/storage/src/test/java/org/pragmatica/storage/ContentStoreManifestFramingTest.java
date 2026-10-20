@@ -1,12 +1,17 @@
 package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -233,19 +238,31 @@ class ContentStoreManifestFramingTest {
         assertThat(store.exists("never-written").await().unwrap()).as("control: an absent name does not exist").isFalse();
     }
 
-    /// The proof the trusted namespace rests on: a LEGACY snapshot line (no escaped-name header) is split at its first
-    /// `|`, so a name containing `|` is never restored from it; an escaped line round-trips any name.
+    /// The proof the trusted namespace rests on, for snapshots in the layout written before the `format=2` encoding:
+    /// the restore path splits a ref line at its FIRST `|`, so a name containing `|` (a trusted ref, or a forged one)
+    /// is never restored from such a file.
     @Test
-    void snapshotRefLines_legacyNeverRestoresAPipeName_escapedRoundTripsIt() {
-        var hex = BlockId.fromHex("ab".repeat(32)).unwrap().hexString();
-        var legacy = new java.util.HashMap<String, BlockId>();
-        var escaped = new java.util.HashMap<String, BlockId>();
+    void legacySnapshot_neverRestoresANameContainingAPipe(@TempDir Path snapshots) throws Exception {
+        var id = BlockId.fromHex("ab".repeat(32)).unwrap();
+        var digest = MessageDigest.getInstance("SHA-256");
 
-        DefaultSnapshotManager.parseRefLine("|victim|" + hex, legacy, false);
-        DefaultSnapshotManager.parseRefLine("planted|x|" + hex, legacy, false);
-        DefaultSnapshotManager.parseRefLine(DefaultSnapshotManager.escapeRefName("|a=b|c\nd%") + "|" + hex, escaped, true);
+        digest.update("ok".getBytes(StandardCharsets.UTF_8));
+        var body = "epoch=1\ntimestamp=1700000000000\nnodeId=legacy-node\ncontentHash="
+                   + HexFormat.of().formatHex(digest.digest())
+                   + "\n\n# Lifecycles\n\n# Refs\n"
+                   + "|victim|" + id.hexString() + "\n"
+                   + "planted|x|" + id.hexString() + "\n"
+                   + "ok|" + id.hexString() + "\n";
 
-        assertThat(legacy.keySet()).noneMatch(name -> name.contains("|"));
-        assertThat(escaped).containsOnlyKeys("|a=b|c\nd%");
+        Files.writeString(snapshots.resolve("snapshot-000001.dat"), body);
+        Files.writeString(snapshots.resolve("LATEST"), "snapshot-000001.dat");
+
+        var restored = SnapshotManager.snapshotManager(MetadataStore.inMemoryMetadataStore("legacy-restore"),
+                                                       SnapshotConfig.snapshotConfig(snapshots, 100, 600_000, 5, "legacy-node"))
+                                      .restoreFromLatest()
+                                      .unwrap();
+
+        assertThat(restored.isPresent()).as("control: the legacy file restores").isTrue();
+        assertThat(restored.unwrap().refs()).containsOnlyKeys("ok");
     }
 }

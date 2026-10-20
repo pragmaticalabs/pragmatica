@@ -74,6 +74,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.hlc.HlcClock;
@@ -171,6 +172,10 @@ public final class ClusterEventAggregator {
 
     /// True while THIS node drains because the leader commanded it (#2014); wired by `AetherNode`.
     private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCommandedDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
+
+    /// True while THIS node is in the voter roster; wired by `AetherNode`. Defaults to true, so an unwired aggregator keeps
+    /// the strict reading: a PASSIVE is a quorum loss. `QUORUM_LOST` is a statement about voters (#2306).
+    private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfIsVoter = new java.util.concurrent.atomic.AtomicReference<>(() -> true);
 
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
@@ -1204,10 +1209,66 @@ public final class ClusterEventAggregator {
                       });
     }
 
+    /// #2306: the recovery edge of the lag warning. The engine publishes it on every `Passive -> Observing`; the recovery is
+    /// published only after a published `observer-consensus-lagging` for this node (#752), so a cold-start observer's first
+    /// adoption, which never lagged, publishes nothing.
+    @Contract
+    public void onObserverResumed(ObserverResumedNotification event) {
+        closeObserverLag("applies consensus decisions again");
+    }
+
+    /// #2306: every exit from lagging closes the warning. Observing again is [#onObserverResumed]; promotion to voter is the
+    /// ACTIVE branch of [#onQuorumStateChange]; leaving the cluster is [#onSelfShutdown] and [#onMembershipDecision]. A crash
+    /// publishes nothing from this node, and the node's NODE_FAILED supersedes the open warning. A close with no open warning
+    /// publishes nothing (#752), so the exits need no state of their own.
+    private void closeObserverLag(String how) {
+        LOG.info("Observer {} {}", selfNode.id(), how);
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                                                          selfNode.id(),
+                                                          "Observer " + selfNode.id() + " " + how));
+    }
+
+    /// #2306: this node is shutting down; a lag warning still open for it is closed.
+    @Contract
+    public void onSelfShutdown(TransportObservation.SelfShutdown event) {
+        closeObserverLag("is shutting down, no longer lagging");
+    }
+
+    private void closeObserverLagWhenSelfLeaves(MembershipDecision decision) {
+        switch (decision) {
+            case MembershipDecision.NodeRemoved removed -> closeObserverLagIfSelf(removed.nodeId());
+            case MembershipDecision.NodeDecommissioned decommissioned -> closeObserverLagIfSelf(decommissioned.nodeId());
+            default -> {}
+        }
+    }
+
+    private void closeObserverLagIfSelf(NodeId node) {
+        if (node.equals(selfNode)) {
+            closeObserverLag("left the cluster, no longer lagging");
+        }
+    }
+
+    /// #2306: a non-voter's PASSIVE is never a quorum loss. An observer leaves `Observing` for reasons that have nothing to do
+    /// with the cluster's quorum (a far-behind catch-up resync, an adoption still running), so the CRITICAL `QuorumLost` is
+    /// withheld and the operator gets a distinct WARNING instead.
+    private void raiseObserverLagging() {
+        LOG.warn("Observer {} is not applying consensus decisions — not a voter, so not a quorum loss", selfNode.id());
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                                                          selfNode.id(),
+                                                          "Observer " + selfNode.id()
+                                                         + " is not applying consensus decisions while it catches up; it is not a voter, so this is not a quorum loss"));
+    }
+
     /// Wire the "this node is draining by command" probe (#2014), from the local `DrainProcedure`.
     @Contract
     public void bindSelfCommandedDrain(BooleanSupplier selfCommandedDrain) {
         this.selfCommandedDrain.set(selfCommandedDrain);
+    }
+
+    /// Wire the "this node is in the voter roster" probe (#2306), from the installed voter configuration.
+    @Contract
+    public void bindSelfIsVoter(BooleanSupplier selfIsVoter) {
+        this.selfIsVoter.set(selfIsVoter);
     }
 
     /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
@@ -1248,6 +1309,7 @@ public final class ClusterEventAggregator {
                 // it restored — the same latched-red failure the un-gating of QUORUM_ESTABLISHED
                 // exists to prevent, reached on a different surface.
                 LOG.info("Quorum established on {} — consensus available", selfNode.id());
+                closeObserverLag("was promoted to a voter, no longer lagging");
                 emitLocal(new QuorumEstablished(hlcClock.now(),
                                                 Severity.INFO,
                                                 "Quorum established",
@@ -1268,6 +1330,12 @@ public final class ClusterEventAggregator {
                     // (`ClusterStateNotification#demoted`, #1790). Planned work: it is not quorum loss,
                     // so it neither pages nor needs a recovery event.
                     LOG.info("Node {} left the electorate by reconfiguration — observing a live quorum", selfNode.id());
+
+                    return;
+                }
+
+                if (!selfIsVoter.get().getAsBoolean()) {
+                    raiseObserverLagging();
 
                     return;
                 }
@@ -1293,6 +1361,7 @@ public final class ClusterEventAggregator {
     /// is the cluster leader.
     @Contract
     public void onMembershipDecision(MembershipDecision decision) {
+        closeObserverLagWhenSelfLeaves(decision);
         switch (decision) {
             // NODE_FAILED moved to the ungated FSM DEAD edge (#210) — the projector can drop this
             // quorum-gated decision during post-kill churn, so it is no longer the failure source.

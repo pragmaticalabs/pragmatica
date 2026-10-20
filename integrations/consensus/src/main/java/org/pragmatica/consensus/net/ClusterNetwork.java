@@ -41,7 +41,11 @@ import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
 ///
 /// **Implementation contract:** All methods must be exception-safe.
 /// Network failures should be logged internally, not thrown to callers.
-/// The consensus protocol handles message loss through timeouts and retries.
+///
+/// Delivery is best-effort and unacknowledged: a send reported as [WriteOutcome.Sent] was only
+/// accepted locally. Rabia tolerates loss, reordering and duplicates through its own timeouts and
+/// retransmission; every other consumer earns end-to-end delivery itself (quorum collection,
+/// anti-entropy, caller deadlines).
 public interface ClusterNetwork {
     /// Additive fault-injection filter. It cannot bypass transport or application authority checks.
     default Unit setInboundFaultFilter(java.util.function.BiPredicate<NodeId, org.pragmatica.messaging.Message.Wired> filter) {
@@ -238,9 +242,11 @@ public interface ClusterNetwork {
     /// This set does NOT include self - only remote peers with active connections.
     Set<NodeId> connectedPeers();
 
-    /// Peers locally reachable for quorum purposes — includes CONNECTED and EVICTED
-    /// (transient stale-link awaiting reconcile). Mirrors `activeConnectedCount`
-    /// semantics so externally-visible counts do not flicker on momentary evictions.
+    /// Peers this node counts as active — CONNECTED plus EVICTED (a stale link awaiting
+    /// re-dial, which is not reachable until it re-attaches). Mirrors `activeConnectedCount`
+    /// semantics so externally-visible counts do not flicker on momentary evictions. The
+    /// transport only logs that count: quorum is decided by the membership layer and the
+    /// Rabia engine, not here.
     /// Default falls back to `connectedPeers` for transports without an EVICTED state.
     default Set<NodeId> activePeers() {
         return connectedPeers();

@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -316,6 +317,8 @@ public final class WaveExecutor {
                                                        CreatedNodes created) {
         return switch (action) {
             case DiffAction.RuntimeChange a -> executeRuntimeChange(a, stored, desired, created);
+            case DiffAction.RuntimeProfileChange a -> new ClusterConfigError.RuntimeProfileChangeViaApply(a.profileName(),
+                                                                                                          a.fields()).result();
             case DiffAction.SourceFieldChange a -> executeSourceFieldChange(a, stored, desired, created);
             case DiffAction.ClusterLevelChange a -> logClusterLevelChange(a);
             default -> logUnknownModification(action);

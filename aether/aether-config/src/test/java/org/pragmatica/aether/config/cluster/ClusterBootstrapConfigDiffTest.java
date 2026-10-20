@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -37,7 +38,7 @@ class ClusterBootstrapConfigDiffTest {
             sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
-            Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
+            Map.of(NodeRole.CORE, roleSubTable(some(coreCount), none(), none(), RUNTIME_REF)),
             List.of()
         );
     }
@@ -47,7 +48,7 @@ class ClusterBootstrapConfigDiffTest {
             sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
-            Map.of(role, roleSubTable(role, some(count), none(), none(), runtimeRef)),
+            Map.of(role, roleSubTable(some(count), none(), none(), runtimeRef)),
             List.of()
         );
     }
@@ -61,11 +62,10 @@ class ClusterBootstrapConfigDiffTest {
     }
 
     private static ClusterBootstrapConfig configWithSources(Map<String, SourceProfile> sources) {
-        return clusterBootstrapConfig(
-            "1", clusterIdentity("test-cluster", "1.0").unwrap(),
+        return clusterBootstrapConfig(clusterIdentity("test-cluster", "1.0").unwrap(),
             defaultCoreTopology(), sources,
-            Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-            infrastructureConfig(NetworkingType.MANUAL),
+            Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+            infrastructureConfig(),
             defaultOperationsConfig()
         , java.util.Map.of());
     }
@@ -160,8 +160,8 @@ class ClusterBootstrapConfigDiffTest {
         void diff_addRole_producesAddition() {
             var stored = forgeConfig(3);
             var desired = configWithSources(Map.of("forge", sourceWithRoles("forge", Map.of(
-                NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF),
-                NodeRole.WORKER, roleSubTable(NodeRole.WORKER, some(2), none(), none(), RUNTIME_REF)
+                NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF),
+                NodeRole.WORKER, roleSubTable(some(2), none(), none(), RUNTIME_REF)
             ))));
             var plan = diff(stored, desired);
 
@@ -176,8 +176,8 @@ class ClusterBootstrapConfigDiffTest {
         @Test
         void diff_removeRole_producesRemoval() {
             var stored = configWithSources(Map.of("forge", sourceWithRoles("forge", Map.of(
-                NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF),
-                NodeRole.WORKER, roleSubTable(NodeRole.WORKER, some(2), none(), none(), RUNTIME_REF)
+                NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF),
+                NodeRole.WORKER, roleSubTable(some(2), none(), none(), RUNTIME_REF)
             ))));
             var desired = forgeConfig(3);
             var plan = diff(stored, desired);
@@ -213,14 +213,14 @@ class ClusterBootstrapConfigDiffTest {
                 sourceNameOrDefault("forge"), SourceType.FORGE, none(), some("cred-a"), none(), none(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
-                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF)),
                 List.of()
             )));
             var desired = configWithSources(Map.of("forge", sourceProfile(
                 sourceNameOrDefault("forge"), SourceType.FORGE, none(), some("cred-b"), none(), none(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
-                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF)),
                 List.of()
             )));
             var plan = diff(stored, desired);
@@ -250,7 +250,7 @@ class ClusterBootstrapConfigDiffTest {
                 sourceNameOrDefault("forge"), SourceType.FORGE, none(), none(), none(), none(), List.of(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
-                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), RUNTIME_REF)),
                 List.of(), none(), ceiling
             );
         }
@@ -258,12 +258,11 @@ class ClusterBootstrapConfigDiffTest {
         @Test
         void diff_versionChange_producesClusterLevel() {
             var stored = forgeConfig(3);
-            var desired = clusterBootstrapConfig(
-                "1", clusterIdentity("test-cluster", "2.0").unwrap(),
+            var desired = clusterBootstrapConfig(clusterIdentity("test-cluster", "2.0").unwrap(),
                 defaultCoreTopology(),
                 Map.of("forge", forgeSource("forge", 3)),
-                Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-                infrastructureConfig(NetworkingType.MANUAL),
+                Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+                infrastructureConfig(),
                 defaultOperationsConfig()
             , java.util.Map.of());
             var plan = diff(stored, desired);
@@ -283,12 +282,11 @@ class ClusterBootstrapConfigDiffTest {
         @Test
         void diff_clusterNameChange_producesImmutable() {
             var stored = forgeConfig(3);
-            var desired = clusterBootstrapConfig(
-                "1", clusterIdentity("other-cluster", "1.0").unwrap(),
+            var desired = clusterBootstrapConfig(clusterIdentity("other-cluster", "1.0").unwrap(),
                 defaultCoreTopology(),
                 Map.of("forge", forgeSource("forge", 3)),
-                Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
-                infrastructureConfig(NetworkingType.MANUAL),
+                Map.of(RUNTIME_REF, runtimeProfile(RuntimeType.JVM, none(), none())),
+                infrastructureConfig(),
                 defaultOperationsConfig()
             , java.util.Map.of());
             var plan = diff(stored, desired);
@@ -353,6 +351,103 @@ class ClusterBootstrapConfigDiffTest {
             assertThat(output).contains("Current: 3 cores");
             assertThat(output).contains("Desired: 5 cores");
             assertThat(output).contains("~ forge.core  count: 3 -> 5");
+        }
+    }
+
+    /// #1966: profile CONTENT was never diffed, so an edit to a profile both configs declare was an empty plan.
+    @Nested
+    class RuntimeProfileContent {
+        private ClusterBootstrapConfig withProfiles(Map<String, RuntimeProfile> profiles) {
+            var base = forgeConfig(3);
+
+            return clusterBootstrapConfig(clusterIdentity("test-cluster", "1.0").unwrap(),
+                                          defaultCoreTopology(), base.sources(),
+                                          profiles,
+                                          infrastructureConfig(),
+                                          defaultOperationsConfig(), Map.of());
+        }
+
+        private ClusterBootstrapConfig withProfile(RuntimeProfile profile) {
+            return withProfiles(Map.of(RUNTIME_REF, profile));
+        }
+
+        private ClusterBootstrapConfig withImages(String image, String... names) {
+            var profiles = new HashMap<String, RuntimeProfile>();
+
+            for (var name : names) {
+                profiles.put(name, runtimeProfile(RuntimeType.DOCKER, some(image), none()));
+            }
+            return withProfiles(profiles);
+        }
+
+        @Test
+        void diff_profileImageChanged_producesRuntimeProfileChange() {
+            var stored = withProfile(runtimeProfile(RuntimeType.DOCKER, some("img:1"), none()));
+            var desired = withProfile(runtimeProfile(RuntimeType.DOCKER, some("img:2"), none()));
+
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).containsExactly(new DiffAction.RuntimeProfileChange(RUNTIME_REF, "image"));
+        }
+
+        @Test
+        void diff_profileFieldsChanged_namesEveryChangedField() {
+            var stored = withProfile(runtimeProfile(RuntimeType.JVM, none(), some("-Xmx1g")));
+            var desired = withProfile(runtimeProfile(RuntimeType.DOCKER, none(), some("-Xmx2g"), some("http://x/a.jar")));
+
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).containsExactly(new DiffAction.RuntimeProfileChange(RUNTIME_REF, "type, jvm_args, jar_url"));
+        }
+
+        @Test
+        void diff_identicalProfile_emptyPlan() {
+            var config = withProfile(runtimeProfile(RuntimeType.DOCKER, some("img:1"), none()));
+
+            assertThat(diff(config, config).isEmpty()).isTrue();
+        }
+
+        /// A profile only the committed config declares is removed from the file: inert unless a role still
+        /// references it, in which case the role surfaces as a `RuntimeChange`. Never a content change.
+        @Test
+        void diff_profileOnlyInStored_emptyPlan() {
+            var stored = withImages("img:1", RUNTIME_REF, "extra");
+            var desired = withImages("img:1", RUNTIME_REF);
+
+            assertThat(diff(stored, desired).isEmpty()).isTrue();
+        }
+
+        @Test
+        void diff_profileOnlyInDesired_emptyPlan() {
+            var stored = withImages("img:1", RUNTIME_REF);
+            var desired = withImages("img:1", RUNTIME_REF, "extra");
+
+            assertThat(diff(stored, desired).isEmpty()).isTrue();
+        }
+
+        /// The order feeds the `~` lines of `formatPlan`, which the operator reads: sorted by profile name,
+        /// not by hash order. Names chosen so their `HashSet` iteration order is not alphabetical.
+        @Test
+        void diff_severalProfilesChanged_planIsOrderedByProfileName() {
+            var stored = withImages("img:1", "charlie", "alpha", "bravo");
+            var desired = withImages("img:2", "charlie", "alpha", "bravo");
+
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).containsExactly(new DiffAction.RuntimeProfileChange("alpha", "image"),
+                                                             new DiffAction.RuntimeProfileChange("bravo", "image"),
+                                                             new DiffAction.RuntimeProfileChange("charlie", "image"));
+        }
+
+        @Test
+        void formatPlan_severalProfilesChanged_listsProfilesInNameOrder() {
+            var stored = withImages("img:1", "charlie", "alpha", "bravo");
+            var desired = withImages("img:2", "charlie", "alpha", "bravo");
+
+            var output = formatPlan(diff(stored, desired), stored, desired);
+
+            assertThat(output.indexOf("runtime.alpha")).isPositive().isLessThan(output.indexOf("runtime.bravo"));
+            assertThat(output.indexOf("runtime.bravo")).isLessThan(output.indexOf("runtime.charlie"));
         }
     }
 }

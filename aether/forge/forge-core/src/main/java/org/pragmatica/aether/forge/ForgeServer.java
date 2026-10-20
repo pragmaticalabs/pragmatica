@@ -28,6 +28,7 @@ import org.pragmatica.aether.ember.EmberCluster.StartFailure;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -376,14 +377,50 @@ public final class ForgeServer {
 
     /// Package-visible with the exit injected (see [#applyApiVersioning]).
     void applyAppHttpSecurity(EmberCluster clusterInstance, IntConsumer exit) {
-        siblingAppConfig(exit).map(AetherConfig::appHttp)
-                        .filter(appHttp -> !appHttp.apiKeys()
-                                                   .isEmpty())
-                        .onPresent(appHttp -> {
-                                       clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
-                                                                           appHttp.apiKeys());
-                                       operatorApiKey.set(adminCapableKey(appHttp));
-                                   });
+        var appHttp = siblingAppConfig(exit).map(AetherConfig::appHttp);
+
+        appHttp.filter(config -> !config.apiKeys()
+                                        .isEmpty())
+               .onPresent(config -> {
+                              clusterInstance.withAppHttpSecurity(config.securityMode(),
+                                                                  config.apiKeys());
+                              operatorApiKey.set(adminCapableKey(config));
+                          });
+        applyManagementSecurityMode(clusterInstance, appHttp, exit);
+    }
+
+    /// #962 — `forge run` honours `[management] security_mode` from the sibling `aether.toml`, independently of the
+    /// key gate above: the management plane's own mode is not a credential. Absent, the embedded nodes inherit the
+    /// app-HTTP mode as before. The app-HTTP mode itself stays NONE for a run that declares no keys (see above), so
+    /// an explicit `api-key` management mode with no key declared would leave Forge's own control calls refused
+    /// (401) by the fail-closed plane: that is a refusal to start, never a cluster Forge cannot drive.
+    @Contract
+    private void applyManagementSecurityMode(EmberCluster clusterInstance,
+                                             Option<AppHttpConfig> appHttp,
+                                             IntConsumer exit) {
+        appHttp.onPresent(config -> config.managementSecurityMode()
+                                          .onPresent(mode -> applyManagementMode(clusterInstance, config, mode, exit)));
+    }
+
+    @Contract
+    private void applyManagementMode(EmberCluster clusterInstance,
+                                     AppHttpConfig config,
+                                     SecurityMode mode,
+                                     IntConsumer exit) {
+        if (mode != SecurityMode.NONE && config.apiKeys().isEmpty()) {
+            ForgeAppConfig.refuse(ForgeAppConfig.keylessManagementRefusal(siblingConfigName()), exit);
+
+            return;
+        }
+
+        clusterInstance.withManagementSecurityMode(Option.some(mode));
+    }
+
+    private String siblingConfigName() {
+        return startupConfig.forgeConfig()
+                            .map(path -> path.resolveSibling("aether.toml")
+                                             .toString())
+                            .or("aether.toml");
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the

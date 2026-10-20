@@ -55,8 +55,8 @@ public final class CommittedEntityStake {
                             if (key.stream()
                                    .equals(arcName) && value.owner()
                                                             .equals(self)) {
-                            owned.set(true);
-                        }
+                                owned.set(true);
+                            }
                         });
 
         return owned.get();

@@ -218,7 +218,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
     private void validateSchemaPresence(List<SliceManifest> localManifests,
                                         List<DependencyManifest> dependencyManifests) throws MojoExecutionException {
-        var blueprintConfig = loadBlueprintConfig();
+        var blueprintConfig = loadBlueprintConfig(project.getBasedir().toPath());
 
         if (blueprintConfig.schema() == SchemaMode.EXTERNAL) {
             getLog().debug("Schema validation skipped (blueprint.schema = external)");
@@ -255,12 +255,17 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         }
     }
 
-    private BlueprintConfig loadBlueprintConfig() {
-        var projectDir = Option.some(project.getBasedir().toPath());
+    static BlueprintConfig loadBlueprintConfig(Path projectDir) throws MojoExecutionException {
+        var loaded = ConfigLoader.load(Option.none(), Option.some(projectDir));
+        var refusal = loaded.fold(cause -> Option.some(cause.message()),
+                                  _ -> Option.<String> none());
 
-        return ConfigLoader.load(Option.none(),
-                                 projectDir)
-                           .blueprint();
+        if (refusal.isPresent()) {
+            throw new MojoExecutionException(refusal.unwrap());
+        }
+
+        return loaded.unwrap()
+                     .blueprint();
     }
 
     private Set<String> collectDatasources(List<SliceManifest> localManifests,
@@ -480,7 +485,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         }
     }
 
-    private SliceConfig loadSliceConfig(SliceManifest manifest) {
+    SliceConfig loadSliceConfig(SliceManifest manifest) throws MojoExecutionException {
         var configFile = manifest.configFile();
 
         if (configFile == null || configFile.isEmpty()) {
@@ -499,12 +504,27 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             return SliceConfig.defaultConfig();
         }
 
-        return SliceConfig.load(configPath)
-                          .onFailure(cause -> getLog().warn("Failed to load config for slice " + manifest.sliceName()
-                                                           + ": " + cause.message()
-                                                           + " - using defaults"))
-                          .onSuccess(_ -> getLog().debug("Loaded config for slice: " + manifest.sliceName()))
-                          .or(SliceConfig.defaultConfig());
+        var loaded = refusingSliceConfig(manifest.sliceName(), configPath);
+
+        getLog().debug("Loaded config for slice: " + manifest.sliceName());
+
+        return loaded;
+    }
+
+    /// #1455: a slice config that cannot be used (syntax error, wrong-typed `instances`) fails the goal naming the
+    /// file; it used to warn and build the blueprint with the default instance count.
+    static SliceConfig refusingSliceConfig(String sliceName, Path configPath) throws MojoExecutionException {
+        var loaded = SliceConfig.load(configPath);
+        var refusal = loaded.fold(cause -> Option.some("Invalid config for slice " + sliceName
+                                                      + " (" + configPath
+                                                      + "): " + cause.message()),
+                                  _ -> Option.<String> none());
+
+        if (refusal.isPresent()) {
+            throw new MojoExecutionException(refusal.unwrap());
+        }
+
+        return loaded.unwrap();
     }
 
     private Option<SliceManifest> loadManifestFromDependency(String groupArtifact, String version) {

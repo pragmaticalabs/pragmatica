@@ -102,6 +102,42 @@ class GcpClientTest {
     }
 
     @Test
+    void insertDecodesTheOperationsOwnError() {
+        testHttp.respondWith(200, """
+            {"name":"op-9","status":"DONE","operationType":"insert","error":{"errors":[{"code":"QUOTA_EXCEEDED","message":"Quota 'CPUS' exceeded"}]}}
+            """);
+        var request = new org.pragmatica.cloud.gcp.api.InsertInstanceRequest("n",
+                                                                             "type",
+                                                                             List.of(),
+                                                                             List.of(),
+                                                                             Map.of(),
+                                                                             new org.pragmatica.cloud.gcp.api.InsertInstanceRequest.Metadata(List.of()),
+                                                                             org.pragmatica.lang.Option.none());
+
+        client.insertInstance(request)
+              .await()
+              .onFailure(cause -> assertThat(cause).isNull())
+              .onSuccess(operation -> assertThat(operation.failure().or("")).contains("QUOTA_EXCEEDED").contains("CPUS"));
+    }
+
+    @Test
+    void insertWithoutAnError_reportsNoFailure() {
+        testHttp.respondWith(200, RESET_OPERATION_RESPONSE);
+        var request = new org.pragmatica.cloud.gcp.api.InsertInstanceRequest("n",
+                                                                             "type",
+                                                                             List.of(),
+                                                                             List.of(),
+                                                                             Map.of(),
+                                                                             new org.pragmatica.cloud.gcp.api.InsertInstanceRequest.Metadata(List.of()),
+                                                                             org.pragmatica.lang.Option.none());
+
+        client.insertInstance(request)
+              .await()
+              .onFailure(cause -> assertThat(cause).isNull())
+              .onSuccess(operation -> assertThat(operation.failure().isEmpty()).isTrue());
+    }
+
+    @Test
     void aggregateInventoryReadsEveryPageAndPreservesZones() {
         testHttp.responseSequence.add("""
             {"items":{"zones/us-central1-a":{"instances":[{"name":"east","status":"RUNNING","zone":"us-central1-a"}]}},"nextPageToken":"next"}

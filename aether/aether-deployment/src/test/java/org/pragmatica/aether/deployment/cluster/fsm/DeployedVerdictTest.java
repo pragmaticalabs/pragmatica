@@ -5,12 +5,6 @@
 package org.pragmatica.aether.deployment.cluster.fsm;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,6 +46,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -81,15 +76,14 @@ class DeployedVerdictTest {
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> leaderHarness;
     private ExpandedBlueprint expanded;
     private RecordingClusterNode recorder;
-    private final List<String> infoLines = java.util.Collections.synchronizedList(new ArrayList<>());
-    private Runnable detachLog = () -> {};
+    private LogCapture infoLog;
 
     @BeforeEach
     void setUp() {
         leaderStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
         recorder = new RecordingClusterNode(SELF, leaderStore);
         leaderHarness = leaderHarness(recorder, leaderStore);
-        detachLog = capturingInfo(infoLines);
+        infoLog = LogCapture.capture(ClusterDeploymentState.Active.class, Level.INFO, true);
         expanded = blueprint();
         KVCommand<AetherKey> command = new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
                                                            AppBlueprintValue.appBlueprintValue(expanded));
@@ -102,14 +96,14 @@ class DeployedVerdictTest {
 
     @AfterEach
     void tearDown() {
-        detachLog.run();
+        infoLog.close();
     }
 
     @Test
     void theLeaderLogsTheVerdictOnTheFirstActiveInstance_withTheCountAndNotTheOldWording() {
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, activeInstance())));
 
-        assertThat(infoLines)
+        assertThat(infoLog.messages())
                 .as("the call site logs the verdict, not the old 'fully deployed — all N slices active'")
                 .anySatisfy(line -> assertThat(line).contains("deployed: each of its 1 slices has at least one ACTIVE instance")
                                                     .contains(SLICE.asString() + ": 1 of 3 instances ACTIVE"))
@@ -196,32 +190,6 @@ class DeployedVerdictTest {
 
         assertThat(active().deployedVerdict(expanded.id(), Set.of(SLICE)))
                 .contains(SLICE.asString() + ": 2 of 3 instances ACTIVE");
-    }
-
-    private static Runnable capturingInfo(List<String> sink) {
-        var context = (LoggerContext) LogManager.getContext(false);
-        var loggerConfig = context.getConfiguration().getLoggerConfig(ClusterDeploymentState.Active.class.getName());
-        var previous = loggerConfig.getLevel();
-        var appender = new AbstractAppender("deployed-verdict-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (ClusterDeploymentState.Active.class.getName().equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.INFO, null);
-        loggerConfig.setLevel(Level.INFO);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            loggerConfig.setLevel(previous);
-            context.updateLoggers();
-            appender.stop();
-        };
     }
 
     private ClusterDeploymentState.Active active() {

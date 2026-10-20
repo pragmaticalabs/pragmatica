@@ -3,6 +3,9 @@
 # EmberReadCommittedFailoverTest (2 tests, #2087): 58.9 s on bigboy at 40a421bb9 (earlier runs of the one-test version 40.1-51.3 s); weight rounded up.
 # EmberVoterHealTest 116 (#2098): surefire class time on bigboy, 3 runs of f2098-2f21a633a: 116.4 s, 113.4 s, 112.4 s (maximum used).
 # TransportWiringTripwireEmberTest 10 (#2215): surefire class time 9.5 s locally at b04c9bcf13 (load ~6; 2 of 4 tests @Disabled, so re-measure when they are enabled).
+# EmberStopDeactivatesLeaderTogglesTest 17 (#2271): surefire class time 16.58 s and 16.65 s locally at 3fb41a2f9e + the test (3-node cluster, idle machine); rounded up.
+# EmberConfigMalformedValueTest 0 (#1455): surefire class time 0.006 s and 0.007 s on cloudbb-1 at b3055d534 and d123940b8 (2 tests, pure config parse, no cluster); rounded to 0 like EmberConfigBasePortTest.
+# EmberObserverQuorumLossWiringTest 165 (#2306): surefire class time 98.7 s, 98.3 s and 159.3 s on cloudbb-1 at 9b6620ed2 (2 tests: the lag/recovery wiring round and the two-voters-plus-observer loss; the first test's cluster start varies 20-81 s); maximum rounded up.
 EmberAmnesiacRestartTest 162
 EmberBlackholedReplicaRecoveryTest 94
 EmberBootstrapAdminKeyAuthTest 10
@@ -17,6 +20,7 @@ EmberClusterSwimStartFailureTest 2
 EmberClusterTeardownWiringTest 1
 EmberColdStartSingleDialerTest 73
 EmberConfigBasePortTest 0
+EmberConfigMalformedValueTest 0
 EmberConfigStartTimeoutTest 0
 EmberDrainAcknowledgementWiringTest 24
 EmberDrainEvictionWiringTest 9
@@ -31,6 +35,7 @@ EmberLeaderLossIsrShrinkTest 78
 EmberMinorityOwnerIsrTest 21
 EmberMutePeerPromotionEscapeTest 141
 EmberNodeReplacementTest 624
+EmberObserverQuorumLossWiringTest 165
 EmberOrdinaryFailoverNoFalseAlertTest 96
 EmberPacedBurstTest 49
 EmberPartitionedCoreSelfFenceTest 403
@@ -39,6 +44,7 @@ EmberReadCommittedFailoverTest 60
 EmberSameIdentityRelaunchTest 478
 EmberSelfDrainSlotReleaseTest 0
 EmberSilentPartitionMinorityOwnerAcksTest 114
+EmberStopDeactivatesLeaderTogglesTest 17
 EmberTestPortsTest 26
 EmberUpgradeRunTest 108
 EmberWorkerDeadSeedTest 40

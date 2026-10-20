@@ -1,0 +1,2 @@
+# Test sources that still manipulate the log4j2 configuration by hand instead of using LogCapture.
+# It is EMPTY: every site has been converted. A new raw site fails LogCaptureUsageGuardTest; fix the site, do not list it.

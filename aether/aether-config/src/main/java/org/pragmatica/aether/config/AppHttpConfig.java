@@ -26,7 +26,8 @@ public record AppHttpConfig(boolean enabled,
                             String apiVersionHeaderName,
                             Option<AppTls> tls,
                             TimeSpan readTimeout,
-                            int minBodyRate) {
+                            int minBodyRate,
+                            Option<SecurityMode> managementSecurityMode) {
     /// Operator-supplied TLS identity for the USER-facing app-HTTP listener.
     ///
     /// The app port must not reuse the cluster identity. That certificate is issued by the
@@ -39,6 +40,33 @@ public record AppHttpConfig(boolean enabled,
     /// authentication stripped. That is reachable by clients which trust the cluster CA
     /// (service-to-service), and is NOT suitable for public traffic.
     public record AppTls(String certPath, String keyPath) {}
+
+    /// The shape before `read_timeout`, `min_body_rate` and `[management] security_mode` existed: the listener takes
+    /// the default request-body bounds, and the management plane inherits [#securityMode].
+    public AppHttpConfig(boolean enabled,
+                         int port,
+                         Map<String, ApiKeyEntry> apiKeys,
+                         int maxRequestSize,
+                         SecurityMode securityMode,
+                         Option<JwtConfig> jwtConfig,
+                         HttpProtocol httpProtocol,
+                         ApiVersioningDetection apiVersioningDetection,
+                         String apiVersionHeaderName,
+                         Option<AppTls> tls) {
+        this(enabled,
+             port,
+             apiKeys,
+             maxRequestSize,
+             securityMode,
+             jwtConfig,
+             httpProtocol,
+             apiVersioningDetection,
+             apiVersionHeaderName,
+             tls,
+             DEFAULT_READ_TIMEOUT,
+             DEFAULT_MIN_BODY_RATE,
+             Option.empty());
+    }
 
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;
@@ -79,7 +107,8 @@ public record AppHttpConfig(boolean enabled,
                                          apiVersionHeaderName,
                                          Option.empty(),
                                          DEFAULT_READ_TIMEOUT,
-                                         DEFAULT_MIN_BODY_RATE));
+                                         DEFAULT_MIN_BODY_RATE,
+                                         Option.empty()));
     }
 
     /// Attach an operator-supplied TLS identity to this listener. See [AppTls].
@@ -95,7 +124,8 @@ public record AppHttpConfig(boolean enabled,
                                  apiVersionHeaderName,
                                  Option.some(appTls),
                                  readTimeout,
-                                 minBodyRate);
+                                 minBodyRate,
+                                 managementSecurityMode);
     }
 
     /// Replace the read timeout. See [#DEFAULT_READ_TIMEOUT].
@@ -111,7 +141,8 @@ public record AppHttpConfig(boolean enabled,
                                  apiVersionHeaderName,
                                  tls,
                                  readTimeout,
-                                 minBodyRate);
+                                 minBodyRate,
+                                 managementSecurityMode);
     }
 
     /// Replace the minimum body rate. See [#DEFAULT_MIN_BODY_RATE].
@@ -127,7 +158,31 @@ public record AppHttpConfig(boolean enabled,
                                  apiVersionHeaderName,
                                  tls,
                                  readTimeout,
-                                 minBodyRate);
+                                 minBodyRate,
+                                 managementSecurityMode);
+    }
+
+    /// Give the Management API its own security mode (#962). `Option.none()` restores inheritance of [#securityMode].
+    public AppHttpConfig withManagementSecurityMode(Option<SecurityMode> mode) {
+        return new AppHttpConfig(enabled,
+                                 port,
+                                 apiKeys,
+                                 maxRequestSize,
+                                 securityMode,
+                                 jwtConfig,
+                                 httpProtocol,
+                                 apiVersioningDetection,
+                                 apiVersionHeaderName,
+                                 tls,
+                                 readTimeout,
+                                 minBodyRate,
+                                 mode);
+    }
+
+    /// Whether the Management API authenticates (#962): its own `[management] security_mode` when set, else
+    /// [#securityEnabled]. The management plane has no JWT mode, so only `NONE` disables it.
+    public boolean managementSecurityEnabled() {
+        return managementSecurityMode.or(securityMode) != SecurityMode.NONE;
     }
 
     public static Result<AppHttpConfig> appHttpConfig(boolean enabled,

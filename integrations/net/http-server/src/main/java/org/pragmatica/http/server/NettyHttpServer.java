@@ -600,6 +600,7 @@ final class NettyHttpServer implements HttpServer {
         private final boolean keepAlive;
         private final Runnable onWritten;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
+        private final Promise<Unit> flushed = Promise.promise();
 
         private final java.util.concurrent.atomic.AtomicBoolean written = new java.util.concurrent.atomic.AtomicBoolean(false);
 
@@ -621,8 +622,13 @@ final class NettyHttpServer implements HttpServer {
 
         @Override
         public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            writeAsync(status, body, contentType);
+        }
+
+        @Override
+        public Promise<Unit> writeAsync(HttpStatus status, byte[] body, ContentType contentType) {
             if (!written.compareAndSet(false, true)) {
-                return;
+                return flushed;
             }
 
             var nettyStatus = HttpResponseStatus.valueOf(status.code());
@@ -643,6 +649,16 @@ final class NettyHttpServer implements HttpServer {
             if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);
             }
+
+            future.addListener((ChannelFuture result) -> {
+                if (result.isSuccess()) {
+                    flushed.succeed(Unit.unit());
+                } else {
+                    flushed.fail(org.pragmatica.lang.utils.Causes.fromThrowable(result.cause()));
+                }
+            });
+
+            return flushed;
         }
     }
 

@@ -13,7 +13,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.jar.Attributes;
@@ -71,18 +70,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -849,14 +839,14 @@ class BlueprintPublishOwnershipTest {
                 [streams.order-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
 
                 [streams.consumer-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
                 """;
 
         /// `consistency_mode` is the record-binder spelling that reached the runtime before #1549. The stream
@@ -866,8 +856,8 @@ class BlueprintPublishOwnershipTest {
                 [streams.order-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
                 consistency_mode = "strong"
                 """;
 
@@ -1395,16 +1385,16 @@ class BlueprintPublishOwnershipTest {
                 base_url = [
                 """;
 
-        private FailOpenLogCapture failOpenLogCapture;
+        private LogCapture failOpenLogCapture;
 
         @BeforeEach
         void captureBlueprintServiceLog() {
-            failOpenLogCapture = FailOpenLogCapture.attach(BLUEPRINT_SERVICE_LOGGER_NAME);
+            failOpenLogCapture = LogCapture.capture(BLUEPRINT_SERVICE_LOGGER_NAME, Level.WARN, false);
         }
 
         @AfterEach
         void detachBlueprintServiceLog() {
-            failOpenLogCapture.detach();
+            failOpenLogCapture.close();
         }
 
         @Test
@@ -1445,7 +1435,7 @@ class BlueprintPublishOwnershipTest {
             var result = publishWithComposite(jar, Option.none());
 
             result.onFailure(cause -> Assertions.fail("Fail-open expected when no ConfigurationProvider is wired: " + cause.message()));
-            assertThat(failOpenLogCapture.capturedWarns())
+            assertThat(failOpenLogCapture.messages())
                     .as("fail-open skip must be logged, not silent")
                     .anyMatch(msg -> msg.contains("Config-section pre-flight (#547) SKIPPED")
                                    && msg.contains("1 declared resource section(s)")
@@ -1672,68 +1662,6 @@ class BlueprintPublishOwnershipTest {
             }
 
             return target;
-        }
-
-        /// Log4j2 programmatic appender capturing WARN-and-above messages from a named logger for
-        /// assertions — same wiring approach as `ClusterTopologyManagerCasLossLoggingTest` in this
-        /// module, adapted to attach/detach around a single test via `@BeforeEach`/`@AfterEach`
-        /// rather than a standalone test class.
-        private static final class FailOpenLogCapture extends AbstractAppender {
-            private final List<String> messages = new CopyOnWriteArrayList<>();
-            private final LoggerConfig loggerConfig;
-            private final Level originalLevel;
-
-            private FailOpenLogCapture(String name, Layout<?> layout, LoggerConfig loggerConfig, Level originalLevel) {
-                super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-                this.loggerConfig = loggerConfig;
-                this.originalLevel = originalLevel;
-            }
-
-            static FailOpenLogCapture attach(String loggerName) {
-                var ctx = (LoggerContext) LogManager.getContext(false);
-                var configuration = ctx.getConfiguration();
-                var loggerConfig = getOrCreateLoggerConfig(configuration, loggerName);
-                var originalLevel = loggerConfig.getLevel();
-                var capture = new FailOpenLogCapture(loggerName + "-capture", PatternLayout.createDefaultLayout(), loggerConfig, originalLevel);
-
-                capture.start();
-                loggerConfig.addAppender(capture, Level.WARN, null);
-                loggerConfig.setLevel(Level.WARN);
-                ctx.updateLoggers();
-
-                return capture;
-            }
-
-            void detach() {
-                var ctx = (LoggerContext) LogManager.getContext(false);
-
-                loggerConfig.removeAppender(getName());
-                loggerConfig.setLevel(originalLevel);
-                ctx.updateLoggers();
-                stop();
-            }
-
-            List<String> capturedWarns() {
-                return List.copyOf(messages);
-            }
-
-            @Override public void append(LogEvent event) {
-                if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                    messages.add(event.getMessage().getFormattedMessage());
-                }
-            }
-
-            private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration, String loggerName) {
-                var existing = configuration.getLoggerConfig(loggerName);
-
-                if (loggerName.equals(existing.getName())) {
-                    return existing;
-                }
-
-                var fresh = new LoggerConfig(loggerName, Level.WARN, false);
-                configuration.addLogger(loggerName, fresh);
-                return fresh;
-            }
         }
     }
 }

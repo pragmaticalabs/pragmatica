@@ -603,6 +603,10 @@ run_cluster_b_suites() {
         # missing core) or no committed leader. `_ready` is retained for log context only.
         if [ "$_restore_rc" -ne 0 ] || [ -z "$_leader" ]; then
             log_error "Cluster B unrecoverable after suite ${suite} (restore_rc=${_restore_rc}, leader='${_leader}', ready=${_ready:-0}/${NODE_COUNT} [informational; gate=restore deficit]) — remaining destructive suites will be SKIPPED to avoid misattributed cascade failures"
+            # #1972: the failed restore is a failure of the RUN in its own right. Until now it only quarantined LATER suites
+            # (skipped-unrecoverable), so a restore that failed after the LAST suite left nothing to fail the run and the
+            # process exited 0 with a FAIL in the log.
+            echo "{\"suite\":\"${suite}-restore-baseline\",\"status\":\"failed\",\"pass\":0,\"fail\":1,\"duration\":0}" >> "$RESULTS_FILE"
             aborted=true
         fi
         local quiesce_elapsed=$(( $(date +%s) - quiesce_start ))

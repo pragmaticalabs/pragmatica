@@ -160,5 +160,5 @@ replacement), and a request for the version the cluster config already stores is
 is still live or owed, in which case it attaches to that run.
 
 A downgrade run across the content-store trusted-ref change (#2263) is unsupported. A node that boots the older binary over
-content-store snapshots written by the newer one loses the names written since the upgrade, or refuses to boot. See
+content-store snapshots written by the newer one cannot read the names written since the upgrade, or refuses to boot. See
 [`../reference/versioning-and-compatibility.md`](../reference/versioning-and-compatibility.md#upgrade-note-no-rollback-past-the-content-store-trusted-ref-change-2263).

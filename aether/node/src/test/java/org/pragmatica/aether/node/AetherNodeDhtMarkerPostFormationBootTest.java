@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
@@ -255,6 +256,45 @@ class AetherNodeDhtMarkerPostFormationBootTest {
         assertThat(pendingBeforeStart).as("before start(), the streams gate must be among the pending admissions -- the "
                                           + "readiness component reads this list")
                                       .contains("streams");
+    }
+
+    /// #1170: `artifacts` has a real, encrypted disk tier, so `createAll` stamps its
+    /// `.encryption-enabled` BEFORE `start()` runs the post-formation DHT check. A stream-segments
+    /// marker seeded into the DHT with `streams_encrypted` off makes that check refuse, and the
+    /// refused boot must not leave the stamp: backing `artifacts` out to `encrypted = false` would
+    /// otherwise trip its reverse guard on a marker no ciphertext justified.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void start_leavesNoDiskMarker_whenThePostFormationDhtCheckRefusesTheBoot() {
+        var provider = (SecretsProvider) path -> Promise.success(Map.of(SECRET_PATH, VALID_AES256_KEY).get(path));
+        var environment = Option.some(EnvironmentIntegration.environmentIntegration(Option.none(), Option.some(provider), Option.none()));
+        var encryption = Option.some(StorageEncryptionConfig.storageEncryptionConfig(Map.of(ACTIVE_KEY_ID, "${secrets:" + SECRET_PATH + "}"),
+                                                                                      ACTIVE_KEY_ID,
+                                                                                      false));
+        var realRoot = tempDir.resolve("real-artifacts-root");
+        var artifacts = HermeticStorage.storageConfigAt(realRoot, true);
+        var marker = Path.of(artifacts.diskPath()).resolve(EncryptingStorageTier.MARKER_FILE_NAME);
+
+        node = AetherNode.aetherNode(minimalConfig(environment, encryption, artifacts), () -> {})
+                          .onFailure(cause -> fail("construction must succeed - " + cause.message()))
+                          .unwrap();
+
+        assertThat(Files.exists(marker)).as("PRECONDITION: createAll stamped the encrypted disk tier before start()")
+                                        .isTrue();
+
+        node.dhtClient()
+            .unwrap()
+            .put(STREAMS_MARKER_KEY, ACTIVE_KEY_ID.getBytes(StandardCharsets.UTF_8))
+            .await(MARKER_READ_BOUND)
+            .onFailure(cause -> fail("PRECONDITION: seeding the streams marker failed - " + cause.message()));
+
+        node.start()
+            .await(START_BOUND)
+            .onSuccess(_ -> fail("a stream-segments marker present with streams_encrypted off must fail start()"))
+            .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+
+        assertThat(Files.exists(marker)).as("a boot refused after formation must take back the disk marker it stamped")
+                                        .isFalse();
     }
 
     /// #849, claim 6, forward direction: `streams_encrypted = true` -> `start()` writes

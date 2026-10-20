@@ -8,20 +8,9 @@ import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +31,7 @@ import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testlogging.LogCapture;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,7 +62,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// `resourceProviderSetup.spiProvider().onPresent(...)` block where the WARN used to fire.
 ///
 /// Log-capture strategy follows `DelegatedStorageAdapterTest` / `ClusterTopologyManagerCasLossLoggingTest`:
-/// a programmatic log4j2 appender on `AetherNode`'s own logger, asserting on captured WARN messages.
+/// a `LogCapture` on `AetherNode`'s own logger, asserting on captured WARN messages.
 class AetherNodeContentStorageWarnBootTest {
     private static final String LOGGER_NAME = AetherNode.class.getName();
     private static final String SECRET_PATH = "path/to/k1";
@@ -81,16 +71,14 @@ class AetherNodeContentStorageWarnBootTest {
     /// #783 review F3: both assertions in this class are now `noneMatch` (the #830 WARN is retired, so
     /// its ABSENCE is what there is to pin). A pair of `noneMatch` assertions is satisfied by an empty
     /// list, so anything that silently detaches the capture -- a renamed logger, a log4j2 config change
-    /// making `getOrCreateLoggerConfig` hand back a different `LoggerConfig`, an exception swallowed in
+    /// making `LogCapture` register a different `LoggerConfig`, an exception swallowed in
     /// `setUp` -- would leave this class green while examining nothing. This sentinel is the positive
     /// control: it is emitted through the SAME logger the appender is attached to, BEFORE the boot, so
     /// asserting it was captured proves the appender was live across the whole boot window. Without it
     /// the class cannot fail, which on this project is worse than having no test at all.
     private static final String APPENDER_SENTINEL = "positive control: AetherNodeContentStorageWarnBootTest appender is attached";
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
     private AetherNode node;
 
     @TempDir
@@ -98,15 +86,7 @@ class AetherNodeContentStorageWarnBootTest {
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("AetherNodeContentStorageWarnCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        loggerConfig = getOrCreateLoggerConfig(configuration);
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
     }
 
     @AfterEach
@@ -124,11 +104,7 @@ class AetherNodeContentStorageWarnBootTest {
         ConfigService.clear();
         ResourceProvider.clear();
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     /// Emits [#APPENDER_SENTINEL] on the exact logger [#LOGGER_NAME] the appender is bound to. Called
@@ -140,7 +116,7 @@ class AetherNodeContentStorageWarnBootTest {
 
     /// Asserts the capture is actually working. Paired with every `noneMatch` below.
     private void assertAppenderIsLive() {
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
                 .as("POSITIVE CONTROL: the appender must have captured the sentinel emitted before boot -- an "
                     + "empty capture would satisfy the noneMatch assertion below while proving nothing")
                 .anyMatch(msg -> msg.contains(APPENDER_SENTINEL));
@@ -162,7 +138,7 @@ class AetherNodeContentStorageWarnBootTest {
 
         assertAppenderIsLive();
 
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
                 .as("#783: `content` is now synthesized through the same config/keyring-aware `createAll` "
                     + "path as every other instance, so a configured keyring covers it too -- there is no "
                     + "more coverage gap left to warn about")
@@ -181,7 +157,7 @@ class AetherNodeContentStorageWarnBootTest {
 
         assertAppenderIsLive();
 
-        assertThat(appender.capturedWarns())
+        assertThat(capture.messages())
                 .as("with no node-wide keyring there was never anything to warn about, before or after #783")
                 .noneMatch(msg -> msg.contains(CONTENT_STORAGE_WARN_FRAGMENT));
     }
@@ -250,40 +226,5 @@ class AetherNodeContentStorageWarnBootTest {
     /// for a single test process.
     private static Option<EnvironmentIntegration> environmentWith(Option<SecretsProvider> secrets) {
         return Option.some(EnvironmentIntegration.environmentIntegration(Option.none(), secrets, Option.none()));
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-        configuration.addLogger(LOGGER_NAME, fresh);
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            var layout = PatternLayout.createDefaultLayout();
-            return new CapturingAppender(name, layout);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedWarns() {
-            return messages.stream().collect(Collectors.toUnmodifiableList());
-        }
     }
 }

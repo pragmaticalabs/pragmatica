@@ -22,16 +22,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -48,6 +38,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,8 +58,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// own-restore arm is again `activateWithoutAdoption` → `restoreState`: a failed restore skips
 /// `activate()`, records the cause as the authority failure (reported by `voterReconfigurationStatus()`
 /// and fencing activation on later sync rounds), and `logRestoreFailure` reports it at ERROR.
-/// **#1468 stays OPEN** for whether that stop is bounded (wedge) or terminal (exit), and what the start
-/// promise and readiness surface report meanwhile.
+/// The stop is bounded (decided on #1468, 2026-10-18): the process-level `OwnRestoreWatchdog` exits the process
+/// with a distinct code once [RabiaEngine#ownRestoreFailure] has persisted for its bound. The engine's side of
+/// that is pinned here; the bound and the exit are pinned by `OwnRestoreWatchdogTest`.
 ///
 /// **The negative assertions are meaningful only because of the control.** `#ownRestoreSucceeds_activates`
 /// runs the identical fixture with a SUCCEEDING `restoreSnapshot` and activates well inside the same
@@ -83,6 +75,7 @@ class RabiaOwnRestoreFailureTest {
     private static final byte[] OWN_SNAPSHOT = "own".getBytes(StandardCharsets.UTF_8);
     private static final byte[] PEER_SNAPSHOT = "peer".getBytes(StandardCharsets.UTF_8);
     private static final Phase OWN_PHASE = Phase.phase(5);
+    private static final Phase PEER_PHASE = Phase.phase(10);
     private static final String STUCK_FRAGMENT = "still SYNCING after";
     private static final int WARN_ROUNDS = 6;
     private static final long FAST_RETRY_MILLIS = 20;
@@ -92,22 +85,11 @@ class RabiaOwnRestoreFailureTest {
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture appender;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("RabiaOwnRestoreFailureCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-
-        loggerConfig = getOrCreateLoggerConfig(configuration);
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+        appender = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
     }
 
     @AfterEach
@@ -115,12 +97,7 @@ class RabiaOwnRestoreFailureTest {
         engines.forEach(engine -> engine.stop()
                                         .await());
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        appender.close();
     }
 
     /// TRIPWIRE — pins #1468's decision for the restore-failure arm (owner ruling, session 27): fail
@@ -143,6 +120,55 @@ class RabiaOwnRestoreFailureTest {
             .contains(UNREADABLE_SNAPSHOT.message());
     }
 
+    /// #1468 bound: the typed own-restore failure is what the process-level watchdog samples. It is the
+    /// cause itself, not its text, and it is absent on the control path below.
+    @Test
+    void ownRestoreFails_exposesTheTypedCauseToTheWatchdog() {
+        var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        becameActive(engine);
+
+        assertThat(engine.ownRestoreFailure()).as("the watchdog's input is the restore failure itself").isEqualTo(Option.some(UNREADABLE_SNAPSHOT));
+    }
+
+    /// D1, the false-positive class: a responder's snapshot that fails to restore is NOT the node's own history.
+    /// Another sync round may adopt a readable snapshot, so the watchdog must have nothing to bound. The control
+    /// is the own-restore test above, where the identical failing state machine DOES set the failure; the
+    /// precondition below shows the responder restore really ran and failed.
+    @Test
+    void responderSnapshotRestoreFails_leavesOwnRestoreFailureEmpty() {
+        var engine = coldStarted(3, new FailingRestoreStateMachine(), noOwnHistory());
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> appender.messages(Level.ERROR).stream().anyMatch(message -> message.contains(FAILURE_FRAGMENT))))
+            .as("precondition: the responder's snapshot was restored and the restore failed")
+            .isTrue();
+        assertThat(engine.isActive()).as("the node did not activate on the unreadable snapshot").isFalse();
+        assertThat(engine.ownRestoreFailure()).as("a responder-snapshot failure is recoverable and is not the own-restore failure")
+                                              .isEqualTo(Option.none());
+        assertThat(engine.restoredStateSaveFailure()).as("nor is it a failed re-persist: no save was attempted")
+                                                     .isEqualTo(Option.none());
+    }
+
+    /// D3: the own-restore arm runs only once a genesis has resolved, and no genesis installs after that, so
+    /// `ownRestoreFailure` is never cleared in-process (there is deliberately no clear in `installGenesis`). This
+    /// pins the claim from the one entry point that could install one: `initializeVoters` is refused once the
+    /// engine has started, and the failure stays.
+    @Test
+    void ownRestoreFails_noGenesisCanInstallAfterwards_theFailureStays() {
+        var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> engine.ownRestoreFailure().isPresent())).as("precondition: the failure was recorded").isTrue();
+
+        var refusal = engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(List.of(NODE_1, NODE_2))));
+
+        assertThat(refusal.isFailure()).as("a started engine refuses a genesis install").isTrue();
+        assertThat(engine.ownRestoreFailure()).isEqualTo(Option.some(UNREADABLE_SNAPSHOT));
+    }
+
     /// Pins the diagnostic itself. The ERROR is the per-attempt operator signal on this path, so it must
     /// name the consequence and render the cause, not log a bare object. The periodic stuck-in-`Syncing`
     /// WARN reports the stall's length on top of it (#1447, pinned below).
@@ -152,7 +178,7 @@ class RabiaOwnRestoreFailureTest {
 
         engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
         becameActive(engine);
-        assertThat(appender.capturedErrors()).as("a failed own-restore must report the consequence and the cause, not a bare object")
+        assertThat(appender.messages(Level.ERROR)).as("a failed own-restore must report the consequence and the cause, not a bare object")
                   .isNotEmpty()
                   .anyMatch(message -> message.contains(FAILURE_FRAGMENT)
                                        && message.contains(CONSEQUENCE_FRAGMENT)
@@ -172,8 +198,9 @@ class RabiaOwnRestoreFailureTest {
         assertThat(becameActive(engine)).as("control: the same path DOES activate when the snapshot restores, so the tripwire's zero is a real absence")
                   .isTrue();
         assertThat(stateMachine.lastRestored()).as("control: the own-restore branch is the one exercised").isEqualTo(OWN_SNAPSHOT);
-        assertThat(appender.capturedErrors()).as("a successful restore reports no failure")
+        assertThat(appender.messages(Level.ERROR)).as("a successful restore reports no failure")
                   .noneMatch(message -> message.contains(FAILURE_FRAGMENT));
+        assertThat(engine.ownRestoreFailure()).as("a successful restore leaves nothing for the watchdog to bound").isEqualTo(Option.none());
     }
 
     /// #1447 — the stuck-sync WARN was structurally suppressed on the adoption loop: `adoptCollectedState`
@@ -189,7 +216,7 @@ class RabiaOwnRestoreFailureTest {
 
         assertThat(awaitCondition(() -> !stuckWarnings().isEmpty(), STUCK_BUDGET_MILLIS))
             .as("#1447: a single node looping on a failed own-restore must emit the stuck-sync WARN; errors seen: %s",
-                appender.capturedErrors())
+                appender.messages(Level.ERROR))
             .isTrue();
         assertThat(stuckWarnings()).allMatch(message -> message.contains("adoption threshold is met")
                                                         && message.contains(UNREADABLE_SNAPSHOT.message()));
@@ -234,7 +261,7 @@ class RabiaOwnRestoreFailureTest {
     }
 
     private List<String> stuckWarnings() {
-        return appender.capturedWarnings()
+        return appender.messages(Level.WARN)
                        .stream()
                        .filter(message -> message.contains(STUCK_FRAGMENT))
                        .toList();
@@ -310,6 +337,25 @@ class RabiaOwnRestoreFailureTest {
         return new durable(phase, snapshot);
     }
 
+    /// Persistence with no own history: nothing to restore, saves succeed.
+    private static RabiaPersistence<TestCommand> noOwnHistory() {
+        record noOwnHistory() implements RabiaPersistence<TestCommand> {
+            @Override
+            public Result<Unit> save(StateMachine<TestCommand> stateMachine,
+                                     Phase lastCommittedPhase,
+                                     Collection<Batch<TestCommand>> pendingBatches) {
+                return Result.success(Unit.unit());
+            }
+
+            @Override
+            public Option<SavedState<TestCommand>> load() {
+                return Option.none();
+            }
+        }
+
+        return new noOwnHistory();
+    }
+
     private static SyncResponse<TestCommand> cold(NodeId sender, Phase phase, byte[] snapshot) {
         return new SyncResponse<>(sender,
                                   SavedState.savedState(snapshot, phase, List.of()),
@@ -364,51 +410,6 @@ class RabiaOwnRestoreFailureTest {
         engine.clusterState(ClusterStateNotification.active());
 
         return new Started(engine, network);
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.ERROR, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-        private final List<String> warnings = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.ERROR)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            } else if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                warnings.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedErrors() {
-            return List.copyOf(messages);
-        }
-
-        List<String> capturedWarnings() {
-            return List.copyOf(warnings);
-        }
     }
 
     private static boolean becameActive(RabiaEngine<TestCommand> engine) {
