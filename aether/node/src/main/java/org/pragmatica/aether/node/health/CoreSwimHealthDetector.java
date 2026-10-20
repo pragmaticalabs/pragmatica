@@ -357,8 +357,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                            swimPort,
                                                                            gossipEncryptor))
                               .async()
-                              .onSuccess(context::dispatch)
-                              .onFailure(_ -> context.dispatch(new SwimHealthEvents.StartFailed()))
+                              .withSuccess(context::dispatch)
+                              .withFailure(_ -> context.dispatch(new SwimHealthEvents.StartFailed()))
                               .mapToUnit();
     }
 

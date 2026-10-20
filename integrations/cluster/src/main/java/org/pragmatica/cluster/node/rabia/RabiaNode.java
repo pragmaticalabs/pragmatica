@@ -722,18 +722,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
             @Override
             public Promise<Unit> start() {
-                return network().start()
-                              .onSuccessRunAsync(topologyManager()::start)
-                              .flatMap(consensus()::start);
+                return RabiaNodeLifecycle.start(network()::start, topologyManager()::start, consensus()::start);
             }
 
             @Override
             public Promise<Unit> stop() {
                 leaderManager().stop();
 
-                return consensus().stop()
-                                .onResultRun(topologyManager()::stop)
-                                .flatMap(network()::stop);
+                return RabiaNodeLifecycle.stop(consensus()::stop, topologyManager()::stop, network()::stop);
             }
 
             @Override

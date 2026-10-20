@@ -107,6 +107,80 @@ class GovernorAnnouncerTest {
         assertThat(requests).isEmpty();
     }
 
+    private static final int TRIALS = 40;
+
+    /// One nomination whose reply resolves LATER, on another thread (a reply that resolves inline hides every ordering defect
+    /// between the promise and its handlers). A probe registers its observer on the reply AFTER the announcer's own steps, so it
+    /// runs when the announcer's dependent steps have; a handler form of those steps ran concurrently with it instead.
+    private record Nomination(GovernorAnnouncer announcer, List<GovernorAuthorityMessage.Request> sent, Promise<GovernorAuthorityMessage.Response> reply) {
+        static Nomination nominate() {
+            var sent = new ArrayList<GovernorAuthorityMessage.Request>();
+            var reply = new AtomicReference<Promise<GovernorAuthorityMessage.Response>>();
+            var announcer = GovernorAnnouncer.governorAnnouncer(SELF, () -> "pool-a", () -> "host:9000", () -> Option.none(), () -> true, request -> {
+                sent.add(request);
+                reply.set(Promise.promise());
+
+                return reply.get();
+            });
+
+            announcer.start();
+            announcer.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+
+            return new Nomination(announcer, sent, reply.get());
+        }
+
+        void resolveLater(Option<GovernorAnnouncementValue> granted) {
+            Thread.ofVirtual().start(() -> resolveAfterDelay(granted));
+        }
+
+        private void resolveAfterDelay(Option<GovernorAnnouncementValue> granted) {
+            java.util.concurrent.locks.LockSupport.parkNanos(2_000_000L);
+            reply.succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", sent.getFirst().requestId(), granted));
+        }
+
+        int renominateAndCount() {
+            announcer.onMembershipChange(List.of(alive(SELF), alive(PEER)));
+
+            return sent.size();
+        }
+    }
+
+    @Test
+    void grant_isRecordedBeforeTheReplyResolvesForItsDependents() {
+        var missing = 0;
+
+        for (var trial = 0; trial < TRIALS; trial++) {
+            var nomination = Nomination.nominate();
+            var governor = nomination.reply().map(_ -> nomination.announcer().isGovernor());
+
+            nomination.resolveLater(Option.some(authority(SELF, 1)));
+            if (!governor.await().unwrap()) {
+                missing++;
+            }
+            nomination.announcer().stop();
+        }
+
+        assertThat(missing).as("nominations (of %d) whose grant was not on record when the reply's dependents ran", TRIALS).isZero();
+    }
+
+    @Test
+    void pendingFlag_isReleasedBeforeTheReplyResolvesForItsDependents() {
+        var stillPending = 0;
+
+        for (var trial = 0; trial < TRIALS; trial++) {
+            var nomination = Nomination.nominate();
+            var requestsSent = nomination.reply().map(_ -> nomination.renominateAndCount());
+
+            nomination.resolveLater(Option.none());
+            if (requestsSent.await().unwrap() < 2) {
+                stillPending++;
+            }
+            nomination.announcer().stop();
+        }
+
+        assertThat(stillPending).as("nominations (of %d) still marked pending when the reply's dependents ran", TRIALS).isZero();
+    }
+
     private static GovernorAnnouncementValue authority(NodeId owner, long term) {
         return GovernorAnnouncementValue.governorAnnouncementValue(owner, List.of(SELF, PEER), "host:9000", 1,
                                                                     term, Epoch.epoch(0L, term, 0), Epoch.ZERO,

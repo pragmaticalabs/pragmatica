@@ -135,11 +135,11 @@ public interface GovernorAnnouncer {
                                                                     address.get());
 
                 request.apply(proposal)
-                       .onSuccess(response -> accept(id, response))
-                       .onFailure(cause -> org.slf4j.LoggerFactory.getLogger(GovernorAnnouncer.class)
-                                                                  .debug("Governor nomination deferred: {}",
-                                                                         cause.message()))
-                       .onResultRun(() -> pending.set(false));
+                       .withSuccess(response -> accept(id, response))
+                       .withFailure(cause -> org.slf4j.LoggerFactory.getLogger(GovernorAnnouncer.class)
+                                                                    .debug("Governor nomination deferred: {}",
+                                                                           cause.message()))
+                       .withResult(_ -> pending.set(false));
             }
 
             @Contract
