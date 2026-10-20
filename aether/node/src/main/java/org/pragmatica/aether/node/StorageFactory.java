@@ -1187,15 +1187,25 @@ public final class StorageFactory {
                                          BooleanSupplier stopped) {
         var attempts = new AtomicInteger();
 
-        return Retry.retry()
-                    .attempts(Integer.MAX_VALUE)
-                    .strategy(backoff)
-                    .execute(() -> attemptUnlessStopped(client,
-                                                        check,
-                                                        attemptTimeout,
-                                                        stopped,
-                                                        attempts.incrementAndGet()))
-                    .onResult(check.readGate()::resolve);
+        return settleGateWith(Retry.retry()
+                                   .attempts(Integer.MAX_VALUE)
+                                   .strategy(backoff)
+                                   .execute(() -> attemptUnlessStopped(client,
+                                                                       check,
+                                                                       attemptTimeout,
+                                                                       stopped,
+                                                                       attempts.incrementAndGet())),
+                              check.readGate());
+    }
+
+    /// Settles `gate` with the outcome in chain order (`withResult`), before any dependent of `outcome` runs: a caller
+    /// that continues past the check sees `dhtAdmissionPending()` already false. Returns `outcome` itself, not the
+    /// derived promise `withResult` yields, because `verifyEach` cancels it (`allOfOrCancel`) and the cancellation must
+    /// still settle the gate.
+    private static Promise<Unit> settleGateWith(Promise<Unit> outcome, Promise<Unit> gate) {
+        outcome.withResult(gate::resolve);
+
+        return outcome;
     }
 
     private static Promise<Unit> attemptUnlessStopped(DHTClient client,
@@ -1272,8 +1282,8 @@ public final class StorageFactory {
         var guards = checks.stream().filter(check -> !writesMarker(check)).toList();
 
         return verifyEach(client, guards, stopped).flatMap(_ -> verifyEach(client, writes, stopped))
-                         .onFailure(cause -> writes.forEach(check -> check.readGate()
-                                                                          .resolve(cause.result())));
+                         .withFailure(cause -> writes.forEach(check -> check.readGate()
+                                                                            .resolve(cause.result())));
     }
 
     private static boolean writesMarker(DhtMarkerCheck check) {
@@ -1313,7 +1323,7 @@ public final class StorageFactory {
                                       .map(StorageSetup::dhtMarkerCheck)
                                       .flatMap(Option::stream)
                                       .toList(),
-                                stopped).onFailure(_ -> rollbackDiskMarkers(setups.values()));
+                                stopped).withFailure(_ -> rollbackDiskMarkers(setups.values()));
     }
 
     private static Result<Unit> rollbackDiskMarkers(Collection<StorageSetup> setups) {
