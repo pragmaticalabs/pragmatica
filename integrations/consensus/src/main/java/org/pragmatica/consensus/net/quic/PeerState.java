@@ -477,7 +477,8 @@ public final class PeerState {
         return connection.linkRank()
                          .flatMap(incumbent -> challenger.linkRank()
                                                          .map(incoming -> !incoming.survivesOver(incumbent)))
-                         .or(() -> isLegacyIncumbentKept(legacyDirectionOrder(challenger), nowNanos));
+                         .or(() -> isLegacyIncumbentKept(legacyDirectionOrder(challenger),
+                                                         nowNanos));
     }
 
     private int legacyDirectionOrder(QuicPeerConnection challenger) {

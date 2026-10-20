@@ -15,13 +15,13 @@
  */
 package org.pragmatica.consensus.net.quic;
 
+import java.nio.ByteBuffer;
+
 import org.pragmatica.consensus.net.quic.QuicClusterServer.MessageReceiver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Deserializer;
-
-import java.nio.ByteBuffer;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandler;
@@ -70,7 +70,10 @@ record PeerOpenedLaneRouter(Deserializer deserializer,
         var lane = (byte) StreamType.CONTROL.streamIndex();
 
         return LinkRank.isValidGeneration(generation)
-               ? ByteBuffer.allocate(1 + GENERATION_TAIL_BYTES).put(lane).putLong(generation).array()
+               ? ByteBuffer.allocate(1 + GENERATION_TAIL_BYTES)
+                           .put(lane)
+                           .putLong(generation)
+                           .array()
                : new byte[]{lane};
     }
 

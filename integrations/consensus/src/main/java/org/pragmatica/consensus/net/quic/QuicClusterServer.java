@@ -512,8 +512,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void handlePreamble(ChannelHandlerContext ctx, ByteBuf buf) {
-            PeerOpenedLaneRouter.preambleLane(buf)
-                                .fold(() -> onInvalidPreamble(ctx), lane -> routePreamble(ctx, lane, buf));
+            PeerOpenedLaneRouter.preambleLane(buf).fold(() -> onInvalidPreamble(ctx),
+                                                        lane -> routePreamble(ctx, lane, buf));
         }
 
         private Unit onInvalidPreamble(ChannelHandlerContext ctx) {

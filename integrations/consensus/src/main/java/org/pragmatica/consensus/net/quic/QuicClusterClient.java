@@ -717,7 +717,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         private final Promise<QuicPeerConnection> promise;
         private volatile boolean helloReceived;
 
-        ClientHelloHandler(NodeId peerId, QuicChannel quicChannel, long generation, Promise<QuicPeerConnection> promise) {
+        ClientHelloHandler(NodeId peerId,
+                           QuicChannel quicChannel,
+                           long generation,
+                           Promise<QuicPeerConnection> promise) {
             this.peerId = peerId;
             this.quicChannel = quicChannel;
             this.generation = generation;
