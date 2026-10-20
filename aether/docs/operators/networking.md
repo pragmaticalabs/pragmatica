@@ -69,9 +69,19 @@ see [TLS Certificate Management](tls-certificates.md).
 
 ### Connection Model
 
-Each pair of nodes maintains exactly one QUIC connection. The node with the lower
-NodeId always initiates (QUIC client role). This eliminates duplicate connection
-detection and simultaneous-open race conditions.
+Each pair of nodes settles on one QUIC connection. The node with the lower NodeId
+normally initiates (QUIC client role), but after a link loss both ends can dial at
+once, so two connections to one peer can briefly coexist. Every dial carries a
+generation: one greater than the highest generation the dialing node itself has dialed
+or attached for that peer (each node knows only its own view; the other end's counter is
+not consulted). Both ends keep the connection with the greater generation (equal
+generations go to the connection dialed by the lower NodeId) and close the other. The
+decision reads no clock, so the two ends reach it independently and, if both see the same
+two connections, keep the same one. That agreement does not cover a connection that
+liveness closes while the decision runs: the pair then re-dials with a higher generation
+and settles on the next round. A pair in which one end sends no generation (an earlier
+version) is arbitrated by the previous age-based rule, which can leave the two ends on
+different connections until the next reconnect.
 
 ### Flow Control Parameters
 
