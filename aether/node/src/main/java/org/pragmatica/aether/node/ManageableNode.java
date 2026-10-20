@@ -203,6 +203,7 @@ public interface ManageableNode {
     default Option<PrefetchGossipStats> prefetchGossipStats() {
         return Option.none();
     }
+
     Option<ClusterTopologyManager> clusterTopologyManager();
     /// Diagnostic/test observable — the leader `PresenceSampler` peak (monotonic high-water mark
     /// of the debounced stable member-set size ever observed). The NTT `LeaderReconciler` latches

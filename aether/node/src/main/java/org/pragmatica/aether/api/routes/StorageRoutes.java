@@ -395,7 +395,9 @@ public final class StorageRoutes implements RouteSource {
         return new StorageInstanceSummary(setup.name(), toTierDetails(setup), toReadinessDetail(setup), wal);
     }
 
-    private static StorageDetailResponse toDetailResponse(StorageSetup setup, Option<WalUsage> wal, Option<GossipDetail> gossip) {
+    private static StorageDetailResponse toDetailResponse(StorageSetup setup,
+                                                          Option<WalUsage> wal,
+                                                          Option<GossipDetail> gossip) {
         return new StorageDetailResponse(setup.name(),
                                          toTierDetails(setup),
                                          toSnapshotDetail(setup),
@@ -409,7 +411,7 @@ public final class StorageRoutes implements RouteSource {
     /// Asked of the node only for an instance that prefetches, so the answer is "the gossip this instance's hints ride".
     private static Option<GossipDetail> gossipFor(ManageableNode node, StorageSetup setup) {
         return prefetchStatsOf(setup).flatMap(_ -> node.prefetchGossipStats())
-                                     .map(StorageRoutes::toGossipDetail);
+                              .map(StorageRoutes::toGossipDetail);
     }
 
     private static GossipDetail toGossipDetail(PrefetchGossipStats stats) {

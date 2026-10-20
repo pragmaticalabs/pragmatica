@@ -506,6 +506,10 @@ final class DefaultStorageInstance implements StorageInstance {
         boolean isCancelled() {
             return cancelled.get();
         }
+
+        boolean isFor(BlockId block) {
+            return id.equals(block);
+        }
     }
 
     /// The ticket is registered BEFORE the tombstone is read, and [#delete] sets the tombstone BEFORE it looks for
@@ -683,9 +687,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// [#warmGuarded] for why that order).
     private Unit announceDelete(BlockId id) {
         deletesInFlight.add(id);
-        warmsInFlight.stream()
-                     .filter(ticket -> ticket.id().equals(id))
-                     .forEach(WarmTicket::cancel);
+        warmsInFlight.stream().filter(ticket -> ticket.isFor(id)).forEach(WarmTicket::cancel);
 
         return unit();
     }
