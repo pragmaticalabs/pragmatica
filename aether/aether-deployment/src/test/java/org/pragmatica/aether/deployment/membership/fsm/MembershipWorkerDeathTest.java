@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import org.pragmatica.consensus.NodeId;
@@ -58,6 +60,20 @@ class MembershipWorkerDeathTest {
         }
     }
 
+    private static boolean removedEmitted(List<MembershipDeltaEdge> edges) {
+        return edges.stream().anyMatch(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED);
+    }
+
+    private static void parkUntil(CountDownLatch parked, CountDownLatch release) {
+        parked.countDown();
+
+        try {
+            release.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static String state(MembershipFsm fsm, NodeId id) {
         return fsm.memberStates().get(id);
     }
@@ -73,12 +89,37 @@ class MembershipWorkerDeathTest {
         assertThat(state(membership, id)).as("precondition: admitted worker is a MEMBER").isEqualTo("Member");
         membership.onSwimFaulty(id, 1);
 
-        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
-            .as("a worker SWIM declared FAULTY, with no evidence of life, must reach DEAD; state=%s", state(membership, id))
+        assertThat(awaitTrue(() -> removedEmitted(edges), 3_000))
+            .as("a worker SWIM declared FAULTY, with no evidence of life, must reach DEAD and emit the REMOVED edge that drives the worker leave; state=%s, edges=%s",
+                state(membership, id), edges)
             .isTrue();
-        assertThat(edges.stream().map(MembershipDeltaEdge::kind).toList())
-            .as("DEAD emits the REMOVED edge that drives the worker leave")
-            .contains(MembershipDeltaEdge.Kind.REMOVED);
+        assertThat(state(membership, id)).isEqualTo("Dead");
+    }
+
+    /// #2137 — the REMOVED edge is emitted AFTER the monitor is released and after `onEnteredDead` (#929), so a
+    /// reader can see `Dead` before the edge exists. Park the Dead fan-out to hold that window open: state
+    /// reads Dead, the edge is absent, and it still arrives once the fan-out resumes. A test that asserts the
+    /// edge at the instant state reads Dead is racy by design; it must wait for the edge itself.
+    @Test
+    void killedWorker_deadStateIsVisibleBeforeTheRemovedEdge_andTheEdgeStillArrives() throws InterruptedException {
+        var membership = fsm();
+        var edges = new CopyOnWriteArrayList<MembershipDeltaEdge>();
+        var id = new NodeId("worker-seam");
+        var parked = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        membership.onMembershipDelta(edges::add);
+        membership.onConfirmedDeparture(_ -> parkUntil(parked, release));
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onSwimFaulty(id, 1);
+
+        assertThat(parked.await(3, TimeUnit.SECONDS)).as("control: the Dead fan-out started").isTrue();
+        assertThat(state(membership, id)).as("state already reads Dead while the fan-out is parked").isEqualTo("Dead");
+        assertThat(removedEmitted(edges)).as("the REMOVED edge follows the Dead fan-out, so it is not there yet").isFalse();
+
+        release.countDown();
+
+        assertThat(awaitTrue(() -> removedEmitted(edges), 3_000)).as("the REMOVED edge arrives after the fan-out resumes").isTrue();
     }
 
     @Test
