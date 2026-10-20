@@ -96,7 +96,8 @@ class GeneratedVersionedRouteTest {
         @Test
         void factoryThreadsMountModeForDeployTimeDetection() {
             assertThat(generated).contains("RouteMountMode mountMode");
-            assertThat(generated).contains("SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode)");
+            // Prefix only: a slice with generatable JSON route types also passes its generated codec after mountMode.
+            assertThat(generated).contains("SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode");
         }
 
         @Test

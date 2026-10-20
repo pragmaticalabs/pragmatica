@@ -17,6 +17,7 @@ package org.pragmatica.http;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.json.Json;
 
 
 /// RFC 9457 Problem Details for HTTP APIs.
@@ -33,6 +34,7 @@ import org.pragmatica.lang.Option;
 /// @param detail    Human-readable explanation specific to this occurrence (Section 3.1.4)
 /// @param instance  URI reference identifying the specific occurrence (Section 3.1.5)
 /// @param requestId Unique identifier for the request (extension member per Section 3.2)
+@Json
 public record ProblemDetail(String type,
                             String title,
                             int status,

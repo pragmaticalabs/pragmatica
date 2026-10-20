@@ -19,7 +19,8 @@ public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                      Map<String, RuntimeProfile> runtimes,
                                      InfrastructureConfig infrastructure,
                                      OperationsConfig operations,
-                                     Map<String, CommunityPlacement> communities) {
+                                     Map<String, CommunityPlacement> communities,
+                                     Option<CommunityPolicy> communityPolicy) {
     public ClusterBootstrapConfig {
         communities = Map.copyOf(communities);
         sources = Map.copyOf(sources);
@@ -33,13 +34,32 @@ public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                                                 InfrastructureConfig infrastructure,
                                                                 OperationsConfig operations,
                                                                 Map<String, CommunityPlacement> communities) {
+        return clusterBootstrapConfig(cluster,
+                                      coreTopology,
+                                      sources,
+                                      runtimes,
+                                      infrastructure,
+                                      operations,
+                                      communities,
+                                      Option.none());
+    }
+
+    public static ClusterBootstrapConfig clusterBootstrapConfig(ClusterIdentity cluster,
+                                                                CoreTopology coreTopology,
+                                                                Map<String, SourceProfile> sources,
+                                                                Map<String, RuntimeProfile> runtimes,
+                                                                InfrastructureConfig infrastructure,
+                                                                OperationsConfig operations,
+                                                                Map<String, CommunityPlacement> communities,
+                                                                Option<CommunityPolicy> communityPolicy) {
         return new ClusterBootstrapConfig(cluster,
                                           coreTopology,
                                           sources,
                                           runtimes,
                                           infrastructure,
                                           operations,
-                                          communities);
+                                          communities,
+                                          communityPolicy);
     }
 
     public Result<ClusterBootstrapConfig> withClusterName(String newName) {
@@ -50,7 +70,8 @@ public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                                                  runtimes,
                                                                  infrastructure,
                                                                  operations,
-                                                                 communities));
+                                                                 communities,
+                                                                 communityPolicy));
     }
 
     public int derivedCoreCount() {

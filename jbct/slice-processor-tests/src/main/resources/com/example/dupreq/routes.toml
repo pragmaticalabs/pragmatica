@@ -1,0 +1,8 @@
+prefix = "/api/dupreq"
+
+[routes]
+named = "POST /named"
+counted = "POST /counted"
+
+[errors]
+default = 500

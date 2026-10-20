@@ -20,6 +20,16 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
+        <!-- ProblemDetail carries @Json: its reflection-free codec is generated here and used for every error body. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-codec-processor</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Testing -->
         <dependency>

@@ -33,6 +33,91 @@ import static org.pragmatica.serialization.SliceCodec.*;
 
 class SliceCodecTest {
 
+    // The encoder changed from Netty's to the JDK's. The wire bytes must stay Netty's for every input except
+    // where Netty 4.2.9 emits invalid UTF-8: an unpaired high surrogate followed by a non-ASCII char that is
+    // not its low surrogate (Netty writes '?' plus that char's low byte). There they must equal the JDK's.
+    @Nested
+    class StringEncodingTests {
+
+        @Test
+        void writeString_bytesEqualNettyEncoding_forRandomStrings() {
+            var random = new java.util.Random(7);
+
+            for (var i = 0; i < 100_000; i++) {
+                var text = randomString(random);
+                var ours = Unpooled.buffer();
+                var netty = Unpooled.buffer();
+
+                writeString(ours, text);
+                writeCompact(netty, io.netty.buffer.ByteBufUtil.utf8Bytes(text));
+                io.netty.buffer.ByteBufUtil.writeUtf8(netty, text);
+                if (hasNettyDivergence(text)) {
+                    var jdk = Unpooled.buffer();
+                    var bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+                    writeCompact(jdk, bytes.length);
+                    jdk.writeBytes(bytes);
+                    assertEquals(jdk, ours, text);
+                } else {
+                    assertEquals(netty, ours, text);
+                }
+                assertEquals(new String(text.getBytes(java.nio.charset.StandardCharsets.UTF_8), java.nio.charset.StandardCharsets.UTF_8),
+                             readString(ours));
+            }
+        }
+
+        @Test
+        void writeString_staysValidUtf8AfterUnpairedHighSurrogate_whereNettyDoesNot() {
+            var ours = Unpooled.buffer();
+
+            writeString(ours, "\uD800\uD800\uDC00");
+            assertEquals("?\uD800\uDC00", readString(ours));
+            // Netty: '?', then the low byte of the second high surrogate, then '?' for the orphaned low one.
+            assertEquals(3, io.netty.buffer.ByteBufUtil.getBytes(nettyEncoded("\uD800\uD800\uDC00")).length);
+
+            var mixed = Unpooled.buffer();
+
+            writeString(mixed, "\uDA62\u6FDC");
+            assertEquals("?\u6FDC", readString(mixed));
+            assertArrayEquals(new byte[]{'?', (byte) 0xDC}, io.netty.buffer.ByteBufUtil.getBytes(nettyEncoded("\uDA62\u6FDC")));
+        }
+
+        private static ByteBuf nettyEncoded(String text) {
+            var buf = Unpooled.buffer();
+
+            io.netty.buffer.ByteBufUtil.writeUtf8(buf, text);
+            return buf;
+        }
+
+        private static boolean hasNettyDivergence(String text) {
+            for (var i = 0; i + 1 < text.length(); i++) {
+                var next = text.charAt(i + 1);
+
+                if (Character.isHighSurrogate(text.charAt(i)) && !Character.isLowSurrogate(next) && next >= 0x80) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static String randomString(java.util.Random random) {
+            var sb = new StringBuilder();
+
+            for (var len = random.nextInt(40); len > 0; len--) {
+                switch (random.nextInt(6)) {
+                    case 0 -> sb.append((char) (0xD800 + random.nextInt(0x800)));
+                    case 1 -> sb.append((char) (0x80 + random.nextInt(0x780)));
+                    case 2 -> sb.append((char) (0x800 + random.nextInt(0xD000)));
+                    case 3 -> sb.appendCodePoint(0x10000 + random.nextInt(0xFFFFF));
+                    default -> sb.append((char) random.nextInt(0x80));
+                }
+            }
+
+            return sb.toString();
+        }
+    }
+
     @Nested
     class VlqTests {
 

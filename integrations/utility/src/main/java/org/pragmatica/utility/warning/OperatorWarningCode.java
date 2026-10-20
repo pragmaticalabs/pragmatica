@@ -413,7 +413,25 @@ public enum OperatorWarningCode {
     /// version), the subscriber is no longer registered, or the publisher was released. INFO,
     /// published only after a published mismatch event for the same subject (#752 mechanism); a subscriber that was never refused
     /// publishes nothing.
-    TOPIC_TIER_MISMATCH_RESOLVED("topic-tier-mismatch-resolved", "topic", WarningLevel.INFO, TOPIC_TIER_MISMATCH);
+    TOPIC_TIER_MISMATCH_RESOLVED("topic-tier-mismatch-resolved", "topic", WarningLevel.INFO, TOPIC_TIER_MISMATCH),
+    /// A worker joined a source whose derived communities cannot take it (#241): every community of the source is at the hard ceiling and
+    /// the source is at its `community_policy.max_communities`, so the worker gets no community. Subject is the source; the message names the
+    /// worker and the bounds. Raise `max_communities` or `max_size` in the cluster config, or add worker capacity under another source; the
+    /// worker takes a community when it rejoins. Closed by [#COMMUNITY_GROWTH_RESUMED].
+    COMMUNITY_GROWTH_BLOCKED("community-growth-blocked", "community-growth", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
+    /// was raised, or a community has room). INFO, published only after a published blocked event for the source (#752 mechanism).
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED),
+    /// A worker has no community because the leader's commit of its assignment was refused several times in a row (#241): the community
+    /// changed between each decision and its commit. Subject is the worker. The worker takes a community when it is admitted again (restart it
+    /// if it does not). Closed by [#COMMUNITY_ASSIGNMENT_PLACED].
+    COMMUNITY_ASSIGNMENT_UNPLACED("community-assignment-unplaced", "community-assignment", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO, published only after a
+    /// published unplaced event for the worker (#752 mechanism).
+    COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",
+                                "community-assignment",
+                                WarningLevel.INFO,
+                                COMMUNITY_ASSIGNMENT_UNPLACED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
