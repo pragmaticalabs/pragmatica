@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 
@@ -36,15 +37,28 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
         UNKNOWN
     }
 
-    /// A method declared in the file: simple name, declared return type's simple name, parameter names and the span of its body.
-    record MethodDecl(String name, String returnType, Set<String> params, int bodyStart, int bodyEnd) {}
+    /// A method declared in the file: simple name, declared return type's simple name, parameter names in order and the span of its
+    /// body.
+    record MethodDecl(String name, String returnType, List<String> params, int bodyStart, int bodyEnd) {
+        static MethodDecl methodDecl(String name, String returnType, List<String> params, int bodyStart, int bodyEnd) {
+            return new MethodDecl(name, returnType, params, bodyStart, bodyEnd);
+        }
+    }
 
     /// What one file declares. Names declared with both a Promise and a non-Promise type are dropped from `promiseNames`.
     record FileFacts(Set<String> promiseNames,
                      Set<String> resultNames,
                      Set<String> promiseMethods,
                      Set<String> resultMethods,
-                     Map<String, List<MethodDecl>> methods) {}
+                     Map<String, List<MethodDecl>> methods) {
+        static FileFacts fileFacts(Set<String> promiseNames,
+                                   Set<String> resultNames,
+                                   Set<String> promiseMethods,
+                                   Set<String> resultMethods,
+                                   Map<String, List<MethodDecl>> methods) {
+            return new FileFacts(promiseNames, resultNames, promiseMethods, resultMethods, methods);
+        }
+    }
 
     String IDENT = "[A-Za-z_$][A-Za-z0-9_$]*";
 
@@ -76,95 +90,99 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
     /// Terminals that leave the carrier: after them the value is no longer what the chain started as.
     Set<String> LEAVES_RESULT = Set.of("fold", "or", "orElse", "unwrap", "option", "toOption", "toResult", "isPresent", "get");
 
-    static FileFacts facts(String masked) {
-        var promiseNames = new HashSet<String>();
-        var resultNames = new HashSet<String>();
-        var otherNames = new HashSet<String>();
-        var promiseMethods = new HashSet<String>();
-        var resultMethods = new HashSet<String>();
-        var otherMethods = new HashSet<String>();
-
-        scanDeclarations(masked, promiseNames, resultNames, otherNames, promiseMethods, resultMethods, otherMethods);
-
-        var methods = methodTable(masked);
-        var partial = new FileFacts(promiseNames, resultNames, promiseMethods, resultMethods, methods);
-
-        for (var pass = 0; pass < 2; pass++) {
-            inferVars(masked, partial, otherNames);
+    /// The names a file declares, bucketed by declared carrier; the sets are filled while scanning, then reconciled.
+    record Collected(Set<String> promiseNames,
+                     Set<String> resultNames,
+                     Set<String> otherNames,
+                     Set<String> promiseMethods,
+                     Set<String> resultMethods,
+                     Set<String> otherMethods) {
+        static Collected collected() {
+            return new Collected(new HashSet<>(),
+                                 new HashSet<>(),
+                                 new HashSet<>(),
+                                 new HashSet<>(),
+                                 new HashSet<>(),
+                                 new HashSet<>());
         }
 
-        promiseNames.removeAll(otherNames);
-        promiseNames.removeAll(resultNames);
-        promiseMethods.removeAll(otherMethods);
-        promiseMethods.removeAll(resultMethods);
-        resultMethods.removeAll(otherMethods);
+        void add(String typeName, String name, boolean isMethod) {
+            bucket(typeName, isMethod).add(name);
+        }
+
+        private Set<String> bucket(String typeName, boolean isMethod) {
+            return switch (typeName) {
+                case "Promise" -> isMethod
+                                  ? promiseMethods
+                                  : promiseNames;
+                case "Result" -> isMethod
+                                 ? resultMethods
+                                 : resultNames;
+                default -> isMethod
+                           ? otherMethods
+                           : otherNames;
+            };
+        }
+    }
+
+    static FileFacts facts(String masked) {
+        var collected = Collected.collected();
+
+        scanDeclarations(masked, collected);
+
+        var partial = FileFacts.fileFacts(collected.promiseNames(),
+                                          collected.resultNames(),
+                                          collected.promiseMethods(),
+                                          collected.resultMethods(),
+                                          methodTable(masked));
+
+        for (var pass = 0; pass < 2; pass++) {
+            inferVars(masked, partial, collected.otherNames());
+        }
+
+        collected.promiseNames().removeAll(collected.otherNames());
+        collected.promiseNames().removeAll(collected.resultNames());
+        collected.promiseMethods().removeAll(collected.otherMethods());
+        collected.promiseMethods().removeAll(collected.resultMethods());
+        collected.resultMethods().removeAll(collected.otherMethods());
         return partial;
     }
 
-    private static void scanDeclarations(String masked,
-                                         Set<String> promiseNames,
-                                         Set<String> resultNames,
-                                         Set<String> otherNames,
-                                         Set<String> promiseMethods,
-                                         Set<String> resultMethods,
-                                         Set<String> otherMethods) {
+    private static void scanDeclarations(String masked, Collected collected) {
         var matcher = DECLARED.matcher(masked);
 
         while (matcher.find()) {
             var typeName = matcher.group(2);
-            var end = matcher.end();
 
-            if (NOT_A_TYPE.contains(typeName)) {
+            if (NOT_A_TYPE.contains(typeName) || "var".equals(typeName)) {
                 continue;
             }
 
-            if (matcher.group(3) != null) {
-                var close = closeAngle(masked, matcher.end() - 1);
+            var end = typeEnd(masked, matcher);
 
-                if (close < 0) {
-                    continue;
-                }
-
-                end = close + 1;
+            if (end < 0) {
+                continue;
             }
 
             var named = DECLARED_NAME.matcher(masked).region(end, masked.length());
 
-            if (!named.lookingAt() || NOT_A_TYPE.contains(named.group(1))) {
-                continue;
+            if (named.lookingAt() && !NOT_A_TYPE.contains(named.group(1))) {
+                collected.add(typeName, named.group(1), "(".equals(named.group(2)));
             }
-
-            record(typeName, named.group(1), "(".equals(named.group(2)), promiseNames, resultNames, otherNames,
-                   promiseMethods, resultMethods, otherMethods);
         }
     }
 
-    private static void record(String typeName,
-                               String name,
-                               boolean isMethod,
-                               Set<String> promiseNames,
-                               Set<String> resultNames,
-                               Set<String> otherNames,
-                               Set<String> promiseMethods,
-                               Set<String> resultMethods,
-                               Set<String> otherMethods) {
-        var isPromise = "Promise".equals(typeName);
-        var isResult = "Result".equals(typeName);
-
-        if (isMethod) {
-            (isPromise
-             ? promiseMethods
-             : isResult
-               ? resultMethods
-               : otherMethods).add(name);
-            return;
+    /// Offset just past the type at the matcher's position, skipping a type-argument list; `-1` when the `<` opens no such list.
+    private static int typeEnd(String masked, Matcher matcher) {
+        if (matcher.group(3) == null) {
+            return matcher.end();
         }
 
-        (isPromise
-         ? promiseNames
-         : isResult
-           ? resultNames
-           : otherNames).add(name);
+        var close = closeAngle(masked, matcher.end() - 1);
+
+        return close < 0
+               ? - 1
+               : close + 1;
     }
 
     /// `var x = <chain>;` — the declared name takes the carrier of its initializer.
@@ -221,7 +239,7 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
 
             if (bodyClose > 0) {
                 table.computeIfAbsent(name, _ -> new ArrayList<>())
-                     .add(new MethodDecl(name, returnType, paramNames(masked.substring(open + 1, close)), bodyOpen + 1, bodyClose));
+                     .add(MethodDecl.methodDecl(name, returnType, paramNames(masked.substring(open + 1, close)), bodyOpen + 1, bodyClose));
             }
         }
 
@@ -284,8 +302,8 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
                : token;
     }
 
-    private static Set<String> paramNames(String list) {
-        var names = new HashSet<String>();
+    private static List<String> paramNames(String list) {
+        var names = new ArrayList<String>();
 
         for (var chunk : list.split(",")) {
             var matcher = Pattern.compile(IDENT).matcher(chunk);
@@ -338,23 +356,25 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
     }
 
     private static Kind callHeadKind(String name, FileFacts facts) {
-        return facts.promiseMethods().contains(name)
-               ? Kind.PROMISE
-               : facts.resultMethods().contains(name)
-                 ? Kind.RESULT
-                 : Kind.UNKNOWN;
+        return declaredKind(name, facts.promiseMethods(), facts.resultMethods());
     }
 
     private static Kind namedHeadKind(String name, FileFacts facts) {
         return switch (name) {
             case "Promise" -> Kind.PROMISE;
             case "Result" -> Kind.RESULT;
-            default -> facts.promiseNames().contains(name)
-                       ? Kind.PROMISE
-                       : facts.resultNames().contains(name)
-                         ? Kind.RESULT
-                         : Kind.UNKNOWN;
+            default -> declaredKind(name, facts.promiseNames(), facts.resultNames());
         };
+    }
+
+    private static Kind declaredKind(String name, Set<String> promises, Set<String> results) {
+        if (promises.contains(name)) {
+            return Kind.PROMISE;
+        }
+
+        return results.contains(name)
+               ? Kind.RESULT
+               : Kind.UNKNOWN;
     }
 
     private static Kind walk(String text, int from, Kind start) {
@@ -629,7 +649,11 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
     }
 
     /// A call chain's text with the statement prefix that precedes it removed, and whether that prefix was `return`.
-    record Chain(String text, boolean isReturn) {}
+    record Chain(String text, boolean isReturn) {
+        static Chain chain(String text, boolean isReturn) {
+            return new Chain(text, isReturn);
+        }
+    }
 
     Pattern ELSE = Pattern.compile("^\\s*else\\b");
     Pattern HEADER = Pattern.compile("^\\s*(?:if|while|for|switch)\\s*(?=\\()");
@@ -648,8 +672,8 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
         var ret = RETURN.matcher(text);
 
         return ret.find()
-               ? new Chain(text.substring(ret.end()), true)
-               : new Chain(text, false);
+               ? Chain.chain(text.substring(ret.end()), true)
+               : Chain.chain(text, false);
     }
 
     private static String stripControl(String text) {

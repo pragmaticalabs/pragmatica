@@ -174,7 +174,7 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
-        void reportsFirstLineAndColumnOfTheCallback() {
+        void diagnostic_reportsCallbackLine_forMultiLineChain() {
             var found = lint("""
                     package org.example;
                     class Foo {
@@ -250,7 +250,7 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
-        void messageNamesTheCallPath() {
+        void message_namesCallPath_forDelegatedWrite() {
             var found = lint("""
                     package org.example;
                     class Foo {
@@ -270,6 +270,37 @@ class CstPromiseCallbackWriteRuleTest {
                             .contains("via outer"),
                        found.getFirst()
                             .message());
+        }
+
+        @Test
+        void flags_whenCallBindsSharedStateToTheDelegatesParameter() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private final AtomicInteger remaining = new AtomicInteger(2);
+                        void run(Promise<String> p) {
+                            p.onResultRun(() -> release(remaining));
+                        }
+                        private static void release(AtomicInteger counter) {
+                            counter.decrementAndGet();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_whenCallBindsOnlyTheCallbacksOwnValueToTheDelegatesParameter() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        void run(Promise<List<String>> p) {
+                            p.onSuccess(values -> fill(values));
+                        }
+                        private static void fill(List<String> target) {
+                            target.add("x");
+                        }
+                    }
+                    """));
         }
 
         @Test
@@ -423,6 +454,20 @@ class CstPromiseCallbackWriteRuleTest {
                         private boolean done;
                         void run(Result<String> r) {
                             r.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_resultVariableInFileThatAlsoHoldsPromises() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<String> load() { return null; }
+                        void run(Result<String> parsed) {
+                            parsed.onSuccess(_ -> done = true);
                         }
                     }
                     """));

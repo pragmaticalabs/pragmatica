@@ -65,11 +65,10 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
 
         var masked = MapperSafety.blankNonCode(source);
 
-        if (!masked.contains("Promise")) {
-            return Stream.empty();
-        }
-
-        return findings(masked, source, ctx).stream();
+        return CALLBACK.matcher(masked)
+                       .find()
+               ? findings(masked, source, ctx).stream()
+               : Stream.empty();
     }
 
     private List<Diagnostic> findings(String masked, String source, LintContext ctx) {
@@ -88,7 +87,7 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
             }
 
             var dot = matcher.start();
-            var start = PromiseCarrier.chainStart(masked, dot);
+            var start = firstCode(masked, PromiseCarrier.chainStart(masked, dot));
 
             if (isPromise(masked, facts, start, dot, close)) {
                 SharedWrites.inCallback(masked.substring(open + 1, close), facts, masked)
@@ -98,6 +97,17 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
         }
 
         return result;
+    }
+
+    /// First non-blank offset at or after `from`: a chain starts after the previous statement's `;`, which is on that statement's line.
+    private static int firstCode(String masked, int from) {
+        var i = from;
+
+        while (i < masked.length() && Character.isWhitespace(masked.charAt(i))) {
+            i++;
+        }
+
+        return i;
     }
 
     private boolean isPromise(String masked, PromiseCarrier.FileFacts facts, int start, int dot, int close) {

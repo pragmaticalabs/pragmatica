@@ -8,6 +8,9 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+
 
 /// Detects writes to shared state in the text of a callback, for JBCT-ASYNC-01.
 ///
@@ -32,7 +35,11 @@ sealed interface SharedWrites permits SharedWrites.unused {
     record unused() implements SharedWrites {}
 
     /// A write found in a callback, described for the diagnostic.
-    record Write(String description, List<String> via) {}
+    record Write(String description, List<String> via) {
+        static Write write(String description, List<String> via) {
+            return new Write(description, via);
+        }
+    }
 
     int MAX_DEPTH = 3;
 
@@ -54,6 +61,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
     Pattern SETTER_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(set[A-Z][A-Za-z0-9_$]*)\\s*\\(");
     Pattern PLAIN_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(" + IDENT + ")\\s*\\(");
     Pattern METHOD_REF = Pattern.compile("^\\s*(?:this|" + IDENT + ")\\s*::\\s*(" + IDENT + ")\\s*$");
+    Pattern ARGUMENT_ROOT = Pattern.compile("(?:this\\s*\\.\\s*)?(" + IDENT + ")");
     Pattern LAMBDA = Pattern.compile("^\\s*(?:\\(([^()]*)\\)|(" + IDENT + "))\\s*->\\s*(.*)$", Pattern.DOTALL);
 
     Pattern LOCAL_DECL = Pattern.compile("(?:\\b(?:final|var)\\s+|\\b[A-Z][\\w$]*(?:\\.[A-Z][\\w$]*)*(?:<[^;(){}=]*>)?(?:\\[\\])*\\s+"
@@ -66,6 +74,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
     Set<String> NOT_SHARED_ROOTS = Set.of("log", "LOG", "logger", "LOGGER", "Promise", "Result", "Option", "Objects", "Math",
                                           "String", "System", "Unit");
+    Set<String> LITERALS = Set.of("new", "true", "false", "null");
     Set<String> NOT_ASSIGNMENT_ROOTS = Set.of("return", "case", "default", "else", "new", "throw", "yield");
 
     /// First shared write reachable from a callback argument (`x -> ...`, `() -> ...`, `this::name`, `Type::name`), or none.
@@ -77,14 +86,14 @@ sealed interface SharedWrites permits SharedWrites.unused {
                          ? lambda.group(1)
                          : lambda.group(2);
 
-            return inBody(paramNames(params), lambda.group(3), facts, masked, MAX_DEPTH, Set.of());
+            return inBody(Set.copyOf(paramNames(params)), lambda.group(3), facts, masked, MAX_DEPTH, Set.of());
         }
 
         var reference = METHOD_REF.matcher(argument);
 
         return reference.matches()
-               ? viaMethod(reference.group(1), facts, masked, MAX_DEPTH, Set.of())
-               : Option.none();
+               ? viaMethod(reference.group(1), facts, masked, MAX_DEPTH, Set.of(), List.of())
+               : none();
     }
 
     private static Option<Write> inBody(Set<String> params,
@@ -117,11 +126,11 @@ sealed interface SharedWrites permits SharedWrites.unused {
             }
 
             if (matcher.group(1) != null || !locals.contains(root)) {
-                return Option.some(new Write("assigns " + matcher.group().strip(), List.of()));
+                return some(Write.write("assigns " + matcher.group().strip(), List.of()));
             }
         }
 
-        return Option.none();
+        return none();
     }
 
     private static Option<Write> prefixStep(Set<String> locals, String body) {
@@ -129,11 +138,11 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         while (matcher.find()) {
             if (!locals.contains(root(matcher.group(2)))) {
-                return Option.some(new Write("updates " + matcher.group().strip(), List.of()));
+                return some(Write.write("updates " + matcher.group().strip(), List.of()));
             }
         }
 
-        return Option.none();
+        return none();
     }
 
     private static Option<Write> mutatingCall(Set<String> locals, String body) {
@@ -144,22 +153,26 @@ sealed interface SharedWrites permits SharedWrites.unused {
             var root = root(qualifier);
 
             if (!locals.contains(root) && !NOT_SHARED_ROOTS.contains(root)) {
-                return Option.some(new Write("calls " + compact(matcher.group()), List.of()));
+                return some(Write.write("calls " + compact(matcher.group()), List.of()));
             }
         }
 
-        return Option.none();
+        return none();
     }
 
     private static Option<Write> setterCall(String body) {
         var matcher = SETTER_CALL.matcher(body);
 
         return matcher.find()
-               ? Option.some(new Write("calls " + matcher.group(1) + "(...)", List.of()))
-               : Option.none();
+               ? some(Write.write("calls " + matcher.group(1) + "(...)", List.of()))
+               : none();
     }
 
     /// Follows plain calls into methods of this file; the first write found there is reported with the call path.
+    ///
+    /// A callee's parameter is local to it only when the call passes it a value the caller owns (a lambda parameter or local, a
+    /// literal, a fresh `new`). A parameter bound to a field or a captured variable is that shared state under another name, so
+    /// `releaseAfterBoth(remaining, gate)` writes shared state when its body decrements `remaining`.
     private static Option<Write> delegated(Set<String> locals,
                                            String body,
                                            PromiseCarrier.FileFacts facts,
@@ -167,7 +180,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
                                            int depth,
                                            Set<String> seen) {
         if (depth <= 0) {
-            return Option.none();
+            return none();
         }
 
         var matcher = PLAIN_CALL.matcher(body);
@@ -175,30 +188,87 @@ sealed interface SharedWrites permits SharedWrites.unused {
         while (matcher.find()) {
             var name = matcher.group(1);
 
-            if (!PromiseCarrier.CONTROL.contains(name) && !seen.contains(name)) {
-                var found = viaMethod(name, facts, masked, depth, seen);
+            if (PromiseCarrier.CONTROL.contains(name) || seen.contains(name)) {
+                continue;
+            }
 
-                if (found.isPresent()) {
-                    return found;
-                }
+            var found = viaMethod(name, facts, masked, depth, seen, sharedArguments(locals, body, matcher.end() - 1));
+
+            if (found.isPresent()) {
+                return found;
             }
         }
 
-        return Option.none();
+        return none();
+    }
+
+    /// For each argument of the call whose `(` is at `open`: whether it is shared (rooted in a name the caller does not own).
+    private static List<Boolean> sharedArguments(Set<String> locals, String body, int open) {
+        var close = PromiseCarrier.closeOf(body, open);
+
+        if (close < 0) {
+            return List.of();
+        }
+
+        var shared = new ArrayList<Boolean>();
+
+        for (var argument : topLevelArguments(body.substring(open + 1, close))) {
+            shared.add(isShared(locals, argument));
+        }
+
+        return shared;
+    }
+
+    private static boolean isShared(Set<String> locals, String argument) {
+        var text = argument.strip();
+        var matcher = ARGUMENT_ROOT.matcher(text);
+
+        return matcher.lookingAt() && !LITERALS.contains(matcher.group(1)) && !locals.contains(matcher.group(1))
+               && !text.contains("->");
+    }
+
+    private static List<String> topLevelArguments(String list) {
+        var arguments = new ArrayList<String>();
+        var depth = 0;
+        var from = 0;
+
+        for (var i = 0; i < list.length(); i++) {
+            var c = list.charAt(i);
+
+            if (c == '(' || c == '[' || c == '{') {
+                depth++;
+            } else if (c == ')' || c == ']' || c == '}') {
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                arguments.add(list.substring(from, i));
+                from = i + 1;
+            }
+        }
+
+        if (!list.substring(from).isBlank()) {
+            arguments.add(list.substring(from));
+        }
+
+        return arguments;
     }
 
     private static Option<Write> viaMethod(String name,
                                            PromiseCarrier.FileFacts facts,
                                            String masked,
                                            int depth,
-                                           Set<String> seen) {
+                                           Set<String> seen,
+                                           List<Boolean> sharedArguments) {
         var overloads = facts.methods().getOrDefault(name, List.of());
         var nowSeen = new HashSet<String>(seen);
 
         nowSeen.add(name);
 
         for (var method : overloads) {
-            var found = inBody(method.params(), masked.substring(method.bodyStart(), method.bodyEnd()), facts, masked, depth - 1,
+            var found = inBody(localParams(method, sharedArguments),
+                               masked.substring(method.bodyStart(), method.bodyEnd()),
+                               facts,
+                               masked,
+                               depth - 1,
                                nowSeen);
 
             if (found.isPresent()) {
@@ -206,7 +276,26 @@ sealed interface SharedWrites permits SharedWrites.unused {
             }
         }
 
-        return Option.none();
+        return none();
+    }
+
+    /// The callee's parameters that are local to it: all of them unless the call's arity matches and binds a parameter to shared state.
+    private static Set<String> localParams(PromiseCarrier.MethodDecl method, List<Boolean> sharedArguments) {
+        var params = method.params();
+
+        if (params.size() != sharedArguments.size()) {
+            return Set.copyOf(params);
+        }
+
+        var local = new HashSet<String>();
+
+        for (var i = 0; i < params.size(); i++) {
+            if (!sharedArguments.get(i)) {
+                local.add(params.get(i));
+            }
+        }
+
+        return local;
     }
 
     private static Write prepend(String method, Write write) {
@@ -214,7 +303,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         via.add(method);
         via.addAll(write.via());
-        return new Write(write.description(), List.copyOf(via));
+        return Write.write(write.description(), List.copyOf(via));
     }
 
     private static Set<String> declaredLocals(String body) {
@@ -242,8 +331,8 @@ sealed interface SharedWrites permits SharedWrites.unused {
         }
     }
 
-    private static Set<String> paramNames(String list) {
-        var names = new HashSet<String>();
+    private static List<String> paramNames(String list) {
+        var names = new ArrayList<String>();
         var ident = Pattern.compile(IDENT);
 
         for (var chunk : list.split(",")) {
