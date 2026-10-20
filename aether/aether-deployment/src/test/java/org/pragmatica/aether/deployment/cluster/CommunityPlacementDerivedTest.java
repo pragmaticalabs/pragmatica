@@ -248,6 +248,22 @@ class CommunityPlacementDerivedTest {
     }
 
     @Test
+    void reconcile_aCommunityThatIsNotDerived_isLeftAloneEvenInDerivedMode() {
+        start(HEAD + POLICY);
+        community("eu-w-0", CommunityState.ACTIVE, 10, 4);
+        community("legacy", CommunityState.ACTIVE, 100, 0);
+        var reconciler = reconciler();
+
+        pass(reconciler);
+        now.addAndGet(GRACE_MS * 2);
+        pass(reconciler);
+        pass(reconciler);
+
+        assertThat(value("legacy").targetSize()).as("not a <source>-w-N id: no policy resizes it").isEqualTo(100);
+        assertThat(value("legacy").state()).as("nor dissolves it").isEqualTo(CommunityState.ACTIVE);
+    }
+
+    @Test
     void reconcile_declaredCommunitiesPresent_derivedCommunitiesAreLeftAlone() {
         start(HEAD + POLICY + """
             [community.stable]
