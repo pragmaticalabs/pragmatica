@@ -647,11 +647,12 @@ public interface SystemTags {
         pin(table, 2167, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue");
         // #1155: ScheduledTaskStateValue with `boundHolder`; 2168 is free on every origin branch and open PR head (scanned 2026-10-19).
         pin(table, 2168, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue");
-        // wiring the prefetch manager: the SWIM application-gossip datagram (#2169) and its storage payload (#2170, #2171).
-        // 2169..2171 are free on every origin branch and open PR head (scanned 2026-10-20).
-        pin(table, 2169, "org.pragmatica.swim.SwimMessage.AppGossip");
-        pin(table, 2170, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip");
-        pin(table, 2171, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip.Hint");
+        // Wiring the prefetch manager: the SWIM application-gossip datagram (2171) and its storage payload (2172, 2173).
+        // 2169 and 2170 belong to #1337's open branch; 2171..2173 are free on every origin branch (166 tips) and every
+        // open PR head (13), scanned 2026-10-20.
+        pin(table, 2171, "org.pragmatica.swim.SwimMessage.AppGossip");
+        pin(table, 2172, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip");
+        pin(table, 2173, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip.Hint");
         // ---- 2143..16383 RESERVED ----
         rejectDuplicateTags(table);
 

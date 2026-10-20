@@ -10,17 +10,21 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.PrefetchConfig;
+import org.pragmatica.storage.PrefetchManager;
 import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -93,6 +97,46 @@ class StorageRoutesTest {
         @Test
         void instanceDetail_notFound_returnsError() {
             assertThat(setups.containsKey("nonexistent")).isFalse();
+        }
+    }
+
+    @Nested
+    class Prefetch {
+
+        @Test
+        void prefetchStatsOf_aSetupWithAPrefetchManager_reportsItsCounters() {
+            var instance = setups.get("artifacts").instance();
+            var manager = PrefetchManager.prefetchManager(instance, PrefetchConfig.prefetchConfig());
+            var setup = withPrefetch(setups.get("artifacts"), manager);
+
+            manager.activate();
+            manager.recordAccess(BlockId.blockId("read".getBytes(StandardCharsets.UTF_8)).unwrap());
+
+            var stats = StorageRoutes.prefetchStatsOf(setup);
+
+            assertThat(stats.isPresent()).isTrue();
+            stats.onPresent(reported -> {
+                assertThat(reported.active()).isTrue();
+                assertThat(reported.tracked()).isEqualTo(1);
+            });
+        }
+
+        @Test
+        void prefetchStatsOf_aSetupWithoutPrefetch_reportsNothingRatherThanZeros() {
+            assertThat(StorageRoutes.prefetchStatsOf(setups.get("streams")).isEmpty()).isTrue();
+        }
+
+        private StorageSetup withPrefetch(StorageSetup setup, PrefetchManager manager) {
+            return new StorageSetup(setup.name(),
+                                    setup.instance(),
+                                    setup.snapshotManager(),
+                                    setup.readinessGate(),
+                                    setup.metadataStore(),
+                                    setup.demotionManager(),
+                                    setup.garbageCollector(),
+                                    setup.dhtMarkerCheck(),
+                                    setup.committedDiskMarker(),
+                                    manager);
         }
     }
 

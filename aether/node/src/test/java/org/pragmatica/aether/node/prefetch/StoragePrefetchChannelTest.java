@@ -161,6 +161,18 @@ class StoragePrefetchChannelTest {
     }
 
     @Test
+    void outgoing_hintsThatEncodeToExactlyTheBudget_goOutWhole() {
+        artifacts.toCollect.addAll(hints(6));
+
+        var exact = codec.encode(StoragePrefetchGossip.from("artifacts", hints(6))).length;
+        var bytes = channel.outgoing(exact).unwrap();
+
+        assertThat(bytes.length).isEqualTo(exact);
+        assertThat(decoded(bytes).hints()).hasSize(6);
+        assertThat(channel.stats().trimmed()).isZero();
+    }
+
+    @Test
     void outgoing_whenEvenOneHintDoesNotFit_isNone() {
         artifacts.toCollect.addAll(hints(1));
 
@@ -221,9 +233,9 @@ class StoragePrefetchChannelTest {
 
     @Test
     void wireTags_areTheOnesPinnedForThePrefetchPayloadAndTheGossipDatagram() {
-        assertThat(SystemTags.tagFor("org.pragmatica.swim.SwimMessage.AppGossip")).isEqualTo(2169);
-        assertThat(SystemTags.tagFor("org.pragmatica.aether.node.prefetch.StoragePrefetchGossip")).isEqualTo(2170);
-        assertThat(SystemTags.tagFor("org.pragmatica.aether.node.prefetch.StoragePrefetchGossip.Hint")).isEqualTo(2171);
+        assertThat(SystemTags.tagFor("org.pragmatica.swim.SwimMessage.AppGossip")).isEqualTo(2171);
+        assertThat(SystemTags.tagFor("org.pragmatica.aether.node.prefetch.StoragePrefetchGossip")).isEqualTo(2172);
+        assertThat(SystemTags.tagFor("org.pragmatica.aether.node.prefetch.StoragePrefetchGossip.Hint")).isEqualTo(2173);
     }
 
     @Test

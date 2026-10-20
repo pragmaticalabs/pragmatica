@@ -369,7 +369,7 @@ public final class StorageRoutes implements RouteSource {
                                          prefetchStatsOf(setup));
     }
 
-    private static Option<PrefetchStats> prefetchStatsOf(StorageSetup setup) {
+    static Option<PrefetchStats> prefetchStatsOf(StorageSetup setup) {
         return setup.prefetchManager() == PrefetchManager.NOOP
                ? Option.none()
                : Option.some(setup.prefetchManager().stats());

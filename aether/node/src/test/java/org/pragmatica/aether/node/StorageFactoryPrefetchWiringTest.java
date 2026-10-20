@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,6 +28,7 @@ import org.pragmatica.storage.TierLevel;
 import static java.util.Arrays.copyOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
@@ -140,13 +142,14 @@ class StorageFactoryPrefetchWiringTest {
 
         b.prefetchManager().processHints(List.of(PrefetchHint.prefetchHint(id.hexString(), 50)));
 
-        assertThat(memoryBytes(b)).isEqualTo(content.length);
+        // The shared tier answers on its own thread, so the copy lands a moment after processHints returns.
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(memoryBytes(b)).isEqualTo(content.length));
 
         var record = b.metadataStore().getLifecycle(id).unwrap();
 
         assertThat(record.cacheOnly()).isTrue();
         assertThat(record.presentIn()).contains(TierLevel.MEMORY);
-        assertThat(b.prefetchManager().stats().warmed()).isEqualTo(1);
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(b.prefetchManager().stats().warmed()).isEqualTo(1));
     }
 
     private static long memoryBytes(StorageFactory.StorageSetup setup) {

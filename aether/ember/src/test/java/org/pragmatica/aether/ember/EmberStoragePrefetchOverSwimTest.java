@@ -104,6 +104,11 @@ class EmberStoragePrefetchOverSwimTest {
         assertThat(record.presentIn()).contains(TierLevel.MEMORY);
         assertThat(peer.storageSetups().get(INSTANCE).prefetchManager().stats().warmed()).isPositive();
         assertThat(reader.storageSetups().get(INSTANCE).prefetchManager().stats().hintsSent()).isPositive();
+
+        assertThat(peer.stop().await(STOP_BOUND).isSuccess()).as("the peer stops").isTrue();
+        assertThat(peer.storageSetups().get(INSTANCE).prefetchManager().isActive())
+            .as("a stopped node neither gossips nor fetches")
+            .isFalse();
     }
 
     private static void readRound(AetherNode reader, BlockId id) {

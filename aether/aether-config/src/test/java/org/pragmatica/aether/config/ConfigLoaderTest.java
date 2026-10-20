@@ -919,6 +919,59 @@ class ConfigLoaderTest {
             .onSuccess(config -> assertWalPath(config, "   ", false));
     }
 
+    // Cross-node block prefetching is ON for every instance unless an operator switches it off per instance.
+    @Test
+    void loadFromString_prefetchAbsent_isOn() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            disk_path = "/data/aether/artifacts"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.storage().get("artifacts").prefetch()).isTrue());
+    }
+
+    @Test
+    void loadFromString_prefetchFalse_switchesItOffForThatInstanceOnly() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch = false
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").prefetch()).isFalse();
+                assertThat(config.storage().get("content").prefetch()).isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_prefetchWrongType_isRefused() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch = "sometimes"
+            """;
+
+        assertThat(ConfigLoader.loadFromString(toml).isFailure()).as("a wrong-typed value is refused, never defaulted (#1455)").isTrue();
+    }
+
     private static void assertWalPath(AetherConfig config, String expected, boolean explicit) {
         var storage = config.storage().get("streams");
 

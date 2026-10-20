@@ -978,9 +978,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// order, or the same pair of nodes would keep exchanging payloads.
     @Contract
     void sendAppGossip() {
-        if (!gossipChannels.isEmpty()) {
-            randomAliveMember().onPresent(peer -> gossipChannels.forEach((channel, handler) -> offerAppGossip(peer, channel, handler)));
-        }
+        randomAliveMember().onPresent(peer -> gossipChannels.forEach((channel, handler) -> offerAppGossip(peer, channel, handler)));
     }
 
     private Option<SwimMember> randomAliveMember() {
