@@ -16,6 +16,7 @@
 package org.pragmatica.utility.warning;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -109,6 +110,19 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.COMMUNITY_GROWTH_RESUMED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.level()).isEqualTo(WarningLevel.WARNING);
         assertThat(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.code()).isEqualTo("community-growth-blocked");
+    }
+
+    /// #241: a parked placement operation is a WARNING closed by either of two INFO recoveries, both of which may be raised by a node other
+    /// than the one that raised the warning (a leader change keeps the operation).
+    @Test
+    void communityPlacementParked_isClosedByTwoInfoRecoveriesThatCloseAcrossNodes() {
+        for (var recovery : List.of(OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED, OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED)) {
+            assertThat(recovery.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED);
+            assertThat(recovery.level()).isEqualTo(WarningLevel.INFO);
+            assertThat(recovery.closesAcrossNodes()).isTrue();
+        }
+        assertThat(OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED.code()).isEqualTo("community-placement-parked");
     }
 
     /// #1337: the tier-mismatch refusal is closed by an INFO recovery of its own subsystem, so it needs no place on the frozen list.

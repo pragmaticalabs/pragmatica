@@ -21,6 +21,18 @@ class RouteAssemblerTest {
         assertThat(path.isSuccess()).isTrue();
     }
 
+    /// #241: the operator clear of a parked placement operation is a leader-bound POST that does not shadow the community reads.
+    @Test
+    void communityPlacementClear_isALeaderBoundPostUnderTheCommunitiesPath() {
+        var route = ManagementRoute.COMMUNITY_PLACEMENT_CLEAR;
+        var path = route.assemble("eu-w-1");
+
+        assertThat(route.method()).isEqualTo(org.pragmatica.http.HttpMethod.POST);
+        assertThat(route.target()).isEqualTo(RouteTarget.LEADER);
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/cluster/communities/placement/clear/eu-w-1"));
+        assertThat(path.isSuccess()).isTrue();
+    }
+
     @Test
     void assemble_singleParam_appendsToTail() {
         var path = ManagementRoute.DEPLOY_PROMOTE.assemble("dep-1");
