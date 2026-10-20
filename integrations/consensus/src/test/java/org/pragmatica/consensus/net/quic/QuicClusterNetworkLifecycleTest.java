@@ -156,6 +156,24 @@ class QuicClusterNetworkLifecycleTest {
         assertThat(hookDone.get()).as("the ready hook finished before the awaited start resolved").isTrue();
     }
 
+    /// The start promise resolves on a Netty I/O thread, and the only production hook binds SWIM's UDP port and awaits it, so a hook
+    /// must never run there. Fired as a plain dependent step it ran on the event loop (`FastThreadLocalThread`).
+    @Test
+    void readyHook_doesNotRunOnANettyIoThread() throws Exception {
+        var network = network();
+        var hookThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+
+        network.whenReady(() -> hookThread.set(Thread.currentThread()));
+        network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));
+
+        var thread = hookThread.get();
+
+        assertThat(thread).as("the hook ran before the awaited start resolved").isNotNull();
+        assertThat(thread instanceof io.netty.util.concurrent.FastThreadLocalThread || thread.getName().contains("EventLoop"))
+            .as("hook ran on thread '%s' (virtual=%s, class=%s)", thread.getName(), thread.isVirtual(), thread.getClass().getName())
+            .isFalse();
+    }
+
     /// A failed start has released `isRunning` by the time its promise resolves, so a retry right after the failure binds. Reset by a
     /// handler beside the dependents, the retry was turned away as already running and bound nothing. Each trial fails a start for a
     /// held UDP port, then retries on a free one.
