@@ -142,5 +142,11 @@ class ManagementRoutePermissionsTest {
         void clearUnconfirmed_isOperator() {
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_UNCONFIRMED_CLEAR)).isEqualTo(OPERATOR_AND_ABOVE);
         }
+
+        /// #241: clearing a parked community placement operation is an operator operation too.
+        @Test
+        void clearPlacement_isOperator() {
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.COMMUNITY_PLACEMENT_CLEAR)).isEqualTo(OPERATOR_AND_ABOVE);
+        }
     }
 }

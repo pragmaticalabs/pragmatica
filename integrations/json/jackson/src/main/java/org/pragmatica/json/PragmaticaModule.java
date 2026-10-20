@@ -16,10 +16,17 @@
  */
 package org.pragmatica.json;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import tools.jackson.core.Version;
+import tools.jackson.databind.BeanDescription;
+import tools.jackson.databind.DeserializationConfig;
+import tools.jackson.databind.JavaType;
+import tools.jackson.databind.ValueDeserializer;
+import tools.jackson.databind.deser.Deserializers;
 import tools.jackson.databind.module.SimpleModule;
 
 
@@ -41,6 +48,32 @@ public class PragmaticaModule extends SimpleModule {
         addDeserializer((Class) Result.class, new ResultDeserializer());
         // Register Option serializers
         addSerializer((Class) Option.class, new OptionSerializer());
-        addDeserializer((Class) Option.class, new OptionDeserializer());
+    }
+
+    // Option deserializers are found per concrete type, not registered on the plain class: a class-keyed
+    // registration hands every Option<T> the same untyped instance, and only a declared Option property can recover
+    // T from its context. See OptionDeserializer#optionDeserializer.
+    @Contract
+    @Override
+    public void setupModule(SetupContext context) {
+        super.setupModule(context);
+        context.addDeserializers(new OptionDeserializers());
+    }
+
+    private static final class OptionDeserializers extends Deserializers.Base {
+        @NullReturn
+        @Override
+        public ValueDeserializer<?> findBeanDeserializer(JavaType type,
+                                                         DeserializationConfig config,
+                                                         BeanDescription.Supplier description) {
+            return type.getRawClass() == Option.class
+                   ? OptionDeserializer.optionDeserializer(type)
+                   : null;
+        }
+
+        @Override
+        public boolean hasDeserializerFor(DeserializationConfig config, Class<?> type) {
+            return type == Option.class;
+        }
     }
 }

@@ -36,6 +36,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 
 
 /// Generates RouteSource and SliceRouterFactory implementation class for a slice.
@@ -60,7 +61,7 @@ import org.pragmatica.lang.utils.Causes;
 ///
 ///     @Override
 ///     public SliceRouter create({SliceName} slice) {
-///         return create(slice, JsonMapper.defaultJsonMapper());
+///         return create(slice, JsonMapper.valueObjectJsonMapper());
 ///     }
 ///
 ///     @Override
@@ -209,22 +210,43 @@ public class RouteSourceGenerator {
         }
 
         validateVersionMethodBindings(routeConfig, model, sliceElement);
+        var routesName = model.simpleName() + "Routes";
+
         try {
-            var routesName = model.simpleName() + "Routes";
+            return generateJsonCodecs(sliceElement, model, routeConfig, routesName + "JsonCodecs").flatMap(jsonCodecs -> writeRoutesClass(sliceElement,
+                                                                                                                                          model,
+                                                                                                                                          routeConfig,
+                                                                                                                                          errorMappings,
+                                                                                                                                          routesName,
+                                                                                                                                          jsonCodecs));
+        } catch (Exception e) {
+            return routesClassFailure(e);
+        }
+    }
+
+    private Result<Option<String>> writeRoutesClass(TypeElement sliceElement,
+                                                    SliceModel model,
+                                                    RouteConfig routeConfig,
+                                                    List<ErrorTypeMapping> errorMappings,
+                                                    String routesName,
+                                                    Option<String> jsonCodecs) {
+        try {
             var qualifiedName = model.packageName() + "." + routesName;
             // Generate the Routes class
             JavaFileObject file = filer.createSourceFile(qualifiedName, sliceElement);
 
             try (var writer = new PrintWriter(file.openWriter())) {
-                generateRoutesClass(writer, model, routeConfig, errorMappings, routesName, sliceElement);
+                generateRoutesClass(writer, model, routeConfig, errorMappings, routesName, sliceElement, jsonCodecs);
             }
 
             return Result.success(Option.some(qualifiedName));
         } catch (Exception e) {
-            return Causes.cause("Failed to generate routes class: " + e.getClass()
-                                                                       .getSimpleName()
-                               + ": " + e.getMessage()).result();
+            return routesClassFailure(e);
         }
+    }
+
+    private static <T> Result<T> routesClassFailure(Exception e) {
+        return Causes.cause("Failed to generate routes class: " + e.getClass().getSimpleName() + ": " + e.getMessage()).result();
     }
 
     /// Decision D8 (#198 §5): for a versioned slice, verify every `(vN, bindKey)` resolves to an
@@ -248,12 +270,104 @@ public class RouteSourceGenerator {
         }
     }
 
+    /// Reflection-free JSON codecs for every JSON route body and response type, in `<Slice>RoutesJsonCodecs`.
+    /// A type the generator cannot handle (an interface, a type variable, ...) gets a compiler note and stays on
+    /// Jackson, the generated codec's fallback; no supported type at all means no holder and no change to the
+    /// generated routes. Returns the holder's simple name when one was written.
+    private Result<Option<String>> generateJsonCodecs(TypeElement sliceElement,
+                                                      SliceModel model,
+                                                      RouteConfig routeConfig,
+                                                      String holderName) {
+        var json = new JsonCodecGenerator(filer, elements, types, model.packageName());
+        var methodMap = buildMethodMap(model.methods());
+
+        for (var entry : routeConfig.routes().entrySet()) {
+            var method = methodMap.get(entry.getKey());
+
+            if (method == null) {
+                continue;
+            }
+
+            for (var root : jsonRoots(method, entry.getValue())) {
+                addJsonRoot(json, root).onPresent(reason -> messager.printMessage(Diagnostic.Kind.NOTE,
+                                                                                  "Route '" + entry.getKey()
+                                                                                 + "': " + root.type()
+                                                                                 + " uses the Jackson fallback: " + reason,
+                                                                                  sliceElement));
+            }
+        }
+
+        if (!json.hasCodecs()) {
+            return Result.success(Option.none());
+        }
+
+        return json.write(holderName, "slice-processor " + BuildInfo.VERSION, sliceElement)
+                   .map(_ -> Option.some(holderName));
+    }
+
+    // A body is decoded by its declared type, so a List/Set body gets a generated container codec; a response is
+    // encoded from its runtime value, so it gets only its element codecs.
+    private static Option<String> addJsonRoot(JsonCodecGenerator json, JsonRoot root) {
+        return root.body()
+               ? json.addBodyRoot(root.type())
+               : json.addRoot(root.type());
+    }
+
+    /// A JSON route root and whether it is the request body (decoded by declared type) or the response.
+    record JsonRoot(TypeMirror type, boolean body) {
+        static JsonRoot jsonRoot(TypeMirror type, boolean body) {
+            return new JsonRoot(type, body);
+        }
+    }
+
+    // The JSON request body (same resolution as the generated withBody TypeToken) and the JSON response.
+    // Unit carries no data and is left to the fallback, as are types without codecs (String, byte[]).
+    private List<JsonRoot> jsonRoots(MethodModel method, RouteDsl routeDsl) {
+        var roots = new ArrayList<JsonRoot>();
+        var jsonBody = isBodyMethod(routeDsl.method()) && !boundEntirelyByPathAndQuery(method, routeDsl) && switch (routeDsl.consumes()
+                                                                                                                            .category()) {
+            case "TEXT", "HTML", "XML", "BINARY", "MULTIPART" -> false;
+            default -> true;
+        };
+
+        if (jsonBody) {
+            requestBodyType(method).onPresent(type -> roots.add(JsonRoot.jsonRoot(type, true)));
+        }
+
+        if (routeDsl.produces().isJson() && !isUnit(method.responseType())) {
+            roots.add(JsonRoot.jsonRoot(method.responseType(), false));
+        }
+
+        return roots;
+    }
+
+    private static Option<TypeMirror> requestBodyType(MethodModel method) {
+        if (method.hasSecurityParams()) {
+            var bizParams = method.businessParameters();
+
+            return bizParams.size() == 1
+                   ? Option.some(bizParams.getFirst().type())
+                   : Option.none();
+        }
+
+        return method.parameters()
+                     .isEmpty()
+               ? Option.none()
+               : Option.some(method.parameterType());
+    }
+
+    private static boolean isUnit(TypeMirror type) {
+        return type.toString()
+                   .equals("org.pragmatica.lang.Unit");
+    }
+
     private void generateRoutesClass(PrintWriter out,
                                      SliceModel model,
                                      RouteConfig routeConfig,
                                      List<ErrorTypeMapping> errorMappings,
                                      String routesName,
-                                     TypeElement sliceElement) {
+                                     TypeElement sliceElement,
+                                     Option<String> jsonCodecs) {
         var sliceName = model.simpleName();
         var basePackage = model.packageName();
         // Package
@@ -304,14 +418,15 @@ public class RouteSourceGenerator {
         // SliceRouterFactory: create(slice)
         out.println("    @Override");
         out.println("    public SliceRouter create(" + sliceName + " slice) {");
-        out.println("        return create(slice, JsonMapper.defaultJsonMapper());");
+        out.println("        return create(slice, JsonMapper.valueObjectJsonMapper());");
         out.println("    }");
         out.println();
         // SliceRouterFactory: create(slice, jsonMapper)
         out.println("    @Override");
         out.println("    public SliceRouter create(" + sliceName + " slice, JsonMapper jsonMapper) {");
         out.println("        var routes = new " + routesName + "(slice);");
-        out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);");
+        jsonCodecs.onPresent(_ -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, RouteMountMode.pathMode(), jsonCodec(jsonMapper));"))
+                  .onEmpty(() -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);"));
         out.println("    }");
         out.println();
         // SliceRouterFactory: create(slice, jsonMapper, mountMode) — #198 deploy-either-way (§7).
@@ -321,9 +436,21 @@ public class RouteSourceGenerator {
         out.println("    public SliceRouter create(" + sliceName
                    + " slice, JsonMapper jsonMapper, RouteMountMode mountMode) {");
         out.println("        var routes = new " + routesName + "(slice);");
-        out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode);");
+        jsonCodecs.onPresent(_ -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode, jsonCodec(jsonMapper));"))
+                  .onEmpty(() -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode);"));
         out.println("    }");
         out.println();
+        // Generated JSON codecs for this slice's route types; Jackson (the given mapper) for everything else.
+        jsonCodecs.onPresent(holder -> {
+            out.println("    private static org.pragmatica.http.JsonCodec jsonCodec(JsonMapper jsonMapper) {");
+            out.println("        return org.pragmatica.aether.http.adapter.GeneratedJsonCodec.generatedJsonCodec(" + holder
+                       + ".CODECS,");
+            out.println("                                                                                    " + holder
+                       + ".CONTAINERS,");
+            out.println("                                                                                    org.pragmatica.http.routing.JsonCodecAdapter.forMapper(jsonMapper));");
+            out.println("    }");
+            out.println();
+        });
         // routes() method
         generateRoutesMethod(out, model, routeConfig, sliceElement);
         out.println();

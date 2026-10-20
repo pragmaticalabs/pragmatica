@@ -1115,6 +1115,16 @@ shape, both enforced at compile time:
   compile error: ephemeral dispatch carries no envelope, so the message id, partition and offset
   would be fabricated. If the processor cannot read `resources.toml` at all it refuses too, and says
   so distinctly — an unreadable declaration is not evidence of an ephemeral one.
+- **The topic's publisher must declare it durable too (#1337).** The compile-time rule reads only the *subscriber's*
+  `resources.toml`. A publisher in another jar that leaves the topic ephemeral (no `durability`, which is the
+  default) would hand the handler a bare event, so the **blueprint is refused when it is published**: the response
+  names the topic, the publishing slice and the subscribing method (`Deploy refused, topic tier mismatch: ...`),
+  and nothing is deployed. Declare the topic `durable` in the publisher's `resources.toml`, or drop the
+  `MessageContext` parameter. A bare handler on an ephemeral topic is not affected. The same check holds when the
+  publisher and subscriber are deployed separately, in either order: each slice's activation records the topic and tier it
+  publishes or needs, and an activation that conflicts with a standing row fails with the same message. (A delivery that still
+  reaches a mismatch, e.g. two activations at the same instant, is refused per delivery at runtime and counted on
+  `aether.topic.delivery.undelivered`, with the `topic-tier-mismatch` operator warning.)
 - **A handler cannot carry both interceptors and `MessageContext`.** Aspects (`@WithRetry`,
   `@WithCache`, and the rest of the [Aspects](#aspects-interceptors) section) wrap a handler as
   `Fn1<Promise<Unit>, T>` — typed on the event alone, with nowhere to carry the context. Declaring
