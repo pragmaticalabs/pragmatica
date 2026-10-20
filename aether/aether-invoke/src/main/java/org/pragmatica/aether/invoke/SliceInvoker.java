@@ -615,7 +615,6 @@ class SliceInvokerImpl implements SliceInvoker {
     private record TierMismatchLog(AtomicLong lastLoggedNanos, AtomicLong suppressed) {}
 
     private final ConcurrentHashMap<String, TierMismatchLog> tierMismatchLogs = new ConcurrentHashMap<>();
-
     /// The clock of the tier-mismatch log window; a test advances it instead of waiting a minute.
     java.util.function.LongSupplier tierMismatchNanos = System::nanoTime;
 

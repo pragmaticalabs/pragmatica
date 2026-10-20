@@ -82,12 +82,18 @@ record StaleEntryCleaner(Active active) {
               .kvStore()
               .forEach(TopicSubscriptionKey.class,
                        AetherValue.TopicSubscriptionValue.class,
-                       (key, _) -> collectStaleTopicRow(commands, key, key.nodeId(), currentNodes));
+                       (key, _) -> collectStaleTopicRow(commands,
+                                                        key,
+                                                        key.nodeId(),
+                                                        currentNodes));
         active.ctx()
               .kvStore()
               .forEach(TopicPublisherKey.class,
                        AetherValue.TopicPublisherValue.class,
-                       (key, _) -> collectStaleTopicRow(commands, key, key.nodeId(), currentNodes));
+                       (key, _) -> collectStaleTopicRow(commands,
+                                                        key,
+                                                        key.nodeId(),
+                                                        currentNodes));
         if (!commands.isEmpty()) {
             log.info("Cleaning up {} stale topic subscription/publisher rows", commands.size());
             active.ctx()
