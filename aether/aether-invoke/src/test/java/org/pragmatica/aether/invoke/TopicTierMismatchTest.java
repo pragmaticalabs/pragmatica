@@ -169,6 +169,76 @@ class TopicTierMismatchTest {
         assertThat(events).as("one event per subscriber while the mismatch stands").hasSize(1);
     }
 
+    /// A hot ephemeral publisher fails every publish identically: the counter is exact (one per publish), the event is raised once, and
+    /// the invoker's own `SLICE-INVOKE-FAIL` WARN is written once per (subscriber slice, method) per period, not once per publish.
+    @Test
+    void burstOfRefusals_countsEveryOne_butLogsTheInvokeFailureOnce() {
+        var harness = Harness.wired(new TypeToken<ContextualEvent>() {});
+        var warnings = new java.util.ArrayList<String>();
+        var detach = LogCapture.warningsOf(SliceInvokerImpl.class, warnings);
+
+        try {
+            for (var i = 0; i < 25; i++) {
+                harness.publisher().publish("order-" + i).await();
+            }
+        } finally {
+            detach.run();
+        }
+
+        assertThat(harness.refusals()).isEqualTo(25.0);
+        assertThat(warnings.stream().filter(line -> line.contains("SLICE-INVOKE-FAIL")).count()).as("WARN lines: %s", warnings).isEqualTo(1);
+    }
+
+    /// v-2339 F3: after the period the next WARN is written and carries how many refusals were held back; the budget is per subscriber
+    /// SLICE and method, so two versions of one slice share it.
+    @Test
+    void invokeFailureLog_afterThePeriod_carriesTheSuppressedCount_andTwoVersionsShareOneBudget() {
+        var invoker = (SliceInvokerImpl) Harness.wired(new TypeToken<ContextualEvent>() {}).invoker();
+        var clock = new java.util.concurrent.atomic.AtomicLong(1_000_000_000_000L);
+        var v1 = Artifact.artifact("org.example:order-sub:1.0.0").unwrap();
+        var v2 = Artifact.artifact("org.example:order-sub:2.0.0").unwrap();
+        var cause = TopicTierMismatch.FACTORY.apply("onOrderPlaced");
+        var warnings = new java.util.ArrayList<String>();
+        var detach = LogCapture.warningsOf(SliceInvokerImpl.class, warnings);
+
+        invoker.tierMismatchNanos = clock::get;
+        try {
+            invoker.logInvokeFailure(v1, METHOD, cause);
+            invoker.logInvokeFailure(v2, METHOD, cause);
+            invoker.logInvokeFailure(v1, METHOD, cause);
+            assertThat(warnings).as("one budget for both versions: %s", warnings).hasSize(1);
+
+            clock.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(61));
+            invoker.logInvokeFailure(v2, METHOD, cause);
+            clock.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(61));
+            invoker.logInvokeFailure(v1, METHOD, cause);
+        } finally {
+            detach.run();
+        }
+
+        assertThat(warnings).hasSize(3);
+        assertThat(warnings.get(1)).contains("(2 more tier-mismatch refusals since the previous line)");
+        assertThat(warnings.get(2)).as("the count restarts after each line").contains("(0 more");
+        assertThat(warnings.getFirst()).contains("(0 more");
+    }
+
+    /// Another subscriber method is another budget.
+    @Test
+    void invokeFailureLog_anotherMethod_hasItsOwnBudget() {
+        var invoker = (SliceInvokerImpl) Harness.wired(new TypeToken<ContextualEvent>() {}).invoker();
+        var warnings = new java.util.ArrayList<String>();
+        var detach = LogCapture.warningsOf(SliceInvokerImpl.class, warnings);
+
+        try {
+            invoker.logInvokeFailure(SUBSCRIBER, METHOD, TopicTierMismatch.FACTORY.apply("a"));
+            invoker.logInvokeFailure(SUBSCRIBER, MethodName.methodName("onOther").unwrap(), TopicTierMismatch.FACTORY.apply("b"));
+        } finally {
+            detach.run();
+        }
+
+        assertThat(warnings).hasSize(2);
+    }
+
     /// Control, same harness: a bare-typed handler is delivered, counts nothing and raises nothing, so the red above comes
     /// from the ContextualEvent parameter and not from the harness.
     @Test

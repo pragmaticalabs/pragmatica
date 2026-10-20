@@ -381,6 +381,17 @@ public enum OperatorWarningCode {
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// Background promotion of a storage instance has copied nothing for several consecutive cycles while copies kept
+    /// failing: a copy attempt fails when its faster tier rejects the write or its source tier cannot be read. It detects
+    /// FAILING COPIES only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing.
+    /// The subject is the storage instance; the message names it and what to do (check the tiers' health and free space,
+    /// `memory_max_bytes` / `disk_max_bytes`, or set `promotion = false` for the instance). Closed by
+    /// [#STORAGE_PROMOTION_RESUMED].
+    STORAGE_PROMOTION_STALLED("storage-promotion-stalled", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_PROMOTION_STALLED], same subject: a promotion cycle copied a block successfully. A cycle
+    /// with nothing to copy does not close it, because a tier that is still broken looks the same as an idle one. INFO,
+    /// published only after a published stalled event for the instance (#752 mechanism).
+    STORAGE_PROMOTION_RESUMED("storage-promotion-resumed", "storage", WarningLevel.INFO, STORAGE_PROMOTION_STALLED),
     /// A worker still has no committed activation directive after the community-absence window (#1840): its SWIM ANNOUNCE is held until the
     /// directive commits, so the cluster's SWIM scope does not include it. Typically the leader has not admitted it (no capacity reservation
     /// or admission authorisation), or the directive was refused. The subject is the node. Closed by [#WORKER_ASSIGNED].

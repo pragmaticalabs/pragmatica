@@ -88,6 +88,7 @@ public final class AsyncCallbackCheck implements TaskListener {
                                                     "setOpaque", "accumulate");
     /// `Result`/`Option` combinators run their function argument inline; the argument is scanned in its own right.
     private static final Set<String> COMBINATOR_OWNERS = Set.of("org.pragmatica.lang.Result", "org.pragmatica.lang.Option");
+    private static final Set<String> PROMISE_FACTORIES = Set.of("promise", "resolved", "success", "ok", "failure", "err", "unitPromise");
     private static final Set<String> RESOLVERS = Set.of("succeed", "fail", "resolve", "cancel");
     private static final Set<String> LOGGER_OWNERS = Set.of("org.slf4j.Logger", "org.slf4j.spi.LoggingEventBuilder",
                                                             "java.lang.System.Logger", "java.util.logging.Logger",
@@ -257,7 +258,7 @@ public final class AsyncCallbackCheck implements TaskListener {
                                         Set<Element> scope,
                                         int depth,
                                         boolean resultDiscarded) {
-        if (isAllowlisted(method)) {
+        if (isAllowlisted(method) || isPureFactory(method)) {
             return Optional.empty();
         }
 
@@ -323,6 +324,21 @@ public final class AsyncCallbackCheck implements TaskListener {
                || EXECUTOR_OWNERS.contains(owner)
                || name.startsWith("schedule")
                || owner.equals(PROMISE) && RESOLVERS.contains(name);
+    }
+
+    /// `Cause.promise()`, `Promise.success(v)`, `Unit.unit()`: building a value has no effect, so discarding one is not one. Their
+    /// arguments are still scanned, so the consumer handed to `Promise.promise(consumer)` is judged on its own body.
+    private static boolean isPureFactory(ExecutableElement method) {
+        if (!(method.getEnclosingElement() instanceof TypeElement owner)) {
+            return false;
+        }
+
+        var type = owner.getQualifiedName().toString();
+        var name = method.getSimpleName().toString();
+
+        return type.equals(PROMISE) && PROMISE_FACTORIES.contains(name)
+               || type.equals("org.pragmatica.lang.Cause") && (name.equals("promise") || name.equals("result"))
+               || type.equals("org.pragmatica.lang.Unit") && name.equals("unit");
     }
 
     private static boolean isCombinator(ExecutableElement method) {
