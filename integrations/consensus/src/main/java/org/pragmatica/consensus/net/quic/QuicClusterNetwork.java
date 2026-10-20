@@ -1777,7 +1777,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
         outcome.superseded().onPresent(old -> closeSupersededConnection(old, connection));
-        attachObserver.accept(new AttachObservation(peerId, origin, Option.some(outcome.result())));
+        attachObserver.accept(new AttachObservation(peerId,
+                                                    origin,
+                                                    Option.some(outcome.result())));
         boolean isReconnect;
 
         switch (outcome.result()) {
