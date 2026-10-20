@@ -6850,13 +6850,12 @@ public interface AetherNode extends ManageableNode {
         // the DHT cannot answer. Without this the node would report ready while its DHT tiers still refuse
         // every operation.
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
-
         BooleanSupplier nodeDraining = () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE;
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
                                                                                           () -> signalReadyActivatingStorage(() -> signalReadyAndWakePrefetch(nodeLifecycle::signalReady,
-                                                                                                                                                                storageSetups,
-                                                                                                                                                                nodeDraining),
+                                                                                                                                                              storageSetups,
+                                                                                                                                                              nodeDraining),
                                                                                                                              storageSetups,
                                                                                                                              nodeDraining),
                                                                                           nodeReportedStateHolder));

@@ -1693,7 +1693,8 @@ public final class StorageFactory {
     /// It starts dormant: the node activates it when it reports ready ([#activatePrefetch]).
     private static PrefetchManager prefetchManagerFor(StorageConfig config, StorageInstance instance) {
         return config.prefetch()
-               ? PrefetchManager.prefetchManager(instance, PrefetchConfig.prefetchConfig(config.prefetchMaxInFlight()))
+               ? PrefetchManager.prefetchManager(instance,
+                                                 PrefetchConfig.prefetchConfig(config.prefetchMaxInFlight()))
                : PrefetchManager.NOOP;
     }
 

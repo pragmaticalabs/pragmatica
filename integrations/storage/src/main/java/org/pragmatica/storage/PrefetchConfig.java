@@ -34,7 +34,12 @@ public record PrefetchConfig(int accessThreshold,
     /// Default configuration: threshold=10, maxHints=5, cooldown=30s, observation window=5min, 10,000 tracked blocks,
     /// 4 prefetches in flight.
     public static PrefetchConfig prefetchConfig() {
-        return new PrefetchConfig(10, 5, 30_000L, DEFAULT_OBSERVATION_WINDOW_MS, DEFAULT_MAX_TRACKED_BLOCKS, DEFAULT_MAX_IN_FLIGHT);
+        return new PrefetchConfig(10,
+                                  5,
+                                  30_000L,
+                                  DEFAULT_OBSERVATION_WINDOW_MS,
+                                  DEFAULT_MAX_TRACKED_BLOCKS,
+                                  DEFAULT_MAX_IN_FLIGHT);
     }
 
     /// Custom threshold, hint count and cooldown, with the default observation window and tracked-block cap.
@@ -49,12 +54,7 @@ public record PrefetchConfig(int accessThreshold,
 
     /// The default configuration with a different in-flight cap (clamped to at least 1).
     public static PrefetchConfig prefetchConfig(int maxInFlight) {
-        return new PrefetchConfig(10,
-                                  5,
-                                  30_000L,
-                                  DEFAULT_OBSERVATION_WINDOW_MS,
-                                  DEFAULT_MAX_TRACKED_BLOCKS,
-                                  maxInFlight);
+        return new PrefetchConfig(10, 5, 30_000L, DEFAULT_OBSERVATION_WINDOW_MS, DEFAULT_MAX_TRACKED_BLOCKS, maxInFlight);
     }
 
     /// Custom parameters with the default in-flight cap.
