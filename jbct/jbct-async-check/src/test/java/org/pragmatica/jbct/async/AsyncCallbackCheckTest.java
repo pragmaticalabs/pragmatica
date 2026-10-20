@@ -170,11 +170,11 @@ class AsyncCallbackCheckTest {
 
         @Test
         void flags_discardedValueCalls() {
-            var gate = "static class Gate { String compute() { return \"x\"; } Unit act(String v) { return Unit.unit(); } }\n"
+            var gate = "static class Gate { String read() { return \"x\"; } Unit act(String v) { return Unit.unit(); } }\n"
                        + "Gate gate = new Gate();\n";
 
-            assertThat(lines(body(gate + "void run(Promise<String> p) { p.onSuccess(_ -> gate.compute()); }\n"))).hasSize(1);
-            assertThat(lines(body(gate + "void run(Promise<String> p) { p.onSuccess(_ -> { gate.compute(); }); }\n"))).hasSize(1);
+            assertThat(lines(body(gate + "void run(Promise<String> p) { p.onSuccess(_ -> gate.read()); }\n"))).hasSize(1);
+            assertThat(lines(body(gate + "void run(Promise<String> p) { p.onSuccess(_ -> { gate.read(); }); }\n"))).hasSize(1);
             assertThat(lines(body(gate + "void run(Promise<String> p, Option<String> o) { p.onSuccess(_ -> o.onPresent(v -> gate.act(v))); }\n")))
                 .hasSize(1);
         }
@@ -241,8 +241,8 @@ class AsyncCallbackCheckTest {
             assertThat(lines(body("""
                     Gate gate = new Gate();
                     static class Gate { void release(String key) { } }
-                    void run(Promise<String> p, Optional<String> slot) {
-                        p.onSuccess(_ -> slot.ifPresent(gate::release));
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> { var slot = Optional.of("x"); slot.ifPresent(gate::release); });
                     }
                     """))).hasSize(1);
         }
@@ -561,6 +561,19 @@ class AsyncCallbackCheckTest {
 
     @Nested
     class Suppression {
+        @Test
+        void clean_detachedCommentAboveAStatementWhoseCallIsOnALaterLine() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void register(String name, Promise<String> p) { }
+                    void run(Promise<String> p) {
+                        // detached: registration is advisory
+                        register("x",
+                                 p.onSuccess(_ -> done = true));
+                    }
+                    """))).isEmpty();
+        }
+
         @Test
         void flags_detachedCommentWithEmptyReason() {
             assertThat(lines(body("""

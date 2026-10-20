@@ -469,10 +469,6 @@ public final class AsyncCallbackCheck implements TaskListener {
         }
 
         private boolean identifierIsShared(TreePath path, IdentifierTree id) {
-            if (id.getName().contentEquals("this") || id.getName().contentEquals("super")) {
-                return true;
-            }
-
             var element = trees.getElement(path);
 
             return element != null && switch (element.getKind()) {
