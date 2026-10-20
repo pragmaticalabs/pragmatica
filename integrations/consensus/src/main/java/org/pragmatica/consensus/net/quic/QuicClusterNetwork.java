@@ -278,6 +278,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// earlier) and fed directly with the dialer expected-vs-actual Hello diagnostic
     /// ([#journalDialerHello]). Diagnostic-only; defaults to a no-op.
     private volatile Consumer<PeerTransitionRecord> peerTransitionListener = ignored -> {};
+
     /// Test hook (transport overhaul N33): told of every attach decision, DUPLICATE and REJECTED included, which
     /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
     private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
