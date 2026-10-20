@@ -409,7 +409,8 @@ public enum OperatorWarningCode {
     /// version), the subscriber is no longer registered, or the publisher was released. INFO,
     /// published only after a published mismatch event for the same subject (#752 mechanism); a subscriber that was never refused
     /// publishes nothing.
-    TOPIC_TIER_MISMATCH_RESOLVED("topic-tier-mismatch-resolved", "topic", WarningLevel.INFO, TOPIC_TIER_MISMATCH);
+    TOPIC_TIER_MISMATCH_RESOLVED("topic-tier-mismatch-resolved", "topic", WarningLevel.INFO, TOPIC_TIER_MISMATCH),
+    ;
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
