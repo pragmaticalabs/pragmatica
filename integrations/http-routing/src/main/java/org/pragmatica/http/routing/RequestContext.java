@@ -1,8 +1,9 @@
 package org.pragmatica.http.routing;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.pragmatica.http.Headers;
@@ -290,10 +291,12 @@ public interface RequestContext extends HttpRequest {
             return Headers.trailers(fieldMap(request.trailingHeaders()));
         }
 
+        /// #2310: names folded with [java.util.Locale#ROOT] and kept in arrival order, so values of names that differ
+        /// only in case merge in the order they arrived.
         private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
-            var fieldMap = new HashMap<String, List<String>>();
+            var fieldMap = new LinkedHashMap<String, List<String>>();
 
-            fields.forEach(entry -> fieldMap.computeIfAbsent(entry.getKey(),
+            fields.forEach(entry -> fieldMap.computeIfAbsent(entry.getKey().toLowerCase(Locale.ROOT),
                                                              _ -> new ArrayList<>())
                                             .add(entry.getValue()));
 

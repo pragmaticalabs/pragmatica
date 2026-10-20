@@ -385,7 +385,7 @@ final class Http3Server {
             var headerMap = new HashMap<String, List<String>>();
 
             for (var entry : h3Headers) {
-                headerMap.computeIfAbsent(entry.getKey().toString().toLowerCase(),
+                headerMap.computeIfAbsent(entry.getKey().toString().toLowerCase(Locale.ROOT),
                                           _ -> new ArrayList<>())
                          .add(entry.getValue().toString());
             }
@@ -468,12 +468,10 @@ final class Http3Server {
                 return flushed;
             }
 
-            Result.lift(Causes::fromThrowable,
-                        () -> responseHeaders(status, body.length, contentType, pendingHeaders))
-                  .onFailure(this::answerInternalError)
-                  .onSuccess(headers -> commit(headers, body));
-
-            return flushed;
+            return Result.lift(Causes::fromThrowable,
+                               () -> responseHeaders(status, body.length, contentType, pendingHeaders)).fold(this::answerInternalError,
+                                                                                                             headers -> commit(headers,
+                                                                                                                               body));
         }
 
         private Http3Headers responseHeaders(HttpStatus status,
@@ -491,27 +489,30 @@ final class Http3Server {
             return headers;
         }
 
-        private void answerInternalError(Cause cause) {
+        private Promise<Unit> answerInternalError(Cause cause) {
             log.error("Failed to build HTTP/3 response for request {}, answering 500: {}", requestId, cause.message());
             var body = "{\"error\":\"Internal Server Error\"}".getBytes(StandardCharsets.UTF_8);
-
-            commit(responseHeaders(HttpStatus.INTERNAL_SERVER_ERROR,
-                                   body.length,
-                                   CommonContentType.APPLICATION_JSON,
-                                   Map.of()),
-                   body);
+            // the promise fails first: the 500's own writes may complete it synchronously on the event loop
             flushed.fail(cause);
+
+            return commit(responseHeaders(HttpStatus.INTERNAL_SERVER_ERROR,
+                                          body.length,
+                                          CommonContentType.APPLICATION_JSON,
+                                          Map.of()),
+                          body);
         }
 
         /// The HEADERS frame and the body, then a clean `FIN` once the last write succeeds. Any failed write resets the
         /// stream instead, once.
-        private void commit(Http3Headers headers, byte[] body) {
+        private Promise<Unit> commit(Http3Headers headers, byte[] body) {
             ctx.write(new DefaultHttp3HeadersFrame(headers)).addListener(this::resetOnFailure);
             var last = body.length > 0
                        ? ctx.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body)))
                        : ctx.writeAndFlush(Unpooled.EMPTY_BUFFER);
 
             last.addListener(this::finishOrReset);
+
+            return flushed;
         }
 
         private void resetOnFailure(Future<? super Void> future) {

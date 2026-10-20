@@ -19,6 +19,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -103,6 +104,23 @@ class SliceRouterHeaderModeShapeTest {
     private static String contentType(HttpResponseData response) {
         return response.headers()
                        .getOrDefault("Content-Type", "");
+    }
+
+    /// #2310: the version header name is folded with `Locale.ROOT`, as the request's header keys are; under a `tr-TR`
+    /// default a default-locale fold of `API-Version` is `apı-version` and the header would never be found.
+    @Test
+    void versionHeader_isFound_underATurkishDefaultLocale() {
+        var saved = Locale.getDefault();
+
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+            var v1 = send("/api/catalog/items", Map.of("api-version", List.of("1")), router());
+
+            assertThat(body(v1)).contains("list-v1");
+        } finally {
+            Locale.setDefault(saved);
+        }
     }
 
     @Test

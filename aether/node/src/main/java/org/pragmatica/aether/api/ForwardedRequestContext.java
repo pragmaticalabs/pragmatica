@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.Locale;
+
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -18,7 +20,7 @@ record ForwardedRequestContext(HttpRequestContext source,
                                Headers trailers) implements HttpRequest {
     static ForwardedRequestContext forwardedRequestContext(HttpRequestContext source) {
         return new ForwardedRequestContext(source,
-                                           HttpMethod.valueOf(source.method().toUpperCase()),
+                                           HttpMethod.valueOf(source.method().toUpperCase(Locale.ROOT)),
                                            Headers.headers(source.headers()),
                                            QueryParams.queryParams(source.queryParams()),
                                            Headers.trailers(source.trailers()));

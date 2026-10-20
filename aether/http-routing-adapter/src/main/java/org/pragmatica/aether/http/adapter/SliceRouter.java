@@ -6,6 +6,7 @@ package org.pragmatica.aether.http.adapter;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -217,8 +218,8 @@ public interface SliceRouter {
             }
 
             private Option<String> headerValue(HttpRequestContext request) {
-                return Option.option(request.headers().get(mountMode.headerName().toLowerCase())).flatMap(values -> Option.from(values.stream()
-                                                                                                                                      .findFirst()));
+                return Option.option(request.headers().get(mountMode.headerName().toLowerCase(Locale.ROOT))).flatMap(values -> Option.from(values.stream()
+                                                                                                                                                 .findFirst()));
             }
 
             private HttpResponseData versionError(Cause cause, HttpRequestContext request) {

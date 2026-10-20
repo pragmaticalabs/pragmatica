@@ -22,6 +22,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -136,6 +137,41 @@ class HttpRequestTrailersTest {
             assertThat(exchange(chunked("x-big: " + OVER_LIMIT + "\r\n"))).isEqualTo(431);
             assertThat(recorder.requests()).as("a request whose trailers could not be read must not be dispatched")
                                            .isEmpty();
+        }
+
+        /// The transport folds names with `Locale.ROOT` before the forbidden-name filter sees them; under a `tr-TR`
+        /// default, `AUTHORIZATION` would otherwise become `authorızatıon` and be delivered.
+        @Test
+        void forbiddenTrailerFields_inUpperCase_areDiscarded_underATurkishDefaultLocale() throws IOException {
+            var saved = Locale.getDefault();
+
+            try {
+                Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+                assertThat(exchange(chunked("AUTHORIZATION: Bearer forged\r\nIF-MATCH: *\r\nX-OK: yes\r\n")))
+                    .isEqualTo(200);
+            } finally {
+                Locale.setDefault(saved);
+            }
+
+            assertThat(recorder.single().trailers().asMap().keySet()).containsExactly("x-ok");
+        }
+
+        @Test
+        void trailerNamesDifferingOnlyInCase_mergeEveryValue_inArrivalOrder() throws IOException {
+            assertThat(exchange(chunked("x-a: 1\r\nX-A: 2\r\nx-a: 3\r\n"))).isEqualTo(200);
+            assertThat(recorder.single().trailers().getAll("x-a")).containsExactly("1", "2", "3");
+        }
+
+        /// A decode failure that is not about size (here a chunk size that is not hex) is refused 400 and never
+        /// dispatched, like the over-limit trailer section is refused 431.
+        @Test
+        void malformedChunk_isRefused400_andNeverDispatched() throws IOException {
+            var raw = "POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n"
+                      + "Connection: close\r\n\r\nzz\r\nhello\r\n0\r\n\r\n";
+
+            assertThat(exchange(raw)).isEqualTo(400);
+            assertThat(recorder.requests()).isEmpty();
         }
 
         private int exchange(String raw) throws IOException {

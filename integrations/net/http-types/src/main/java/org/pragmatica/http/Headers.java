@@ -15,8 +15,11 @@
  */
 package org.pragmatica.http;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -66,17 +69,21 @@ public interface Headers {
     Map<String, List<String>> asMap();
 
     /// Create headers from a raw map (will be normalized to lowercase keys).
+    ///
+    /// #2310: names are case-folded with [Locale#ROOT], never the JVM default (under `tr-TR` the default turns `I`
+    /// into a dotless `ı`). Names that differ only in case are one field: their values are merged, in the raw map's
+    /// iteration order, and none is lost.
     static Headers headers(Map<String, List<String>> raw) {
         record headers(Map<String, List<String>> normalized) implements Headers {
             @Override
             public Option<String> get(String name) {
-                return Option.option(normalized.get(name.toLowerCase()))
-                             .flatMap(values -> Option.from(values.stream().findFirst()));
+                return Option.option(normalized.get(name.toLowerCase(Locale.ROOT))).flatMap(values -> Option.from(values.stream()
+                                                                                                                        .findFirst()));
             }
 
             @Override
             public List<String> getAll(String name) {
-                return Option.option(normalized.get(name.toLowerCase())).or(List::of);
+                return Option.option(normalized.get(name.toLowerCase(Locale.ROOT))).or(List::of);
             }
 
             @Override
@@ -84,28 +91,30 @@ public interface Headers {
                 return normalized;
             }
         }
-        var normalized = new HashMap<String, List<String>>();
+        var merged = new LinkedHashMap<String, List<String>>();
 
-        raw.forEach((k, v) -> normalized.put(k.toLowerCase(), List.copyOf(v)));
+        raw.forEach((k, v) -> merged.computeIfAbsent(k.toLowerCase(Locale.ROOT),
+                                                     _ -> new ArrayList<>())
+                                    .addAll(v));
+        merged.replaceAll((_, v) -> List.copyOf(v));
 
-        return new headers(Map.copyOf(normalized));
+        return new headers(Map.copyOf(merged));
     }
 
     /// Create headers from a single-value map (convenience for simple cases).
     static Headers fromSingleValueMap(Map<String, String> raw) {
         var multi = new HashMap<String, List<String>>();
 
-        raw.forEach((k, v) -> multi.put(k.toLowerCase(), List.of(v)));
+        raw.forEach((k, v) -> multi.put(k, List.of(v)));
 
         return headers(multi);
     }
 
-    /// #2310: request trailer fields from a raw map, normalized as [#headers(Map)] does, with every name in
-    /// [#FORBIDDEN_TRAILER_FIELDS] discarded.
+    /// #2310: request trailer fields from a raw map, normalized as [#headers(Map)] does (names folded with
+    /// [Locale#ROOT], case variants merged), with every name in [#FORBIDDEN_TRAILER_FIELDS] discarded.
     static Headers trailers(Map<String, List<String>> raw) {
-        var permitted = new HashMap<String, List<String>>();
+        var permitted = new HashMap<>(headers(raw).asMap());
 
-        raw.forEach((k, v) -> permitted.put(k.toLowerCase(), v));
         permitted.keySet().removeAll(FORBIDDEN_TRAILER_FIELDS);
 
         return headers(permitted);

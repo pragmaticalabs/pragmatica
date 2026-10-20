@@ -35,6 +35,21 @@ class RequestContextImplTrailersTest {
         assertThat(context.headers().get("x-checksum").isEmpty()).isTrue();
     }
 
+    /// Names that differ only in case are one field: every value survives, in arrival order.
+    @Test
+    void trailers_namesDifferingOnlyInCase_mergeEveryValue_inArrivalOrder() {
+        var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/upload", Unpooled.EMPTY_BUFFER);
+
+        request.trailingHeaders()
+               .add("x-a", "1")
+               .add("X-A", "2")
+               .add("x-a", "3");
+
+        var context = RequestContext.RequestContextImpl.requestContext(request, ROUTE, JsonCodecAdapter.defaultCodec(), "req-3");
+
+        assertThat(context.trailers().getAll("x-a")).containsExactly("1", "2", "3");
+    }
+
     @Test
     void trailers_ofARequestWithoutATrailerSection_areEmpty() {
         var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/upload", Unpooled.EMPTY_BUFFER);

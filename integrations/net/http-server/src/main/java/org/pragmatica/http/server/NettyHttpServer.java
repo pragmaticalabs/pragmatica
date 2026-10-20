@@ -16,9 +16,12 @@
 package org.pragmatica.http.server;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
@@ -35,6 +38,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsContextFactory;
 import org.pragmatica.utility.IdGenerator;
 
@@ -524,11 +528,13 @@ final class NettyHttpServer implements HttpServer {
         }
 
         private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
-            var fieldMap = new HashMap<String, List<String>>();
+            // #2310: insertion order, so values of names that differ only in case keep their arrival order
+            var fieldMap = new LinkedHashMap<String, List<String>>();
 
             for (var entry : fields) {
-                fieldMap.computeIfAbsent(entry.getKey().toLowerCase(),
-                                         _ -> new ArrayList<>()).add(entry.getValue());
+                fieldMap.computeIfAbsent(entry.getKey().toLowerCase(Locale.ROOT),
+                                         _ -> new ArrayList<>())
+                        .add(entry.getValue());
             }
 
             return fieldMap;
@@ -584,15 +590,28 @@ final class NettyHttpServer implements HttpServer {
             writeAsync(status, body, contentType);
         }
 
+        /// #2310: a response that cannot be built (a content type that throws, a header value Netty refuses) is answered
+        /// `500` with the server's own headers only, and the returned promise fails with the cause; before, the
+        /// `written` flag was already set, the error path wrote nothing, and the request hung. The same guard as the
+        /// HTTP/3 writer's, minus the stream reset: an HTTP/1.1 response that fails to flush fails the promise, and a
+        /// non-keep-alive connection is closed as before.
         @Override
         public Promise<Unit> writeAsync(HttpStatus status, byte[] body, ContentType contentType) {
             if (!written.compareAndSet(false, true)) {
                 return flushed;
             }
 
-            var nettyStatus = HttpResponseStatus.valueOf(status.code());
-            var content = Unpooled.wrappedBuffer(body);
-            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, nettyStatus, content);
+            return Result.lift(Causes::fromThrowable, () -> response(status, body, contentType, responseHeaders)).fold(this::answerInternalError,
+                                                                                                                       this::send);
+        }
+
+        private FullHttpResponse response(HttpStatus status,
+                                          byte[] body,
+                                          ContentType contentType,
+                                          HttpHeaders extraHeaders) {
+            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
+                                                       HttpResponseStatus.valueOf(status.code()),
+                                                       Unpooled.wrappedBuffer(body));
 
             response.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType.headerText());
             response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
@@ -601,7 +620,24 @@ final class NettyHttpServer implements HttpServer {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
             }
 
-            response.headers().add(responseHeaders);
+            response.headers().add(extraHeaders);
+
+            return response;
+        }
+
+        private Promise<Unit> answerInternalError(Cause cause) {
+            log.error("Failed to build HTTP/1.1 response for request {}, answering 500: {}", requestId, cause.message());
+            // the promise fails first: the 500's own write may complete it synchronously on the event loop
+            flushed.fail(cause);
+            var body = "{\"error\":\"Internal Server Error\"}".getBytes(StandardCharsets.UTF_8);
+
+            return send(response(HttpStatus.INTERNAL_SERVER_ERROR,
+                                 body,
+                                 CommonContentType.APPLICATION_JSON,
+                                 EmptyHttpHeaders.INSTANCE));
+        }
+
+        private Promise<Unit> send(FullHttpResponse response) {
             var future = ctx.writeAndFlush(response);
 
             if (!keepAlive) {
@@ -612,7 +648,7 @@ final class NettyHttpServer implements HttpServer {
                 if (result.isSuccess()) {
                     flushed.succeed(Unit.unit());
                 } else {
-                    flushed.fail(org.pragmatica.lang.utils.Causes.fromThrowable(result.cause()));
+                    flushed.fail(Causes.fromThrowable(result.cause()));
                 }
             });
 
