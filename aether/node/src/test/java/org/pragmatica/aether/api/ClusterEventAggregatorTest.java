@@ -1675,7 +1675,20 @@ class ClusterEventAggregatorTest {
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED);
+                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED, OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                                  OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED);
+    }
+
+    /// #241: a parked placement operation is kept by the next leader, so either of its recoveries may come from a node that never raised the
+    /// warning, and each is its own event.
+    @Test
+    void onOperatorWarning_theParkedPlacementRecoveries_arePublishedByANodeThatDidNotRaiseTheWarning() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED, "stable", "cleared by alice"));
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED, "other", "left DRAIN_UNCERTAIN"));
+
+        assertThat(codes(successor)).containsExactly("community-placement-cleared", "community-placement-resumed");
     }
 
     /// Amendment B: the rejoin resolution closes the previous leader's warning the same way, and is a different event from a confirmation.
