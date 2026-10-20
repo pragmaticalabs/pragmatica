@@ -33,6 +33,10 @@ sealed interface ScriptRunner {
     /// Bound on the walk from the working directory toward the filesystem root.
     int MAX_ASCENT = 16;
     String EXECUTABLE_PERMISSIONS = "rwxr-xr-x";
+    /// The only variables [#run] lets a script inherit from the JVM that launched it. Everything else the
+    /// scripts read (`AETHER_SSH_KEY`, `HCLOUD_TOKEN`, `FIREWALL_NAME`, `PG_LABEL`, ...) must come from the
+    /// `environment` a test passes, so an operator's or a CI worker's exported variables can never change a verdict.
+    List<String> INHERITED = List.of("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "USER", "LOGNAME");
 
     record Execution(int exitCode, String output) {
         static Execution execution(int exitCode, String output) {
@@ -72,6 +76,7 @@ sealed interface ScriptRunner {
                                                  .redirectErrorStream(true)
                                                  .redirectOutput(captured.toFile());
 
+        builder.environment().keySet().retainAll(INHERITED);
         builder.environment().putAll(environment);
 
         return builder;

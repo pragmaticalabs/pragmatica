@@ -1527,6 +1527,74 @@ class BlueprintPublishOwnershipTest {
             result.onFailure(cause -> Assertions.fail("[payments] is configured in the KV overlay: " + cause.message()));
         }
 
+        /// #1337 wiring: `BlueprintService.validateSliceJars` runs the topic-tier pre-flight, so the refusal reaches the
+        /// `POST /api/v1/blueprints` caller (400, `BlueprintRejected`) with the topic and the subscribing method named. A pre-flight that
+        /// is correct in isolation proves nothing about being called.
+        @Test
+        void publish_isRefused_whenAContextHandlerSubscribesToATopicTheSliceDeclaresEphemeral() throws IOException {
+            var jar = writeSliceJarWithTopicTier("[order-placed]\ntopic_name = \"order-placed\"\n", true);
+            var result = publishDslWithComposite(jar, Option.none());
+
+            result.onSuccess(_ -> Assertions.fail("a context handler on an ephemeral topic must refuse the deploy"))
+                  .onFailure(cause -> {
+                      assertThat(cause).isInstanceOf(BlueprintRejected.class);
+                      assertThat(cause.message()).contains("topic tier mismatch")
+                                                 .contains("order-placed")
+                                                 .contains("onOrderPlaced");
+                  });
+        }
+
+        @Test
+        void publish_isAccepted_whenTheContextHandlersTopicIsDeclaredDurable() throws IOException {
+            var jar = writeSliceJarWithTopicTier("[order-placed]\ntopic_name = \"order-placed\"\ndurability = \"durable\"\n", true);
+
+            publishDslWithComposite(jar, Option.none()).onFailure(cause -> Assertions.fail("a durable topic accepts a context handler: " + cause.message()));
+        }
+
+        @Test
+        void publish_isAccepted_whenTheHandlerIsBareOnAnEphemeralTopic() throws IOException {
+            var jar = writeSliceJarWithTopicTier("[order-placed]\ntopic_name = \"order-placed\"\n", false);
+
+            publishDslWithComposite(jar, Option.none()).onFailure(cause -> Assertions.fail("a bare handler works on an ephemeral topic: " + cause.message()));
+        }
+
+        /// A self-subscribed slice (so the orphan-publisher check does not fire), with the slice's own `resources.toml` and the
+        /// subscription marked `context=message` when `contextual`, exactly as the slice processor generates it.
+        private Path writeSliceJarWithTopicTier(String resourcesToml, boolean contextual) throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, SLICE_CLASS);
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("orders-api-topic-tier-1.0.0.jar");
+            var topology = """
+                    slice.name=orders-api
+                    routes.count=0
+                    dependencies.count=0
+                    resources.count=0
+                    publish.topics.count=1
+                    publish.topic.0.config=order-placed
+                    publish.topic.0.messageType=com.example.OrderPlaced
+                    reactive.count=1
+                    reactive.0.category=subscription
+                    reactive.0.method=onOrderPlaced
+                    reactive.0.config=order-placed
+                    reactive.0.messageType=com.example.OrderPlaced
+                    """ + (contextual ? "reactive.0.context=message\n" : "");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/orders/"));
+                out.closeEntry();
+                writeEntry(out, "META-INF/slice/OrdersApi.manifest", topology);
+                writeEntry(out, "META-INF/resources.toml", resourcesToml);
+            }
+
+            return target;
+        }
+
         private static void assertOnlyPaymentsSectionMissing(Cause cause) {
             assertThat(cause.stream().toList()).as("every aggregated failure is a MissingConfigSection")
                                                .isNotEmpty()

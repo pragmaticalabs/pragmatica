@@ -173,12 +173,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         var commandCount = batch.size();
 
         clusterNode.apply(List.copyOf(batch))
-                   .onFailure(cause -> log.warn("Leader-change bootstrap batch failed ({} commands, attempt {}/{}): {}",
-                                                commandCount,
-                                                bootstrapAttempts.get(),
-                                                BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
-                                                cause.message()))
-                   .onSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, commandCount));
+                   .withFailure(cause -> log.warn("Leader-change bootstrap batch failed ({} commands, attempt {}/{}): {}",
+                                                  commandCount,
+                                                  bootstrapAttempts.get(),
+                                                  BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
+                                                  cause.message()))
+                   .withSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, commandCount));
     }
 
     private boolean leaderEpochChanged(Option<Long> captured) {
@@ -426,7 +426,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                 bootstrapAttempts.get(),
                                                 BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
                                                 cause.message()))
-                   .onSuccess(_ -> bootstrapComplete.set(true));
+                   .withSuccess(_ -> bootstrapComplete.set(true));
     }
 
     private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {

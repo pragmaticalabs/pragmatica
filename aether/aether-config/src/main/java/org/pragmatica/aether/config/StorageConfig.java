@@ -16,6 +16,9 @@ import org.pragmatica.lang.Verify;
 /// nodes on one host (EmberCluster, co-located containers) must never share a WAL directory, and the
 /// suffix is what keeps that invariant independent of operator input.
 ///
+/// `promotion` is a kill switch for background tier promotion on this instance (default on): promotion copies hot
+/// blocks into the node's faster tiers, per node. It has no effect on `streams`, which never promotes.
+///
 /// `shared` (#249) is the instance's cluster-shared last tier, from `[storage.<instance>.shared]`: the in-memory
 /// DHT by default, or an S3-compatible bucket ([SharedTierConfig]).
 ///
@@ -33,6 +36,7 @@ public record StorageConfig(long memoryMaxBytes,
                             int snapshotRetentionCount,
                             String walPath,
                             boolean encrypted,
+                            boolean promotion,
                             SharedTierConfig shared,
                             boolean derivesPaths) {
     /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
@@ -41,8 +45,7 @@ public record StorageConfig(long memoryMaxBytes,
     public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
     private static final String DEFAULT_ROOT = "/data/aether";
 
-    /// The pre-#249 shape: the shared tier is the in-memory DHT ([SharedTierConfig#dht()]), today's behaviour, and the
-    /// paths are used as written ([#derivesPaths] false).
+    /// Pre-promotion-key shape, kept so existing callers stay source-compatible; `promotion` defaults to on.
     public StorageConfig(long memoryMaxBytes,
                          long diskMaxBytes,
                          String diskPath,
@@ -61,6 +64,31 @@ public record StorageConfig(long memoryMaxBytes,
              snapshotRetentionCount,
              walPath,
              encrypted,
+             true);
+    }
+
+    /// The pre-#249 shape: the shared tier is the in-memory DHT ([SharedTierConfig#dht()]), today's behaviour, and the
+    /// paths are used as written ([#derivesPaths] false).
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
              SharedTierConfig.dht(),
              false);
     }
@@ -78,7 +106,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  "60s",
                                  5,
                                  "",
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// Pre-#634-3 shape, kept so existing callers (and the defaults they encode) stay source-compatible;
@@ -98,7 +127,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  "",
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// Pre-#253 shape, kept so existing callers stay source-compatible; `encrypted` defaults to false.
@@ -118,7 +148,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  walPath,
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// #253: `encrypted` opts this instance's disk/DHT tiers into [org.pragmatica.storage.EncryptingStorageTier],
@@ -141,7 +172,31 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  walPath,
-                                 encrypted);
+                                 encrypted,
+                                 true);
+    }
+
+    /// `promotion` switches background tier promotion on this instance on or off (`[storage.<name>] promotion`).
+    public static StorageConfig storageConfig(long memoryMaxBytes,
+                                              long diskMaxBytes,
+                                              String diskPath,
+                                              String snapshotPath,
+                                              int snapshotMutationThreshold,
+                                              String snapshotMaxInterval,
+                                              int snapshotRetentionCount,
+                                              String walPath,
+                                              boolean encrypted,
+                                              boolean promotion) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion);
     }
 
     /// #249: this configuration with `shared` as the last tier of the instance's stack.
@@ -155,6 +210,7 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotRetentionCount,
                                  walPath,
                                  encrypted,
+                                 promotion,
                                  shared,
                                  derivesPaths);
     }
@@ -175,6 +231,7 @@ public record StorageConfig(long memoryMaxBytes,
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
                                  defaults.encrypted(),
+                                 defaults.promotion(),
                                  shared,
                                  true);
     }
@@ -190,6 +247,7 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotRetentionCount,
                                  walPath,
                                  encrypted,
+                                 promotion,
                                  shared,
                                  true);
     }
@@ -206,6 +264,7 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotRetentionCount,
                                  walPath,
                                  encrypted,
+                                 promotion,
                                  shared,
                                  false);
     }

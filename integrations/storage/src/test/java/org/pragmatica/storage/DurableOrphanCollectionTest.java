@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.EnumSet;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -43,6 +44,30 @@ class DurableOrphanCollectionTest {
         assertThat(store.getLifecycle(durablyDropped).isPresent()).as("orphaned in the snapshot and now").isFalse();
         assertThat(store.getLifecycle(droppedAfter).isPresent()).as("its drop is not durable yet").isTrue();
         assertThat(store.getLifecycle(reReferenced).isPresent()).as("referenced again").isTrue();
+    }
+
+    /// A cache-only marker has no references either, but it records a read, not a dropped ref: a stale durable snapshot
+    /// that holds one proves nothing about the block being an orphan, so the pressure pass must not collect on its word.
+    @Test
+    void earlyCollection_ignoresAMarkerInTheSnapshot_evenWhenTheBlockIsAnOrphanNow() {
+        var store = MetadataStore.inMemoryMetadataStore("gc-marker");
+        var storage = StorageInstance.storageInstance("gc-marker", List.of(MemoryTier.memoryTier(1 << 20)), store);
+        var collector = StorageGarbageCollector.storageGarbageCollector(storage, store, GarbageCollectorConfig.garbageCollectorConfig());
+        var id = storage.putRef("a", bytes("was a marker once")).await().unwrap();
+        var staleStore = MetadataStore.inMemoryMetadataStore("stale");
+
+        staleStore.createLifecycle(BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.MEMORY)));
+
+        var stale = SnapshotManager.snapshotManager(staleStore, SnapshotConfig.snapshotConfig(dir.resolve("stale"), "gc"))
+                                   .snapshotNow()
+                                   .unwrap();
+
+        collector.activate();
+        storage.deleteRef("a").await();
+
+        assertThat(store.getLifecycle(id).unwrap().isOrphaned()).as("control: it is an orphan now").isTrue();
+        assertThat(collector.collectOrphansDurableIn(stale)).isZero();
+        assertThat(store.getLifecycle(id).isPresent()).as("its drop is not in any durable snapshot").isTrue();
     }
 
     /// The shared (DHT) tier has no path to deletion from a node's pass: an orphan collected early leaves its

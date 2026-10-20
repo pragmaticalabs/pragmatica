@@ -20,6 +20,12 @@ on:
       - '.github/workflows/catalog.yml'
   workflow_dispatch:
 
+# A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
+# cancelled: each merged commit's own run is evidence.
+concurrency:
+  group: catalog-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   statistics:
     runs-on: ubuntu-latest

@@ -373,7 +373,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is expired ([#PiggybackBuffer.expireFaultyUpdates]) so a rejoining isolated node does
     /// NOT inject stale death verdicts into the healed cluster (the S06 partition-heal
     /// collapse root). Volatile: written/read across the probe (scheduler) and message threads.
+    /// Every write goes through [#isolationLatchGuard] (#1990), so the all-FAULTY check and the
+    /// latch write cannot straddle a peer's revival.
     private volatile boolean selfIsolated = false;
+    /// Makes "all peers FAULTY, so latch" ([#latchSelfIsolation]) and "reconnection evidence, so
+    /// clear" ([#unlatchSelfIsolation]) mutually atomic. Leaf lock: nothing is acquired while it is
+    /// held (the check reads the lock-free `members` map; the dissemination-backlog expiry and the
+    /// logging run after release), so it joins no lock cycle with [#lifecycleLock],
+    /// [#membershipScopeGuard] or the [PiggybackBuffer] monitor.
+    private final Object isolationLatchGuard = new Object();
     /// Incarnation-aware, TTL-bounded tombstones for ids that died and got cleaned up.
     /// Refuses third-party re-introduction of a dead id (gossip dissemination + bare
     /// channel re-seed) that would otherwise re-create it as SUSPECT and restart the
@@ -1489,16 +1497,35 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// verdicts accumulated here are isolation-era and must not be gossiped into the cluster
     /// on rejoin (expired in [#acceptAliveEvidence] on the first reconnection evidence).
     private void detectSelfIsolation() {
-        if (selfIsolated || members.isEmpty()) {
-            return;
-        }
-
-        if (members.values().stream().allMatch(m -> m.state() == MemberState.FAULTY)) {
-            selfIsolated = true;
+        if (latchSelfIsolation(this::allPeersFaulty)) {
             LOG.warn("SWIM self-isolation detected: all {} tracked peers FAULTY simultaneously — "
                     + "treating as local isolation; isolation-era FAULTY verdicts will be expired on rejoin",
                      members.size());
         }
+    }
+
+    /// Check and latch under [#isolationLatchGuard] (#1990). A revival stores ALIVE and THEN runs
+    /// [#unlatchSelfIsolation]; if this section runs first the later unlatch clears the latch, if the
+    /// unlatch runs first this check, run later, sees the ALIVE — a stale latch (latch set while a peer is
+    /// ALIVE) is impossible. Each FAULTY writer stores and THEN checks, so the last writer sees every
+    /// earlier store: a missed latch (all FAULTY, latch clear) is impossible too. The check is a parameter
+    /// so a test can hold the check-to-write window open.
+    boolean latchSelfIsolation(BooleanSupplier allPeersFaulty) {
+        synchronized (isolationLatchGuard) {
+            if (selfIsolated || members.isEmpty() || !allPeersFaulty.getAsBoolean()) {
+                return false;
+            }
+
+            selfIsolated = true;
+
+            return true;
+        }
+    }
+
+    private boolean allPeersFaulty() {
+        return members.values()
+                      .stream()
+                      .allMatch(m -> m.state() == MemberState.FAULTY);
     }
 
     /// Least-recently-probed (LRP) selection: pick the probable member with the
@@ -1709,17 +1736,29 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Clear the self-isolation latch on the first reconnection evidence and expire the
     /// isolation-era FAULTY backlog (P2). A no-op when not isolated.
     private void clearIsolationOnReconnect(NodeId peer) {
-        if (!selfIsolated) {
+        if (!unlatchSelfIsolation()) {
             return;
         }
 
-        selfIsolated = false;
         var dropped = piggybackBuffer.expireFaultyUpdates();
 
         LOG.warn("SWIM rejoin after self-isolation (reconnection evidence from {}): expired {} isolation-era "
                 + "FAULTY dissemination entries — not gossiping stale death verdicts into the healed cluster",
                  peer.id(),
                  dropped);
+    }
+
+    /// Clear the latch under [#isolationLatchGuard]; `true` when it was set. Deliberately no unlocked
+    /// `selfIsolated` fast path: a revival that read `false` and returned could slip between a detector's
+    /// all-FAULTY check and its latch write, leaving the latch set with a live peer (#1990).
+    private boolean unlatchSelfIsolation() {
+        synchronized (isolationLatchGuard) {
+            var wasIsolated = selfIsolated;
+
+            selfIsolated = false;
+
+            return wasIsolated;
+        }
     }
 
     private void forwardRelay(Ack ack) {
@@ -2287,6 +2326,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.
     ///
     /// Runs on the shared scheduler. Stops once this node is acknowledged by a peer (inbound probe) or after 60 attempts (30s).
+    ///
+    /// With no seeds the call only seeds this node's identity (incarnation, boot token, labels) and arms no
+    /// loop: there is nobody to announce to, and a node that holds its announcement back until it is assigned
+    /// (#1840) still answers probes under its real identity meanwhile.
     @Contract
     public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
         announceJoin(self, clusterName, incarnation, 0L, seeds);
@@ -2318,6 +2361,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
             selfLabels = gossipLabels(self.labels());
+            if (seeds.isEmpty()) {
+                return;
+            }
+
             var attempts = new AtomicInteger(0);
             var future = new AtomicReference<ScheduledFuture<?>>();
             var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,

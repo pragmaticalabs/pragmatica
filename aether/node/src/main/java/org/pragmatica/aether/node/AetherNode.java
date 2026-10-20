@@ -2805,6 +2805,7 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
+                stopStorageMaintenance(storageSetups);
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
 
                 return Unit.unit();
@@ -2838,26 +2839,46 @@ public interface AetherNode extends ManageableNode {
                 return formationUnlessSwimFails(startClusterAsync(), outcome);
             }
 
+            /// The in-process formation effects (event-loop metrics, the first election kick) are a DEPENDENT step
+            /// (`withSuccess`): whoever awaited the start proceeds with them in place. Discovery registration blocks on the
+            /// provider and the instance tag is an external signal bootstrap polls, so those two stay detached.
             private Promise<Unit> startClusterAsync() {
                 return clusterNode.start()
-                                  .onSuccess(_ -> {
-                                                 log.info("Aether node {} cluster formation complete",
-                                                          self());
-                                                 clusterNode.network()
-                                                            .server()
-                                                            .onPresent(server -> {
-                                                                           eventLoopMetricsCollector.register(server.bossGroup());
-                                                                           eventLoopMetricsCollector.register(server.workerGroup());
-                                                                           log.info("Registered EventLoopGroups for metrics collection");
-                                                                       });
-                                                 clusterNode.leaderManager()
-                                                            .triggerElection();
-                                                 discoveryProvider.onPresent(this::registerWithDiscovery);
-                                                 applyNodeIdTag();
-                                             })
+                                  .withSuccess(_ -> runFormationEffects())
+                                  .onSuccess(_ -> registerFormedNode())
                                   .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
+            }
+
+            // A dependent step must not fail the start it follows: a throw from the effects is logged, not propagated.
+            // FER (degrade forward): formation has succeeded, so a failed metrics registration or election kick is absorbed with a
+            // WARN. Guarantee earned: the start reports formation, not its by-products. Mechanism: a single run, the WARN is the record.
+            @Contract
+            private void runFormationEffects() {
+                Result.lift(this::onClusterFormed).onFailure(cause -> log.warn("Cluster formation effects failed: {}",
+                                                                               cause.message()));
+            }
+
+            @Contract
+            private void onClusterFormed() {
+                log.info("Aether node {} cluster formation complete", self());
+                clusterNode.network().server().onPresent(this::registerEventLoopGroups);
+                clusterNode.leaderManager().triggerElection();
+            }
+
+            private void registerEventLoopGroups(Server server) {
+                eventLoopMetricsCollector.register(server.bossGroup());
+                eventLoopMetricsCollector.register(server.workerGroup());
+                log.info("Registered EventLoopGroups for metrics collection");
+            }
+
+            // Detached on purpose: `registerSelf` is awaited (it blocks its thread) and the tag is an external signal;
+            // nothing in this process reads either after the start resolves.
+            @Contract
+            private void registerFormedNode() {
+                discoveryProvider.onPresent(this::registerWithDiscovery);
+                applyNodeIdTag();
             }
 
             private void registerWithDiscovery(DiscoveryProvider dp) {
@@ -3609,6 +3630,7 @@ public interface AetherNode extends ManageableNode {
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                            () -> {},
                                                            drainInitiatedEmitter(scheduledTaskDrainHookRef,
+                                                                                 () -> stopStorageMaintenance(storageSetups),
                                                                                  clusterEventDrainEmitterRef),
                                                            departurePush,
                                                            jvmExit);
@@ -4172,14 +4194,23 @@ public interface AetherNode extends ManageableNode {
         // `active` flag, so the periodic driver below can call demote()/collectGarbage()
         // unconditionally on every node (leader or not) and it safely no-ops until this node's
         // adapter is activated.
+        //
+        // Promotion, and demotion of `artifacts` and `content`, are NOT leader-pinned: their fast tiers are
+        // private to each node, so a leader-only manager would warm only the leader's caches. Both are
+        // activated on every node when it reports ready (signalReadyActivatingStorage, below) and deactivated
+        // on stop. `streams` stays as it was: leader-pinned demotion, no promotion.
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
+        var compositePromotionManager = StorageFactory.compositePromotionManager(storageSetups);
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
                                                                                       compositeGarbageCollector);
         var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
+                                                                                         compositePromotionManager,
+                                                                                         PromotionStallWatch.promotionStallWatch(storageSetups,
+                                                                                                                                 operatorWarningSink),
                                                                                          compositeGarbageCollector);
 
-        LOG.info("Storage maintenance enabled: demotion+GC cadence={}, storage setups={}",
+        LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",
                  config.timeouts().storageMaintenance().interval(),
                  storageSetups.keySet());
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
@@ -4547,11 +4578,13 @@ public interface AetherNode extends ManageableNode {
                                         .toList();
         Runnable announceJoinTrigger = selfNodeInfo == null
                                        ? () -> {}
-                                       : () -> swimHealthDetector.announceJoin(selfNodeInfo,
-                                                                               swimConfig.clusterName(),
-                                                                               bootIncarnation,
-                                                                               bootToken,
-                                                                               swimSeeds);
+                                       : joinAnnouncement(config,
+                                                          swimHealthDetector,
+                                                          selfNodeInfo,
+                                                          swimConfig.clusterName(),
+                                                          bootIncarnation,
+                                                          bootToken,
+                                                          swimSeeds);
         // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
         // closes over the encryptor + announce trigger that are only in scope here. It fails the
@@ -6823,7 +6856,9 @@ public interface AetherNode extends ManageableNode {
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          nodeLifecycle::signalReady,
+                                                                                          () -> signalReadyActivatingStorage(nodeLifecycle::signalReady,
+                                                                                                                             storageSetups,
+                                                                                                                             () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE),
                                                                                           nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
@@ -7382,6 +7417,36 @@ public interface AetherNode extends ManageableNode {
         holder.onSubsystemsReady();
     }
 
+    /// Per-node storage maintenance starts with the node's readiness: promotion and demotion of `artifacts` and
+    /// `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
+    /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. FER (degrade forward):
+    /// a manager that cannot start is logged and the node still becomes ready, with that instance's tiers unmaintained;
+    /// promotion is an optimization, not a dependency.
+    @Contract
+    static void signalReadyActivatingStorage(Runnable signalReady,
+                                             Map<String, StorageFactory.StorageSetup> storageSetups,
+                                             BooleanSupplier draining) {
+        activateStorageUnlessDraining(storageSetups, draining);
+        signalReady.run();
+    }
+
+    /// The ready signal fires on EVERY entry of the node-deployment state machine to Active, so it can fire again after
+    /// the node began draining (a quorum-loss drain, then quorum comes back before the process exits). Drain is one-way and
+    /// single-shot (`DrainProcedure`: INACTIVE -> DRAINING -> EXITED, nothing leads back), so a draining node's maintenance
+    /// must stay off: re-activating it would resume promotion and demotion on a node that is leaving.
+    @Contract
+    private static void activateStorageUnlessDraining(Map<String, StorageFactory.StorageSetup> storageSetups,
+                                                      BooleanSupplier draining) {
+        if (draining.getAsBoolean()) {
+            LOG.info("Node is draining: storage maintenance stays off");
+
+            return;
+        }
+
+        StorageFactory.activateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}",
+                                                                                          cause.message()));
+    }
+
     /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed
     /// storage instance admitted by its post-formation encryption-marker check. Already admitted (or no
     /// DHT tier at all: an empty set resolves at once), it runs synchronously, exactly as before. Still
@@ -7391,7 +7456,7 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReadyOnceDhtAdmitted(Promise<Unit> dhtAdmission,
                                                            Runnable signalReady,
                                                            NodeReportedStateHolder holder) {
-        dhtAdmission.onSuccess(_ -> markSubsystemsReady(signalReady, holder));
+        dhtAdmission.withSuccess(_ -> markSubsystemsReady(signalReady, holder));
     }
 
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
@@ -7985,34 +8050,46 @@ public interface AetherNode extends ManageableNode {
 
     /// `DrainProcedure`'s single-shot `drainInitiatedEmitter`, invoked once inside the INACTIVE->DRAINING
     /// CAS and therefore the node's one drain edge, shared by all three triggers (QUORUM_LOSS,
-    /// CORE_ABSENCE, COMMANDED). Two consumers, in falling order of consequence:
+    /// CORE_ABSENCE, COMMANDED). Three consumers, in falling order of consequence:
     ///
     ///   1. #273 item 1 — stop this node's ALL-mode scheduled fires. A correctness action.
-    ///   2. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
+    ///   2. Stop this node's storage promotion and per-node demotion.
+    ///   3. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
     ///
-    /// The scheduled-task hook runs FIRST but inside its own no-throw guard, so it can neither delay nor
-    /// suppress (2). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
-    /// outer guard would let a throw from (1) swallow (2) — the exact loss #565 was filed for.
+    /// The two hooks run FIRST but each inside its own no-throw guard, so neither can delay nor
+    /// suppress (3). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
+    /// outer guard would let a throw from (1) or (2) swallow (3) — the exact loss #565 was filed for.
     ///
     /// Package-private and named rather than an inline lambda so the composition itself is testable:
     /// `ScheduledTaskDrainWiringBootTest` drives a real drain through it. Both arguments are
     /// forward-declared refs — the manager and the event aggregator are both constructed after
     /// `DrainProcedure`.
     static Consumer<DrainReason> drainInitiatedEmitter(AtomicReference<Runnable> scheduledTaskDrainHookRef,
+                                                       Runnable storageMaintenanceStop,
                                                        AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef) {
         return reason -> {
-            runScheduledTaskDrainHookSafely(scheduledTaskDrainHookRef.get());
+            runDrainHookSafely("Scheduled-task", scheduledTaskDrainHookRef.get());
+            runDrainHookSafely("Storage-maintenance", storageMaintenanceStop);
             clusterEventDrainEmitterRef.get()
                                        .accept(reason);
         };
     }
 
-    private static void runScheduledTaskDrainHookSafely(Runnable hook) {
+    private static void runDrainHookSafely(String name, Runnable hook) {
         try {
             hook.run();
         } catch (Throwable t) {
-            LOG.warn("Scheduled-task drain hook failed: {} — drain proceeds", t.getMessage());
+            LOG.warn("{} drain hook failed: {} — drain proceeds", name, t.getMessage());
         }
+    }
+
+    /// Promotion and demotion of this node's storage stop when the node starts draining, not only when it stops: a
+    /// draining node is leaving, and a cycle that copies blocks into tiers about to be torn down gains nothing. FER: a
+    /// manager that will not deactivate is logged and the drain goes on. Also run first thing in `shutdownStorage()`.
+    @Contract
+    private static void stopStorageMaintenance(Map<String, StorageFactory.StorageSetup> storageSetups) {
+        StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be deactivated: {}",
+                                                                                            cause.message()));
     }
 
     /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
@@ -8714,21 +8791,53 @@ public interface AetherNode extends ManageableNode {
                                    Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
-
+        // `startOutcome::fail` and the announcement are dependent steps (`withFailure`/`withSuccess`), so they have run
+        // when `start` resolves for whoever awaits it. `failNode` may block (Ember awaits the node's own stop), so it stays
+        // a detached handler, registered on the DERIVED promise: it can run only after `startOutcome` was failed.
         return swimHealthDetector.start(workerGroup, guarded)
-                                 .onFailure(startOutcome::fail)
-                                 .onSuccessRun(() -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
+                                 .withFailure(startOutcome::fail)
+                                 .withSuccess(_ -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
                                  .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
                                                                             cause,
                                                                             failNode));
     }
 
+    /// The join announcement SWIM runs at transport-ready. A worker holds its ANNOUNCE to the seeds until its
+    /// activation directive is committed ([#handleActivationDirective] releases it): before that it has no
+    /// community, and the cores' membership scope admits no worker that is not a governor, so every round
+    /// was traffic they dropped (#1840). A core announces at once, as it must to be dialed by survivors.
+    static Runnable joinAnnouncement(AetherNodeConfig config,
+                                     CoreSwimHealthDetector swimHealthDetector,
+                                     NodeInfo self,
+                                     String clusterName,
+                                     long incarnation,
+                                     long bootToken,
+                                     List<InetSocketAddress> seeds) {
+        return configuredWorker(config)
+               ? () -> swimHealthDetector.announceJoinWhenAssigned(self,
+                                                                   clusterName,
+                                                                   incarnation,
+                                                                   bootToken,
+                                                                   seeds,
+                                                                   config.timeouts().cluster().communityAbsence())
+               : () -> swimHealthDetector.announceJoin(self, clusterName, incarnation, bootToken, seeds);
+    }
+
     /// A start refused because `stop()` already closed the detector resolves as a no-op success (it must
     /// not run `failNode`: in a single-JVM host a stale one could stop a same-id relaunch). There is no
     /// protocol to announce for, so the announcement is skipped.
+    ///
+    /// A dependent step of the start: a trigger that throws must not fail the start it follows (that would run `failNode`),
+    /// so a throw is logged instead.
+    ///
+    /// FER (degrade forward): SWIM is up, so a failed announcement is absorbed with a WARN rather than halting a node whose
+    /// failure detector runs. Guarantee earned: a lost announcement does not stop the node. Mechanism: a single attempt, no retry
+    /// here; the WARN is the only record of it.
+    @Contract
     private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
         if (!swimHealthDetector.isClosed()) {
-            announceJoinTrigger.run();
+            Result.lift(announceJoinTrigger::run).onFailure(cause -> LOG.warn("SWIM join announcement failed: {}",
+                                                                              cause.message()));
         }
     }
 
@@ -8754,22 +8863,22 @@ public interface AetherNode extends ManageableNode {
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
-    private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
-                                                  NodeId selfId,
-                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                  SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
-                                                  ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                                  AetherNodeConfig config,
-                                                  MessageRouter.DelegateRouter delegateRouter,
-                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                  SliceStore sliceStore,
-                                                  SliceInvoker sliceInvoker,
-                                                  Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
-                                                  org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
-                                                  AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
-                                                  GovernorAuthorityClient governorAuthorityClient,
-                                                  java.util.function.BooleanSupplier ready,
-                                                  Logger growthLog) {
+    static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
+                                          NodeId selfId,
+                                          RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                          SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                          ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                          AetherNodeConfig config,
+                                          MessageRouter.DelegateRouter delegateRouter,
+                                          KVStore<AetherKey, AetherValue> kvStore,
+                                          SliceStore sliceStore,
+                                          SliceInvoker sliceInvoker,
+                                          Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
+                                          org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
+                                          AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                                          GovernorAuthorityClient governorAuthorityClient,
+                                          java.util.function.BooleanSupplier ready,
+                                          Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
@@ -8788,6 +8897,7 @@ public interface AetherNode extends ManageableNode {
             clusterNode.authorizeActivation();
         } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
+            swimHealthDetectorSupplier.get().markAssigned();
             activateWorkerMode(selfId,
                                clusterNode,
                                switchableCluster,
