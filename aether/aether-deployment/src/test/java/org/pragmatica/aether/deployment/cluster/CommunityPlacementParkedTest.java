@@ -223,6 +223,19 @@ class CommunityPlacementParkedTest {
     }
 
     @Test
+    void reconcile_aTransitionTheStoreRefuses_raisesNoRecovery() {
+        start();
+        seedOperation(PlacementOperationPhase.DRAIN_UNCERTAIN, now.get());
+        beforeCommit = () -> seedOperation(PlacementOperationPhase.DRAIN_UNCERTAIN, now.get() + 1);
+
+        assertThat(reconciler.onDrainCompleted(OLD, "op-1").await().unwrap()).as("the write lost the race").isFalse();
+        settle();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.DRAIN_UNCERTAIN);
+        assertThat(codes).as("the operation did not leave the parked phase").doesNotContain("community-placement-resumed");
+    }
+
+    @Test
     void reconcile_anOperationThatLeavesAnOrdinaryPhase_raisesNoRecovery() {
         start();
         seedOperation(PlacementOperationPhase.DRAIN_REQUESTED, now.get());
