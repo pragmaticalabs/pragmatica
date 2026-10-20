@@ -587,11 +587,7 @@ public final class NodeReplacementWiring {
                              record.replacement())
                          .map(node -> in.ctm()
                                         .instanceListed(node, source)
-                                        .onSuccess(listed -> {
-                                  if (listed) {
-                                      seen.add(node);
-                                  }
-                              })
+                                        .withSuccess(listed -> noteListed(node, listed))
                                         .<Unit> map(_ -> Unit.unit())
                                         .recover(_ -> Unit.unit()))
                          .reduce(Promise.unitPromise(),
@@ -616,15 +612,17 @@ public final class NodeReplacementWiring {
                                          source -> {
                                              in.ctm()
                                                .instanceListed(node, source)
-                                               .onSuccess(listed -> {
-                                                 if (listed) {
-                                                     seen.add(node);
-                                                 }
-                                             })
-                                               .onResultRun(() -> observing.remove(node));
+                                               .withSuccess(listed -> noteListed(node, listed))
+                                               .withResult(_ -> observing.remove(node));
 
                                              return Unit.unit();
                                          });
+        }
+
+        private void noteListed(NodeId node, boolean listed) {
+            if (listed) {
+                seen.add(node);
+            }
         }
 
         private EffectResult drained(NodeId original, DrainOutcome outcome) {

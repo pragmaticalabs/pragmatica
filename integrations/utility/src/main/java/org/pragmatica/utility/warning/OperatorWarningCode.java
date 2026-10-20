@@ -392,6 +392,13 @@ public enum OperatorWarningCode {
     /// with nothing to copy does not close it, because a tier that is still broken looks the same as an idle one. INFO,
     /// published only after a published stalled event for the instance (#752 mechanism).
     STORAGE_PROMOTION_RESUMED("storage-promotion-resumed", "storage", WarningLevel.INFO, STORAGE_PROMOTION_STALLED),
+    /// A worker still has no committed activation directive after the community-absence window (#1840): its SWIM ANNOUNCE is held until the
+    /// directive commits, so the cluster's SWIM scope does not include it. Typically the leader has not admitted it (no capacity reservation
+    /// or admission authorisation), or the directive was refused. The subject is the node. Closed by [#WORKER_ASSIGNED].
+    WORKER_ASSIGNMENT_OVERDUE("worker-assignment-overdue", "membership", WarningLevel.WARNING),
+    /// The recovery of [#WORKER_ASSIGNMENT_OVERDUE], same subject (#1840): the worker's activation directive committed and its held SWIM ANNOUNCE was
+    /// released. Raised only when the warning was.
+    WORKER_ASSIGNED("worker-assigned", "membership", WarningLevel.INFO, WORKER_ASSIGNMENT_OVERDUE),
     /// An ephemeral-tier publisher fanned an event out to a subscriber whose handler takes the delivery context (#1337): that
     /// handler belongs to a durable topic, and an ephemeral delivery carries no envelope to build the context from. The delivery
     /// was refused and the event NOT delivered to that subscriber. The message names the topic, the publishing slice and the

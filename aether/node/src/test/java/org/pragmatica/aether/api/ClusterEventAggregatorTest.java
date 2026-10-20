@@ -2422,6 +2422,7 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
                              OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
                              OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
+                             OperatorWarningCode.WORKER_ASSIGNED,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
@@ -2449,6 +2450,7 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                              OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
                              OperatorWarningCode.STORAGE_PROMOTION_STALLED,
+                             OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

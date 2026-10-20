@@ -183,7 +183,7 @@ record PlacementReconciler(NodeId self,
 
         return configuration(snapshot).fold(Promise::unitPromise,
                                             config -> reconcileConfiguration(config, snapshot))
-                            .onResultRun(() -> running.set(false));
+                            .withResult(_ -> running.set(false));
     }
 
     private Map<AetherKey, AetherValue> aetherSnapshot() {

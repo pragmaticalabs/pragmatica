@@ -71,7 +71,7 @@ public interface CoreVoterReconciler {
                 return installed.get()
                                 .fold(Promise::unitPromise, this::reconcileInstalled)
                                 .timeout(TimeSpan.timeSpan(30).seconds())
-                                .onResultRun(() -> running.set(false));
+                                .withResult(_ -> running.set(false));
             }
 
             private Promise<Unit> reconcileInstalled(VoterConfiguration current) {

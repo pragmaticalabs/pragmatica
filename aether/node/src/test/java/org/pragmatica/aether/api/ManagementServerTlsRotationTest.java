@@ -61,13 +61,15 @@ class ManagementServerTlsRotationTest {
     @Test
     @Timeout(120)
     void rotate_unbuildableBundle_keepsServingCurrentCertificateAndRaisesOnceThenRecovers() throws Exception {
-        var port = TlsProbe.freeTcpPort();
         var events = TlsProbe.newEventList();
-        var server = managementServerWithTls(port);
+        // Port 0: the listener binds a port nobody else can hold and reports it back, so no probe-then-rebind race (#2152).
+        var server = managementServerWithTls(0);
 
         server.setOperatorWarningSink(TlsProbe.recordingSink(events));
         try {
-            server.start().await(BOUND);
+            TlsProbe.requireStarted(server.start().await(BOUND), "management TLS listener");
+            int port = server.boundPort().or(0);
+            assertThat(port).as("control: the started listener reports its bound port").isPositive();
             assertThat(TlsProbe.eventually(() -> reachable(port), EVENT_BUDGET_MS)).as("control: TLS listener is up").isTrue();
             var original = TlsProbe.presentedCertificate(port);
 
@@ -99,9 +101,13 @@ class ManagementServerTlsRotationTest {
             var applied = server.rotateCertificate(TlsProbe.validBundle("mgmt-rotation-node")).await(BOUND);
 
             assertThat(applied.isSuccess()).as("a valid bundle rotates").isTrue();
-            assertThat(TlsProbe.sameCertificate(original, TlsProbe.presentedCertificate(port)))
+            // An applied rotation re-binds the CONFIGURED port, which is 0 here: the rotated listener has a new port, read back.
+            int rotatedPort = server.boundPort().or(0);
+
+            assertThat(rotatedPort).as("the rotated listener reports its bound port").isPositive();
+            assertThat(TlsProbe.sameCertificate(original, TlsProbe.presentedCertificate(rotatedPort)))
                 .as("after the valid rotation the certificate changed").isFalse();
-            assertThat(TlsProbe.httpsStatus(port)).isPositive();
+            assertThat(TlsProbe.httpsStatus(rotatedPort)).isPositive();
             assertThat(TlsProbe.eventually(() -> TlsProbe.countOf(events, "http-tls-rotation-restored") == 1, EVENT_BUDGET_MS))
                 .as("the recovery event follows the later successful rotation").isTrue();
         } finally {
