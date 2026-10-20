@@ -1,0 +1,13 @@
+# Publisher-side resources for test-topic-tier-pub (#1337).
+#
+# The publisher module declares `tier-orders` with NO durability, so the EPHEMERAL default. The subscriber module
+# (test-topic-tier-sub) declares the SAME topic `durable`. Each slice reads only its own jar's resources.toml, so
+# the disagreement is invisible to both builds - which is the defect.
+#
+# `tier-bare` is the control: ephemeral on both sides, with a bare handler.
+
+[tier-orders]
+topic_name = "tier-orders"
+
+[tier-bare]
+topic_name = "tier-bare"
