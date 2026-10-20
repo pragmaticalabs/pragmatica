@@ -412,6 +412,30 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         assertThat(sliceFailedWith("topic tier mismatch")).isFalse();
     }
 
+    @Test
+    void durablePublisher_isAccepted_whileADurableSubscriberRowStands() {
+        declarePublisherTopic(PUBLISHER_SLICE, DURABLE_ORDERS);
+        seedSubscriberRow(OTHER_PUBLISHER, OTHER_NODE, TopicTier.DURABLE);
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, PUBLISHER_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publisherTiers()).containsKey(PUBLISHER_SLICE.asString()));
+        assertThat(sliceFailedWith("topic tier mismatch")).isFalse();
+    }
+
+    /// Rows are matched on the topic's address: an ephemeral publisher of ANOTHER topic is no reason to refuse.
+    @Test
+    void durableSubscriber_isAccepted_whenTheEphemeralPublisherIsOnAnotherTopic() {
+        var elsewhere = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "invoices", org.pragmatica.aether.slice.resource.ResourceVersion.defaultVersion()).unwrap();
+
+        kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(TopicPublisherKey.topicPublisherKey(elsewhere, OTHER_PUBLISHER, OTHER_NODE),
+                                                                                             TopicPublisherValue.topicPublisherValue(OTHER_NODE, TopicTier.EPHEMERAL)))));
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, CONTEXT_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(subscriptionTiers()).containsKey(CONTEXT_SLICE.asString()));
+    }
+
     /// An upgrade replaces its predecessor: the same slice's rows at ANOTHER version are not a conflict.
     @Test
     void rowsOfTheSameSliceAtAnotherVersion_doNotBlockItsUpgrade() {
