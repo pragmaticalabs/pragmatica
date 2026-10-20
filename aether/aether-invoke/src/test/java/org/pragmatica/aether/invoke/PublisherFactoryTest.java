@@ -455,6 +455,47 @@ class PublisherFactoryTest {
             assertTrue(invocations.isEmpty());
         }
 
+        /// #1337 wiring: the factory hands the context's `OperatorWarningSink` and `MeterRegistry` to the publisher it provisions, so
+        /// a subscriber's tier-mismatch refusal reaches the node's event log and the per-topic counter. A publisher built by hand
+        /// (as the unit tests do) cannot show that the factory passes them.
+        @Test
+        void provision_tierMismatchRefusal_reachesTheContextsSinkAndMeterRegistry() {
+            var meters = new SimpleMeterRegistry();
+            var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            registerBareSubscriptionFor(Option.some(BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var context = ProvisioningContext.provisioningContext()
+                                             .withExtension(TopicSubscriptionRegistry.class, registry)
+                                             .withExtension(SliceInvoker.class,
+                                                            new MinimalStubSliceInvoker(invocations,
+                                                                                        Option.some(org.pragmatica.aether.slice.TopicTierMismatch.FACTORY.apply("onOrder"))))
+                                             .withExtension(String.class, PUBLISHER_SLICE.asString())
+                                             .withExtension(OwningBlueprintResolver.class, _ -> Option.some(BLUEPRINT))
+                                             .withExtension(MeterRegistry.class, meters)
+                                             .withExtension(org.pragmatica.utility.warning.OperatorWarningSink.class,
+                                                            org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+            @SuppressWarnings("unchecked")
+            var publisher = (Publisher<Object>) factory.provision(new TopicConfig("orders"), context)
+                                                       .await()
+                                                       .onFailure(_ -> fail("Provisioning should succeed"))
+                                                       .unwrap();
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+
+            while (events.isEmpty() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertEquals(1, events.size());
+            assertEquals(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH, events.getFirst().code());
+            assertEquals(1.0,
+                         meters.find(TopicPublisher.DELIVERY_UNDELIVERED_COUNTER)
+                               .tag("reason", TopicPublisher.REASON_TIER_MISMATCH)
+                               .counter()
+                               .count());
+        }
+
         /// A runtime with no resolver registered (unit test, minimal runtime): both ends scope to the
         /// slice's own coordinates. A SINGLE slice therefore still reaches itself — the behaviour
         /// that existed before #1216 and must not regress — while two distinct slices do not, because
@@ -579,8 +620,15 @@ class PublisherFactoryTest {
     private static final class MinimalStubSliceInvoker implements SliceInvoker {
         private final CopyOnWriteArrayList<Object> invocations;
 
+        private final org.pragmatica.lang.Option<org.pragmatica.lang.Cause> failure;
+
         MinimalStubSliceInvoker(CopyOnWriteArrayList<Object> invocations) {
+            this(invocations, Option.none());
+        }
+
+        MinimalStubSliceInvoker(CopyOnWriteArrayList<Object> invocations, Option<org.pragmatica.lang.Cause> failure) {
             this.invocations = invocations;
+            this.failure = failure;
         }
 
         @Override
@@ -588,7 +636,7 @@ class PublisherFactoryTest {
         public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
             invocations.add(slice);
 
-            return (Promise<R>) Promise.unitPromise();
+            return failure.fold(() -> (Promise<R>) Promise.unitPromise(), org.pragmatica.lang.Cause::promise);
         }
 
         @Override

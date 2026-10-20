@@ -334,7 +334,7 @@ final class DefaultStorageInstance implements StorageInstance {
     public Promise<Option<byte[]>> get(BlockId id) {
         return readCache.deduplicate(id,
                                      () -> waterfallRead(id))
-                        .onSuccess(opt -> opt.onPresent(_ -> recordAccess(id)));
+                        .withSuccess(opt -> opt.onPresent(_ -> recordAccess(id)));
     }
 
     @Override
@@ -393,7 +393,7 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"));
+        return deleteFromAllTiers(id, 0).withSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"));
     }
 
     /// #801: the scan's verdict is only good until something touches the record, so the record is
@@ -811,8 +811,8 @@ final class DefaultStorageInstance implements StorageInstance {
         // failure is recovered, not propagated, or the caller is told its durably stored data
         // failed (#910). The old chain logged "skipped" and then flatMapped the failure through.
         return tier.put(id, content)
-                   .onSuccess(_ -> recordTierPresence(id,
-                                                      tier.level()))
+                   .withSuccess(_ -> recordTierPresence(id,
+                                                        tier.level()))
                    .fold(result -> result.fold(cause -> discardFailedPromotion(tier, id, cause),
                                                Promise::success))
                    .flatMap(_ -> promoteToNextCacheTier(id, content, cacheTiers, index + 1));
