@@ -63,6 +63,10 @@ class SystemCodecPinningTest {
     /// The leader pre-vote pair (#1748) is exempt like the refusals: a handful of messages per leader-loss
     /// suspicion, none in steady state, and no one-byte slot is free to give it.
     ///
+    /// `AppGossip` (SWIM application gossip carrying storage prefetch hints) is exempt like the refusals: one datagram per
+    /// probe round, and only when a channel has something to say (a hint needs a block read often enough to cross a
+    /// threshold) -- not the per-message traffic the window was bought for, and no one-byte slot is free to give it.
+    ///
     /// `CommitAdvance` (#2087) is exempt like the refusals: one small message per coalesced visible advance and one per owned
     /// partition per tick -- no more than the ack it follows -- and no one-byte slot is free to give it (every slot
     /// 0..127 is pinned, 0..20 are the primitives, and a retired tag is never reused).
@@ -79,6 +83,7 @@ class SystemCodecPinningTest {
                                  .stream()
                                  .filter(entry -> !entry.getKey().endsWith(".SyncRejected") && !entry.getKey().endsWith(".HelloRefused")
                                                   && !entry.getKey().endsWith(".IdentityRefused")
+                                                  && !entry.getKey().endsWith(".AppGossip")
                                                   && !entry.getKey().endsWith(".LeaderPreVoteRequest")
                                                   && !entry.getKey().endsWith(".LeaderPreVoteResponse")
                                                   && !entry.getKey().endsWith(".CommitAdvance")

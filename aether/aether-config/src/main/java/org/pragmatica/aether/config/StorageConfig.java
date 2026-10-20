@@ -15,6 +15,10 @@ import org.pragmatica.lang.Verify;
 /// set, the effective directory is still suffixed with the node id (`<walPath>/<nodeId>`): multiple
 /// nodes on one host (EmberCluster, co-located containers) must never share a WAL directory, and the
 /// suffix is what keeps that invariant independent of operator input.
+///
+/// `prefetch` is the kill switch for cross-node block prefetching on this instance: on by default, it lets the
+/// node gossip hints about the blocks it reads often and copy hinted blocks into its own cache tiers. It is read
+/// for every instance but `streams`, which prefetches its own segments and takes no part in it.
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -23,7 +27,31 @@ public record StorageConfig(long memoryMaxBytes,
                             String snapshotMaxInterval,
                             int snapshotRetentionCount,
                             String walPath,
-                            boolean encrypted) {
+                            boolean encrypted,
+                            boolean prefetch) {
+    /// Every instance a config names takes part in prefetching unless it says otherwise: the shape this record had before
+    /// `prefetch` existed.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             true);
+    }
+
     /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
     /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
     /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
@@ -43,7 +71,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  "60s",
                                  5,
                                  "",
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// Pre-#634-3 shape, kept so existing callers (and the defaults they encode) stay source-compatible;
@@ -63,7 +92,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  "",
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// Pre-#253 shape, kept so existing callers stay source-compatible; `encrypted` defaults to false.
@@ -83,7 +113,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  walPath,
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// #253: `encrypted` opts this instance's disk/DHT tiers into [org.pragmatica.storage.EncryptingStorageTier],
@@ -106,7 +137,31 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  walPath,
-                                 encrypted);
+                                 encrypted,
+                                 true);
+    }
+
+    /// `prefetch` switches cross-node block prefetching off for this instance (`[storage.<name>] prefetch = false`).
+    public static StorageConfig storageConfig(long memoryMaxBytes,
+                                              long diskMaxBytes,
+                                              String diskPath,
+                                              String snapshotPath,
+                                              int snapshotMutationThreshold,
+                                              String snapshotMaxInterval,
+                                              int snapshotRetentionCount,
+                                              String walPath,
+                                              boolean encrypted,
+                                              boolean prefetch) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 prefetch);
     }
 
     /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.

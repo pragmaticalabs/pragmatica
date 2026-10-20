@@ -90,6 +90,21 @@ public sealed interface SwimMessage {
         }
     }
 
+    /// An application payload for a [GossipChannel], in a datagram of its own -- never piggybacked on a
+    /// Ping or Ack, where it would compete with membership updates for a budget that is already tight. The
+    /// protocol sends it to ONE random ALIVE member per probe round and drops it, on arrival, from a sender it
+    /// does not know, on a channel nothing registered, or past a fixed rate. `payload` is copied on
+    /// construction: it crosses a thread boundary on arrival.
+    record AppGossip(NodeId from, int channel, byte[] payload) implements SwimMessage {
+        public AppGossip {
+            payload = payload.clone();
+        }
+
+        public static AppGossip appGossip(NodeId from, int channel, byte[] payload) {
+            return new AppGossip(from, channel, payload);
+        }
+    }
+
     /// A single membership update disseminated via piggyback. `bootToken` is the subject's
     /// per-process random boot token as known to the sender (`0` = unknown; equality only).
     /// `labels` are the subject's descriptor labels (role/source) as known to the sender — empty

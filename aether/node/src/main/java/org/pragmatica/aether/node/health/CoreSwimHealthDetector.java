@@ -7,7 +7,9 @@ package org.pragmatica.aether.node.health;
 import java.net.InetSocketAddress;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -37,6 +39,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.swim.GossipChannel;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.NettySwimTransport;
@@ -115,6 +118,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// (the only edge SWIM emits to the cluster-wide `TransportObservation` stream) to
     /// the cluster `MessageRouter`. Wired by the Aether node assembly.
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
+    /// Application gossip channels pending wiring into the underlying [`SwimProtocol`] once it is created in
+    /// `seedAndWrap`; the storage prefetch channel registers here during node assembly.
+    private final Map<Integer, GossipChannel> pendingGossipChannels = new ConcurrentHashMap<>();
 
     private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
     private final MembershipResyncPolicy resync = MembershipResyncPolicy.membershipResyncPolicy();
@@ -555,6 +561,19 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         protocol().onPresent(p -> p.addTransportObservationEmitter(emitter));
     }
 
+    /// Registers an application [GossipChannel]: once per probe round SWIM asks it what to say to one random
+    /// ALIVE peer, and hands it what peers say. Buffered until the underlying [`SwimProtocol`] is constructed.
+    @Contract
+    public void registerGossipChannel(int channel, GossipChannel handler) {
+        pendingGossipChannels.put(channel, handler);
+        protocol().onPresent(p -> p.registerGossipChannel(channel, handler));
+    }
+
+    /// What application gossip has done on the running protocol; absent before SWIM starts.
+    public Option<SwimProtocol.AppGossipStats> appGossipStats() {
+        return protocol().map(SwimProtocol::appGossipStats);
+    }
+
     public Option<HealthSnapshot> currentHealth() {
         return protocol().map(SwimProtocol::currentHealth);
     }
@@ -629,6 +648,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         operatorWarningSink.onPresent(protocol::setOperatorWarningSink);
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
+        pendingGossipChannels.forEach(protocol::registerGossipChannel);
         seedMembers(protocol);
         seedPeerDirectory(protocol);
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),

@@ -12,6 +12,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -32,6 +33,7 @@ import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
@@ -43,6 +45,8 @@ import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataSnapshot;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.PrefetchConfig;
+import org.pragmatica.storage.PrefetchManager;
 import org.pragmatica.storage.SnapshotConfig;
 import org.pragmatica.storage.SnapshotError;
 import org.pragmatica.storage.SnapshotManager;
@@ -128,7 +132,30 @@ public final class StorageFactory {
                                DemotionManager demotionManager,
                                StorageGarbageCollector garbageCollector,
                                Option<DhtMarkerCheck> dhtMarkerCheck,
-                               Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker) {
+                               Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker,
+                               PrefetchManager prefetchManager) {
+        /// The setup as it was before cross-node prefetching: no prefetch manager (`PrefetchManager.NOOP`).
+        public StorageSetup(String name,
+                            StorageInstance instance,
+                            SnapshotManager snapshotManager,
+                            StorageReadinessGate readinessGate,
+                            MetadataStore metadataStore,
+                            DemotionManager demotionManager,
+                            StorageGarbageCollector garbageCollector,
+                            Option<DhtMarkerCheck> dhtMarkerCheck,
+                            Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker) {
+            this(name,
+                 instance,
+                 snapshotManager,
+                 readinessGate,
+                 metadataStore,
+                 demotionManager,
+                 garbageCollector,
+                 dhtMarkerCheck,
+                 committedDiskMarker,
+                 PrefetchManager.NOOP);
+        }
+
         /// #1170: the disk marker [#createAll] committed for this instance, kept so a boot refused
         /// AFTER formation (the DHT marker check, [#admitDhtMarkers]) can take back what it stamped.
         /// Empty until [#createAll] commits, and for an instance with no encrypted disk tier.
@@ -229,7 +256,8 @@ public final class StorageFactory {
                                     demotionManager,
                                     garbageCollector,
                                     dhtMarkerCheck,
-                                    armedDisk);
+                                    armedDisk,
+                                    prefetchManager);
         }
     }
 
@@ -661,7 +689,8 @@ public final class StorageFactory {
                                  defaults.snapshotMaxInterval(),
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
-                                 encrypted);
+                                 encrypted,
+                                 defaults.prefetch());
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
@@ -707,7 +736,8 @@ public final class StorageFactory {
                                  defaults.snapshotMaxInterval(),
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
-                                 encrypted);
+                                 encrypted,
+                                 defaults.prefetch());
     }
 
     /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream
@@ -1436,7 +1466,19 @@ public final class StorageFactory {
                                                       String nodeId,
                                                       Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
-        var instance = StorageInstance.storageInstance(name, tiers, metadataStore);
+        // The prefetch manager needs the instance, and the instance must tell the manager of every read hit: the
+        // listener reaches the manager through a holder bound once both exist.
+        var prefetchHolder = new AtomicReference<>(PrefetchManager.NOOP);
+        var instance = StorageInstance.storageInstance(name,
+                                                       tiers,
+                                                       metadataStore,
+                                                       WritePolicy.WRITE_THROUGH,
+                                                       Option.none(),
+                                                       AppendLog.TornTailSink.logOnly(),
+                                                       id -> prefetchHolder.get().recordAccess(id));
+        var prefetchManager = prefetchManagerFor(config, instance);
+
+        prefetchHolder.set(prefetchManager);
         var snapshotConfig = buildSnapshotConfig(config, nodeId).withVolumeSentinel(volumeSentinel(tiers,
                                                                                                    Path.of(config.snapshotPath())));
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
@@ -1457,15 +1499,52 @@ public final class StorageFactory {
                                             tiers.size(),
                                             config.snapshotPath());
 
-                                   return StorageSetup.storageSetup(name,
-                                                                    instance,
-                                                                    snapshotManager,
-                                                                    readinessGate,
-                                                                    metadataStore,
-                                                                    demotionManager,
-                                                                    garbageCollector,
-                                                                    dhtMarkerCheck);
+                                   return new StorageSetup(name,
+                                                           instance,
+                                                           snapshotManager,
+                                                           readinessGate,
+                                                           metadataStore,
+                                                           demotionManager,
+                                                           garbageCollector,
+                                                           dhtMarkerCheck,
+                                                           Option.empty(),
+                                                           prefetchManager);
                                });
+    }
+
+    /// The real prefetch manager unless the instance switched prefetching off (`[storage.<name>] prefetch = false`).
+    /// It starts dormant: the node activates it when it reports ready ([#activatePrefetch]).
+    private static PrefetchManager prefetchManagerFor(StorageConfig config, StorageInstance instance) {
+        return config.prefetch()
+               ? PrefetchManager.prefetchManager(instance, PrefetchConfig.prefetchConfig())
+               : PrefetchManager.NOOP;
+    }
+
+    /// The prefetch managers that are real, by storage instance name -- what the SWIM prefetch channel routes hints
+    /// to. An instance with prefetching off (and `streams`, which has none) is absent.
+    public static Map<String, PrefetchManager> prefetchManagers(Map<String, StorageSetup> setups) {
+        return setups.entrySet()
+                     .stream()
+                     .filter(entry -> entry.getValue().prefetchManager() != PrefetchManager.NOOP)
+                     .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().prefetchManager()));
+    }
+
+    /// Wakes every instance's prefetch manager: a node that reports ready starts to gossip hints and act on them.
+    public static Unit activatePrefetch(Map<String, StorageSetup> setups) {
+        prefetchManagers(setups).forEach((name, manager) -> activateOne(name, manager));
+
+        return unit();
+    }
+
+    /// Puts them back to sleep when the node stops serving, so a stopping node neither gossips nor starts fetches.
+    public static Unit deactivatePrefetch(Map<String, StorageSetup> setups) {
+        prefetchManagers(setups).values().forEach(PrefetchManager::deactivate);
+
+        return unit();
+    }
+
+    private static void activateOne(String name, PrefetchManager manager) {
+        manager.activate().onFailure(cause -> log.warn("Prefetch manager for '{}' could not be activated: {}", name, cause.message()));
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED

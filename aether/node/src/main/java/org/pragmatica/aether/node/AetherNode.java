@@ -82,6 +82,7 @@ import org.pragmatica.aether.node.backup.GitBackupRepository;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
+import org.pragmatica.aether.node.prefetch.StoragePrefetchChannel;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
@@ -2793,6 +2794,7 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
+                StorageFactory.deactivatePrefetch(storageSetups);
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
 
                 return Unit.unit();
@@ -5243,6 +5245,13 @@ public interface AetherNode extends ManageableNode {
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
         swimHealthDetector.addTransportObservationEmitter(delegateRouter::route);
+        // Storage prefetch hints ride SWIM's application gossip: once per probe round the hottest blocks of one
+        // instance go to one random peer in a datagram of their own, and arriving hints reach the prefetch manager
+        // of the instance they name. The managers stay dormant until the node reports ready.
+        swimHealthDetector.registerGossipChannel(StoragePrefetchChannel.CHANNEL,
+                                                 StoragePrefetchChannel.storagePrefetchChannel(StorageFactory.prefetchManagers(storageSetups),
+                                                                                               serializer,
+                                                                                               deserializer));
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
         // observations directly. NODE_FAILED / NODE_LEFT events are emitted via the
         // canonical MembershipDecision route (MembershipDeltaProjector, Wave 4), keyed off
@@ -6811,7 +6820,8 @@ public interface AetherNode extends ManageableNode {
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          nodeLifecycle::signalReady,
+                                                                                          () -> signalReadyAndWakePrefetch(nodeLifecycle,
+                                                                                                                           storageSetups),
                                                                                           nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
@@ -7360,6 +7370,16 @@ public interface AetherNode extends ManageableNode {
         if (previous != current) {
             ctm.onClusterPhaseChanged(current);
         }
+    }
+
+    /// The node reports ready: lifecycle first, then cross-node block prefetching wakes (it gossips hints and acts on
+    /// them only from here on). Run from the same self-ready signal as the readiness state, so a node that is not ready
+    /// neither tells peers what to fetch nor starts fetching for them.
+    @Contract
+    private static void signalReadyAndWakePrefetch(NodeLifecycle lifecycle,
+                                                   Map<String, StorageFactory.StorageSetup> storageSetups) {
+        lifecycle.signalReady();
+        StorageFactory.activatePrefetch(storageSetups);
     }
 
     /// B1 (membership v2 §7.5): the node's self-ready signal also marks subsystems ready for the

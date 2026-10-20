@@ -21,6 +21,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue.TierStatus;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.storage.PrefetchManager;
+import org.pragmatica.storage.PrefetchStats;
 import org.pragmatica.storage.ReadinessState;
 import org.pragmatica.storage.StorageInstance.TierInfo;
 import org.pragmatica.storage.TierLevel;
@@ -76,11 +78,14 @@ public final class StorageRoutes implements RouteSource {
 
     record StorageListResponse(List<StorageInstanceSummary> instances) {}
 
+    /// `prefetch` is the cross-node block prefetching this instance takes part in; absent for an instance that does not
+    /// (`[storage.<name>] prefetch = false`, and `streams`, which prefetches its own segments).
     record StorageDetailResponse(String name,
                                  List<TierDetail> tiers,
                                  SnapshotDetail snapshot,
                                  ReadinessDetail readiness,
-                                 Option<WalUsage> wal) {}
+                                 Option<WalUsage> wal,
+                                 Option<PrefetchStats> prefetch) {}
 
     record SnapshotResponse(String name, long epoch, long timestampMs) {}
 
@@ -360,7 +365,14 @@ public final class StorageRoutes implements RouteSource {
                                          toTierDetails(setup),
                                          toSnapshotDetail(setup),
                                          toReadinessDetail(setup),
-                                         wal);
+                                         wal,
+                                         prefetchStatsOf(setup));
+    }
+
+    private static Option<PrefetchStats> prefetchStatsOf(StorageSetup setup) {
+        return setup.prefetchManager() == PrefetchManager.NOOP
+               ? Option.none()
+               : Option.some(setup.prefetchManager().stats());
     }
 
     private static SnapshotResponse triggerSnapshot(StorageSetup setup) {

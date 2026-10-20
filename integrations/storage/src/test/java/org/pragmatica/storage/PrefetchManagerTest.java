@@ -133,27 +133,26 @@ class PrefetchManagerTest {
     @Nested
     class HintProcessingTests {
 
+        /// The block lives only in the cluster-shared tier -- the case this feature exists for. The old version of
+        /// this test put it in a node-private "durable" tier and asserted a `get` succeeded, which holds with or
+        /// without prefetch; here the assertion is on the cache tier, which only a prefetch can fill.
         @Test
-        void processHints_missingBlock_triggersPrefetch() {
-            // Use two-tier storage so the block is stored in the durable tier
-            var durableTier = MemoryTier.memoryTier(1024 * 1024, TierLevel.LOCAL_DISK);
-            var twoTierStorage = StorageInstance.storageInstance("two-tier", List.of(memoryTier, durableTier));
-
-            // Store block in durable tier only (simulate remote data)
+        void processHints_blockOnlyInTheSharedTier_copiesItIntoTheCacheTier() {
+            var shared = new SharedTestTier();
+            var sharedOnlyStorage = StorageInstance.storageInstance("shared-only", List.of(memoryTier, shared));
             var id = blockIdOf(BLOCK_A);
-            durableTier.put(id, BLOCK_A).await()
-                       .onFailure(c -> fail("put failed: " + c.message()));
 
-            var pm = prefetchManager(twoTierStorage, config);
+            shared.put(id, BLOCK_A).await().onFailure(c -> fail("put failed: " + c.message()));
+
+            var pm = prefetchManager(sharedOnlyStorage, config);
             pm.activate();
 
-            var hints = List.of(prefetchHint(id.hexString(), 10, TierLevel.MEMORY.name()));
-            pm.processHints(hints);
+            assertThat(memoryTier.exists(id).await().unwrap()).as("control: not local before the hint").isFalse();
 
-            // Allow async prefetch to complete
-            twoTierStorage.get(id).await()
-                          .onFailure(c -> fail("get failed: " + c.message()))
-                          .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+            pm.processHints(List.of(prefetchHint(id.hexString(), 10)));
+
+            assertThat(memoryTier.exists(id).await().unwrap()).isTrue();
+            assertThat(pm.stats().warmed()).isEqualTo(1);
         }
 
         @Test
@@ -168,11 +167,12 @@ class PrefetchManagerTest {
 
             var initialUsed = memoryTier.usedBytes();
 
-            var hints = List.of(prefetchHint(id.hexString(), 10, TierLevel.MEMORY.name()));
+            var hints = List.of(prefetchHint(id.hexString(), 10));
             pm.processHints(hints);
 
             // Block already exists, no additional storage activity expected
             assertThat(memoryTier.usedBytes()).isEqualTo(initialUsed);
+            assertThat(pm.stats().warmed()).as("started, but nothing was fetched").isZero();
         }
 
         @Test
@@ -183,7 +183,7 @@ class PrefetchManagerTest {
             var id = blockIdOf(BLOCK_A);
 
             // Access count 1, threshold is 3 — should be ignored
-            var hints = List.of(prefetchHint(id.hexString(), 1, TierLevel.MEMORY.name()));
+            var hints = List.of(prefetchHint(id.hexString(), 1));
             pm.processHints(hints);
 
             // No prefetch initiated — block still doesn't exist
@@ -218,7 +218,7 @@ class PrefetchManagerTest {
             // NOT activated — dormant
 
             var id = blockIdOf(BLOCK_A);
-            var hints = List.of(prefetchHint(id.hexString(), 100, TierLevel.MEMORY.name()));
+            var hints = List.of(prefetchHint(id.hexString(), 100));
 
             pm.processHints(hints);
 
@@ -271,7 +271,7 @@ class PrefetchManagerTest {
             pm.activate();
 
             var id = blockIdOf(BLOCK_A);
-            var hints = List.of(prefetchHint(id.hexString(), 10, TierLevel.MEMORY.name()));
+            var hints = List.of(prefetchHint(id.hexString(), 10));
 
             // First attempt sets cooldown
             pm.processHints(hints);

@@ -855,6 +855,8 @@ public final class ConfigLoader {
         // #253: per-instance opt-in into encryption; requires [storage.encryption] to carry a keyring
         // (enforced by StorageEncryptionConfigValidator, not here).
         var encrypted = doc.getBoolean(sectionName, "encrypted").or(false);
+        // Cross-node block prefetching: on unless an operator switches it off for the instance.
+        var prefetch = doc.getBoolean(sectionName, "prefetch").or(true);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -864,7 +866,8 @@ public final class ConfigLoader {
                                            snapshotInterval,
                                            retentionCount,
                                            walPath,
-                                           encrypted);
+                                           encrypted,
+                                           prefetch);
     }
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {

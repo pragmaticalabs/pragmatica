@@ -76,6 +76,8 @@ public sealed interface NodeCodecs {
         // write when the harness happens to hit the owner directly. Aggregation is manual, so a new
         // @Codec package is INERT until this line exists — check here FIRST for any new wire type.
         all.addAll(org.pragmatica.aether.node.entityforward.EntityforwardCodecsNode.CODECS);
+        // Storage prefetch hints: the payload SWIM's application gossip carries between nodes (StoragePrefetchChannel).
+        all.addAll(org.pragmatica.aether.node.prefetch.PrefetchCodecsNode.CODECS);
         // aether-stream wire types (replication, read-forward, stream-consensus) — without these the
         // active replication / catch-up / forward sends throw "No codec registered" over the cluster network.
         all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
