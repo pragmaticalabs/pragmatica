@@ -132,7 +132,8 @@ public interface CommunityPlacementReconciler {
                                        new AtomicBoolean(),
                                        new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
                                        new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
-                                       clock);
+                                       clock,
+                                       new java.util.concurrent.ConcurrentHashMap<>());
     }
 }
 
@@ -151,7 +152,8 @@ record PlacementReconciler(NodeId self,
                            AtomicBoolean running,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> protectedNodes,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes,
-                           java.util.function.LongSupplier clock) implements CommunityPlacementReconciler {
+                           java.util.function.LongSupplier clock,
+                           java.util.concurrent.ConcurrentHashMap<String, Long> emptySince) implements CommunityPlacementReconciler {
     @Override
     public java.util.Set<NodeId> protectedView() {
         return protectedNodes.get()
@@ -318,7 +320,122 @@ record PlacementReconciler(NodeId self,
                                              (identity, cause) -> org.slf4j.LoggerFactory.getLogger(CommunityPlacementReconciler.class)
                                                                                          .warn("Community {} reconciliation deferred: {}",
                                                                                                identity,
-                                                                                               cause.message()));
+                                                                                               cause.message()))
+                                 .flatMap(_ -> reconcileDerived(config));
+    }
+
+    /// #241: the derived communities (`<source>-w-N`) of a cluster that declares no `[community.*]` follow the committed
+    /// `[community_policy]`: their target size is re-stamped to `max_size`, and with growth on an empty one is dissolved after the
+    /// grace. Declared communities are never touched here. Needs a committed policy: without one there is nothing to follow.
+    private Promise<Unit> reconcileDerived(ClusterBootstrapConfig config) {
+        return config.communities().isEmpty()
+               ? config.communityPolicy().fold(Promise::unitPromise, this::reconcileDerivedCommunities)
+               : Promise.unitPromise();
+    }
+
+    private Promise<Unit> reconcileDerivedCommunities(org.pragmatica.aether.config.cluster.CommunityPolicy policy) {
+        var snapshot = aetherSnapshot();
+        var views = derivedViews(snapshot);
+        var since = timeEmptiness(views);
+        var actions = DerivedCommunityPlan.plan(views, policy, since, clock.getAsLong());
+
+        return currentLeader().fold(Promise::unitPromise, leader -> applyDerivedActions(actions, leader, snapshot));
+    }
+
+    private static List<DerivedCommunityPlan.View> derivedViews(Map<AetherKey, AetherValue> snapshot) {
+        var members = snapshot.values()
+                              .stream()
+                              .filter(AetherValue.ActivationDirectiveValue.class::isInstance)
+                              .map(AetherValue.ActivationDirectiveValue.class::cast)
+                              .filter(directive -> !directive.communityId().isBlank())
+                              .collect(Collectors.groupingBy(AetherValue.ActivationDirectiveValue::communityId, Collectors.counting()));
+
+        return snapshot.entrySet()
+                       .stream()
+                       .filter(entry -> entry.getKey() instanceof AetherKey.CommunityKey && entry.getValue() instanceof AetherValue.CommunityValue)
+                       .map(entry -> derivedView(((AetherKey.CommunityKey) entry.getKey()).communityId(),
+                                                 (AetherValue.CommunityValue) entry.getValue(),
+                                                 members))
+                       .flatMap(Option::stream)
+                       .toList();
+    }
+
+    private static Option<DerivedCommunityPlan.View> derivedView(String id,
+                                                                 AetherValue.CommunityValue community,
+                                                                 Map<String, Long> members) {
+        return CommunityGrowthPolicy.derivedIndex(community.sourceName(), id)
+                                    .map(_ -> DerivedCommunityPlan.View.view(id,
+                                                                            community.sourceName(),
+                                                                            community.state(),
+                                                                            community.targetSize(),
+                                                                            members.getOrDefault(id, 0L).intValue()));
+    }
+
+    /// Emptiness is timed in this leader's memory: a community first seen empty now starts its grace now, a community seen
+    /// with a member is forgotten. A new leader restarts every grace, which delays a dissolve and never hastens one.
+    private Map<String, Long> timeEmptiness(List<DerivedCommunityPlan.View> views) {
+        var empty = DerivedCommunityPlan.emptyOpen(views);
+
+        emptySince.keySet().retainAll(empty);
+        empty.forEach(id -> emptySince.putIfAbsent(id, clock.getAsLong()));
+
+        return Map.copyOf(emptySince);
+    }
+
+    private Promise<Unit> applyDerivedActions(List<DerivedCommunityPlan.Action> actions,
+                                              LeaderValue leader,
+                                              Map<AetherKey, AetherValue> snapshot) {
+        return actions.stream()
+                      .reduce(Promise.unitPromise(),
+                              (previous, action) -> previous.flatMap(_ -> applyDerived(action, leader, snapshot)),
+                              (_, later) -> later);
+    }
+
+    // FER (degrade forward): a refused or failed write for one derived community is dropped, and the pass carries on to the next. Guarantee: the
+    // community is left exactly as committed, because every write is an expected-value transaction; nothing is half-applied. Mechanism: the
+    // next pass (every 10 s) recomputes the actions from the committed state, so a dropped write is retried by construction.
+    private Promise<Unit> applyDerived(DerivedCommunityPlan.Action action,
+                                       LeaderValue leader,
+                                       Map<AetherKey, AetherValue> snapshot) {
+        return (switch (action) {
+            case DerivedCommunityPlan.Action.Restamp restamp -> rewriteCommunity(restamp.communityId(),
+                                                                                  community -> community.withTargetSize(restamp.targetSize()),
+                                                                                  leader,
+                                                                                  snapshot);
+            case DerivedCommunityPlan.Action.BeginDissolve begin -> rewriteCommunity(begin.communityId(),
+                                                                                      community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVING),
+                                                                                      leader,
+                                                                                      snapshot);
+            case DerivedCommunityPlan.Action.Reopen reopen -> rewriteCommunity(reopen.communityId(),
+                                                                                community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.FORMING),
+                                                                                leader,
+                                                                                snapshot);
+            case DerivedCommunityPlan.Action.CompleteDissolve complete -> markDissolved(complete.communityId(), leader, snapshot);
+        }).recover(_ -> Unit.unit());
+    }
+
+    private Promise<Unit> rewriteCommunity(String communityId,
+                                           Function<AetherValue.CommunityValue, AetherValue.CommunityValue> change,
+                                           LeaderValue leader,
+                                           Map<AetherKey, AetherValue> snapshot) {
+        var key = new AetherKey.CommunityKey(communityId);
+
+        return store.getTyped(key, AetherValue.CommunityValue.class)
+                    .fold(Promise::unitPromise,
+                          before -> {
+                              var id = UUID.randomUUID().toString();
+                              var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                    id,
+                                                                                                    leader,
+                                                                                                    reservationGuardsFromSnapshot(snapshot),
+                                                                                                    List.of(new KVCommand.Mutation<>(key,
+                                                                                                                                     Option.some(before),
+                                                                                                                                     Option.some(change.apply(before)))));
+
+                              return apply.apply(List.of(command))
+                                          .map(results -> accepted(results, id))
+                                          .mapToUnit();
+                          });
     }
 
     private Promise<Unit> reconcileIdentity(String identity) {
@@ -920,7 +1037,7 @@ record PlacementReconciler(NodeId self,
             return Option.from(members.entrySet()
                                       .stream()
                                       .sorted(Map.Entry.comparingByKey(Comparator.comparing(NodeId::id)))
-                                      .findFirst()).fold(() -> markDissolved(policy, leader, snapshot),
+                                      .findFirst()).fold(() -> markDissolved(policy.id(), leader, snapshot),
                                                          member -> reserveRetirement(config,
                                                                                      policy,
                                                                                      leader,
@@ -1047,10 +1164,10 @@ record PlacementReconciler(NodeId self,
                              });
     }
 
-    private Promise<Unit> markDissolved(CommunityPlacement policy,
+    private Promise<Unit> markDissolved(String communityId,
                                         LeaderValue leader,
                                         Map<AetherKey, AetherValue> snapshot) {
-        var key = new AetherKey.CommunityKey(policy.id());
+        var key = new AetherKey.CommunityKey(communityId);
 
         return store.getTyped(key, AetherValue.CommunityValue.class)
                     .fold(Promise::unitPromise,

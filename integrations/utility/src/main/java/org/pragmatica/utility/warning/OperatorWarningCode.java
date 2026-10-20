@@ -380,7 +380,15 @@ public enum OperatorWarningCode {
     /// decisions, or it left the lagging state another way (promoted to a voter, removed from the cluster, shutting down; the message
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
-    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING);
+    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// A worker joined a source whose derived communities cannot take it (#241): every community of the source is at the hard ceiling and
+    /// the source is at its `community_policy.max_communities`, so the worker gets no community. Subject is the source; the message names the
+    /// worker and the bounds. Raise `max_communities` or `max_size` in the cluster config, or add worker capacity under another source; the
+    /// worker takes a community when it rejoins. Closed by [#COMMUNITY_GROWTH_RESUMED].
+    COMMUNITY_GROWTH_BLOCKED("community-growth-blocked", "community-growth", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
+    /// was raised, or a community has room). INFO, published only after a published blocked event for the source (#752 mechanism).
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

@@ -21,7 +21,9 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.AuditLog;
+import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
+import org.pragmatica.aether.deployment.cluster.CommunityGrowthPolicy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
@@ -112,6 +114,9 @@ import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
+
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1116,11 +1121,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var source = resolveSource(node);
 
             if (policies.isEmpty()) {
-                commitWorkerCommunity(node,
-                                      source + WORKER_COMMUNITY_SUFFIX,
-                                      source,
-                                      ctx.communityPolicy().current().maxSize(),
-                                      configuration.observed());
+                assignDerivedCommunity(node, source, configuration.observed());
 
                 return;
             }
@@ -1141,6 +1142,81 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                               "",
                                                                               policy.targetSize(),
                                                                               configuration.observed()));
+        }
+
+        /// #241: a worker of a source with no declared communities takes a DERIVED community. With growth off (the default) that is
+        /// the source's single `<source>-w-0`; with growth on it is whatever [CommunityGrowthPolicy] chooses over the source's
+        /// derived communities, a new `<source>-w-N` included. Either way it is a worker with no community yet: a committed
+        /// assignment is never revisited.
+        private void assignDerivedCommunity(NodeId node,
+                                            String source,
+                                            Option<AetherValue.ClusterConfigValue> configuration) {
+            var policy = ctx.communityPolicy().current();
+
+            if (!policy.growth()) {
+                commitWorkerCommunity(node, source + WORKER_COMMUNITY_SUFFIX, source, policy.maxSize(), configuration);
+
+                return;
+            }
+
+            applyGrowthDecision(node,
+                                source,
+                                configuration,
+                                CommunityGrowthPolicy.pick(source,
+                                                           DerivedCommunities.candidates(ctx, source, ctx.nowMs()),
+                                                           policy));
+        }
+
+        private void applyGrowthDecision(NodeId node,
+                                         String source,
+                                         Option<AetherValue.ClusterConfigValue> configuration,
+                                         CommunityGrowthPolicy.Decision decision) {
+            switch (decision) {
+                case CommunityGrowthPolicy.Decision.Join join -> admitToCommunity(node, source, join.communityId(), configuration);
+                case CommunityGrowthPolicy.Decision.Mint mint -> admitToCommunity(node, source, mint.communityId(), configuration);
+                case CommunityGrowthPolicy.Decision.Refusal _ -> refuseGrowth(node, source);
+            }
+        }
+
+        private void admitToCommunity(NodeId node,
+                                      String source,
+                                      String communityId,
+                                      Option<AetherValue.ClusterConfigValue> configuration) {
+            ctx.communityAdmission().register(node, communityId, ctx.nowMs());
+            commitWorkerCommunity(node, communityId, source, ctx.communityPolicy().current().maxSize(), configuration);
+
+            if (ctx.communityAdmission().clearBlocked(source)) {
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                                       source,
+                                       "Worker {} of source {} was admitted to community {} again",
+                                       node,
+                                       source,
+                                       communityId);
+            }
+        }
+
+        // FER (degrade forward): the refused worker joins the cluster without a community and the refusal is reported, so the
+        // failure is visible and never silent. Guarantee: the worker is not placed work as a community member and the operator is told
+        // why; nothing is retried by the leader. Mechanism: the warning below, closed by community-growth-resumed on the next
+        // admission for the source; the worker takes a community when it rejoins after the bound is raised.
+        private void refuseGrowth(NodeId node, String source) {
+            var policy = ctx.communityPolicy().current();
+
+            ctx.communityAdmission().markBlocked(source);
+            OperatorWarnings.raise(log,
+                                   ctx.operatorWarnings(),
+                                   OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                                   source,
+                                   "No community can take worker {} of source {}: its communities are at the {} ceiling and the source is at "
+                                   + "the bound of {} (max_size {}). Raise community_policy.max_communities or max_size, or add worker "
+                                   + "capacity under another source; the worker takes a community when it rejoins",
+                                   node,
+                                   source,
+                                   CommunityPolicy.CEILING,
+                                   policy.maxCommunities(),
+                                   policy.maxSize());
         }
 
         private Option<org.pragmatica.aether.config.cluster.CommunityPlacement> reservedWorkerCommunity(NodeId node,
