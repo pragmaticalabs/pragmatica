@@ -25,6 +25,8 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import org.assertj.core.api.Assertions;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.security.CertificateBundle;
@@ -37,10 +39,15 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 public final class TlsProbe {
     private TlsProbe() {}
 
+    /// The port a listener really bound, or a test failure naming the listener when it reports none.
+    public static int requireBoundPort(Option<Integer> bound, String listener) {
+        return bound.or(() -> Assertions.fail("%s reports no bound port", listener));
+    }
+
     /// Fails the test AT the start, naming the cause. A listener that did not start (a stolen port, #2152) otherwise
     /// surfaces only later as an unrelated "control" assertion with no cause.
     public static void requireStarted(Result<Unit> outcome, String listener) {
-        outcome.onFailure(cause -> org.assertj.core.api.Assertions.fail("%s did not start: %s", listener, cause.message()));
+        outcome.onFailure(cause -> Assertions.fail("%s did not start: %s", listener, cause.message()));
     }
 
 

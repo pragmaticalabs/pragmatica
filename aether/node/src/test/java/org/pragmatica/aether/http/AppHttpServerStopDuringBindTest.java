@@ -63,7 +63,7 @@ class AppHttpServerStopDuringBindTest {
                                                                                            boundAtGate,
                                                                                            stopAtGate));
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener on TCP " + TEST_PORT);
 
         assertThat(boundAtGate.get())
             .as("control: TCP %d must already be held when the gate runs, or this test would be "
