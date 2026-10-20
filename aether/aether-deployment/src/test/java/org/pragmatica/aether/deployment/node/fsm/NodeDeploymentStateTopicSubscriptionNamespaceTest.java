@@ -104,6 +104,10 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(SLICE.base()),
                                                                        SliceTargetValue.sliceTargetValue(SLICE.version(),
                                                                                                           1,
+                                                                                                          Option.some(BlueprintId.blueprintId(BLUEPRINT)))),
+                                                    new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(CONTEXT_SLICE.base()),
+                                                                       SliceTargetValue.sliceTargetValue(CONTEXT_SLICE.version(),
+                                                                                                          1,
                                                                                                           Option.some(BlueprintId.blueprintId(BLUEPRINT)))))));
 
         cluster = new RecordingClusterNode(SELF);
