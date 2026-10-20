@@ -1084,10 +1084,10 @@ public final class PartitionBackfill {
                                         request,
                                         () -> progress(streamName, partition))
                         .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response).withSuccess(_ -> markVerifiedIfCompared(streamName,
-                                                                                                                                                               partition,
-                                                                                                                                                               epoch,
-                                                                                                                                                               !response.payloads()
-                                                                                                                                                                        .isEmpty())));
+                                                                                                                                                                 partition,
+                                                                                                                                                                 epoch,
+                                                                                                                                                                 !response.payloads()
+                                                                                                                                                                          .isEmpty())));
     }
 
     /// The compare succeeded against the committed owner of `epoch`: this copy may now serve and acknowledge at and above that
@@ -2239,9 +2239,9 @@ public final class PartitionBackfill {
                                                      .isEmpty()
                                              ? handleNoSource(streamName, partition, replicas)
                                              : applyAndPromote(streamName, partition, -1L, response).withSuccess(_ -> markVerifiedIfCompared(streamName,
-                                                                                                                                           partition,
-                                                                                                                                           epoch,
-                                                                                                                                           true)));
+                                                                                                                                             partition,
+                                                                                                                                             epoch,
+                                                                                                                                             true)));
     }
 
     /// An owner reporting `-1` is an EMPTY owner, never a true tail (#445) — self must not promote off

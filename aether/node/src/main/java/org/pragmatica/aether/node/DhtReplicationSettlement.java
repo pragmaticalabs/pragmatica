@@ -448,7 +448,7 @@ public interface DhtReplicationSettlement {
                       .withSuccess(_ -> filed.set(Option.some(desired)))
                       .withResult(_ -> filing.set(Option.none()))
                       .withFailure(cause -> LOG.debug("DHT replication report not filed: {}",
-                                                    cause.message()));
+                                                      cause.message()));
             }
 
             private Option<DhtReplicationChangeValue> committed() {
@@ -521,8 +521,8 @@ public interface DhtReplicationSettlement {
                       .apply(List.of(transaction))
                       .withResult(_ -> inFlight.set(Option.none()))
                       .withFailure(cause -> LOG.debug("DHT replication change {} not committed: {}",
-                                                    next.version(),
-                                                    cause.message()));
+                                                      next.version(),
+                                                      cause.message()));
             }
         }
 

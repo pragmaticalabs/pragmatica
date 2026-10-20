@@ -1093,32 +1093,48 @@ class StorageFactoryEncryptionTest {
                 .isFalse();
     }
 
-    /// Async-callback probe (a late-resolving DHT, not an inline one): the failed-start handler
-    /// (`Main#exitWithError` stops the process) runs on the admission's failure, so the disk-marker rollback and
-    /// the settling of every DHT gate must land BEFORE the refusal is observable. A DHT that answers inline hides
-    /// the race (`onFailure` then runs on the caller); here every answer comes from another thread after a delay.
-    /// Repeated, because each trial is a race the detached callback loses most of the time, not always.
+    /// Async-callback probes (a late-resolving DHT, not an inline one): the failed-start handler (`Main#exitWithError`
+    /// stops the process) runs on the admission's failure, so the disk-marker rollback, and the settling of every DHT
+    /// gate, must land BEFORE the refusal is observable. A DHT that answers inline hides the race (`onFailure` then runs
+    /// on the caller); here every answer comes from another thread after a delay. Repeated, because each trial is a
+    /// race the detached callback loses most of the time, not always.
     @Test
-    void admitDhtMarkers_settlesRollbackAndGatesBeforeRefusalIsObservable_whenDhtAnswersLaterOnAnotherThread() throws IOException {
+    void admitDhtMarkers_rollsBackDiskMarkerBeforeRefusalIsObservable_whenDhtAnswersLaterOnAnotherThread() throws IOException {
         var staleMarkers = 0;
-        var pendingGates = 0;
 
         for (var trial = 0; trial < LATE_DHT_TRIALS; trial++) {
             var base = new InMemoryDHTClient();
             var vaultDisk = tempDir.resolve("vault-late-" + trial);
             var boot = bootRefusedByDht(base, tempDir.resolve("plain-late-" + trial), vaultDisk);
 
-            StorageFactory.admitDhtMarkers(new LateDHTClient(base), boot, () -> false)
-                          .await()
-                          .onSuccess(_ -> fail("the DHT check must refuse a boot without a keyring over an encrypted namespace"));
+            refusedAfterLateAnswers(base, boot);
             staleMarkers += Files.exists(vaultDisk.resolve(EncryptingStorageTier.MARKER_FILE_NAME)) ? 1 : 0;
-            pendingGates += StorageFactory.pendingDhtAdmissions(boot).isEmpty() ? 0 : 1;
         }
 
         assertThat(staleMarkers).as("trials where the caller saw the refusal before the disk marker was rolled back")
                                 .isZero();
+    }
+
+    @Test
+    void admitDhtMarkers_settlesEveryGateBeforeRefusalIsObservable_whenDhtAnswersLaterOnAnotherThread() throws IOException {
+        var pendingGates = 0;
+
+        for (var trial = 0; trial < LATE_DHT_TRIALS; trial++) {
+            var base = new InMemoryDHTClient();
+            var boot = bootRefusedByDht(base, tempDir.resolve("plain-gates-" + trial), tempDir.resolve("vault-gates-" + trial));
+
+            refusedAfterLateAnswers(base, boot);
+            pendingGates += StorageFactory.pendingDhtAdmissions(boot).isEmpty() ? 0 : 1;
+        }
+
         assertThat(pendingGates).as("trials where the caller saw the refusal before every DHT gate was settled")
                                 .isZero();
+    }
+
+    private static void refusedAfterLateAnswers(DHTClient base, Map<String, StorageFactory.StorageSetup> boot) {
+        StorageFactory.admitDhtMarkers(new LateDHTClient(base), boot, () -> false)
+                      .await()
+                      .onSuccess(_ -> fail("the DHT check must refuse a boot without a keyring over an encrypted namespace"));
     }
 
     @Test
