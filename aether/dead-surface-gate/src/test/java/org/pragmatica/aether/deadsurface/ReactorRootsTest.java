@@ -87,7 +87,8 @@ class ReactorRootsTest {
     }
 
     /// The non-vacuity guard: every corpus module with production sources is BUILT (has
-    /// `target/classes`) by the time the gate runs, and contributes a root. Nested modules are built
+    /// `target/classes`) by the time the gate runs, and contributes a root (resources-only
+    /// `pg-test-corpus` also has one, so roots may outnumber source modules). Nested modules are built
     /// before the gate only because the gate's pom depends on them — see the next test.
     @Test
     void productionRoots_realTree_hasOneRootPerModuleWithSources() {
@@ -98,7 +99,8 @@ class ReactorRootsTest {
         assertTrue(ReactorRoots.missingProductionOutput().isEmpty(),
                    "corpus modules with sources but no target/classes: " + ReactorRoots.missingProductionOutput());
         assertEquals(55, withSources.size(), "modules with src/main/java changed (57 minus pg-test-corpus and this gate)");
-        assertEquals(withSources.size(), ReactorRoots.productionRoots().size());
+        assertTrue(ReactorRoots.productionRoots().containsAll(withSources.stream().map(module -> module.resolve("target/classes")).toList()),
+                   "a module with sources contributes no root");
     }
 
     /// Reactor order by construction: Maven schedules this gate after every module it declares as a

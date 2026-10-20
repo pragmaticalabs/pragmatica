@@ -238,333 +238,174 @@
             Corpus modules NESTED under the aggregators above (ReactorRoots follows their <modules>
             transitively): environment/*, resource/* (resource-api is declared further down, it is also
             compiled against), forge/*, pg-tools/*, plus http-security and db-migrations from the top
-            level list. Declared for REACTOR ORDER ONLY, so the transitive closure is excluded: it keeps
-            their third-party jars off this module's test classpath. The one-for-one correspondence with
-            the walked module tree is asserted by ReactorRootsTest, not left to a reader's eye.
+            level list. Declared for REACTOR ORDER, with their transitive closure left in place: a
+            wildcard exclusion looks free but is not. Maven's nearest-wins mediation then drops the same
+            artifact's other path (via node), and its children (smtp, for resource-notification) fall
+            off the classpath that OptionBindingSupportGateTest reads through ServiceLoader. The
+            one-for-one correspondence with the walked module tree is asserted by ReactorRootsTest, not
+            left to a reader's eye.
         -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>http-security</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>db-migrations</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>environment-aws</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>environment-azure</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>environment-docker</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>environment-gcp</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>environment-hetzner</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-jdbc</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-r2dbc</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-jooq-api</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-jooq</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-jooq-r2dbc</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-async</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-jooq-async</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-http</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-interceptors</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>artifact-repo</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-notification</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-durable-entity</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>forge-simulator</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>forge-load</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>forge-api</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>forge-core</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>pg-parser</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>pg-schema</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>pg-codegen</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>pg-test-corpus</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
@@ -572,24 +413,12 @@
             <version>${project.version}</version>
             <type>maven-plugin</type>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>sql-splitter</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>*</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <!--
