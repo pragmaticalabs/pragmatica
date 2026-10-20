@@ -188,16 +188,17 @@ class ReactorRootsTest {
     // --- helpers --------------------------------------------------------------------------------------
 
     /// `aether/pom.xml` -> aggregator `agg` -> `leaf`; the aggregator also lists `gated` inside a
-    /// `<profile>`.
+    /// `<profile>`, declared BEFORE the default `<modules>` so a reader that takes the first block it finds
+    /// picks the profile's.
     private static void fixtureTree(Path aether) throws IOException {
         Files.writeString(aether.resolve("pom.xml"),
                           POM_OPEN + "<modules><module>agg</module><!-- <module>commented</module> --></modules></project>");
         Files.createDirectories(aether.resolve("agg/leaf"));
         Files.createDirectories(aether.resolve("agg/gated"));
         Files.writeString(aether.resolve("agg/pom.xml"),
-                          POM_OPEN + "<packaging>pom</packaging><modules><module> leaf </module></modules>" +
+                          POM_OPEN + "<packaging>pom</packaging>" +
                           "<profiles><profile><id>gated</id><modules><module>gated</module></modules></profile>" +
-                          "</profiles></project>");
+                          "</profiles><modules><module> leaf </module></modules></project>");
         Files.writeString(aether.resolve("agg/leaf/pom.xml"), POM_OPEN + "</project>");
         Files.writeString(aether.resolve("agg/gated/pom.xml"), POM_OPEN + "</project>");
     }
