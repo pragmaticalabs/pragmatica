@@ -59,6 +59,12 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <version>${platform.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>pg-codegen</artifactId>
             <version>${platform.version}</version>
@@ -82,6 +88,11 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
+                            <version>${platform.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>jbct-async-check</artifactId>
                             <version>${platform.version}</version>
                         </path>
                         <path>

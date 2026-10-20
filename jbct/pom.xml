@@ -107,6 +107,11 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-async-check</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-init</artifactId>
                 <version>${project.version}</version>
             </dependency>

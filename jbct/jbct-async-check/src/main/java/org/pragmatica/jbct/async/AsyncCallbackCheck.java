@@ -90,13 +90,16 @@ public final class AsyncCallbackCheck implements TaskListener {
     private static final Set<String> COMBINATOR_OWNERS = Set.of("org.pragmatica.lang.Result", "org.pragmatica.lang.Option");
     private static final Set<String> RESOLVERS = Set.of("succeed", "fail", "resolve", "cancel");
     private static final Set<String> LOGGER_OWNERS = Set.of("org.slf4j.Logger", "org.slf4j.spi.LoggingEventBuilder",
-                                                            "java.lang.System$Logger", "java.util.logging.Logger",
+                                                            "java.lang.System.Logger", "java.util.logging.Logger",
                                                             "java.io.PrintStream", "org.slf4j.MDC");
     private static final Set<String> EXECUTOR_OWNERS = Set.of("java.util.concurrent.ScheduledExecutorService",
                                                               "java.util.concurrent.Executor",
                                                               "java.util.concurrent.ExecutorService",
                                                               "java.util.concurrent.CompletableFuture");
-    private static final Pattern DETACHED = Pattern.compile("(//|/\\*|\\*).*\\bdetached\\s*[:\\-–—]\\s*\\S.{2,}",
+    private static final Pattern STRING_LITERAL = Pattern.compile("\"(?:\\\\.|[^\"\\\\])*\"");
+
+    /// The comment opener must come right before `detached`, so a string literal or "not detached: ..." does not count.
+    private static final Pattern DETACHED = Pattern.compile("(?://|/\\*+|^\\s*\\*+)\\s*detached\\s*[:\\-\u2013\u2014]\\s*\\S.{2,}",
                                                             Pattern.CASE_INSENSITIVE);
 
     private final Trees trees;
@@ -487,6 +490,10 @@ public final class AsyncCallbackCheck implements TaskListener {
                         return identifierIsShared(current, id);
                     }
                     case MemberSelectTree select -> {
+                        if (select.getIdentifier().contentEquals("this") || select.getIdentifier().contentEquals("super")) {
+                            return true;
+                        }
+
                         var element = trees.getElement(current);
 
                         if (element != null && element.getKind() == ElementKind.FIELD && isStatic(element)) {
@@ -610,7 +617,8 @@ public final class AsyncCallbackCheck implements TaskListener {
 
     private static boolean hasDetachedTag(String text, int start, int end) {
         var lineStart = text.lastIndexOf('\n', start - 1) + 1;
-        var lines = new ArrayList<String>(List.of(text.substring(lineStart, Math.min(text.length(), end)).split("\n", -1)));
+        var lineEnd = text.indexOf('\n', end) < 0 ? text.length() : text.indexOf('\n', end);
+        var lines = new ArrayList<String>(List.of(text.substring(lineStart, lineEnd).split("\n", -1)));
         var above = lineStart;
 
         while (above > 0) {
@@ -625,7 +633,7 @@ public final class AsyncCallbackCheck implements TaskListener {
             above = previousStart;
         }
 
-        return lines.stream().anyMatch(line -> DETACHED.matcher(line).find());
+        return lines.stream().map(line -> STRING_LITERAL.matcher(line).replaceAll("\"\"")).anyMatch(line -> DETACHED.matcher(line).find());
     }
 
     private void report(TreePath path, MethodInvocationTree call, Effect effect) {

@@ -21,7 +21,7 @@ import com.sun.source.util.Trees;
 /// processor; javac then initialises this processor for every compilation of the module (`*` makes it
 /// unconditional), and the check runs after attribution, when receiver types and method symbols are exact.
 ///
-/// Options: `-Ajbct.async.severity=warning|error` (default `warning`). Under a compiler that is not javac there is no
+/// Options: `-Ajbct.async.severity=warning|error|off` (default `warning`; `off` installs nothing). Under a compiler that is not javac there is no
 /// `JavacTask`, and the check is not installed (a note says so).
 @SupportedAnnotationTypes("*")
 @SupportedOptions(AsyncCallbackProcessor.SEVERITY_OPTION)
@@ -34,8 +34,19 @@ public final class AsyncCallbackProcessor extends AbstractProcessor {
         install(env);
     }
 
+    private boolean announced;
+
+    /// Announces itself once, so that a build log which lacks the line shows the check never ran (an `annotationProcessorPaths`
+    /// list that does not name `jbct-async-check` silently ignores the provided dependency).
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment round) {
+        if (!announced && !"off".equalsIgnoreCase(processingEnv.getOptions().get(SEVERITY_OPTION))) {
+            announced = true;
+            processingEnv.getMessager()
+                         .printMessage(Diagnostic.Kind.NOTE,
+                                       "JBCT-ASYNC-01 active (" + round.getRootElements().size() + " top-level types)");
+        }
+
         return false;
     }
 
@@ -45,6 +56,10 @@ public final class AsyncCallbackProcessor extends AbstractProcessor {
     }
 
     private static void install(ProcessingEnvironment env) {
+        if ("off".equalsIgnoreCase(env.getOptions().get(SEVERITY_OPTION))) {
+            return;
+        }
+
         try {
             var severity = "error".equalsIgnoreCase(env.getOptions().get(SEVERITY_OPTION))
                            ? Diagnostic.Kind.ERROR

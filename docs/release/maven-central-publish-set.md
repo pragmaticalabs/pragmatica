@@ -23,7 +23,7 @@ annotation-processor path out of the generated `pom.xml` files.
 
 | Command | Maven artifacts the generated project needs |
 |---|---|
-| `jbct init` (slice) | `core`, `slice-processor`, `http-routing-adapter`, `resource-api`, `slice-annotations`, `slice-api` (all provided), plugin `jbct-maven-plugin`, processor path `slice-processor` |
+| `jbct init` (slice) | `core`, `slice-processor`, `http-routing-adapter`, `resource-api`, `slice-annotations`, `slice-api` (all provided), `jbct-async-check` (provided), plugin `jbct-maven-plugin`, processor paths `slice-processor` and `jbct-async-check` |
 | `jbct init --no-slice` | `core`, plugin `jbct-maven-plugin` |
 | `jbct init --with-persistence`, `jbct add-persistence` | the slice set plus `pg-codegen` as a processor path |
 | `jbct add-slice`, `jbct add-event` | nothing new (source files and resources only) |
@@ -190,7 +190,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/xml/jackson-xml` | `org.pragmatica-lite:jackson-xml` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `jbct` | `org.pragmatica-lite:jbct-parent` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of jbct-maven-plugin) |
 | `jbct/jbct-cli` | `org.pragmatica-lite:jbct-cli` | jar | skip | the `jbct` CLI and its libraries reach users through the install script and GitHub releases, not as a dependency; `jbct init` and `jbct add-*` reference none of them |
-| `jbct/jbct-async-check` | `org.pragmatica-lite:jbct-async-check` | jar | publish | compiler annotation processor added as a `provided` dependency (JBCT-ASYNC-01, type-attributed `Promise` callback check); no dependencies of its own |
+| `jbct/jbct-async-check` | `org.pragmatica-lite:jbct-async-check` | jar | publish | template dependency (provided) and the compiler `annotationProcessorPaths` entry beside `slice-processor` (JBCT-ASYNC-01, type-attributed `Promise` callback check); no dependencies of its own |
 | `jbct/jbct-core` | `org.pragmatica-lite:jbct-core` | jar | publish | compile/runtime dependency of jbct-maven-plugin |
 | `jbct/jbct-derive` | `org.pragmatica-lite:jbct-derive` | jar | skip | the `jbct` CLI and its libraries reach users through the install script and GitHub releases, not as a dependency; `jbct init` and `jbct add-*` reference none of them |
 | `jbct/jbct-format` | `org.pragmatica-lite:jbct-format` | jar | publish | compile/runtime dependency of jbct-maven-plugin |

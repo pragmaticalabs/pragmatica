@@ -335,6 +335,18 @@ class AsyncCallbackCheckTest {
         }
 
         @Test
+        void flags_qualifiedThisWrite() {
+            assertThat(lines(body("""
+                    boolean done;
+                    class Inner {
+                        void run(Promise<String> p) {
+                            p.onSuccess(_ -> Foo.this.done = true);
+                        }
+                    }
+                    """))).hasSize(1);
+        }
+
+        @Test
         void flags_voidCallOnACollaboratorField() {
             var found = compile(Map.of("org.example.Gate", HEADER + """
                     class Gate {
@@ -560,6 +572,32 @@ class AsyncCallbackCheckTest {
     }
 
     @Nested
+    class Announcement {
+        @Test
+        void note_announcesTheCheckOnceWithTheTypeCount() {
+            compile(Map.of("org.example.Foo", body("void run() { }\n"), "org.example.Bar", HEADER + "class Bar { }\n"), "warning");
+
+            assertThat(NOTES.get()).containsExactly("JBCT-ASYNC-01 active (2 top-level types)");
+        }
+    }
+
+    @Nested
+    class Allowlist {
+        @Test
+        void clean_systemLoggerAndOtherLoggers() {
+            assertThat(lines(body("""
+                    static final System.Logger SLOG = System.getLogger("x");
+                    static final java.util.logging.Logger JUL = java.util.logging.Logger.getLogger("x");
+                    void run(Promise<String> p) {
+                        p.onFailure(_ -> SLOG.log(System.Logger.Level.INFO, "x"));
+                        p.onSuccess(v -> JUL.info(v));
+                        p.onResult(_ -> org.slf4j.MDC.put("a", "b"));
+                    }
+                    """))).isEmpty();
+        }
+    }
+
+    @Nested
     class Siblings {
         @Test
         void flags_allowlistedCallbackWhoseSiblingHasAnEffect() {
@@ -671,6 +709,42 @@ class AsyncCallbackCheckTest {
                         // detached: registration is advisory
                         register("x",
                                  p.onSuccess(_ -> done = true));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void flags_commentsThatMerelyMentionDetached() {
+            for (var comment : List.of("// not detached: nothing here", "// this is a detached - like thing")) {
+                assertThat(lines(body("boolean done;\nvoid run(Promise<String> p) {\n    " + comment + "\n    p.onSuccess(_ -> done = true);\n}\n")))
+                    .as(comment).hasSize(1);
+            }
+
+            assertThat(lines(body("boolean done;\nvoid run(Promise<String> p) {\n    p.onSuccess(_ -> { var s = \"// detached: in a string\"; done = true; });\n}\n")))
+                .hasSize(1);
+        }
+
+        @Test
+        void clean_trailingCommentAfterTheStatement() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> done = true); // detached: flag read on the next tick only
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void clean_blockCommentForms() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        /* detached: flag read on the next tick only */
+                        p.onSuccess(_ -> done = true);
+                        /**
+                         * detached: second flag, same reason
+                         */
+                        p.onFailure(_ -> done = false);
                     }
                     """))).isEmpty();
         }
@@ -813,6 +887,14 @@ class AsyncCallbackCheckTest {
         }
 
         @Test
+        void off_installsNothingAndStaysSilent() {
+            var found = compile(Map.of("org.example.Foo", SOURCE), "off");
+
+            assertThat(found.lines()).isEmpty();
+            assertThat(NOTES.get()).isEmpty();
+        }
+
+        @Test
         void message_namesTheWriteTheFixAndTheEscapeHatch() {
             var message = compile(Map.of("org.example.Foo", SOURCE), "warning").messages().getFirst();
 
@@ -828,6 +910,8 @@ class AsyncCallbackCheckTest {
     private static List<Integer> lines(String source) {
         return compile(Map.of("org.example.Foo", source), "warning").lines();
     }
+
+    private static final ThreadLocal<List<String>> NOTES = ThreadLocal.withInitial(List::of);
 
     private record Found(List<Integer> lines, List<String> messages, List<Diagnostic.Kind> kinds) {}
 
@@ -847,8 +931,12 @@ class AsyncCallbackCheckTest {
         task.call();
 
         var mine = diagnostics.getDiagnostics().stream()
-                              .filter(d -> d.getMessage(null).startsWith("JBCT-ASYNC-01"))
+                              .filter(d -> d.getMessage(null).startsWith("JBCT-ASYNC-01") && d.getKind() != Diagnostic.Kind.NOTE)
                               .toList();
+        NOTES.set(diagnostics.getDiagnostics().stream()
+                             .filter(d -> d.getKind() == Diagnostic.Kind.NOTE && d.getMessage(null).startsWith("JBCT-ASYNC-01"))
+                             .map(d -> d.getMessage(null))
+                             .toList());
         var errors = diagnostics.getDiagnostics().stream()
                                 .filter(d -> d.getKind() == Diagnostic.Kind.ERROR && !d.getMessage(null).startsWith("JBCT-ASYNC-01"))
                                 .map(d -> d.getMessage(null))
