@@ -1133,6 +1133,31 @@ class StorageFactoryEncryptionTest {
                                 .isZero();
     }
 
+    /// The gate a check settles is read by the next stage of the very promise the check returns, so it must be settled
+    /// before ANY dependent of that promise runs. The dependent here is the tightest observer there is: it runs on the
+    /// thread that resolves the outcome, the moment it resolves.
+    @Test
+    void verifyDhtMarker_settlesTheGateBeforeAnyDependentOfTheOutcome_whenDhtAnswersLaterOnAnotherThread() throws IOException {
+        var stillPending = 0;
+
+        for (var trial = 0; trial < LATE_DHT_TRIALS; trial++) {
+            var base = new InMemoryDHTClient();
+            var boot = bootRefusedByDht(base, tempDir.resolve("plain-gate-" + trial), tempDir.resolve("vault-gate-" + trial));
+            var refusing = checksOf(boot).stream()
+                                         .filter(check -> check.effectiveKeyring().isEmpty())
+                                         .findFirst()
+                                         .orElseThrow();
+
+            stillPending += StorageFactory.verifyDhtMarker(new LateDHTClient(base), refusing)
+                                          .<Boolean> fold(_ -> Promise.success(!refusing.readGate().isResolved()))
+                                          .await()
+                                          .or(true) ? 1 : 0;
+        }
+
+        assertThat(stillPending).as("trials where a dependent of the check's outcome ran before the check settled its gate")
+                                .isZero();
+    }
+
     private static void refusedAfterLateAnswers(DHTClient base, Map<String, StorageFactory.StorageSetup> boot) {
         StorageFactory.admitDhtMarkers(new LateDHTClient(base), boot, () -> false)
                       .await()
