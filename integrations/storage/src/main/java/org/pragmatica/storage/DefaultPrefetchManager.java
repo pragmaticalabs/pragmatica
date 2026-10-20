@@ -55,6 +55,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     private final AtomicLong droppedCooldown = new AtomicLong();
     private final AtomicLong droppedInFlight = new AtomicLong();
     private final AtomicLong droppedUntracked = new AtomicLong();
+    private final AtomicLong droppedDormant = new AtomicLong();
     private volatile boolean active = false;
 
     DefaultPrefetchManager(StorageInstance storage, PrefetchConfig config) {
@@ -150,6 +151,8 @@ final class DefaultPrefetchManager implements PrefetchManager {
     @Contract
     public void processHints(List<PrefetchHint> hints) {
         if (!active) {
+            droppedDormant.addAndGet(hints.size());
+
             return;
         }
 
@@ -168,7 +171,8 @@ final class DefaultPrefetchManager implements PrefetchManager {
                                            warmed.get(),
                                            droppedCooldown.get(),
                                            droppedInFlight.get(),
-                                           droppedUntracked.get());
+                                           droppedUntracked.get(),
+                                           droppedDormant.get());
     }
 
     @Override

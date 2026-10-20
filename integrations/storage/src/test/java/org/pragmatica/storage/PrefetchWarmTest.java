@@ -160,6 +160,16 @@ class PrefetchWarmTest {
         }
 
         @Test
+        void processHints_whileDormant_dropsThemAndCountsThem_startsNothing() {
+            manager.deactivate();
+            manager.processHints(List.of(hintFor(0), hintFor(1)));
+
+            assertThat(storage.warmed).isEmpty();
+            assertThat(manager.stats().droppedDormant()).isEqualTo(2);
+            assertThat(manager.stats().hintsReceived()).as("received counts only what an awake manager acts on").isZero();
+        }
+
+        @Test
         void recordAccess_withTheObservationTableFull_countsTheUnobservedAccess() {
             var tiny = prefetchManager(storage.instance, PrefetchConfig.prefetchConfig(3, 5, 60_000, 300_000, 1));
 

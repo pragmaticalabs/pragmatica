@@ -5,11 +5,21 @@
 package org.pragmatica.aether.node;
 
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+import java.util.UUID;
 
+import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.storage.PrefetchManager;
 
 import org.junit.jupiter.api.AfterEach;
@@ -19,8 +29,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// A booted node owns real prefetch managers for the instances that take part in cross-node prefetching, none for
 /// `streams`, and a stopped node has put them to sleep: it neither gossips hints nor starts fetches for its peers.
@@ -62,6 +74,38 @@ class AetherNodePrefetchBootTest {
         assertThat(setups.get("content").prefetchManager()).isNotSameAs(PrefetchManager.NOOP);
         assertThat(setups.get("artifacts").prefetchManager()).isNotSameAs(PrefetchManager.NOOP);
         assertThat(setups.get("streams").prefetchManager()).isSameAs(PrefetchManager.NOOP);
+    }
+
+    /// The node's self-ready signal is what wakes them. A single core forms on its own (see
+    /// `AetherNodeDhtCatchUpBootTest`), so a started node reaches ready without a cluster around it. Red when
+    /// `AetherNode` stops waking the managers from the self-ready signal.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void aStartedNode_wakesItsPrefetchManagers_whenItReportsReady() {
+        var self = NodeId.nodeId("prefetch-ready-" + UUID.randomUUID()).unwrap();
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
+
+        node = AetherNode.aetherNode(AetherNodeConfig.builder()
+                                                     .self(self).coreNodes(List.of(selfInfo)).managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
+                                                     .sliceConfig(SliceConfig.sliceConfig()).artifactRepo(DHTConfig.DEFAULT).coreMax(1)
+                                                     .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none()).quicTls(TlsConfig.selfSignedMutual())
+                                                     .certificateProvider(Option.none()).configProvider(Option.none()).environment(Option.none())
+                                                     .managementHttpProtocol(HttpProtocol.H1)
+                                                     .storageConfig(HermeticStorage.nodeStorageIn(tempDir, false))
+                                                     .build(),
+                                     () -> {})
+                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
+                         .unwrap();
+
+        var managers = StorageFactory.prefetchManagers(node.storageSetups());
+
+        assertThat(managers.values()).as("control: dormant until the node is ready")
+                                     .allSatisfy(manager -> assertThat(manager.isActive()).isFalse());
+
+        node.start().await(timeSpan(30).seconds()).onFailure(cause -> fail("start must succeed: " + cause.message()));
+
+        await().atMost(Duration.ofSeconds(90))
+               .untilAsserted(() -> assertThat(managers.values()).allSatisfy(manager -> assertThat(manager.isActive()).isTrue()));
     }
 
     @Test

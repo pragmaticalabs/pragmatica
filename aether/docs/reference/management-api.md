@@ -2266,13 +2266,13 @@ exists on the node.
   "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
   "wal": null,
   "prefetch": {"active": true, "tracked": 12, "hintsSent": 40, "hintsReceived": 31, "started": 9, "warmed": 7,
-               "droppedCooldown": 3, "droppedInFlight": 0, "droppedUntracked": 0}
+               "droppedCooldown": 3, "droppedInFlight": 0, "droppedUntracked": 0, "droppedDormant": 0}
 }
 ```
 
 - `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
 - `wal`: same semantics as on `GET /api/v1/storage` — non-`null` only when `{name}` is `streams`.
-- `prefetch`: this node's cross-node block prefetching for the instance; `null` when the instance does not take part (`[storage.<name>] prefetch = false`, and always for `streams`). `active` is false until the node reports ready. `tracked` is the blocks with a live read counter; `hintsSent` / `hintsReceived` count hints handed to SWIM gossip and received from it; `started` is prefetches that got a slot and `warmed` the ones that copied a block into a local cache tier (the rest found it already local or absent). Hints are advisory and dropped, never queued: `droppedCooldown` (block tried less than 30 s ago), `droppedInFlight` (4 prefetches already running), `droppedUntracked` (reads not counted because 10,000 blocks were already tracked).
+- `prefetch`: this node's cross-node block prefetching for the instance; `null` when the instance does not take part (`[storage.<name>] prefetch = false`, and always for `streams`). `active` is false until the node reports ready. `tracked` is the blocks with a live read counter; `hintsSent` / `hintsReceived` count hints handed to SWIM gossip and received from it; `started` is prefetches that got a slot and `warmed` the ones that copied a block into a local cache tier (the rest found it already local or absent). Hints are advisory and dropped, never queued: `droppedCooldown` (block tried less than 30 s ago), `droppedInFlight` (4 prefetches already running), `droppedUntracked` (reads not counted because 10,000 blocks were already tracked), `droppedDormant` (hints that arrived before the node was ready, or while it stopped).
 
 ### POST /api/v1/storage/snapshot/{name}
 

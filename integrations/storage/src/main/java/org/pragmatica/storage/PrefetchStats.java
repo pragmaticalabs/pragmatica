@@ -11,6 +11,7 @@ package org.pragmatica.storage;
 /// @param droppedCooldown hints ignored because the block was attempted less than `cooldownMs` ago
 /// @param droppedInFlight hints ignored because the in-flight cap was reached (never queued: hints go stale quickly)
 /// @param droppedUntracked accesses not observed because the observation table was full
+/// @param droppedDormant hints that arrived while the manager was dormant (the node not yet ready, or stopping)
 public record PrefetchStats(boolean active,
                             int tracked,
                             long hintsSent,
@@ -19,7 +20,8 @@ public record PrefetchStats(boolean active,
                             long warmed,
                             long droppedCooldown,
                             long droppedInFlight,
-                            long droppedUntracked) {
+                            long droppedUntracked,
+                            long droppedDormant) {
     public static PrefetchStats prefetchStats(boolean active,
                                               int tracked,
                                               long hintsSent,
@@ -28,7 +30,8 @@ public record PrefetchStats(boolean active,
                                               long warmed,
                                               long droppedCooldown,
                                               long droppedInFlight,
-                                              long droppedUntracked) {
+                                              long droppedUntracked,
+                                              long droppedDormant) {
         return new PrefetchStats(active,
                                  tracked,
                                  hintsSent,
@@ -37,11 +40,12 @@ public record PrefetchStats(boolean active,
                                  warmed,
                                  droppedCooldown,
                                  droppedInFlight,
-                                 droppedUntracked);
+                                 droppedUntracked,
+                                 droppedDormant);
     }
 
     /// A manager that does nothing: inactive, with nothing counted.
     public static PrefetchStats empty() {
-        return new PrefetchStats(false, 0, 0, 0, 0, 0, 0, 0, 0);
+        return new PrefetchStats(false, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 }
