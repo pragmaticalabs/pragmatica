@@ -155,7 +155,6 @@ public interface ManagementServer {
     /// its configured port). For tests and diagnostics: a server configured with port 0 learns its real port here, so a test
     /// never probes a free port and then loses the race to rebind it.
     Option<Integer> boundPort();
-
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
     /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
