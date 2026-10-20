@@ -161,6 +161,53 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aJoinerWhoseCommitIsRefused_retriesIntoTheCommunityItLostTheRaceFor() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.racedBy(() -> fixture.seedCommunity(FIRST));
+        fixture.joinAll(1);
+        assertThat(fixture.hasDirective(1)).as("the mint lost the race to the community another writer created").isFalse();
+        fixture.rejoin(1);
+
+        assertThat(fixture.communityOf(1)).as("its retry does not count its own refused attempt against the community").isEqualTo(FIRST);
+    }
+
+    @Test
+    void join_growthOn_aRetryOfAJoinerStillInFlight_isNotCountedAgainstItself() {
+        var fixture = fixture(config(true, 1, 5));
+
+        fixture.holdCommits();
+        fixture.joinAll(1);
+        fixture.rejoin(1);
+
+        assertThat(fixture.context().communityAdmission().pendingByCommunity(fixture.context().nowMs(), _ -> false))
+            .as("the retry chose the same community, not the next one for lack of room it took itself")
+            .isEqualTo(Map.of(FIRST, 1));
+    }
+
+    @Test
+    void join_growthOn_aJoinerWhoseCommitFailsOutright_doesNotKeepHoldingItsSlot() {
+        var fixture = fixture(config(true, 1, 5));
+
+        fixture.failNext();
+        fixture.joinAll(1);
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(2)).as("nothing was committed for the first joiner, so the second takes the first community").isEqualTo(FIRST);
+    }
+
+    @Test
+    void join_growthOn_aRefusedJoiner_doesNotKeepHoldingItsSlot() {
+        var fixture = fixture(config(true, 1, 5));
+
+        fixture.racedBy(() -> fixture.seedCommunity(FIRST));
+        fixture.joinAll(1);
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(2)).as("the refused joiner released the slot of the empty community").isEqualTo(FIRST);
+    }
+
+    @Test
     void join_growthOn_anotherSourcesPendingAssignment_isNotOurCandidate() {
         var fixture = fixture(config(true, 2, 5));
 
@@ -294,6 +341,25 @@ class ClusterDeploymentStateCommunityGrowthTest {
             context.setCommunityLiveness(node -> node.equals(worker(number)));
         }
 
+        /// The next commit lands after `change` ran: a concurrent writer got there first.
+        void racedBy(Runnable change) {
+            cluster.beforeApply = change;
+        }
+
+        /// The next commit fails outright, as when consensus is unreachable.
+        void failNext() {
+            cluster.failNext = true;
+        }
+
+        void rejoin(int number) {
+            harness.dispatch(new ClusterDeploymentEvents.WorkerJoinReceived(
+                new org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision(worker(number), "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
+        }
+
+        void seedCommunity(String id) {
+            kvStore.put(CommunityKey.communityKey(id), new CommunityValue(SOURCE, "WORKER", 2, CommunityState.FORMING, 1L, Option.none()));
+        }
+
         void holdCommits() {
             cluster.hold = true;
         }
@@ -402,6 +468,8 @@ class ClusterDeploymentStateCommunityGrowthTest {
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
         final List<List<KVCommand<AetherKey>>> held = Collections.synchronizedList(new ArrayList<>());
         volatile boolean hold;
+        volatile boolean failNext;
+        volatile Runnable beforeApply = () -> {};
         private final InMemoryKvStore committed;
 
         RecordingClusterNode(NodeId self, InMemoryKvStore committed) {
@@ -420,6 +488,16 @@ class ClusterDeploymentStateCommunityGrowthTest {
         // Mirror the real consensus → KV replication loop: an applied batch is recorded AND committed
         // into the shared KV store, so a subsequent community read observes it.
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            if (failNext) {
+                failNext = false;
+
+                return org.pragmatica.lang.utils.Causes.cause("consensus unavailable").promise();
+            }
+
+            var change = beforeApply;
+
+            beforeApply = () -> {};
+            change.run();
             if (hold) {
                 held.add(batch);
 

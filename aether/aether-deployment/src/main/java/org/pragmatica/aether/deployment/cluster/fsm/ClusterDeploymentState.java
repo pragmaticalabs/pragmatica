@@ -1158,6 +1158,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
+            ctx.communityAdmission().forget(node);
             placeByDecision(node,
                             source,
                             configuration,
@@ -1393,11 +1394,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                             .filter(KVCommand.TransactionResult.class::isInstance)
                                             .map(KVCommand.TransactionResult.class::cast)
                                             .filter(result -> !result.accepted())
-                                            .forEach(_ -> log.debug("Assignment changed before commit for {}; fresh admission will retry",
-                                                                    targetNode)))
-               .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
-                                             targetNode,
-                                             cause.message()));
+                                            .forEach(_ -> releaseRefusedAssignment(targetNode)))
+               .onFailure(cause -> {
+                              ctx.communityAdmission()
+                                 .forget(targetNode);
+                              log.error("Failed to submit activation directive for {}: {}",
+                                        targetNode,
+                                        cause.message());
+                          });
+        }
+
+        /// A refused assignment holds no slot: the growth policy counts it only while it is in flight (#241), and the node's retry decides afresh.
+        private void releaseRefusedAssignment(NodeId targetNode) {
+            ctx.communityAdmission().forget(targetNode);
+            log.debug("Assignment changed before commit for {}; fresh admission will retry", targetNode);
         }
 
         /// The CORE membership the CDM allocates/counts over (cluster-topology-overhaul spec,

@@ -96,6 +96,38 @@ class CommunityPlacementRoutesTest {
     }
 
     @Test
+    void clear_ofAnOperationWithNoPreviousNode_answersAnEmptyPreviousNode() {
+        var reconciler = mock(CommunityPlacementReconciler.class);
+
+        when(reconciler.clearParked(anyString(), anyString(), anyString()))
+            .thenReturn(Promise.success(new ParkedClear("eu-w-1", "op-2", PlacementOperationPhase.BLOCKED, new NodeId("placement-op-2"), Option.none())));
+
+        var manager = mock(ClusterTopologyManager.class);
+
+        when(manager.installedCommunityPlacement()).thenReturn(Option.some(reconciler));
+
+        var node = mock(ManageableNode.class);
+
+        when(node.clusterTopologyManager()).thenReturn(Option.some(manager));
+
+        CommunityPlacementRoutes.communityPlacementRoutes(() -> node)
+                                .clear("eu-w-1", new ClearRequest("checked"))
+                                .await()
+                                .onSuccess(body -> assertThat(body.previousNode()).isEmpty())
+                                .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+    }
+
+    /// The management server serves the route: a registered route source that nobody adds to the server is a dead route, and
+    /// `ManagementRouteCoverageTest` cannot see that (it keys on the source's own registration). Read from the source, like that test.
+    @Test
+    void theManagementServer_addsThePlacementRoutesToItsRouteSources() throws Exception {
+        var testClasses = java.nio.file.Path.of(CommunityPlacementRoutesTest.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+        var server = testClasses.getParent().getParent().resolve("src/main/java/org/pragmatica/aether/api/ManagementServer.java");
+
+        assertThat(java.nio.file.Files.readString(server)).contains("routeSources.add(CommunityPlacementRoutes.communityPlacementRoutes(nodeSupplier));");
+    }
+
+    @Test
     void clear_withNoBoundPrincipal_isAttributedToUnknown() {
         routes().clear("eu-w-1", new ClearRequest("checked")).await();
 
