@@ -159,12 +159,17 @@ class AssemblyTraceTest {
         var lines = new ArrayList<String>();
 
         lines.add("## " + title + " (" + table.size() + ")");
-        table.forEach((type, handlers) -> {
-            lines.add(type + " (" + handlers.size() + ")");
-            for (int i = 0; i < handlers.size(); i++) {
-                lines.add("  " + i + ": " + handlers.get(i));
-            }
-        });
+        table.forEach((type, handlers) -> lines.addAll(routeLines(type, handlers)));
+        return lines;
+    }
+
+    private static List<String> routeLines(String type, List<String> handlers) {
+        var lines = new ArrayList<String>();
+
+        lines.add(type + " (" + handlers.size() + ")");
+        for (int i = 0; i < handlers.size(); i++) {
+            lines.add("  " + i + ": " + handlers.get(i));
+        }
         return lines;
     }
 
