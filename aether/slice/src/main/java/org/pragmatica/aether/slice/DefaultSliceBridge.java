@@ -21,6 +21,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings("JBCT-NAM-01")
@@ -147,7 +148,7 @@ public record DefaultSliceBridge(Artifact artifact,
     private static Result<InternalMethod> acceptingBareEvent(InternalMethod method) {
         return takesContext(method)
                ? TopicTierMismatch.FACTORY.apply(method.method().name().name()).<InternalMethod> result()
-               : Result.success(method);
+               : success(method);
     }
 
     private Result<InternalMethod> lookupMethod(String methodName) {
