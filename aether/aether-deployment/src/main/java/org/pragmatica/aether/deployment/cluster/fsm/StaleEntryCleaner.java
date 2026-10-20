@@ -54,7 +54,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-                var commands = new ArrayList<KVCommand<AetherKey>>();
+        var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
               .kvStore()
@@ -88,7 +88,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-                var commands = new ArrayList<KVCommand<AetherKey>>();
+        var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
               .kvStore()
@@ -155,7 +155,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-                var staleKeys = active.sliceStates()
+        var staleKeys = active.sliceStates()
                               .keySet()
                               .stream()
                               .filter(key -> !currentNodes.contains(key.nodeId()))
@@ -193,7 +193,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-                var staleKeys = new ArrayList<NodeArtifactKey>();
+        var staleKeys = new ArrayList<NodeArtifactKey>();
 
         active.ctx()
               .kvStore()
@@ -248,7 +248,7 @@ record StaleEntryCleaner(Active active) {
         // #850: the inclusion filter is the placement set (core ∪ registered workers), not the core
         // set alone — a worker-hosted orphan must be unloaded too, and the stale-entry sweeps no longer
         // remove a live worker's key for it.
-                var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
+        var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
 
         active.ctx()
               .kvStore()

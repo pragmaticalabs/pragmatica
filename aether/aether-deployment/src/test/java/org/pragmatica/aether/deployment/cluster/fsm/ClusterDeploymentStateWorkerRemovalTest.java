@@ -588,6 +588,28 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(kvStore.get(topicRow).isPresent()).as("topic-row sweep used the pass's snapshot").isTrue();
         }
 
+        /// The orphan sweep takes the same snapshot: a ghost's ACTIVE placement with no committed target is UNLOADed only because the
+        /// pass's set still names it.
+        @Test
+        void orphanSweepOfThePass_usesTheSnapshotToo() {
+            var ghost = new NodeId("node-ghost");
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(ghost, ARTIFACT), NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            coreSource = () -> calls.getAndIncrement() == 0 ? Set.of(SELF, ghost) : Set.of(SELF);
+            cluster.commands.clear();
+
+            activeState().sweepStaleEntries(true);
+
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.nodeId().equals(ghost)
+                                                            && put.value() instanceof NodeArtifactValue value
+                                                            && value.state() == SliceState.UNLOAD))
+                    .as("the orphan sweep acted on the node the pass's snapshot names").isTrue();
+        }
+
         /// Control for the instrument: with the supplier steady at `{SELF}` the same sweeps DO remove the ghost's rows.
         @Test
         void control_aSteadySetWithoutTheGhost_sweepsItsRows() {
