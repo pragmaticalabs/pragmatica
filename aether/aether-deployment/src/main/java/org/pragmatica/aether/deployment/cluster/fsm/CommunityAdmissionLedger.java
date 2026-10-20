@@ -47,13 +47,16 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, S
     /// The in-flight assignments per community whose directive is not yet visible (`committed` answers for a node) and younger than
     /// the TTL. Entries that are visible or expired are dropped on the way.
     public Map<String, Integer> pendingByCommunity(long nowMs, Predicate<NodeId> committed) {
-        pending.entrySet()
-               .removeIf(entry -> committed.test(entry.getKey()) || nowMs - entry.getValue()
-                                                                                 .atMs() > PENDING_TTL_MS);
+        pending.entrySet().removeIf(entry -> isSettled(entry, nowMs, committed));
 
         return pending.values()
                       .stream()
                       .collect(Collectors.toMap(Pending::communityId, _ -> 1, Integer::sum));
+    }
+
+    private static boolean isSettled(Map.Entry<NodeId, Pending> entry, long nowMs, Predicate<NodeId> committed) {
+        return committed.test(entry.getKey()) || nowMs - entry.getValue()
+                                                              .atMs() > PENDING_TTL_MS;
     }
 
     /// Records that a join for `source` was refused; true on the first refusal since the last admission.

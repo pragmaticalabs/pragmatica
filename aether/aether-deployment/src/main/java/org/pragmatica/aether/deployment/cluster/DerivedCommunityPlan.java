@@ -12,6 +12,10 @@ import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+
 
 /// What the leader's placement pass does to the DERIVED communities of a cluster (#241): re-stamp the target size when the
 /// committed policy changed it, and dissolve a community that has stayed empty. Pure: the same views and clock always give the
@@ -95,9 +99,9 @@ public sealed interface DerivedCommunityPlan {
                                             Map<String, Long> emptySince,
                                             long nowMs) {
         return switch (view.state()) {
-            case DISSOLVING -> Option.some(settle(view));
+            case DISSOLVING -> some(settle(view));
             case FORMING, ACTIVE, DEGRADED -> restampOrDissolve(view, all, policy, emptySince, nowMs);
-            case DISSOLVED, UNKNOWN -> Option.none();
+            case DISSOLVED, UNKNOWN -> none();
         };
     }
 
@@ -136,8 +140,7 @@ public sealed interface DerivedCommunityPlan {
                                             CommunityPolicy policy,
                                             Map<String, Long> emptySince,
                                             long nowMs) {
-        return view.members() == 0 && Option.option(emptySince.get(view.id()))
-                                            .filter(since -> nowMs - since >= policy.dissolveGraceSeconds() * 1000L)
+        return view.members() == 0 && option(emptySince.get(view.id())).filter(since -> nowMs - since >= policy.dissolveGraceSeconds() * 1000L)
                                             .isPresent();
     }
 

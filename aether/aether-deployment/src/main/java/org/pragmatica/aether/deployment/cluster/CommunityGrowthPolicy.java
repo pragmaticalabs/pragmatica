@@ -12,6 +12,8 @@ import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// The growth policy for DERIVED communities (#241): which community a joining worker takes, and when a new one is minted.
 /// A derived community is `<source>-w-N`, minted by the cluster for a source that has no declared `[community.*]`.
@@ -129,8 +131,7 @@ public sealed interface CommunityGrowthPolicy {
     static Option<Integer> derivedIndex(String source, String communityId) {
         var prefix = source + "-w-";
 
-        return Option.option(communityId)
-                     .filter(id -> id.startsWith(prefix))
+        return option(communityId).filter(id -> id.startsWith(prefix))
                      .map(id -> id.substring(prefix.length()))
                      .filter(tail -> DIGITS.matcher(tail).matches())
                      .map(Integer::parseInt);

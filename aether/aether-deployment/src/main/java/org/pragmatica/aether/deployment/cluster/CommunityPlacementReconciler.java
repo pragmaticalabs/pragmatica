@@ -22,10 +22,12 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
+import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PlacementOperationPhase;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -335,7 +337,7 @@ record PlacementReconciler(NodeId self,
                : Promise.unitPromise();
     }
 
-    private Promise<Unit> reconcileDerivedCommunities(org.pragmatica.aether.config.cluster.CommunityPolicy policy) {
+    private Promise<Unit> reconcileDerivedCommunities(CommunityPolicy policy) {
         var snapshot = aetherSnapshot();
         var views = derivedViews(snapshot);
         var since = timeEmptiness(views);
@@ -354,12 +356,15 @@ record PlacementReconciler(NodeId self,
 
         return snapshot.entrySet()
                        .stream()
-                       .filter(entry -> entry.getKey() instanceof AetherKey.CommunityKey && entry.getValue() instanceof AetherValue.CommunityValue)
-                       .map(entry -> derivedView(((AetherKey.CommunityKey) entry.getKey()).communityId(),
-                                                 (AetherValue.CommunityValue) entry.getValue(),
-                                                 members))
-                       .flatMap(Option::stream)
+                       .flatMap(entry -> derivedView(entry, members).stream())
                        .toList();
+    }
+
+    private static Option<DerivedCommunityPlan.View> derivedView(Map.Entry<AetherKey, AetherValue> entry,
+                                                                 Map<String, Long> members) {
+        return entry.getKey() instanceof AetherKey.CommunityKey key && entry.getValue() instanceof AetherValue.CommunityValue community
+               ? derivedView(key.communityId(), community, members)
+               : Option.none();
     }
 
     private static Option<DerivedCommunityPlan.View> derivedView(String id,
@@ -406,11 +411,11 @@ record PlacementReconciler(NodeId self,
                                                                                  leader,
                                                                                  snapshot);
             case DerivedCommunityPlan.Action.BeginDissolve begin -> rewriteCommunity(begin.communityId(),
-                                                                                     community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVING),
+                                                                                     community -> community.withState(CommunityState.DISSOLVING),
                                                                                      leader,
                                                                                      snapshot);
             case DerivedCommunityPlan.Action.Reopen reopen -> rewriteCommunity(reopen.communityId(),
-                                                                               community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.FORMING),
+                                                                               community -> community.withState(CommunityState.FORMING),
                                                                                leader,
                                                                                snapshot);
             case DerivedCommunityPlan.Action.CompleteDissolve complete -> markDissolved(complete.communityId(),
@@ -427,20 +432,30 @@ record PlacementReconciler(NodeId self,
 
         return store.getTyped(key, AetherValue.CommunityValue.class)
                     .fold(Promise::unitPromise,
-                          before -> {
-                              var id = UUID.randomUUID().toString();
-                              var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
-                                                                                                    id,
-                                                                                                    leader,
-                                                                                                    reservationGuardsFromSnapshot(snapshot),
-                                                                                                    List.of(new KVCommand.Mutation<>(key,
-                                                                                                                                     Option.some(before),
-                                                                                                                                     Option.some(change.apply(before)))));
+                          before -> commitRewrite(key,
+                                                  before,
+                                                  change.apply(before),
+                                                  leader,
+                                                  snapshot));
+    }
 
-                              return apply.apply(List.of(command))
-                                          .map(results -> accepted(results, id))
-                                          .mapToUnit();
-                          });
+    private Promise<Unit> commitRewrite(AetherKey.CommunityKey key,
+                                        AetherValue.CommunityValue before,
+                                        AetherValue.CommunityValue after,
+                                        LeaderValue leader,
+                                        Map<AetherKey, AetherValue> snapshot) {
+        var id = UUID.randomUUID().toString();
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                              id,
+                                                                              leader,
+                                                                              reservationGuardsFromSnapshot(snapshot),
+                                                                              List.of(new KVCommand.Mutation<>(key,
+                                                                                                               Option.some(before),
+                                                                                                               Option.some(after))));
+
+        return apply.apply(List.of(command))
+                    .map(results -> accepted(results, id))
+                    .mapToUnit();
     }
 
     private Promise<Unit> reconcileIdentity(String identity) {

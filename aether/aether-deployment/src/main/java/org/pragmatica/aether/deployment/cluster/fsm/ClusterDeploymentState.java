@@ -1158,18 +1158,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            applyGrowthDecision(node,
-                                source,
-                                configuration,
-                                CommunityGrowthPolicy.pick(source,
-                                                           DerivedCommunities.candidates(ctx, source, ctx.nowMs()),
-                                                           policy));
+            placeByDecision(node,
+                            source,
+                            configuration,
+                            CommunityGrowthPolicy.pick(source,
+                                                       DerivedCommunities.candidates(ctx, source, ctx.nowMs()),
+                                                       policy));
         }
 
-        private void applyGrowthDecision(NodeId node,
-                                         String source,
-                                         Option<AetherValue.ClusterConfigValue> configuration,
-                                         CommunityGrowthPolicy.Decision decision) {
+        private void placeByDecision(NodeId node,
+                                     String source,
+                                     Option<AetherValue.ClusterConfigValue> configuration,
+                                     CommunityGrowthPolicy.Decision decision) {
             switch (decision) {
                 case CommunityGrowthPolicy.Decision.Join join -> admitToCommunity(node,
                                                                                   source,
