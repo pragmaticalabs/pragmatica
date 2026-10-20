@@ -194,10 +194,10 @@ final class DefaultContentStore implements ContentStore {
     /// envelope, whatever its bytes begin with.
     private Promise<Option<byte[]>> getLegacy(String name) {
         return Namespace.LEGACY.refName(name)
-                      .flatMap(storage::resolveRef)
-                      .async(CONTENT_NOT_FOUND)
-                      .flatMap(this::readBlock)
-                      .flatMap(this::resolveLegacy);
+                               .flatMap(storage::resolveRef)
+                               .async(CONTENT_NOT_FOUND)
+                               .flatMap(this::readBlock)
+                               .flatMap(this::resolveLegacy);
     }
 
     private Promise<byte[]> readBlock(BlockId blockId) {
@@ -363,7 +363,7 @@ final class DefaultContentStore implements ContentStore {
         return namespace.refName(name)
                         .flatMap(storage::resolveRef)
                         .fold(() -> Promise.success(none()),
-                            blockId -> previousContentOf(namespace, blockId));
+                              blockId -> previousContentOf(namespace, blockId));
     }
 
     private Promise<Option<PreviousContent>> previousContentOf(Namespace namespace, BlockId blockId) {
