@@ -474,17 +474,20 @@ public final class PeerState {
     /// Otherwise (a link from a dialer that sent no generation) the legacy rule decides; see
     /// [#isLegacyIncumbentKept].
     private boolean isIncumbentKept(QuicPeerConnection challenger, long nowNanos) {
-        return Option.all(connection.linkRank(), challenger.linkRank())
+        return Option.all(connection.linkRank(),
+                          challenger.linkRank())
                      .map(PeerState::survivesIncoming)
-                     .or(() -> isLegacyIncumbentKept(legacyDirectionOrder(challenger), nowNanos));
+                     .or(() -> isLegacyIncumbentKept(legacyDirectionOrder(challenger),
+                                                     nowNanos));
     }
 
     private static boolean survivesIncoming(LinkRank incumbent, LinkRank incoming) {
-        return !incoming.survivesOver(incumbent);
+        return ! incoming.survivesOver(incumbent);
     }
 
     private int legacyDirectionOrder(QuicPeerConnection challenger) {
-        return Option.all(connection.initiator(), challenger.initiator())
+        return Option.all(connection.initiator(),
+                          challenger.initiator())
                      .map(NodeId::compareTo)
                      .or(0);
     }
