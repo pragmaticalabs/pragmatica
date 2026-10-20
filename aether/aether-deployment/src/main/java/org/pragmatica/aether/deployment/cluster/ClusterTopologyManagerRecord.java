@@ -918,10 +918,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                         newNodeId,
                                                                                         intendedRole,
                                                                                         sourceName))
-                                    .onSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
+                                    .withSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
                                     .map(ClusterTopologyManagerRecord::asDispatched)
                                     .fold(this::completeProvision)
-                                    .onFailure(this::recordProvisioningFailure);
+                                    .withFailure(this::recordProvisioningFailure);
     }
 
     /// A refusal before any provider effect (source admission, incomplete inventory) is a deferral for the reconciler: nothing was
@@ -2626,6 +2626,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         lifecycleManager.sourceOf(nodeId)
                         .fold(() -> lifecycleManager.terminateNode(nodeId),
                               source -> reapRetired(nodeId, source, false))
+                        // Detached on purpose: the chain is discarded (this is a void timer/event entry), so the two handlers are
+                        // its terminal effects and nothing in this process is sequenced after the reap; the recheck timer and
+                        // the activation replay read the state they leave.
                         .onSuccess(_ -> reapConfirmed(nodeId))
                         .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
     }
@@ -3126,6 +3129,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void forgetIncarnation(NodeId nodeId) {
         incarnations.merge(nodeId, 1L, Long::sum);
         cancelPendingDrain(nodeId);
+        // Detached on purpose: the join handler discards the chain; the drain command and the operator event are its
+        // terminal effects, and nothing in this process is sequenced after the readmission.
         lifecycleManager.readmitExternal(nodeId).onFailure(cause -> rejoinNotReconciled(nodeId, cause));
         replacementSources.remove(nodeId);
         confirmedReaps.remove(nodeId);

@@ -136,6 +136,7 @@ class StorageRoutesTest {
                                     setup.garbageCollector(),
                                     setup.dhtMarkerCheck(),
                                     setup.committedDiskMarker(),
+                                    setup.promotionManager(),
                                     manager);
         }
     }

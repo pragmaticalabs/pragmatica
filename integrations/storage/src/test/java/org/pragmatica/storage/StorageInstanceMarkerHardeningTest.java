@@ -6,7 +6,11 @@ import java.util.EnumSet;
 import java.util.List;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.function.LongSupplier;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Option;
@@ -23,10 +27,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StorageInstanceMarkerHardeningTest {
     private static final long MEMORY_MAX = 10_000;
 
-    /// A durable tier whose writes can be made to fail.
+    /// A tier whose writes can be made to fail; durable (the disk) or not (a cache).
     private static final class FlakyDurableTier implements StorageTier {
-        private final MemoryTier backing = MemoryTier.memoryTier(1_000_000, TierLevel.LOCAL_DISK);
+        private final TierLevel level;
+        private final boolean durable;
+        private final MemoryTier backing;
         final AtomicBoolean failPuts = new AtomicBoolean();
+
+        FlakyDurableTier() {
+            this(TierLevel.LOCAL_DISK, true);
+        }
+
+        FlakyDurableTier(TierLevel level, boolean durable) {
+            this.level = level;
+            this.durable = durable;
+            this.backing = MemoryTier.memoryTier(1_000_000, level);
+        }
 
         @Override
         public Promise<Option<byte[]>> get(BlockId id) {
@@ -52,7 +68,7 @@ class StorageInstanceMarkerHardeningTest {
 
         @Override
         public TierLevel level() {
-            return TierLevel.LOCAL_DISK;
+            return level;
         }
 
         @Override
@@ -67,7 +83,7 @@ class StorageInstanceMarkerHardeningTest {
 
         @Override
         public boolean isDurable() {
-            return true;
+            return durable;
         }
     }
 
@@ -99,6 +115,12 @@ class StorageInstanceMarkerHardeningTest {
     }
 
     private StorageInstance boundedReader(MemoryTier cache, int cap, MetadataStore metadata) {
+        return boundedReader(cache, cap, metadata, System::currentTimeMillis);
+    }
+
+    /// With `() -> 0L` the marker sweep never runs (it needs the clock to be a full interval past its start), so a
+    /// slot that leaked stays leaked instead of being recounted away by the first sweep.
+    private StorageInstance boundedReader(MemoryTier cache, int cap, MetadataStore metadata, LongSupplier clock) {
         return new DefaultStorageInstance("bounded",
                                           List.of(cache, shared),
                                           metadata,
@@ -106,7 +128,8 @@ class StorageInstanceMarkerHardeningTest {
                                           Option.none(),
                                           AppendLog.TornTailSink.logOnly(),
                                           _ -> {},
-                                          DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(cap, 600_000L, 60_000L));
+                                          DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(cap, 600_000L, 60_000L),
+                                          clock);
     }
 
     private static long markersIn(MetadataStore metadata) {
@@ -138,6 +161,154 @@ class StorageInstanceMarkerHardeningTest {
 
         assertThat(reader.put(content).await().isFailure()).isTrue();
         assertThat(store.listAllLifecycles()).isEmpty();
+    }
+
+    /// The shared tier holds every block ever written, so it can never count as "a cache copy survived": a failed put
+    /// whose only surviving copies are the shared one must leave no record at all, not an empty marker.
+    @Test
+    void put_whoseRequiredWriteFails_withTheCacheCopyGone_andTheBlockOnlyOnTheSharedTier_removesTheRecord() {
+        var id = writeElsewhere("only-shared-remains");
+
+        assertThat(reader.warm(id).await().unwrap()).isTrue();
+        memory.delete(id).await().unwrap();
+        disk.failPuts.set(true);
+
+        assertThat(reader.put(bytes("only-shared-remains")).await().isFailure()).as("control: the put really failed").isTrue();
+        assertThat(shared.exists(id).await().unwrap()).as("control: the shared tier still holds it").isTrue();
+        assertThat(store.getLifecycle(id).isPresent()).as("no empty marker").isFalse();
+    }
+
+    /// A durable tier is not a cache either: a copy there is the node's own data, never what a marker tracks.
+    @Test
+    void put_whoseRequiredWriteFails_withACopyOnlyOnADurableTier_removesTheRecord() {
+        var id = writeElsewhere("durable-copy-only");
+        var content = bytes("durable-copy-only");
+
+        assertThat(reader.warm(id).await().unwrap()).isTrue();
+        memory.delete(id).await().unwrap();
+        disk.put(id, content).await().unwrap();
+        disk.failPuts.set(true);
+
+        assertThat(reader.put(content).await().isFailure()).as("control: the put really failed").isTrue();
+        assertThat(disk.exists(id).await().unwrap()).as("control: the durable copy is there").isTrue();
+        assertThat(store.getLifecycle(id).isPresent()).as("a durable copy does not keep a cache marker").isFalse();
+    }
+
+    /// A marker that names a durable level (a restored snapshot can say anything) is put back naming only the cache
+    /// levels: the durable level is dropped.
+    @Test
+    void put_whoseRequiredWriteFails_putsTheMarkerBackWithoutTheDurableLevel() {
+        var id = writeElsewhere("marker-names-a-durable-level");
+        var content = bytes("marker-names-a-durable-level");
+
+        memory.put(id, content).await().unwrap();
+        store.createLifecycle(BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK)));
+        disk.failPuts.set(true);
+
+        assertThat(reader.put(content).await().isFailure()).as("control: the put really failed").isTrue();
+        assertThat(store.getLifecycle(id).unwrap().presentIn()).contains(TierLevel.MEMORY).doesNotContain(TierLevel.LOCAL_DISK);
+    }
+
+    /// A read whose marker claim loses to another reader hands back the slot it reserved.
+    @Test
+    void get_whoseMarkerClaimIsLost_givesTheSlotBack() {
+        var lost = boundedReader(memory, 2, swallowingFirstMarkerClaim(), () -> 0L);
+        var ids = IntStream.range(0, 4).mapToObj(i -> writeElsewhere("claim-lost-" + i)).toList();
+
+        ids.forEach(id -> lost.get(id).await().unwrap());
+
+        assertThat(store.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).count())
+            .as("the first read's slot came back, so two of the other three reads found room")
+            .isEqualTo(2);
+    }
+
+    /// The marker a warm claimed and then did not need (no cache tier took the copy) is given back WITH its slot. (The
+    /// read's own claim is swallowed so that the marker in question is warm's, not the read's.)
+    @Test
+    void warm_thatNoCacheTierAccepted_givesItsSlotBack() {
+        var cache = new FlakyDurableTier(TierLevel.MEMORY, false);
+        var flaky = new DefaultStorageInstance("flaky-cache",
+                                               List.of(cache, shared),
+                                               swallowingFirstMarkerClaim(),
+                                               WritePolicy.WRITE_THROUGH,
+                                               Option.none(),
+                                               AppendLog.TornTailSink.logOnly(),
+                                               _ -> {},
+                                               DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(1, 600_000L, 60_000L),
+                                               () -> 0L);
+        var refused = writeElsewhere("cache-refuses-this");
+        var accepted = writeElsewhere("cache-takes-this");
+
+        cache.failPuts.set(true);
+
+        assertThat(flaky.warm(refused).await().unwrap()).isFalse();
+        assertThat(markersIn(store)).as("the read's claim was lost and warm's own marker was given back").isZero();
+
+        cache.failPuts.set(false);
+
+        assertThat(flaky.warm(accepted).await().unwrap()).as("the refused warm's slot came back").isTrue();
+    }
+
+    /// Both claims of one warm (the read's and warm's own) lose to other readers: no record, so no copy, and no slot
+    /// is left reserved by the loser.
+    @Test
+    void warm_whoseEveryClaimIsLost_makesNoCopy_andLeaksNoSlot() {
+        var cache = MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY);
+        var lost = boundedReader(cache, 1, swallowingMarkerClaims(2), () -> 0L);
+        var first = writeElsewhere("claims-all-lost");
+        var second = writeElsewhere("claims-go-through");
+
+        assertThat(lost.warm(first).await().unwrap()).isFalse();
+        assertThat(cache.exists(first).await().unwrap()).as("a copy with no record is not made").isFalse();
+        assertThat(lost.warm(second).await().unwrap()).as("the lost claims gave their slots back").isTrue();
+    }
+
+    @Test
+    void warm_ofABlockThatAlreadyHasARecord_isAcceptedAtAFullMarkerTable() {
+        var metadata = MetadataStore.inMemoryMetadataStore("bounded");
+        var cache = MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY);
+        var bounded = boundedReader(cache, 1, metadata);
+        var id = writeElsewhere("already-tracked");
+
+        assertThat(bounded.warm(id).await().unwrap()).as("control: it takes the only slot").isTrue();
+        cache.delete(id).await().unwrap();
+
+        assertThat(bounded.warm(id).await().unwrap()).as("tracking it again needs no new slot").isTrue();
+        assertThat(cache.exists(id).await().unwrap()).isTrue();
+        assertThat(markersIn(metadata)).isEqualTo(1);
+    }
+
+    @Test
+    void warm_concurrently_neverTracksMoreThanTheCap() throws Exception {
+        var pool = Executors.newFixedThreadPool(16);
+
+        try {
+            for (var round = 0; round < 25; round++) {
+                var tag = "round-" + round;
+                var metadata = MetadataStore.inMemoryMetadataStore("bounded-" + round);
+                var bounded = boundedReader(MemoryTier.memoryTier(MEMORY_MAX * 100, TierLevel.MEMORY), 3, metadata);
+                var ids = IntStream.range(0, 64).mapToObj(i -> writeElsewhere("concurrent-" + tag + "-" + i)).toList();
+                var start = new CountDownLatch(1);
+                var futures = ids.stream()
+                                 .map(id -> pool.submit(() -> warmWhenReleased(bounded, id, start)))
+                                 .toList();
+
+                start.countDown();
+                for (var future : futures) {
+                    future.get();
+                }
+
+                assertThat(markersIn(metadata)).as("round %d: 64 warms racing for 3 slots", round).isEqualTo(3);
+            }
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    private static boolean warmWhenReleased(StorageInstance instance, BlockId id, CountDownLatch start) throws InterruptedException {
+        start.await();
+
+        return instance.warm(id).await().unwrap();
     }
 
     @Test
@@ -190,12 +361,16 @@ class StorageInstanceMarkerHardeningTest {
     /// The read that fetches a warmed block normally leaves the marker. When another reader took the last slot
     /// between warm's room check and that read (its claim answers false and stores nothing here), it leaves none; the copy must still be tracked, or not made.
     private MetadataStore swallowingFirstMarkerClaim() {
-        var swallowed = new AtomicBoolean();
+        return swallowingMarkerClaims(1);
+    }
+
+    private MetadataStore swallowingMarkerClaims(int count) {
+        var swallowed = new AtomicInteger();
 
         return (MetadataStore) Proxy.newProxyInstance(MetadataStore.class.getClassLoader(),
                                                       new Class<?>[]{MetadataStore.class},
                                                       (_, method, args) -> {
-                                                          if (method.getName().equals("claimBlock") && swallowed.compareAndSet(false, true)) {
+                                                          if (method.getName().equals("claimBlock") && swallowed.getAndIncrement() < count) {
                                                               return false;
                                                           }
                                                           try {

@@ -71,6 +71,7 @@ class StorageFactoryPrefetchWiringTest {
                                                           defaults.snapshotRetentionCount(),
                                                           defaults.walPath(),
                                                           false,
+                                                          true,
                                                           artifactsPrefetch,
                                                           prefetchMaxInFlight);
         var setups = StorageFactory.createAll(Map.of(ARTIFACTS, artifactsConfig), nodeId, Option.some(dht), Option.none())
@@ -224,6 +225,7 @@ class StorageFactoryPrefetchWiringTest {
                                                    base.snapshotRetentionCount(),
                                                    base.walPath(),
                                                    false,
+                                                   true,
                                                    true,
                                                    cap);
         var setups = StorageFactory.createAll(Map.of(), nodeId, Option.some(dht), Option.none(), defaults)

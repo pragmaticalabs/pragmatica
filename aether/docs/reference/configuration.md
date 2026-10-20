@@ -245,6 +245,12 @@ Per-instance opt-in (any `[storage.<name>]` section, e.g. `[storage.artifacts]`)
 | `prefetch` | true | Cross-node block prefetching for this instance: the node gossips hints about the blocks it reads often (one instance, one random peer, once per SWIM probe round) and copies hinted blocks into its own memory tier. `false` switches it off for the instance. Not read for `streams`, which prefetches its own segments |
 | `prefetch_max_in_flight` | 4 | The most prefetches running at once on this instance. A hint that finds every slot taken is dropped and counted (`droppedInFlight` under `prefetch` in `GET /api/v1/storage/{name}`), never queued. Must be a positive integer; a value that is not is refused at load. Not read for `streams` |
 
+Per-instance kill switch for background tier promotion (any `[storage.<name>]` section except `streams`, which never promotes):
+
+| TOML Key | Default | Description |
+|----------|---------|-------------|
+| `promotion` | true | Copies this instance's hot blocks (more than 50 reads in 5 minutes) from a slower tier into the node's faster tier, on EVERY node, on the `[timeouts.storage_maintenance]` tick. Never fills a faster tier past 70% of its budget, so promotion and demotion do not trade the same blocks. `false` turns it off for the instance. Only blocks this node holds a lifecycle record for are candidates: those it wrote or restored from its snapshot |
+
 **Boot behavior.** Every key in `keys` is resolved through the live `SecretsProvider` once, at boot,
 bounded by a 30-second timeout. Boot fails — naming the key id, never the secret value — if any key
 fails to resolve (malformed `${secrets:...}` reference, provider failure, invalid Base64, wrong

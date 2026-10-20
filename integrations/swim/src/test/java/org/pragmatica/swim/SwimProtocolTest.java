@@ -714,6 +714,34 @@ class SwimProtocolTest {
                 .isGreaterThanOrEqualTo(1);
         }
 
+        /// #1840: a call with no seeds seeds the node's identity and announces nothing, so a node can hold its
+        /// announcement back (a worker until it is assigned) without going silent about who it is.
+        @Test
+        void announceJoin_noSeeds_seedsIdentityAndAnnouncesNothing() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 7L, 1234L, List.of());
+
+            Thread.sleep(1_200L); // span at least two 500ms announce ticks
+
+            assertThat(announceCount(transport)).as("no seeds: nothing to announce to").isZero();
+            assertThat(protocol.selfIncarnation()).as("the identity is seeded all the same").isEqualTo(7L);
+        }
+
+        /// #1840: an identity-only call arms no loop, so it must not cancel the loop an earlier call armed.
+        @Test
+        void announceJoin_noSeeds_leavesARunningAnnounceLoopAlone() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, 0L, List.of());
+            Thread.sleep(200L); // let an in-flight attempt drain
+
+            var afterIdentityOnlyCall = announceCount(transport);
+
+            waitUntil(() -> announceCount(transport) > afterIdentityOnlyCall, 3_000L);
+            assertThat(announceCount(transport)).as("the earlier call's loop keeps announcing")
+                                                .isGreaterThan(afterIdentityOnlyCall);
+        }
+
         /// The seed's address-candidate probe is an ordinary Ping. If this node's Ack to it is lost the seed never
         /// accepts the ANNOUNCE, so a Ping alone must not end the retries.
         @Test

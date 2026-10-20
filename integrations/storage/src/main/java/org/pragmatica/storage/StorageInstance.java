@@ -4,8 +4,6 @@ import java.nio.file.Path;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
@@ -358,8 +356,15 @@ final class DefaultStorageInstance implements StorageInstance {
     /// The cache-only markers in the metadata store: counted exactly on first use (a snapshot restore puts markers
     /// there before any read), then kept by every creation here, and re-counted by every [#sweepIdleMarkers]. A
     /// removal elsewhere is not seen until the next sweep, so it can only over-count, never let the table grow.
-    private final AtomicInteger cacheMarkers = new AtomicInteger();
-    private final AtomicBoolean markersCounted = new AtomicBoolean();
+    ///
+    /// A slot is RESERVED before the marker is claimed and confirmed (or given back) after, all under one lock, so
+    /// racing readers cannot all pass a room check and overshoot the cap, and a recount never wipes a reservation
+    /// that is still in flight: it can over-count for a moment (a marker already in the store whose claim has not
+    /// been confirmed yet), never under-count.
+    private final Object markerLock = new Object();
+    private int cacheMarkers;
+    private int pendingMarkerClaims;
+    private boolean markersCounted;
     private final AtomicLong lastMarkerSweepMillis = new AtomicLong();
 
     /// Bounds on the cache-only markers that READS create for blocks this node does not own. A marker is
@@ -502,23 +507,34 @@ final class DefaultStorageInstance implements StorageInstance {
 
     /// The record comes first: a copy with no record is invisible to demotion (#886). The read that fetched
     /// the block normally created it; if it did not, a counted marker is claimed here and given back unless a
-    /// cache tier accepted the copy, so a failed warm leaves no empty marker of its own.
+    /// cache tier accepted the copy, so a failed warm leaves no empty marker of its own. When there is neither a
+    /// record nor a slot for one (another reader took the last slot since the room check), no copy is made.
     private Promise<Boolean> copyToCacheTiers(BlockId id, byte[] content) {
         var created = claimWarmMarker(id);
 
-        return promoteToCacheTiers(id, content).map(_ -> settleWarm(id, created));
+        return created.isPresent() || metadataStore.containsBlock(id)
+               ? promoteToCacheTiers(id, content).map(_ -> settleWarm(id, created))
+               : Promise.success(false);
     }
 
     private Option<BlockLifecycle> claimWarmMarker(BlockId id) {
         var marker = BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.noneOf(TierLevel.class));
 
-        if (metadataStore.containsBlock(id) || !metadataStore.claimBlock(id, marker)) {
-            return Option.none();
+        return metadataStore.containsBlock(id) || !reserveMarkerSlot()
+               ? Option.none()
+               : claimReservedMarker(id, marker);
+    }
+
+    private Option<BlockLifecycle> claimReservedMarker(BlockId id, BlockLifecycle marker) {
+        if (metadataStore.claimBlock(id, marker)) {
+            confirmMarkerSlot();
+
+            return Option.some(marker);
         }
 
-        cacheMarkers.incrementAndGet();
+        giveBackMarkerSlot();
 
-        return Option.some(marker);
+        return Option.none();
     }
 
     private boolean settleWarm(BlockId id, Option<BlockLifecycle> created) {
@@ -533,7 +549,7 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private void dropUnusedMarker(BlockId id, BlockLifecycle marker) {
         if (metadataStore.releaseClaim(id, marker)) {
-            cacheMarkers.decrementAndGet();
+            forgetMarker();
         }
     }
 
@@ -1348,31 +1364,83 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private void trackReadOnlyBlock(BlockId id, StorageTier tier) {
-        if (!sharedLevels.isEmpty() && !tier.isDurable() && hasRoomForMarker()) {
+        if (!sharedLevels.isEmpty() && !tier.isDurable() && reserveMarkerSlot()) {
             createMarker(id, tier.level());
         }
     }
 
-    /// The claim loses to a writer or another reader that got there first; the presence is then added to
-    /// whatever record that left.
+    /// The slot is already reserved ([#reserveMarkerSlot]). The claim loses to a writer or another reader that got
+    /// there first; the slot is then given back and the presence is added to whatever record that left.
     private void createMarker(BlockId id, TierLevel level) {
         if (metadataStore.claimBlock(id,
                                      BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(level)))) {
-            cacheMarkers.incrementAndGet();
+            confirmMarkerSlot();
         } else {
+            giveBackMarkerSlot();
             recordTierPresence(id, level);
+        }
+    }
+
+    /// Takes one marker slot atomically, so racing readers cannot all pass a room check and overshoot the cap.
+    /// The caller must make the marker or give the slot back.
+    private boolean reserveMarkerSlot() {
+        countMarkersOnFirstUse();
+
+        return tryReserveSlot() || sweepIdleMarkers() && tryReserveSlot();
+    }
+
+    private boolean tryReserveSlot() {
+        synchronized (markerLock) {
+            var hasRoom = cacheMarkers + pendingMarkerClaims < markerLimits.maxMarkers();
+
+            if (hasRoom) {
+                pendingMarkerClaims++;
+            }
+
+            return hasRoom;
+        }
+    }
+
+    private void confirmMarkerSlot() {
+        synchronized (markerLock) {
+            pendingMarkerClaims--;
+            cacheMarkers++;
+        }
+    }
+
+    private void giveBackMarkerSlot() {
+        synchronized (markerLock) {
+            pendingMarkerClaims--;
+        }
+    }
+
+    private void forgetMarker() {
+        synchronized (markerLock) {
+            cacheMarkers--;
         }
     }
 
     private boolean hasRoomForMarker() {
         countMarkersOnFirstUse();
 
-        return cacheMarkers.get() < markerLimits.maxMarkers() || sweepIdleMarkers();
+        return markersInUse() < markerLimits.maxMarkers() || sweepIdleMarkers();
+    }
+
+    private int markersInUse() {
+        synchronized (markerLock) {
+            return cacheMarkers + pendingMarkerClaims;
+        }
     }
 
     private void countMarkersOnFirstUse() {
-        if (markersCounted.compareAndSet(false, true)) {
-            cacheMarkers.set((int) metadataStore.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).count());
+        synchronized (markerLock) {
+            if (!markersCounted) {
+                markersCounted = true;
+                cacheMarkers = (int) metadataStore.listAllLifecycles()
+                                                  .stream()
+                                                  .filter(BlockLifecycle::cacheOnly)
+                                                  .count();
+            }
         }
     }
 
@@ -1391,18 +1459,20 @@ final class DefaultStorageInstance implements StorageInstance {
     /// put that landed since wins). Re-counts the markers left, which also corrects the drift in
     /// [#cacheMarkers]; returns that count.
     private int reclaimIdleMarkers(long now) {
-        var markers = metadataStore.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).toList();
-        var reclaimed = markers.stream()
-                               .filter(marker -> isIdleSharedOnly(marker, now))
-                               .filter(marker -> metadataStore.releaseClaim(marker.blockId(),
-                                                                            marker))
-                               .count();
-        var remaining = markers.size() - (int) reclaimed;
+        synchronized (markerLock) {
+            var markers = metadataStore.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).toList();
+            var reclaimed = markers.stream()
+                                   .filter(marker -> isIdleSharedOnly(marker, now))
+                                   .filter(marker -> metadataStore.releaseClaim(marker.blockId(),
+                                                                                marker))
+                                   .count();
+            var remaining = markers.size() - (int) reclaimed;
 
-        cacheMarkers.set(remaining);
-        log.debug("Cache marker sweep on '{}': {} reclaimed, {} left", name, reclaimed, remaining);
+            cacheMarkers = remaining;
+            log.debug("Cache marker sweep on '{}': {} reclaimed, {} left", name, reclaimed, remaining);
 
-        return remaining;
+            return remaining + pendingMarkerClaims;
+        }
     }
 
     private boolean isIdleSharedOnly(BlockLifecycle marker, long now) {

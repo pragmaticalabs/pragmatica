@@ -856,6 +856,9 @@ public final class ConfigLoader {
         // #253: per-instance opt-in into encryption; requires [storage.encryption] to carry a keyring
         // (enforced by StorageEncryptionConfigValidator, not here).
         var encrypted = doc.getBoolean(sectionName, "encrypted").or(false);
+        // Kill switch for background tier promotion on this instance (default on). Read into StorageConfig.promotion,
+        // which StorageFactory.assembleSetup consults to build the real PromotionManager or the inert one.
+        var promotion = doc.getBoolean(sectionName, "promotion").or(true);
         // Cross-node block prefetching: on unless an operator switches it off for the instance.
         var prefetch = doc.getBoolean(sectionName, "prefetch").or(true);
         var prefetchMaxInFlight = prefetchMaxInFlight(doc, sectionName);
@@ -869,6 +872,7 @@ public final class ConfigLoader {
                                            retentionCount,
                                            walPath,
                                            encrypted,
+                                           promotion,
                                            prefetch,
                                            prefetchMaxInFlight);
     }

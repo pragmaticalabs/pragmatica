@@ -87,18 +87,29 @@ class TopologyObserverVoterQuorumTest {
     private final Source source = new Source();
 
     private TopologyObserver startedObserverWithFiveVotersAndAFullView() {
+        return startedObserverWithFiveVotersAndAFullView(0L);
+    }
+
+    /// `deliveryDelayMillis` delays the routed notification after the quorum bit has flipped: the observer flips the bit first and
+    /// routes afterwards, so a test that reads the bit and then expects the notification races the router. A delay makes that race
+    /// the rule instead of the exception.
+    private TopologyObserver startedObserverWithFiveVotersAndAFullView(long deliveryDelayMillis) {
         var router = MessageRouter.mutable();
 
         router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
         router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
         router.addRoute(NetworkServiceMessage.DisconnectNode.class, _ -> {});
-        router.addRoute(ClusterStateNotification.class, notifications::add);
+        router.addRoute(ClusterStateNotification.class, notification -> {
+            sleepBriefly(deliveryDelayMillis);
+            notifications.add(notification);
+        });
         var observer = TopologyObserver.topologyObserver(fiveCoreConfig(), router, source).unwrap();
 
         observer.installVoterConfiguration(FIVE_VOTERS);
         source.show(Set.of(SELF, A, B, C, D));
         observer.start().await();
         awaitTrue(() -> observer.inQuorum().getAsBoolean(), "control: five voters in the view establish quorum");
+        awaitNotification(ClusterStateNotification.State.ACTIVE, 1, "control: the ACTIVE notification of the established quorum is delivered");
         return observer;
     }
 
@@ -109,7 +120,18 @@ class TopologyObserverVoterQuorumTest {
         source.show(Set.of(SELF, A, OBSERVER));
 
         awaitTrue(() -> !observer.inQuorum().getAsBoolean(), "3 members in the view but only 2 are installed voters: quorum is lost");
-        assertThat(notifications.getLast().state()).isEqualTo(ClusterStateNotification.State.PASSIVE);
+        awaitNotification(ClusterStateNotification.State.PASSIVE, 2, "the loss is published as PASSIVE");
+        observer.stop().await();
+    }
+
+    @Test
+    void twoVotersPlusAnObserver_areNotAQuorumOfFive_whenTheRouterDeliversLate() {
+        var observer = startedObserverWithFiveVotersAndAFullView(300L);
+
+        source.show(Set.of(SELF, A, OBSERVER));
+
+        awaitTrue(() -> !observer.inQuorum().getAsBoolean(), "the bit flips before the notification is delivered");
+        awaitNotification(ClusterStateNotification.State.PASSIVE, 2, "the late delivery still publishes PASSIVE");
         observer.stop().await();
     }
 
@@ -132,6 +154,7 @@ class TopologyObserverVoterQuorumTest {
         source.show(Set.of(SELF, A, B, C, D), 2);
 
         awaitTrue(() -> !observer.inQuorum().getAsBoolean(), "the view's healthy count still bounds the quorum: neither number may inflate it");
+        awaitNotification(ClusterStateNotification.State.PASSIVE, 2, "the loss is published as PASSIVE");
         observer.stop().await();
     }
 
@@ -142,6 +165,12 @@ class TopologyObserverVoterQuorumTest {
             sleepBriefly(10);
         }
         assertThat(condition.getAsBoolean()).as(description).isTrue();
+    }
+
+    /// The notification is routed after the quorum bit flips, so a test that reads the bit must wait for the notification itself
+    /// before asserting on it: `count` notifications have arrived and the last one has state `expected`.
+    private void awaitNotification(ClusterStateNotification.State expected, int count, String description) {
+        awaitTrue(() -> notifications.size() >= count && notifications.getLast().state() == expected, description);
     }
 
     private static void awaitTicks(int ticks) {

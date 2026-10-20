@@ -16,13 +16,16 @@ import org.pragmatica.lang.Verify;
 /// nodes on one host (EmberCluster, co-located containers) must never share a WAL directory, and the
 /// suffix is what keeps that invariant independent of operator input.
 ///
+/// `promotion` is a kill switch for background tier promotion on this instance (default on): promotion copies hot
+/// blocks into the node's faster tiers, per node. It has no effect on `streams`, which never promotes.
+///
 /// `prefetch` is the kill switch for cross-node block prefetching on this instance: on by default, it lets the
 /// node gossip hints about the blocks it reads often and copy hinted blocks into its own cache tiers. It is read
 /// for every instance but `streams`, which prefetches its own segments and takes no part in it.
 ///
 /// `prefetchMaxInFlight` is the most prefetches that run at once on this instance (`prefetch_max_in_flight`, default
-/// 4). A hint that finds every slot taken is dropped and counted, never queued. The loader refuses a value that is not a
-/// positive integer; `prefetch = false` is how prefetching is switched off.
+/// 4). A hint that finds every slot taken is dropped and counted, never queued. The loader refuses a value that is not
+/// a positive integer; `prefetch = false` is how prefetching is switched off.
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -32,12 +35,13 @@ public record StorageConfig(long memoryMaxBytes,
                             int snapshotRetentionCount,
                             String walPath,
                             boolean encrypted,
+                            boolean promotion,
                             boolean prefetch,
                             int prefetchMaxInFlight) {
     /// The default for `prefetchMaxInFlight`; the prefetch manager's own default is pinned to the same number by a test.
     public static final int DEFAULT_PREFETCH_MAX_IN_FLIGHT = 4;
 
-    /// The shape this record had before the in-flight cap existed: the cap takes its default.
+    /// The shape this record had before prefetching existed: `prefetch` is on and the cap takes its default.
     public StorageConfig(long memoryMaxBytes,
                          long diskMaxBytes,
                          String diskPath,
@@ -47,6 +51,32 @@ public record StorageConfig(long memoryMaxBytes,
                          int snapshotRetentionCount,
                          String walPath,
                          boolean encrypted,
+                         boolean promotion) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
+             true,
+             DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+    }
+
+    /// The shape before the in-flight cap existed: the cap takes its default.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion,
                          boolean prefetch) {
         this(memoryMaxBytes,
              diskMaxBytes,
@@ -57,12 +87,12 @@ public record StorageConfig(long memoryMaxBytes,
              snapshotRetentionCount,
              walPath,
              encrypted,
+             promotion,
              prefetch,
              DEFAULT_PREFETCH_MAX_IN_FLIGHT);
     }
 
-    /// Every instance a config names takes part in prefetching unless it says otherwise: the shape this record had before
-    /// `prefetch` existed.
+    /// Pre-promotion-key shape, kept so existing callers stay source-compatible; `promotion` defaults to on.
     public StorageConfig(long memoryMaxBytes,
                          long diskMaxBytes,
                          String diskPath,
@@ -173,6 +203,29 @@ public record StorageConfig(long memoryMaxBytes,
                                  true);
     }
 
+    /// `promotion` switches background tier promotion on this instance on or off (`[storage.<name>] promotion`).
+    public static StorageConfig storageConfig(long memoryMaxBytes,
+                                              long diskMaxBytes,
+                                              String diskPath,
+                                              String snapshotPath,
+                                              int snapshotMutationThreshold,
+                                              String snapshotMaxInterval,
+                                              int snapshotRetentionCount,
+                                              String walPath,
+                                              boolean encrypted,
+                                              boolean promotion) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion);
+    }
+
     /// `prefetch` switches cross-node block prefetching off for this instance (`[storage.<name>] prefetch = false`).
     public static StorageConfig storageConfig(long memoryMaxBytes,
                                               long diskMaxBytes,
@@ -183,6 +236,7 @@ public record StorageConfig(long memoryMaxBytes,
                                               int snapshotRetentionCount,
                                               String walPath,
                                               boolean encrypted,
+                                              boolean promotion,
                                               boolean prefetch) {
         return new StorageConfig(memoryMaxBytes,
                                  diskMaxBytes,
@@ -193,6 +247,7 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotRetentionCount,
                                  walPath,
                                  encrypted,
+                                 promotion,
                                  prefetch);
     }
 
@@ -206,6 +261,7 @@ public record StorageConfig(long memoryMaxBytes,
                                               int snapshotRetentionCount,
                                               String walPath,
                                               boolean encrypted,
+                                              boolean promotion,
                                               boolean prefetch,
                                               int prefetchMaxInFlight) {
         return new StorageConfig(memoryMaxBytes,
@@ -217,6 +273,7 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotRetentionCount,
                                  walPath,
                                  encrypted,
+                                 promotion,
                                  prefetch,
                                  prefetchMaxInFlight);
     }

@@ -23,6 +23,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.storage.PrefetchManager;
 import org.pragmatica.storage.PrefetchStats;
+import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.ReadinessState;
 import org.pragmatica.storage.StorageInstance.TierInfo;
 import org.pragmatica.storage.TierLevel;
@@ -78,12 +79,34 @@ public final class StorageRoutes implements RouteSource {
 
     record StorageListResponse(List<StorageInstanceSummary> instances) {}
 
+    /// Background tier demotion on this node: `active` is whether it is running now, the rest is cumulative since boot.
+    record DemotionDetail(boolean active, int blocksDemoted, long bytesMoved, long lastRunMs) {}
+
+    /// Background tier promotion on this node. `enabled` is false for an instance that never promotes (`streams`, or
+    /// `[storage.<name>] promotion = false`); `failed` counts copies that failed on the source read or the target write.
+    record PromotionDetail(boolean enabled,
+                           boolean active,
+                           int blocksPromoted,
+                           long bytesMoved,
+                           int failed,
+                           int cycles,
+                           long lastRunMs) {}
+
+    /// Orphan garbage collection on this node.
+    record GarbageCollectionDetail(boolean active, int blocksCollected, long lastRunMs) {}
+
+    /// What the instance's background maintenance has done on THIS node (F7: demotion and GC stats had no consumer).
+    record MaintenanceDetail(DemotionDetail demotion,
+                             PromotionDetail promotion,
+                             GarbageCollectionDetail garbageCollection) {}
+
     /// `prefetch` is the cross-node block prefetching this instance takes part in; absent for an instance that does not
     /// (`[storage.<name>] prefetch = false`, and `streams`, which prefetches its own segments).
     record StorageDetailResponse(String name,
                                  List<TierDetail> tiers,
                                  SnapshotDetail snapshot,
                                  ReadinessDetail readiness,
+                                 MaintenanceDetail maintenance,
                                  Option<WalUsage> wal,
                                  Option<PrefetchStats> prefetch) {}
 
@@ -145,7 +168,7 @@ public final class StorageRoutes implements RouteSource {
         return new StorageListResponse(summaries);
     }
 
-    private Result<StorageDetailResponse> instanceDetail(String name) {
+    Result<StorageDetailResponse> instanceDetail(String name) {
         var node = nodeSupplier.get();
 
         return findSetup(name).map(setup -> toDetailResponse(setup, walUsageFor(node, setup)));
@@ -365,6 +388,7 @@ public final class StorageRoutes implements RouteSource {
                                          toTierDetails(setup),
                                          toSnapshotDetail(setup),
                                          toReadinessDetail(setup),
+                                         toMaintenanceDetail(setup),
                                          wal,
                                          prefetchStatsOf(setup));
     }
@@ -373,6 +397,30 @@ public final class StorageRoutes implements RouteSource {
         return setup.prefetchManager() == PrefetchManager.NOOP
                ? Option.none()
                : Option.some(setup.prefetchManager().stats());
+    }
+
+    private static MaintenanceDetail toMaintenanceDetail(StorageSetup setup) {
+        var demotion = setup.demotionManager();
+        var promotion = setup.promotionManager();
+        var collector = setup.garbageCollector();
+        var demotionStats = demotion.stats();
+        var promotionStats = promotion.stats();
+        var gcStats = collector.stats();
+
+        return new MaintenanceDetail(new DemotionDetail(demotion.isActive(),
+                                                        demotionStats.blocksDemoted(),
+                                                        demotionStats.bytesMoved(),
+                                                        demotionStats.lastRunMs()),
+                                     new PromotionDetail(promotion != PromotionManager.NOOP,
+                                                         promotion.isActive(),
+                                                         promotionStats.blocksPromoted(),
+                                                         promotionStats.bytesMoved(),
+                                                         promotionStats.failed(),
+                                                         promotionStats.cycles(),
+                                                         promotionStats.lastRunMs()),
+                                     new GarbageCollectionDetail(collector.isActive(),
+                                                                 gcStats.blocksCollected(),
+                                                                 gcStats.lastRunMs()));
     }
 
     private static SnapshotResponse triggerSnapshot(StorageSetup setup) {

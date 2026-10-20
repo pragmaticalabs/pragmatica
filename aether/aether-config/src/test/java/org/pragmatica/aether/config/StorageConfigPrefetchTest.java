@@ -31,9 +31,21 @@ class StorageConfigPrefetchTest {
     }
 
     @Test
-    void storageConfig_explicitSwitch_isKept() {
-        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, false).prefetch()).isFalse();
-        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true).prefetch()).isTrue();
+    void storageConfig_theShapeFromBeforePrefetch_takesPartInPrefetch_andKeepsItsPromotion() {
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, false).prefetch()).isTrue();
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, false).promotion()).isFalse();
+        assertThat(new StorageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, false).prefetch()).isTrue();
+    }
+
+    @Test
+    void storageConfig_explicitSwitch_isKept_withoutTouchingPromotion() {
+        var off = StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true, false);
+        var on = StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, false, true);
+
+        assertThat(off.prefetch()).isFalse();
+        assertThat(off.promotion()).isTrue();
+        assertThat(on.prefetch()).isTrue();
+        assertThat(on.promotion()).isFalse();
     }
 
     @Test
@@ -41,13 +53,15 @@ class StorageConfigPrefetchTest {
         assertThat(StorageConfig.storageConfig().prefetchMaxInFlight()).isEqualTo(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
         assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", true, false).prefetchMaxInFlight())
             .isEqualTo(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", true, false, false).prefetchMaxInFlight())
+            .isEqualTo(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
         assertThat(new StorageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false).prefetchMaxInFlight())
             .isEqualTo(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
     }
 
     @Test
     void storageConfig_explicitCap_isKept() {
-        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true, 7).prefetchMaxInFlight())
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true, true, 7).prefetchMaxInFlight())
             .isEqualTo(7);
     }
 }

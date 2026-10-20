@@ -919,6 +919,47 @@ class ConfigLoaderTest {
             .onSuccess(config -> assertWalPath(config, "   ", false));
     }
 
+    // `[storage.<name>] promotion` is the kill switch for background tier promotion on that instance. Absent means ON,
+    // so a deployment that never heard of the key promotes; a wrong-typed value is refused by name (#1455), not
+    // defaulted.
+    @Test
+    void loadFromString_promotionKey_switchesPromotionOffForThatInstanceOnly() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            promotion = false
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").promotion()).isFalse();
+                assertThat(config.storage().get("content").promotion()).as("absent means on").isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_promotionKeyOfTheWrongType_isRefusedByName() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            promotion = "yes"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onSuccess(config -> Assertions.fail("a wrong-typed promotion value must not take the default"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion"));
+    }
+
     // Cross-node block prefetching is ON for every instance unless an operator switches it off per instance.
     @Test
     void loadFromString_prefetchAbsent_isOn() {
