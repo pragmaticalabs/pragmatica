@@ -59,20 +59,27 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
-        if (!ctx.shouldLint(packageName(root)) || FileTypeClassifier.classify(root) == FileType.TEST_CLASS) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
 
         var masked = MapperSafety.blankNonCode(source);
 
-        return CALLBACK.matcher(masked)
-                       .find()
-               ? findings(masked, source, ctx).stream()
-               : Stream.empty();
+        if (!CALLBACK.matcher(masked)
+                     .find()) {
+            return Stream.empty();
+        }
+
+        var found = findings(masked, source, ctx);
+
+        // Classifying the file walks the whole CST, so it is deferred until there is something to report.
+        return found.isEmpty() || FileTypeClassifier.classify(root) == FileType.TEST_CLASS
+               ? Stream.empty()
+               : found.stream();
     }
 
     private List<Diagnostic> findings(String masked, String source, LintContext ctx) {
-        var facts = PromiseCarrier.facts(masked);
+        var facts = Declarations.facts(masked);
         var lines = new LineIndex(source);
         var comments = MapperSafety.commentsOnly(source);
         var result = new ArrayList<Diagnostic>();
@@ -80,14 +87,14 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
 
         while (matcher.find()) {
             var open = matcher.end() - 1;
-            var close = PromiseCarrier.closeOf(masked, open);
+            var close = SourceText.closeOf(masked, open);
 
             if (close < 0) {
                 continue;
             }
 
             var dot = matcher.start();
-            var start = firstCode(masked, PromiseCarrier.chainStart(masked, dot));
+            var start = firstCode(masked, SourceText.chainStart(masked, dot));
 
             if (isPromise(masked, facts, start, dot, close)) {
                 SharedWrites.inCallback(masked.substring(open + 1, close), facts, masked)
@@ -110,10 +117,10 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
         return i;
     }
 
-    private boolean isPromise(String masked, PromiseCarrier.FileFacts facts, int start, int dot, int close) {
-        var chain = PromiseCarrier.chain(masked.substring(start, dot));
+    private boolean isPromise(String masked, Declarations.FileFacts facts, int start, int dot, int close) {
+        var chain = SourceText.chain(masked.substring(start, dot));
 
-        return switch (PromiseCarrier.kindOf(chain.text(), facts)) {
+        return switch (PromiseCarrier.kindOf(chain.text(), facts, start)) {
             case PROMISE -> true;
             case RESULT -> false;
             case UNKNOWN -> returnsPromise(masked, facts, chain.isReturn(), start, close);
@@ -121,7 +128,7 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
     }
 
     /// `return <chain>.onX(...);` in a method declared to return `Promise<...>`: `onX` returns the carrier it is called on.
-    private boolean returnsPromise(String masked, PromiseCarrier.FileFacts facts, boolean isReturn, int start, int close) {
+    private boolean returnsPromise(String masked, Declarations.FileFacts facts, boolean isReturn, int start, int close) {
         return isReturn && endsStatement(masked, close) && "Promise".equals(PromiseCarrier.enclosingReturnType(masked, start, facts));
     }
 

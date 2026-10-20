@@ -1,29 +1,28 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.pragmatica.jbct.lint.cst.rules.Declarations.FileFacts;
+import org.pragmatica.jbct.lint.cst.rules.Declarations.Slot;
 
 
 /// Receiver-carrier heuristics for JBCT-ASYNC-01: is the receiver of an `onSuccess`/`onFailure`/`onResult` call a `Promise`
 /// or a `Result`?
 ///
 /// The linter sees one file's syntax and no types, and the two carriers share every callback name (`Result.on*` runs
-/// inline; `Promise.on*` runs on a separate virtual thread). So the answer is inferred from three signals and is `PROMISE`
+/// inline; `Promise.on*` runs on a separate virtual thread). So the answer is inferred from the signals below and is `PROMISE`
 /// only when one of them proves it; everything else is `UNKNOWN`, and the rule does not flag `UNKNOWN`.
 ///
 /// 1. **The chain.** `Promise.x(...)` starts a promise chain, `Result.x(...)` a result chain; `.async()`, `.timeout(...)`,
 ///    `.withSuccess/withFailure/withResult(...)` and the `*Async` callbacks exist only on `Promise` and turn any chain into one;
 ///    `.await(...)` turns a promise chain into a `Result`. Every other combinator preserves the carrier it is called on.
-/// 2. **Declarations in this file.** A field, parameter or local declared `Promise<...>` (or `var x = <promise chain>`), and a
-///    method declared to return `Promise<...>`, name a promise when used as the head of the chain.
-/// 3. **The enclosing return.** `return <chain>.onX(...);` in a method declared to return `Promise<...>` (or `Result<...>`):
-///    `onX` returns the carrier it is called on, so that carrier is the declared return type.
+/// 2. **Declarations in this file** ([Declarations]). A field, parameter, local or lambda parameter declared `Promise<...>` (or
+///    `var x = <promise chain>`), a holder of promises read through its accessor (`supplier.get()`, `inFlight.compute(...)`), and
+///    a method of this file declared to return `Promise<...>` (called bare, or as `x.m()` for a name no other declaration of the
+///    file returns differently), name a promise.
+/// 3. **The enclosing return.** `return <chain>.onX(...);` in a method declared to return `Promise<...>`: `onX` returns the
+///    carrier it is called on, so that carrier is the declared return type.
 ///
 /// **Limit.** A receiver whose type is declared in another file (`cluster.apply(...)`, `ctm.provision(...)`) is `UNKNOWN`
 /// unless one of the signals above reaches it. That is the dominant source of missed sites, and the price of never guessing
@@ -37,42 +36,18 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
         UNKNOWN
     }
 
-    /// A method declared in the file: simple name, declared return type's simple name, parameter names in order and the span of its
-    /// body.
-    record MethodDecl(String name, String returnType, List<String> params, int bodyStart, int bodyEnd) {
-        static MethodDecl methodDecl(String name, String returnType, List<String> params, int bodyStart, int bodyEnd) {
-            return new MethodDecl(name, returnType, params, bodyStart, bodyEnd);
-        }
+    /// The state of a chain while it is read left to right; `HOLDER` has not yet yielded the promise it holds.
+    enum State {
+        PROMISE,
+        RESULT,
+        HOLDER,
+        UNKNOWN
     }
 
-    /// What one file declares. Names declared with both a Promise and a non-Promise type are dropped from `promiseNames`.
-    record FileFacts(Set<String> promiseNames,
-                     Set<String> resultNames,
-                     Set<String> promiseMethods,
-                     Set<String> resultMethods,
-                     Map<String, List<MethodDecl>> methods) {
-        static FileFacts fileFacts(Set<String> promiseNames,
-                                   Set<String> resultNames,
-                                   Set<String> promiseMethods,
-                                   Set<String> resultMethods,
-                                   Map<String, List<MethodDecl>> methods) {
-            return new FileFacts(promiseNames, resultNames, promiseMethods, resultMethods, methods);
-        }
-    }
+    String IDENT = SourceText.IDENT;
 
-    String IDENT = "[A-Za-z_$][A-Za-z0-9_$]*";
-
-    Pattern DECLARED = Pattern.compile("(?<![.\\w$])((?:" + IDENT + "\\.)*)(" + IDENT + ")\\s*(<)?");
-    Pattern DECLARED_NAME = Pattern.compile("\\s*(?:\\[\\]\\s*)*(" + IDENT + ")\\s*(\\(|=|;|,|\\)|:)");
-    Pattern VAR_DECL = Pattern.compile("\\bvar\\s+(" + IDENT + ")\\s*=");
-    Pattern METHOD_HEAD = Pattern.compile("(?<![\\w$.])(" + IDENT + ")\\s*\\(");
     Pattern HEAD = Pattern.compile("\\s*(?:this\\s*\\.\\s*)?(" + IDENT + ")");
-    Pattern THROWS = Pattern.compile("\\s*throws\\s+[\\w.,\\s<>]+?\\s*\\{");
-
-    Set<String> NOT_A_TYPE = Set.of("return", "new", "else", "case", "throw", "import", "package", "instanceof", "extends",
-                                    "implements", "throws", "yield", "assert");
-    Set<String> CONTROL = Set.of("if", "for", "while", "switch", "catch", "synchronized", "try", "do", "return", "new", "else",
-                                 "throw", "super", "this");
+    Pattern MEMBER = Pattern.compile(IDENT);
 
     /// Combinators that exist on `Promise` only, so a chain containing one is a promise from there on.
     Set<String> PROMISE_ONLY = Set.of("async",
@@ -90,389 +65,166 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
     /// Terminals that leave the carrier: after them the value is no longer what the chain started as.
     Set<String> LEAVES_RESULT = Set.of("fold", "or", "orElse", "unwrap", "option", "toOption", "toResult", "isPresent", "get");
 
-    /// The names a file declares, bucketed by declared carrier; the sets are filled while scanning, then reconciled.
-    record Collected(Set<String> promiseNames,
-                     Set<String> resultNames,
-                     Set<String> otherNames,
-                     Set<String> promiseMethods,
-                     Set<String> resultMethods,
-                     Set<String> otherMethods) {
-        static Collected collected() {
-            return new Collected(new HashSet<>(),
-                                 new HashSet<>(),
-                                 new HashSet<>(),
-                                 new HashSet<>(),
-                                 new HashSet<>(),
-                                 new HashSet<>());
-        }
+    /// Names too common across types to infer a carrier from a method of the same name declared in this file.
+    Set<String> GENERIC_NAMES = Set.of("get", "apply", "call", "run", "accept", "test", "of", "put", "add", "remove", "map");
 
-        void add(String typeName, String name, boolean isMethod) {
-            bucket(typeName, isMethod).add(name);
-        }
-
-        private Set<String> bucket(String typeName, boolean isMethod) {
-            return switch (typeName) {
-                case "Promise" -> isMethod
-                                  ? promiseMethods
-                                  : promiseNames;
-                case "Result" -> isMethod
-                                 ? resultMethods
-                                 : resultNames;
-                default -> isMethod
-                           ? otherMethods
-                           : otherNames;
-            };
-        }
-    }
-
-    static FileFacts facts(String masked) {
-        var collected = Collected.collected();
-
-        scanDeclarations(masked, collected);
-
-        var partial = FileFacts.fileFacts(collected.promiseNames(),
-                                          collected.resultNames(),
-                                          collected.promiseMethods(),
-                                          collected.resultMethods(),
-                                          methodTable(masked));
-
-        for (var pass = 0; pass < 2; pass++) {
-            inferVars(masked, partial, collected.otherNames());
-        }
-
-        collected.promiseNames().removeAll(collected.otherNames());
-        collected.promiseNames().removeAll(collected.resultNames());
-        collected.promiseMethods().removeAll(collected.otherMethods());
-        collected.promiseMethods().removeAll(collected.resultMethods());
-        collected.resultMethods().removeAll(collected.otherMethods());
-        return partial;
-    }
-
-    private static void scanDeclarations(String masked, Collected collected) {
-        var matcher = DECLARED.matcher(masked);
-
-        while (matcher.find()) {
-            var typeName = matcher.group(2);
-
-            if (NOT_A_TYPE.contains(typeName) || "var".equals(typeName)) {
-                continue;
-            }
-
-            var end = typeEnd(masked, matcher);
-
-            if (end < 0) {
-                continue;
-            }
-
-            var named = DECLARED_NAME.matcher(masked).region(end, masked.length());
-
-            if (named.lookingAt() && !NOT_A_TYPE.contains(named.group(1))) {
-                collected.add(typeName, named.group(1), "(".equals(named.group(2)));
-            }
-        }
-    }
-
-    /// Offset just past the type at the matcher's position, skipping a type-argument list; `-1` when the `<` opens no such list.
-    private static int typeEnd(String masked, Matcher matcher) {
-        if (matcher.group(3) == null) {
-            return matcher.end();
-        }
-
-        var close = closeAngle(masked, matcher.end() - 1);
-
-        return close < 0
-               ? - 1
-               : close + 1;
-    }
-
-    /// `var x = <chain>;` — the declared name takes the carrier of its initializer.
-    private static void inferVars(String masked, FileFacts facts, Set<String> otherNames) {
-        var matcher = VAR_DECL.matcher(masked);
-
-        while (matcher.find()) {
-            var end = statementEnd(masked, matcher.end());
-
-            if (end < 0) {
-                continue;
-            }
-
-            switch (kindOf(masked.substring(matcher.end(), end), facts)) {
-                case PROMISE -> facts.promiseNames().add(matcher.group(1));
-                case RESULT -> facts.resultNames().add(matcher.group(1));
-                case UNKNOWN -> otherNames.add(matcher.group(1));
-            }
-        }
-    }
-
-    /// Methods with a body declared in this file, keyed by simple name (overloads share a key).
-    private static Map<String, List<MethodDecl>> methodTable(String masked) {
-        var table = new HashMap<String, List<MethodDecl>>();
-        var matcher = METHOD_HEAD.matcher(masked);
-
-        while (matcher.find()) {
-            var name = matcher.group(1);
-
-            if (CONTROL.contains(name)) {
-                continue;
-            }
-
-            var open = matcher.end() - 1;
-            var close = closeOf(masked, open);
-
-            if (close < 0) {
-                continue;
-            }
-
-            var bodyOpen = bodyOpenAfter(masked, close + 1);
-
-            if (bodyOpen < 0) {
-                continue;
-            }
-
-            var returnType = returnTypeBefore(masked, matcher.start());
-
-            if (returnType.isEmpty()) {
-                continue;
-            }
-
-            var bodyClose = closeOf(masked, bodyOpen);
-
-            if (bodyClose > 0) {
-                table.computeIfAbsent(name, _ -> new ArrayList<>())
-                     .add(MethodDecl.methodDecl(name, returnType, paramNames(masked.substring(open + 1, close)), bodyOpen + 1, bodyClose));
-            }
-        }
-
-        return table;
-    }
-
-    private static int bodyOpenAfter(String masked, int from) {
-        var throwsClause = THROWS.matcher(masked).region(from, masked.length());
-
-        if (throwsClause.lookingAt()) {
-            return throwsClause.end() - 1;
-        }
-
-        var i = from;
-
-        while (i < masked.length() && Character.isWhitespace(masked.charAt(i))) {
-            i++;
-        }
-
-        return i < masked.length() && masked.charAt(i) == '{'
-               ? i
-               : - 1;
-    }
-
-    /// Simple name of the type that precedes a method name (`Promise<Unit> run(` gives `Promise`), or empty when the token before
-    /// the name is not a type — a call statement, a `new`, an operator.
-    private static String returnTypeBefore(String masked, int nameStart) {
-        var end = nameStart - 1;
-
-        while (end >= 0 && Character.isWhitespace(masked.charAt(end))) {
-            end--;
-        }
-
-        if (end >= 0 && masked.charAt(end) == '>') {
-            end = openAngle(masked, end) - 1;
-
-            while (end >= 0 && Character.isWhitespace(masked.charAt(end))) {
-                end--;
-            }
-        }
-
-        while (end >= 1 && masked.charAt(end) == ']' && masked.charAt(end - 1) == '[') {
-            end -= 2;
-        }
-
-        var start = end;
-
-        while (start >= 0 && isIdentChar(masked.charAt(start))) {
-            start--;
-        }
-
-        if (start == end) {
-            return "";
-        }
-
-        var token = masked.substring(start + 1, end + 1);
-
-        return NOT_A_TYPE.contains(token)
-               ? ""
-               : token;
-    }
-
-    private static List<String> paramNames(String list) {
-        var names = new ArrayList<String>();
-
-        for (var chunk : list.split(",")) {
-            var matcher = Pattern.compile(IDENT).matcher(chunk);
-            String last = null;
-
-            while (matcher.find()) {
-                last = matcher.group();
-            }
-
-            if (last != null) {
-                names.add(last);
-            }
-        }
-
-        return names;
-    }
-
-    /// Carrier of a receiver expression, read left to right: the head fixes the starting carrier, then each `.name(...)` either
-    /// keeps it, switches it, or leaves it.
-    static Kind kindOf(String receiver, FileFacts facts) {
+    /// Carrier of a receiver expression that starts at `offset`, read left to right: the head fixes the starting carrier, then
+    /// each `.name(...)` either keeps it, switches it, or leaves it.
+    static Kind kindOf(String receiver, FileFacts facts, int offset) {
         var text = receiver.strip();
         var head = HEAD.matcher(text);
 
-        if (!head.lookingAt() || CONTROL.contains(head.group(1))) {
+        if (!head.lookingAt() || Declarations.CONTROL.contains(head.group(1))) {
             return Kind.UNKNOWN;
         }
 
         var name = head.group(1);
-        var i = head.end();
+        var i = skipBlanks(text, head.end());
+        var isCall = i < text.length() && text.charAt(i) == '(';
+        var state = isCall
+                    ? callHeadState(name, facts)
+                    : namedHeadState(name, facts, offset);
+        var viaType = !isCall && Character.isUpperCase(name.charAt(0));
+
+        if (isCall) {
+            var close = SourceText.closeOf(text, i);
+
+            return close < 0
+                   ? Kind.UNKNOWN
+                   : kindOf(walk(text, close + 1, state, viaType, facts));
+        }
+
+        return kindOf(walk(text, i, state, viaType, facts));
+    }
+
+    private static Kind kindOf(State state) {
+        return switch (state) {
+            case PROMISE -> Kind.PROMISE;
+            case RESULT -> Kind.RESULT;
+            case HOLDER, UNKNOWN -> Kind.UNKNOWN;
+        };
+    }
+
+    private static State callHeadState(String name, FileFacts facts) {
+        if (facts.promiseMethods().contains(name)) {
+            return State.PROMISE;
+        }
+
+        return facts.resultMethods().contains(name)
+               ? State.RESULT
+               : State.UNKNOWN;
+    }
+
+    private static State namedHeadState(String name, FileFacts facts, int offset) {
+        return switch (name) {
+            case "Promise" -> State.PROMISE;
+            case "Result" -> State.RESULT;
+            default -> facts.slotAt(name, offset)
+                            .map(PromiseCarrier::stateOf)
+                            .or(State.UNKNOWN);
+        };
+    }
+
+    private static State stateOf(Slot slot) {
+        return switch (slot) {
+            case PROMISE -> State.PROMISE;
+            case RESULT -> State.RESULT;
+            case HOLDER -> State.HOLDER;
+            case OTHER -> State.UNKNOWN;
+        };
+    }
+
+    /// @param viaType the chain starts at a type name (`FileOps.delete(...)`): its methods are that type's, not this file's
+    private static State walk(String text, int from, State start, boolean viaType, FileFacts facts) {
+        var state = start;
+        var i = skipBlanks(text, from);
+
+        while (i < text.length()) {
+            if (text.charAt(i) != '.') {
+                return State.UNKNOWN;
+            }
+
+            i = skipBlanks(text, i + 1);
+
+            if (i < text.length() && text.charAt(i) == '<') {
+                var close = SourceText.closeAngle(text, i);
+
+                if (close < 0) {
+                    return State.UNKNOWN;
+                }
+
+                i = skipBlanks(text, close + 1);
+            }
+
+            var member = MEMBER.matcher(text)
+                               .region(i, text.length());
+
+            if (!member.lookingAt()) {
+                return State.UNKNOWN;
+            }
+
+            i = skipBlanks(text, member.end());
+
+            if (i >= text.length() || text.charAt(i) != '(') {
+                state = State.UNKNOWN;
+                continue;
+            }
+
+            var close = SourceText.closeOf(text, i);
+
+            if (close < 0) {
+                return State.UNKNOWN;
+            }
+
+            state = afterCall(state, member.group(), viaType, facts);
+            i = skipBlanks(text, close + 1);
+        }
+
+        return state;
+    }
+
+    private static int skipBlanks(String text, int from) {
+        var i = from;
 
         while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
             i++;
         }
 
-        var kind = i < text.length() && text.charAt(i) == '('
-                   ? callHeadKind(name, facts)
-                   : namedHeadKind(name, facts);
+        return i;
+    }
 
-        if (i < text.length() && text.charAt(i) == '(') {
-            var close = closeOf(text, i);
-
-            if (close < 0) {
-                return Kind.UNKNOWN;
-            }
-
-            i = close + 1;
+    private static State afterCall(State state, String member, boolean viaType, FileFacts facts) {
+        if (PROMISE_ONLY.contains(member)) {
+            return State.PROMISE;
         }
 
-        return walk(text, i, kind);
-    }
-
-    private static Kind callHeadKind(String name, FileFacts facts) {
-        return declaredKind(name, facts.promiseMethods(), facts.resultMethods());
-    }
-
-    private static Kind namedHeadKind(String name, FileFacts facts) {
-        return switch (name) {
-            case "Promise" -> Kind.PROMISE;
-            case "Result" -> Kind.RESULT;
-            default -> declaredKind(name, facts.promiseNames(), facts.resultNames());
+        return switch (state) {
+            case PROMISE -> "await".equals(member)
+                            ? State.RESULT
+                            : State.PROMISE;
+            case RESULT -> LEAVES_RESULT.contains(member)
+                           ? State.UNKNOWN
+                           : State.RESULT;
+            case HOLDER -> Declarations.HOLDER_ACCESSORS.contains(member)
+                           ? State.PROMISE
+                           : State.UNKNOWN;
+            case UNKNOWN -> !viaType && isPromiseMethod(member, facts)
+                            ? State.PROMISE
+                            : State.UNKNOWN;
         };
     }
 
-    private static Kind declaredKind(String name, Set<String> promises, Set<String> results) {
-        if (promises.contains(name)) {
-            return Kind.PROMISE;
-        }
-
-        return results.contains(name)
-               ? Kind.RESULT
-               : Kind.UNKNOWN;
-    }
-
-    private static Kind walk(String text, int from, Kind start) {
-        var kind = start;
-        var i = from;
-
-        while (i < text.length()) {
-            var c = text.charAt(i);
-
-            if (Character.isWhitespace(c)) {
-                i++;
-                continue;
-            }
-
-            if (c != '.') {
-                return Kind.UNKNOWN;
-            }
-
-            i++;
-
-            while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
-                i++;
-            }
-
-            if (i < text.length() && text.charAt(i) == '<') {
-                var close = closeAngle(text, i);
-
-                if (close < 0) {
-                    return Kind.UNKNOWN;
-                }
-
-                i = close + 1;
-            }
-
-            var matcher = Pattern.compile(IDENT).matcher(text).region(i, text.length());
-
-            if (!matcher.lookingAt()) {
-                return Kind.UNKNOWN;
-            }
-
-            var member = matcher.group();
-
-            i = matcher.end();
-
-            while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
-                i++;
-            }
-
-            if (i < text.length() && text.charAt(i) == '(') {
-                var close = closeOf(text, i);
-
-                if (close < 0) {
-                    return Kind.UNKNOWN;
-                }
-
-                i = close + 1;
-                kind = afterCall(kind, member);
-            } else {
-                kind = Kind.UNKNOWN;
-            }
-        }
-
-        return kind;
-    }
-
-    private static Kind afterCall(Kind kind, String member) {
-        if (PROMISE_ONLY.contains(member)) {
-            return Kind.PROMISE;
-        }
-
-        if ("await".equals(member) && kind == Kind.PROMISE) {
-            return Kind.RESULT;
-        }
-
-        if (kind == Kind.RESULT && LEAVES_RESULT.contains(member)) {
-            return Kind.UNKNOWN;
-        }
-
-        return kind;
+    private static boolean isPromiseMethod(String member, FileFacts facts) {
+        return facts.promiseMethods().contains(member) && !GENERIC_NAMES.contains(member);
     }
 
     /// Declared return type of the method whose body encloses `offset` through plain blocks only. A lambda body in between
     /// returns for the lambda, not the method, so it makes the enclosing declaration irrelevant.
     static String enclosingReturnType(String masked, int offset, FileFacts facts) {
-        MethodDecl best = null;
-
-        for (var overloads : facts.methods().values()) {
-            for (var method : overloads) {
-                if (method.bodyStart() <= offset && offset < method.bodyEnd()
-                    && (best == null || method.bodyStart() > best.bodyStart())) {
-                    best = method;
-                }
-            }
-        }
-
-        return best == null || crossesLambda(masked, best.bodyStart(), offset)
-               ? ""
-               : best.returnType();
+        return facts.innermostAt(offset)
+                    .filter(method -> method.bodyStart() <= offset && !crossesLambda(masked, method.bodyStart(), offset))
+                    .map(Declarations.MethodDecl::returnType)
+                    .or("");
     }
 
     private static boolean crossesLambda(String masked, int from, int offset) {
@@ -503,196 +255,5 @@ sealed interface PromiseCarrier permits PromiseCarrier.unused {
         }
 
         return i >= 1 && masked.charAt(i) == '>' && masked.charAt(i - 1) == '-';
-    }
-
-    /// Offset of the `;` ending the statement that begins at `from`, skipping nested brackets; `-1` when none.
-    static int statementEnd(String masked, int from) {
-        var depth = 0;
-
-        for (var i = from; i < masked.length(); i++) {
-            var c = masked.charAt(i);
-
-            if (c == '(' || c == '[' || c == '{') {
-                depth++;
-            } else if (c == ')' || c == ']' || c == '}') {
-                if (depth == 0) {
-                    return - 1;
-                }
-
-                depth--;
-            } else if (c == ';' && depth == 0) {
-                return i;
-            }
-        }
-
-        return - 1;
-    }
-
-    /// Offset of the bracket closing the one at `open`, or `-1`.
-    static int closeOf(String s, int open) {
-        var depth = 0;
-
-        for (var i = open; i < s.length(); i++) {
-            var c = s.charAt(i);
-
-            if (c == '(' || c == '[' || c == '{') {
-                depth++;
-            } else if (c == ')' || c == ']' || c == '}') {
-                depth--;
-
-                if (depth == 0) {
-                    return i;
-                }
-            }
-        }
-
-        return - 1;
-    }
-
-    /// Offset of the `>` closing the `<` at `open`; `-1` when the span is not a type-argument list.
-    static int closeAngle(String s, int open) {
-        var depth = 0;
-
-        for (var i = open; i < s.length(); i++) {
-            var c = s.charAt(i);
-
-            if (c == '<') {
-                depth++;
-            } else if (c == '>') {
-                depth--;
-
-                if (depth == 0) {
-                    return i;
-                }
-            } else if (depth > 0 && (c == ';' || c == '{' || c == '}' || c == '(' || c == ')' || c == '=')) {
-                return - 1;
-            }
-        }
-
-        return - 1;
-    }
-
-    private static int openAngle(String s, int close) {
-        var depth = 0;
-
-        for (var i = close; i >= 0; i--) {
-            var c = s.charAt(i);
-
-            if (c == '>') {
-                depth++;
-            } else if (c == '<') {
-                depth--;
-
-                if (depth == 0) {
-                    return i;
-                }
-            } else if (c == ';' || c == '{' || c == '}') {
-                return close;
-            }
-        }
-
-        return close;
-    }
-
-    static boolean isIdentChar(char c) {
-        return Character.isLetterOrDigit(c) || c == '_' || c == '$';
-    }
-
-    /// Start of the call chain whose last link ends at `dot`: scanned backward over balanced brackets to the first statement or
-    /// argument boundary.
-    static int chainStart(String s, int dot) {
-        var depth = 0;
-
-        for (var i = dot - 1; i >= 0; i--) {
-            var c = s.charAt(i);
-
-            if ((c == '{' || c == '}') && depth == 0) {
-                return i + 1;
-            }
-
-            if (c == ')' || c == ']' || c == '}') {
-                depth++;
-            } else if (c == '(' || c == '[' || c == '{') {
-                if (depth == 0) {
-                    return i + 1;
-                }
-
-                depth--;
-            } else if (depth == 0 && isBoundary(s, i)) {
-                return i + 1;
-            }
-        }
-
-        return 0;
-    }
-
-    private static boolean isBoundary(String s, int i) {
-        var c = s.charAt(i);
-
-        return c == ';' || c == ',' || c == '=' && !isComparison(s, i) || c == '?' || c == ':' && !isDoubleColon(s, i)
-               || c == '>' && i > 0 && s.charAt(i - 1) == '-';
-    }
-
-    private static boolean isComparison(String s, int i) {
-        var next = i + 1 < s.length()
-                   ? s.charAt(i + 1)
-                   : ' ';
-        var prev = i > 0
-                   ? s.charAt(i - 1)
-                   : ' ';
-
-        return next == '=' || prev == '=' || prev == '!' || prev == '<' || prev == '>';
-    }
-
-    private static boolean isDoubleColon(String s, int i) {
-        return i > 0 && s.charAt(i - 1) == ':' || i + 1 < s.length() && s.charAt(i + 1) == ':';
-    }
-
-    /// A call chain's text with the statement prefix that precedes it removed, and whether that prefix was `return`.
-    record Chain(String text, boolean isReturn) {
-        static Chain chain(String text, boolean isReturn) {
-            return new Chain(text, isReturn);
-        }
-    }
-
-    Pattern ELSE = Pattern.compile("^\\s*else\\b");
-    Pattern HEADER = Pattern.compile("^\\s*(?:if|while|for|switch)\\s*(?=\\()");
-    Pattern RETURN = Pattern.compile("^\\s*return\\b");
-
-    /// Strips leading `else` and `if (...)`/`while (...)`/`for (...)` headers, then a leading `return`, from `chain`.
-    static Chain chain(String chain) {
-        var text = chain;
-        var next = stripControl(text);
-
-        while (!next.equals(text)) {
-            text = next;
-            next = stripControl(text);
-        }
-
-        var ret = RETURN.matcher(text);
-
-        return ret.find()
-               ? Chain.chain(text.substring(ret.end()), true)
-               : Chain.chain(text, false);
-    }
-
-    private static String stripControl(String text) {
-        var otherwise = ELSE.matcher(text);
-
-        if (otherwise.find()) {
-            return text.substring(otherwise.end());
-        }
-
-        var header = HEADER.matcher(text);
-
-        if (header.find()) {
-            var close = closeOf(text, header.end());
-
-            return close > 0
-                   ? text.substring(close + 1)
-                   : text;
-        }
-
-        return text;
     }
 }

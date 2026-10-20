@@ -447,6 +447,137 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
+        void flags_supplierOfPromiseRead() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        private Supplier<Promise<String>> operation;
+                        void run() {
+                            operation.get().onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_mapOfPromisesRead() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        private final Map<String, Promise<String>> inFlight = new ConcurrentHashMap<>();
+                        void run(String id) {
+                            inFlight.computeIfAbsent(id, this::load).onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_recordComponentAccessor() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        record Attempt(Promise<String> promise) {}
+                        void run(Attempt attempt) {
+                            attempt.promise().onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_parameterOfPromiseFactoryLambda() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<String> run() {
+                            return Promise.promise(promise -> promise.onSuccess(_ -> done = true));
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_qualifiedCallToMethodOfTheFileDeclaredToReturnPromise() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<String> load() { return null; }
+                        void run(Foo other) {
+                            other.load().onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_nameDeclaredDifferentlyInAnotherMethod() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void first(Promise<String> value) {
+                            log.info("{}", value);
+                        }
+                        void second() {
+                            var value = repository.find();
+                            value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_nameDeclaredPromiseInTheSameMethod() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void first() {
+                            var value = repository.find();
+                            log.info("{}", value);
+                        }
+                        void second(Promise<String> value) {
+                            value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_staticCallOnAnotherType() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<Unit> delete(Path path) { return null; }
+                        void run(Path path) {
+                            FileOps.delete(path).onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_commonNameDeclaredPromiseInTheFile() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<String> get() { return null; }
+                        void run(Cache cache) {
+                            cache.get().onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
         void clean_resultVariable() {
             assertFalse(flags("""
                     package org.example;
@@ -694,6 +825,75 @@ class CstPromiseCallbackWriteRuleTest {
                         @SuppressWarnings("JBCT-ASYNC-01")
                         void run(Promise<String> p) {
                             p.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+    }
+
+    @Nested
+    class Scope {
+        private static final String WRITER = """
+                package org.example;
+                class Foo {
+                    private boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> done = true);
+                    }
+                }
+                """;
+
+        @Test
+        void clean_inExcludedPackage() {
+            var excluding = CstLinter.cstLinter(LintContext.lintContext(List.of("org.example.**")));
+
+            assertTrue(flags(WRITER));
+            assertFalse(excluding.lint(SourceFile.sourceFile(Path.of("Test.java"), WRITER))
+                                 .or(List.of())
+                                 .stream()
+                                 .anyMatch(diagnostic -> diagnostic.ruleId()
+                                                                   .equals(RULE_ID)));
+        }
+
+        @Test
+        void clean_inTestClass() {
+            assertFalse(flags("""
+                    package org.example;
+                    class FooTest {
+                        private boolean done;
+                        @Test
+                        void run() {
+                            Promise.success(1).onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void message_namesTheFixAndTheEscapeHatch() {
+            var found = lint(WRITER).getFirst();
+
+            assertTrue(found.message()
+                            .contains("assigns done"),
+                       found.message());
+            assertTrue(found.details()
+                            .contains("withSuccess/withFailure/withResult"),
+                       found.details());
+            assertTrue(found.details()
+                            .contains("// detached: <reason>"),
+                       found.details());
+        }
+
+        @Test
+        void flags_chainsInsideIfAndElseBranches() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(boolean go, Promise<String> p) {
+                            if (go) {
+                                p.map(String::trim).onSuccess(_ -> done = true);
+                            } else p.onFailure(_ -> done = false);
                         }
                     }
                     """));

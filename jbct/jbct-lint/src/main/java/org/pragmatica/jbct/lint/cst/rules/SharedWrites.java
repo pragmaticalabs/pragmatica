@@ -78,7 +78,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
     Set<String> NOT_ASSIGNMENT_ROOTS = Set.of("return", "case", "default", "else", "new", "throw", "yield");
 
     /// First shared write reachable from a callback argument (`x -> ...`, `() -> ...`, `this::name`, `Type::name`), or none.
-    static Option<Write> inCallback(String argument, PromiseCarrier.FileFacts facts, String masked) {
+    static Option<Write> inCallback(String argument, Declarations.FileFacts facts, String masked) {
         var lambda = LAMBDA.matcher(argument);
 
         if (lambda.matches()) {
@@ -86,7 +86,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
                          ? lambda.group(1)
                          : lambda.group(2);
 
-            return inBody(Set.copyOf(paramNames(params)), lambda.group(3), facts, masked, MAX_DEPTH, Set.of());
+            return inBody(Set.copyOf(SourceText.declaredNames(params)), lambda.group(3), facts, masked, MAX_DEPTH, Set.of());
         }
 
         var reference = METHOD_REF.matcher(argument);
@@ -98,7 +98,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
     private static Option<Write> inBody(Set<String> params,
                                         String body,
-                                        PromiseCarrier.FileFacts facts,
+                                        Declarations.FileFacts facts,
                                         String masked,
                                         int depth,
                                         Set<String> seen) {
@@ -126,7 +126,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
             }
 
             if (matcher.group(1) != null || !locals.contains(root)) {
-                return some(Write.write("assigns " + matcher.group().strip(), List.of()));
+                return some(Write.write("assigns " + target(matcher.group(1), matcher.group(2)), List.of()));
             }
         }
 
@@ -138,7 +138,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         while (matcher.find()) {
             if (!locals.contains(root(matcher.group(2)))) {
-                return some(Write.write("updates " + matcher.group().strip(), List.of()));
+                return some(Write.write("updates " + matcher.group(2).replaceAll("\\s+", ""), List.of()));
             }
         }
 
@@ -153,7 +153,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
             var root = root(qualifier);
 
             if (!locals.contains(root) && !NOT_SHARED_ROOTS.contains(root)) {
-                return some(Write.write("calls " + compact(matcher.group()), List.of()));
+                return some(Write.write("calls " + compact(matcher.group()) + "...)", List.of()));
             }
         }
 
@@ -175,7 +175,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
     /// `releaseAfterBoth(remaining, gate)` writes shared state when its body decrements `remaining`.
     private static Option<Write> delegated(Set<String> locals,
                                            String body,
-                                           PromiseCarrier.FileFacts facts,
+                                           Declarations.FileFacts facts,
                                            String masked,
                                            int depth,
                                            Set<String> seen) {
@@ -188,7 +188,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
         while (matcher.find()) {
             var name = matcher.group(1);
 
-            if (PromiseCarrier.CONTROL.contains(name) || seen.contains(name)) {
+            if (Declarations.CONTROL.contains(name) || seen.contains(name)) {
                 continue;
             }
 
@@ -204,7 +204,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
     /// For each argument of the call whose `(` is at `open`: whether it is shared (rooted in a name the caller does not own).
     private static List<Boolean> sharedArguments(Set<String> locals, String body, int open) {
-        var close = PromiseCarrier.closeOf(body, open);
+        var close = SourceText.closeOf(body, open);
 
         if (close < 0) {
             return List.of();
@@ -212,7 +212,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         var shared = new ArrayList<Boolean>();
 
-        for (var argument : topLevelArguments(body.substring(open + 1, close))) {
+        for (var argument : SourceText.splitTopLevel(body.substring(open + 1, close))) {
             shared.add(isShared(locals, argument));
         }
 
@@ -227,33 +227,8 @@ sealed interface SharedWrites permits SharedWrites.unused {
                && !text.contains("->");
     }
 
-    private static List<String> topLevelArguments(String list) {
-        var arguments = new ArrayList<String>();
-        var depth = 0;
-        var from = 0;
-
-        for (var i = 0; i < list.length(); i++) {
-            var c = list.charAt(i);
-
-            if (c == '(' || c == '[' || c == '{') {
-                depth++;
-            } else if (c == ')' || c == ']' || c == '}') {
-                depth--;
-            } else if (c == ',' && depth == 0) {
-                arguments.add(list.substring(from, i));
-                from = i + 1;
-            }
-        }
-
-        if (!list.substring(from).isBlank()) {
-            arguments.add(list.substring(from));
-        }
-
-        return arguments;
-    }
-
     private static Option<Write> viaMethod(String name,
-                                           PromiseCarrier.FileFacts facts,
+                                           Declarations.FileFacts facts,
                                            String masked,
                                            int depth,
                                            Set<String> seen,
@@ -280,7 +255,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
     }
 
     /// The callee's parameters that are local to it: all of them unless the call's arity matches and binds a parameter to shared state.
-    private static Set<String> localParams(PromiseCarrier.MethodDecl method, List<Boolean> sharedArguments) {
+    private static Set<String> localParams(Declarations.MethodDecl method, List<Boolean> sharedArguments) {
         var params = method.params();
 
         if (params.size() != sharedArguments.size()) {
@@ -317,7 +292,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
         var multi = LAMBDA_PARAMS.matcher(body);
 
         while (multi.find()) {
-            names.addAll(paramNames(multi.group(1)));
+            names.addAll(SourceText.declaredNames(multi.group(1)));
         }
 
         return names;
@@ -331,35 +306,21 @@ sealed interface SharedWrites permits SharedWrites.unused {
         }
     }
 
-    private static List<String> paramNames(String list) {
-        var names = new ArrayList<String>();
-        var ident = Pattern.compile(IDENT);
-
-        for (var chunk : list.split(",")) {
-            var matcher = ident.matcher(chunk);
-            String last = null;
-
-            while (matcher.find()) {
-                last = matcher.group();
-            }
-
-            if (last != null) {
-                names.add(last);
-            }
-        }
-
-        return names;
-    }
-
     private static String root(String path) {
         var stripped = path.strip();
         var end = 0;
 
-        while (end < stripped.length() && PromiseCarrier.isIdentChar(stripped.charAt(end))) {
+        while (end < stripped.length() && SourceText.isIdentChar(stripped.charAt(end))) {
             end++;
         }
 
         return stripped.substring(0, end);
+    }
+
+    private static String target(String qualifier, String path) {
+        return (qualifier == null
+                ? ""
+                : "this.") + path.replaceAll("\\s+", "");
     }
 
     private static String compact(String call) {
