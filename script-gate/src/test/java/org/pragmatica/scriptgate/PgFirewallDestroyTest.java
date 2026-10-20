@@ -28,11 +28,14 @@ class PgFirewallDestroyTest {
 
     private Path state;
     private Path stubDir;
+    private Path bareDir;
 
     @BeforeEach
     void setUp(@TempDir Path tempDir) {
+        ScriptGate.requiredTool("jq");
         state = tempDir.resolve("state");
         stubDir = tempDir.resolve("stub");
+        bareDir = tempDir.resolve("bare");
         given(ScriptRunner.writeExecutable(stubDir.resolve("curl"), HetznerCurlStub.SCRIPT).mapToUnit());
         given(write("servers.json", HetznerCurlStub.SERVERS));
         given(write("firewalls.json", HetznerCurlStub.FIREWALLS));
@@ -72,6 +75,30 @@ class PgFirewallDestroyTest {
                   .contains("could not delete firewall 'aether-pg-firewall' (id=99)");
     }
 
+    /// jq is how the script reads every API answer. Without it `destroy` used to log "no firewall ... to destroy"
+    /// and exit 0, leaving a real firewall in place. Now it refuses, naming the tool, before any API call.
+    @Test
+    void destroy_refusesNamingJq_whenJqIsNotInstalled() {
+        given(ScriptGate.linkTools(bareDir, List.of("bash")));
+        var execution = executed(runDestroy(stubDir + ":" + bareDir));
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(1);
+        assertThat(execution.output()).contains("missing dependency: jq").doesNotContain("no firewall named");
+        assertThat(calls()).as("refused before any API call").isEmpty();
+    }
+
+    /// curl is the other tool the preflight names; same refusal, before any API call (the curl stub is not on PATH
+    /// here, so a call could not be recorded either - the empty `calls` file is backed by the exit code and message).
+    @Test
+    void destroy_refusesNamingCurl_whenCurlIsNotInstalled() {
+        given(ScriptGate.linkTools(bareDir, List.of("bash", "jq")));
+        var execution = executed(runDestroy(bareDir.toString()));
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(1);
+        assertThat(execution.output()).contains("missing dependency: curl").doesNotContain("no firewall named");
+        assertThat(calls()).as("refused before any API call").isEmpty();
+    }
+
     private Result<Unit> write(String name, String content) {
         return Result.lift(() -> Files.createDirectories(state))
                      .flatMap(directory -> Result.lift(() -> Files.writeString(directory.resolve(name),
@@ -84,9 +111,13 @@ class PgFirewallDestroyTest {
     }
 
     private Result<ScriptRunner.Execution> runDestroy() {
+        return runDestroy(stubDir + ":" + System.getenv("PATH"));
+    }
+
+    private Result<ScriptRunner.Execution> runDestroy(String path) {
         var environment = new HashMap<String, String>();
 
-        environment.put("PATH", stubDir + ":" + System.getenv("PATH"));
+        environment.put("PATH", path);
         environment.put("STUB_STATE", state.toString());
         environment.put("HCLOUD_TOKEN", "stub-token-not-real");
 
