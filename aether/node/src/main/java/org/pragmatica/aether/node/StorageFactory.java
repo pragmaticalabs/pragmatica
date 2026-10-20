@@ -1546,7 +1546,8 @@ public final class StorageFactory {
     }
 
     private static PrefetchManager prefetchManagerOf(Map.Entry<String, StorageSetup> setup) {
-        return setup.getValue().prefetchManager();
+        return setup.getValue()
+                    .prefetchManager();
     }
 
     /// Wakes every instance's prefetch manager: a node that reports ready starts to gossip hints and act on them.
