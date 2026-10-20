@@ -70,6 +70,7 @@ class CommunityPlacementParkedTest {
     private final CopyOnWriteArrayList<String> messages = new CopyOnWriteArrayList<>();
     private final List<CommunityPlacementOperationValue> escalations = new CopyOnWriteArrayList<>();
     private Runnable beforeCommit = () -> {};
+    private java.util.function.Consumer<List<KVCommand<AetherKey>>> beforeEveryCommit = _ -> {};
 
     private volatile String binding = "binding";
     private final CommunityPlacementReconciler.Actuator actuator = new CommunityPlacementReconciler.Actuator() {
@@ -92,6 +93,7 @@ class CommunityPlacementParkedTest {
                                                                                     var hook = beforeCommit;
 
                                                                                     beforeCommit = () -> {};
+                                                                                    beforeEveryCommit.accept(commands);
                                                                                     hook.run();
 
                                                                                     return Promise.success(store.process(store.createBatch(commands)));
@@ -157,6 +159,24 @@ class CommunityPlacementParkedTest {
                                                                       List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(value)))));
     }
 
+    /// Another writer moves the operation on just before the commit that would park it, so the park attempt itself is the one refused.
+    private void moveOnBeforeThePark(List<KVCommand<AetherKey>> commands) {
+        if (parks(commands)) {
+            seedOperation(PlacementOperationPhase.DRAINED, now.get());
+        }
+    }
+
+    private static boolean parks(List<KVCommand<AetherKey>> commands) {
+        return commands.stream()
+                       .filter(KVCommand.LeaderTransaction.class::isInstance)
+                       .map(command -> (KVCommand.LeaderTransaction<?, ?>) command)
+                       .flatMap(transaction -> transaction.mutations().stream())
+                       .anyMatch(mutation -> mutation.replacement().filter(CommunityPlacementOperationValue.class::isInstance)
+                                                     .map(value -> ((CommunityPlacementOperationValue) value).phase())
+                                                     .filter(PlacementOperationPhase.DRAIN_UNCERTAIN::equals)
+                                                     .isPresent());
+    }
+
     private CommunityPlacementOperationValue current() {
         return store.getTyped(new AetherKey.CommunityPlacementOperationKey(COMMUNITY), CommunityPlacementOperationValue.class).unwrap();
     }
@@ -181,6 +201,20 @@ class CommunityPlacementParkedTest {
         awaitCode("community-placement-parked");
         assertThat(messages.getFirst()).contains("stable").contains("DRAIN_UNCERTAIN").contains("old-worker").contains("aether cluster clear-placement stable");
         assertThat(escalations).as("the existing escalation event still fires").hasSize(1);
+    }
+
+    @Test
+    void reconcile_aParkRefusedBecauseTheOperationChangedFirst_raisesNeitherTheWarningNorTheEscalation() {
+        start();
+        seedOperation(PlacementOperationPhase.DRAIN_REQUESTED, now.get() - 120_000L);
+        beforeEveryCommit = this::moveOnBeforeThePark;
+
+        reconciler.reconcile().await().unwrap();
+        settle();
+
+        assertThat(current().phase()).as("the park was refused: the operation the other writer moved on was not overwritten").isNotEqualTo(PlacementOperationPhase.DRAIN_UNCERTAIN);
+        assertThat(codes).as("a park that did not happen is not reported").doesNotContain("community-placement-parked");
+        assertThat(escalations).as("nor escalated").isEmpty();
     }
 
     @Test

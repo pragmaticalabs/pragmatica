@@ -7,6 +7,7 @@
 # EmberConfigMalformedValueTest 0 (#1455): surefire class time 0.006 s and 0.007 s on cloudbb-1 at b3055d534 and d123940b8 (2 tests, pure config parse, no cluster); rounded to 0 like EmberConfigBasePortTest.
 # EmberObserverQuorumLossWiringTest 165 (#2306): surefire class time 98.7 s, 98.3 s and 159.3 s on cloudbb-1 at 9b6620ed2 (2 tests: the lag/recovery wiring round and the two-voters-plus-observer loss; the first test's cluster start varies 20-81 s); maximum rounded up.
 # EmberCommunityGrowthTest 45 (#241): surefire class time 43.9, 44.2, 44.2 and 44.6 s on cloudbb-4 at b392dc239 (5 cores + 4 workers, one test); maximum rounded up.
+# EmberWorkerAssignmentOverdueWiringTest 14 (#1840): surefire class time 11.78 s, 11.89 s and 11.54 s on cloudbb-4 at 66998f5b8 (BB_DEDUP=0 repeats; an earlier run measured 13.69 s); maximum rounded up.
 EmberAmnesiacRestartTest 162
 EmberBlackholedReplicaRecoveryTest 94
 EmberBootstrapAdminKeyAuthTest 10
@@ -50,6 +51,7 @@ EmberStopDeactivatesLeaderTogglesTest 17
 EmberTestPortsTest 26
 EmberUpgradeRunTest 108
 EmberWorkerDeadSeedTest 40
+EmberWorkerAssignmentOverdueWiringTest 14
 EmberWorkerDhtReplicationTest 16
 MinimumLiveIsrTest 0
 EmberVoterHealTest 116
