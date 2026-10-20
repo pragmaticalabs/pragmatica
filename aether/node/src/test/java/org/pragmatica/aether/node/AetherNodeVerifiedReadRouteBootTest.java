@@ -75,7 +75,7 @@ class AetherNodeVerifiedReadRouteBootTest {
         var before = answered();
 
         assertThat(SystemTags.TAGS.get("org.pragmatica.dht.DHTMessage.VerifiedReadRequest")).as("the wire tag routed here")
-                                                                                         .isEqualTo(2169);
+                                                                                         .isEqualTo(2176);
         delegateRouter.route(new DHTMessage.VerifiedReadRequest("verified-1", node.self(), KEY, new byte[32], false));
 
         await().atMost(BOUND)

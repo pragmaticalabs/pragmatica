@@ -31,6 +31,11 @@
                             <artifactId>slice-processor</artifactId>
                             <version>${project.version}</version>
                         </path>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>jbct-async-check</artifactId>
+                            <version>${project.version}</version>
+                        </path>
                     </annotationProcessorPaths>
                     <compilerArgs>
                         <arg>-Aslice.groupId=${project.groupId}</arg>

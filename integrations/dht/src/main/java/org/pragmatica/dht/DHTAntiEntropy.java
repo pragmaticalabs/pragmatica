@@ -898,7 +898,7 @@ public final class DHTAntiEntropy {
     /// round, with nothing to remove them.
     private void sendLoudly(NodeId peer, ProtocolMessage message, String what, Runnable onNotSent) {
         network.sendOutcome(peer, message)
-               .onSuccess(outcome -> {
+               .withSuccess(outcome -> {
                               if (!outcome.isSent()) {
                               log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
                                        what,
@@ -907,7 +907,7 @@ public final class DHTAntiEntropy {
                               onNotSent.run();
                           }
                           })
-               .onFailure(cause -> {
+               .withFailure(cause -> {
                               log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
                                        what,
                                        peer.id(),

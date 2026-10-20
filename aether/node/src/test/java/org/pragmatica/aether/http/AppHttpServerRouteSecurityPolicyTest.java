@@ -77,7 +77,7 @@ class AppHttpServerRouteSecurityPolicyTest {
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
     private static final Artifact REMOTE_ARTIFACT = Artifact.artifact("com.example:parent:1.0.0").unwrap();
     private static final String VALID_API_KEY = "route-sec-test-key-98765";
-    private static final int PORT = 19093;
+    private int port;
 
     private AppHttpServer server;
     private HttpClient httpClient;
@@ -120,7 +120,7 @@ class AppHttpServerRouteSecurityPolicyTest {
                                                                                                                                          ? Option.some(routing)
                                                                                                                                          : null);
 
-        server = AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY)),
+        server = AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(0, Set.of(VALID_API_KEY)),
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
                                              registry,
@@ -133,13 +133,14 @@ class AppHttpServerRouteSecurityPolicyTest {
                                              Option.none(),
                                              Option.none(),
                                              Option.some(manager));
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
     }
 
     private void startServer(StubRoutePublisher publisher, HttpRouteRegistry registry) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
-        var config = AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY));
+        var config = AppHttpConfig.appHttpConfig(0, Set.of(VALID_API_KEY));
 
         server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
@@ -154,7 +155,8 @@ class AppHttpServerRouteSecurityPolicyTest {
                                              Option.none(),
                                              Option.none(),
                                              Option.none());
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
     }
 
     @Test
@@ -538,7 +540,7 @@ class AppHttpServerRouteSecurityPolicyTest {
 
     private HttpResponse<String> get(String path) throws Exception {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + PORT + path))
+                                 .uri(URI.create("http://localhost:" + port + path))
                                  .GET()
                                  .build();
 
@@ -547,7 +549,7 @@ class AppHttpServerRouteSecurityPolicyTest {
 
     private HttpResponse<String> getWithApiKey(String path, String apiKey) throws Exception {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + PORT + path))
+                                 .uri(URI.create("http://localhost:" + port + path))
                                  .header("X-API-Key", apiKey)
                                  .GET()
                                  .build();

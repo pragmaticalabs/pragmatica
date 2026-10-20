@@ -2960,6 +2960,10 @@ with `--node <id>` it returns that node's local detail (`GET /api/v1/storage/{na
 Options:
 - `--node <id>` — target a specific node's local view instead of the cluster rollup.
 
+The per-node view (`--node`) also carries the instance's `maintenance` block: whether demotion, promotion and GC are
+running on that node, and their counters (`promotion.failed` rising with `blocksPromoted` flat is the signal behind the
+`storage-promotion-stalled` event). The cluster rollup does not include it.
+
 ```bash
 aether storage status content
 aether storage status content --node node-1

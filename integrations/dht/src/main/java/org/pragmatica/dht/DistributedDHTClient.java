@@ -445,9 +445,9 @@ public final class DistributedDHTClient implements DHTClient {
                                                                                                   quorum,
                                                                                                   collector)),
                                                   Promise::success))
-                      .onFailure(cause -> noteIfStale(cause, stamp))
-                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
-                      .onResultRun(() -> endPending(key, pending));
+                      .withFailure(cause -> noteIfStale(cause, stamp))
+                      .withSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
+                      .withResult(_ -> endPending(key, pending));
     }
 
     /// The writer's own slot is about to be applied: until the operation resolves, another writer's request on this key is
@@ -698,9 +698,9 @@ public final class DistributedDHTClient implements DHTClient {
                                                                                                   quorum,
                                                                                                   collector)),
                                                   Promise::success))
-                      .onFailure(cause -> noteIfStale(cause, stamp))
-                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
-                      .onResultRun(() -> endPending(key, pending));
+                      .withFailure(cause -> noteIfStale(cause, stamp))
+                      .withSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
+                      .withResult(_ -> endPending(key, pending));
     }
 
     @Override

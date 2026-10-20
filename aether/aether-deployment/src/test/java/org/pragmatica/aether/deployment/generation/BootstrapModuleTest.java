@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.generation;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.LateResolution;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
@@ -237,6 +238,45 @@ class BootstrapModuleTest {
     }
 
 
+    /// The batch's commit must have landed on the module (`bootstrapComplete`) by the time the promise the cluster handed back
+    /// resolves: the next membership event reads that flag, and a module that has not yet seen its own commit plans and
+    /// submits the core-partition write again. The cluster here resolves LATER, on another thread, and the probe observes
+    /// from a dependent registered on that promise after the module's own (an `onSuccess` handler ran concurrently with it).
+    @Nested
+    class CommitIsSeenBeforeTheBatchResolves {
+        private static final int TRIALS = 40;
+
+        @Test
+        void onLeaderGained_membershipEventRightAfterTheCommit_doesNotSubmitTheCorePartitionAgain() {
+            var resubmitted = 0;
+
+            for (var trial = 0; trial < TRIALS; trial++) {
+                var fixture = newFixture(/* initialCoreSize */ 1, true);
+
+                fixture.module.onLeaderGained();
+                fixture.cluster.lastApplied().map(_ -> resubmitOnMembershipEvent(fixture)).await();
+                if (corePartitionPuts(fixture.cluster.batches) > 1) {
+                    resubmitted++;
+                }
+            }
+
+            assertThat(resubmitted).as("fixtures (of %d) whose module planned the core partition again after its own commit", TRIALS)
+                                   .isZero();
+        }
+
+        private static Unit resubmitOnMembershipEvent(Fixture fixture) {
+            fixture.module.onMembershipDecision(MembershipDecision.nodeJoined(SELF, List.of(SELF)));
+
+            return Unit.unit();
+        }
+
+        private static long corePartitionPuts(List<List<KVCommand<AetherKey>>> batches) {
+            return collectPuts(batches).stream()
+                                       .filter(p -> p.key() instanceof DhtPartitionOwnershipKey)
+                                       .count();
+        }
+    }
+
     @Nested
     class LeaderLossResetsBootstrapState {
         @Test
@@ -280,10 +320,18 @@ class BootstrapModuleTest {
     }
 
     private static Fixture newFixture(BootstrapModule.ClusterConfigBaseline baseline) {
+        return newFixture(baseline, false);
+    }
+
+    private static Fixture newFixture(int initialCoreSize, boolean lateCommits) {
+        return newFixture(new BootstrapModule.ClusterConfigBaseline(initialCoreSize, initialCoreSize, 0), lateCommits);
+    }
+
+    private static Fixture newFixture(BootstrapModule.ClusterConfigBaseline baseline, boolean lateCommits) {
         var hlcClock = HlcClock.hlcClock(new NodeId("test-self"));
         Map<AetherKey, AetherValue> kv = new HashMap<>();
         var isLeader = new AtomicBoolean(true);
-        var cluster = new RecordingClusterNode();
+        var cluster = new RecordingClusterNode(lateCommits);
         var module = BootstrapModule.bootstrapModule(isLeader::get,
                                                       () -> Epoch.epoch(0L, FIXTURE_RABIA_TERM, 0L),
                                                       () -> Option.<Long>none(),
@@ -334,6 +382,21 @@ class BootstrapModuleTest {
 
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         final List<List<KVCommand<AetherKey>>> batches = new ArrayList<>();
+        private final boolean lateCommits;
+        private Promise<?> applied = Promise.success(Unit.unit());
+
+        RecordingClusterNode() {
+            this(false);
+        }
+
+        RecordingClusterNode(boolean lateCommits) {
+            this.lateCommits = lateCommits;
+        }
+
+        /// The promise the most recent batch's `apply` handed back.
+        Promise<Unit> lastApplied() {
+            return applied.mapToUnit();
+        }
 
         @Override public NodeId self() {return SELF;}
 
@@ -348,7 +411,8 @@ class BootstrapModuleTest {
         @SuppressWarnings({"unchecked", "rawtypes"})
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             batches.add(List.copyOf(commands));
-            return (Promise) Promise.success(List.of());
+            applied = lateCommits ? LateResolution.later(List.of()) : Promise.success(List.of());
+            return (Promise) applied;
         }
     }
 

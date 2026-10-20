@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Timeout;
 import org.mockito.stubbing.Answer;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.http.TlsProbe;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
@@ -87,7 +88,7 @@ class ManagementServerStopDuringBindTest {
             stopAtGate.set(server.stop());
         });
 
-        server.start().await(START_BOUND);
+        TlsProbe.requireStarted(server.start().await(START_BOUND), "management listener on TCP " + TEST_PORT);
 
         assertThat(boundAtGate.get())
             .as("control: TCP %d must already be held when the gate runs, or this test would be asserting the "

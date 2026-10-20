@@ -553,6 +553,45 @@ class StreamPartitionVisibilityTest {
         }
     }
 
+    /// Async-callback probe: the publish barrier resolves LATER, on another thread, from a registry that already
+    /// holds the peer's ack (the snapshot case of rev1309 F1: no observer call runs, so only the barrier's own
+    /// refresh can make the event visible). The refresh must land before the publisher's continuation, so it is
+    /// chain-ordered rather than a detached `onSuccess`. A barrier that resolves inline hides the race, because a
+    /// callback on an already-resolved promise runs on the caller.
+    @Nested
+    class LateAwait {
+        private static final int TRIALS = 20;
+
+        @Test
+        void awaitReplication_continuationSeesItsOwnAckedWrite_whenBarrierResolvesLaterOnAnotherThread() {
+            ReplicaRegistry registry = replicaRegistry();
+
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            manager = streamPartitionManager(Long.MAX_VALUE,
+                                             EvictionListener.NOOP,
+                                             new LateAwaitReplication(replicationManager(SELF, registry)));
+            createStream(manager, 3, 2);
+            var misses = 0;
+
+            for (var trial = 0; trial < TRIALS; trial++) {
+                var payload = "e" + trial;
+                var offset = publish(manager, payload);
+
+                registry.updateWatermark(STREAM, PARTITION, PEER, offset);
+                var seen = manager.awaitReplication(STREAM, PARTITION, offset, 1)
+                                  .map(_ -> readAll(manager))
+                                  .await()
+                                  .or(List.of());
+
+                misses += seen.contains(payload) ? 0 : 1;
+            }
+
+            assertThat(misses).as("trials where the publisher's continuation did not see its own acked write")
+                              .isZero();
+        }
+    }
+
     // === helpers ===
 
     private static ReplicationManager replicationWithPeer() {
@@ -561,6 +600,74 @@ class StreamPartitionVisibilityTest {
         registry.registerReplica(STREAM, PARTITION, SELF);
         registry.registerReplica(STREAM, PARTITION, PEER);
         return replicationManager(SELF, registry);
+    }
+
+    /// Delegates to a real replication manager, but resolves every `awaitReplication` LATER, from another thread.
+    private static final class LateAwaitReplication implements ReplicationManager {
+        private static final long RESOLVE_DELAY_MS = 3;
+
+        private final ReplicationManager delegate;
+
+        private LateAwaitReplication(ReplicationManager delegate) {
+            this.delegate = delegate;
+        }
+
+        @Contract
+        @Override
+        public void observeAcks(AckObserver observer) {
+            delegate.observeAcks(observer);
+        }
+
+        @Contract
+        @Override
+        public void replicateEvent(String streamName,
+                                   int partition,
+                                   long offset,
+                                   byte[] payload,
+                                   long timestamp,
+                                   Epoch ownerEpoch) {
+            delegate.replicateEvent(streamName, partition, offset, payload, timestamp, ownerEpoch);
+        }
+
+        @Contract
+        @Override
+        public void handleAck(ReplicationMessage.ReplicateAck ack) {
+            delegate.handleAck(ack);
+        }
+
+        @Override
+        public ReplicaRegistry registry() {
+            return delegate.registry();
+        }
+
+        @Override
+        public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+            var promise = Promise.<Unit> promise();
+
+            Thread.ofVirtual()
+                  .start(() -> resolveAfterDelay(promise, streamName, partition, offset, minAcks));
+
+            return promise;
+        }
+
+        private void resolveAfterDelay(Promise<Unit> promise, String streamName, int partition, long offset, int minAcks) {
+            try {
+                Thread.sleep(RESOLVE_DELAY_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            delegate.awaitReplication(streamName, partition, offset, minAcks).onResult(promise::resolve);
+        }
+
+        @Override
+        public long replicatedThrough(String streamName, int partition, int minAcks) {
+            return delegate.replicatedThrough(streamName, partition, minAcks);
+        }
+
+        @Override
+        public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+            return delegate.replicatedThrough(pending, minAcks);
+        }
     }
 
     /// Delegates to a real replication manager, but parks the observer the partition manager installs on

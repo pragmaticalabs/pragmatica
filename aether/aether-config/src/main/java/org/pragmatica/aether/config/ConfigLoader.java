@@ -855,6 +855,9 @@ public final class ConfigLoader {
         // #253: per-instance opt-in into encryption; requires [storage.encryption] to carry a keyring
         // (enforced by StorageEncryptionConfigValidator, not here).
         var encrypted = doc.getBoolean(sectionName, "encrypted").or(false);
+        // Kill switch for background tier promotion on this instance (default on). Read into StorageConfig.promotion,
+        // which StorageFactory.assembleSetup consults to build the real PromotionManager or the inert one.
+        var promotion = doc.getBoolean(sectionName, "promotion").or(true);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -864,7 +867,8 @@ public final class ConfigLoader {
                                            snapshotInterval,
                                            retentionCount,
                                            walPath,
-                                           encrypted);
+                                           encrypted,
+                                           promotion);
     }
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {

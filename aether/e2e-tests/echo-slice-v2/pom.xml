@@ -37,6 +37,12 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
             <version>${project.parent.version}</version>
             <scope>provided</scope>
@@ -66,6 +72,11 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
+                            <version>${project.parent.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>jbct-async-check</artifactId>
                             <version>${project.parent.version}</version>
                         </path>
                     </annotationProcessorPaths>
