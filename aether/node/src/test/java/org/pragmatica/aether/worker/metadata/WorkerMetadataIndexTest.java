@@ -36,6 +36,27 @@ class WorkerMetadataIndexTest {
         assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKey(key);
     }
 
+    /// v-2339 F4 (#1337): a worker receives both topic row kinds: in the global scope and in its artifact's scope. A worker that
+    /// hosts a publisher or a subscriber has to see the other side's rows for the activation check, and the delivery path reads them.
+    @Test
+    void topicSubscriptionAndPublisherRowsAreInTheGlobalAndTheArtifactScopes_andReachAWorker() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var artifact = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+        var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress("default", "orders", "1.0.0").unwrap();
+        var subscription = AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address, artifact, org.pragmatica.aether.slice.MethodName.methodName("onOrder").unwrap(), CORE);
+        var publisher = AetherKey.TopicPublisherKey.topicPublisherKey(address, artifact, CORE);
+        var subscriptionValue = AetherValue.TopicSubscriptionValue.topicSubscriptionValue(CORE, AetherValue.TopicTier.DURABLE);
+        var publisherValue = AetherValue.TopicPublisherValue.topicPublisherValue(CORE, AetherValue.TopicTier.EPHEMERAL);
+
+        index.put(subscription, subscriptionValue);
+        index.put(publisher, publisherValue);
+
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).containsEntry(subscription, subscriptionValue).containsEntry(publisher, publisherValue);
+        assertThat(index.snapshot("artifact:org.example:orders")).containsEntry(subscription, subscriptionValue).containsEntry(publisher, publisherValue);
+        assertThat(index.snapshot("artifact:org.example:other")).doesNotContainKey(publisher).doesNotContainKey(subscription);
+        assertThat(index.scopesForWorker(WORKER).stream().flatMap(scope -> index.snapshot(scope).keySet().stream())).contains(subscription, publisher);
+    }
+
     @Test
     void rawProviderConfigurationNeverEntersWorkerProjection() {
         var index = WorkerMetadataIndex.workerMetadataIndex();

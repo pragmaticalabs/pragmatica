@@ -672,11 +672,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                log,
                                                "App HTTP listeners")
                             .flatMap(_ -> restartWithNewBundle(newBundle))
-                            .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                      pair.h3(),
-                                                                                                      currentRoutes)))
+                            .map(pair -> recordRotationApplied(pair, currentRoutes))
                             .mapToUnit()
                             .onSuccessRun(tlsRotation::applied);
+    }
+
+    /// A MAP stage, not an `onSuccess` observer: an observer runs concurrently with whoever awaits the rotation promise, so a
+    /// caller reading `boundPort()` right after the rotation resolved could still see the old listener's port (#2152). As a stage,
+    /// "the rotation resolved" implies "the new listeners are recorded".
+    private AppHttpContext.ServerPair recordRotationApplied(AppHttpContext.ServerPair pair, RouteTable currentRoutes) {
+        context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(), pair.h3(), currentRoutes));
+
+        return pair;
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {

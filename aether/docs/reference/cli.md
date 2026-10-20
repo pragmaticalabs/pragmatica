@@ -2282,6 +2282,25 @@ aether cluster communities default:local:0
 be observed. A worker that fenced itself after losing the core is shown as `DEGRADED`, never `DISSOLVED`;
 see `GET /api/v1/cluster/communities` in the management API reference.
 
+### `aether cluster clear-placement`
+
+Clear ONE parked community placement operation (#241), by community id, after you checked the nodes it names. A placement operation (a worker
+replacement, a scale-down, a community retirement) is parked when its drain acknowledgement never came (`DRAIN_UNCERTAIN`: the previous worker may
+or may not be drained) or when it is `BLOCKED` by a conflict the reconciler cannot resolve and whose target node it has not observed. The cluster raises
+`community-placement-parked` with the command to run. Wraps `POST /api/v1/cluster/communities/placement/clear/{id}`.
+
+```bash
+aether cluster clear-placement stable --reason "old-worker is drained and its instance is gone"
+```
+
+| Option | Description |
+|--------|-------------|
+| `--reason` | What you checked on the nodes before clearing (required; recorded in the audit event) |
+
+The clear closes the operation and nothing else: the previous worker and the replacement are NOT removed, drained or terminated, and the next
+reconcile pass recomputes the community from what is there. Exit codes: 0 cleared, 3 the community has no operation, 1 any other refusal (the
+operation is not parked, or the node is not the leader) or failure, 64 a missing or blank `--reason`.
+
 ### `aether cluster governors`
 
 Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/v1/cluster/governors`.
@@ -2959,6 +2978,10 @@ with `--node <id>` it returns that node's local detail (`GET /api/v1/storage/{na
 
 Options:
 - `--node <id>` — target a specific node's local view instead of the cluster rollup.
+
+The per-node view (`--node`) also carries the instance's `maintenance` block: whether demotion, promotion and GC are
+running on that node, and their counters (`promotion.failed` rising with `blocksPromoted` flat is the signal behind the
+`storage-promotion-stalled` event). The cluster rollup does not include it.
 
 ```bash
 aether storage status content

@@ -1,0 +1,12 @@
+prefix = "/api/tier-pub"
+
+[security]
+# Test fixture: public routes so the forge proof can drive publish without auth setup.
+default = "public"
+override_policy = "strengthen_only"
+
+[routes]
+publishOrder = "POST /publish-order"
+
+[errors]
+default = 500

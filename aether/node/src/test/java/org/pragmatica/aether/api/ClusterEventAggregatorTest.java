@@ -1675,7 +1675,20 @@ class ClusterEventAggregatorTest {
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED);
+                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED, OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                                  OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED);
+    }
+
+    /// #241: a parked placement operation is kept by the next leader, so either of its recoveries may come from a node that never raised the
+    /// warning, and each is its own event.
+    @Test
+    void onOperatorWarning_theParkedPlacementRecoveries_arePublishedByANodeThatDidNotRaiseTheWarning() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED, "stable", "cleared by alice"));
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED, "other", "left DRAIN_UNCERTAIN"));
+
+        assertThat(codes(successor)).containsExactly("community-placement-cleared", "community-placement-resumed");
     }
 
     /// Amendment B: the rejoin resolution closes the previous leader's warning the same way, and is a different event from a confirmation.
@@ -2356,6 +2369,22 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
+    /// #1337: the tier-mismatch refusal is paired like the other conditions: its recovery is published after it, once, and a
+    /// recovery for a subject that was never refused publishes nothing.
+    @Test
+    void onOperatorWarning_topicTierMismatch_isFollowedByItsRecoveryOnce_andAStrayRecoveryIsDropped() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var subject = "default:orders:1.0.0/org.example:sub:1.0.0:onOrder";
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, "never-refused", "stray"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH, subject, "refused"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, subject, "reached again"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, subject, "reached again"));
+
+        assertThat(codes(h)).containsExactly("topic-tier-mismatch", "topic-tier-mismatch-resolved");
+    }
+
     /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
     @Test
     void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
@@ -2372,7 +2401,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal and the storage promotion stall); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2404,7 +2433,14 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
                              OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                              OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
-                             OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED);
+                             OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                             OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
+                             OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
+                             OperatorWarningCode.WORKER_ASSIGNED,
+                             OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                              OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
@@ -2429,7 +2465,13 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_CONFIG_MISSING,
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
-                             OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING);
+                             OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                             OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
+                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
+                             OperatorWarningCode.STORAGE_PROMOTION_STALLED,
+                             OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
+                             OperatorWarningCode.TOPIC_TIER_MISMATCH);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);

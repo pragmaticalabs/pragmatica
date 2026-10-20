@@ -16,6 +16,7 @@
 package org.pragmatica.utility.warning;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -99,6 +100,49 @@ class OperatorWarningCodeTest {
                                                                  .unwrap()).isEqualTo(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING);
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
+    /// #241: a refused join into a full source is a WARNING with an INFO recovery for the same subject.
+    @Test
+    void communityGrowthBlocked_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_RESUMED.recoveryOf()
+                                                              .unwrap()).isEqualTo(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED);
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_RESUMED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.code()).isEqualTo("community-growth-blocked");
+    }
+
+    /// #241: a parked placement operation is a WARNING closed by either of two INFO recoveries, both of which may be raised by a node other
+    /// than the one that raised the warning (a leader change keeps the operation).
+    @Test
+    void communityPlacementParked_isClosedByTwoInfoRecoveriesThatCloseAcrossNodes() {
+        for (var recovery : List.of(OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED, OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED)) {
+            assertThat(recovery.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED);
+            assertThat(recovery.level()).isEqualTo(WarningLevel.INFO);
+            assertThat(recovery.closesAcrossNodes()).isTrue();
+        }
+        assertThat(OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED.code()).isEqualTo("community-placement-parked");
+    }
+
+    /// #1337: the tier-mismatch refusal is closed by an INFO recovery of its own subsystem, so it needs no place on the frozen list.
+    @Test
+    void topicTierMismatch_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED.recoveryOf()
+                                                                   .unwrap()).isEqualTo(OperatorWarningCode.TOPIC_TIER_MISMATCH);
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.TOPIC_TIER_MISMATCH.hasRecovery()).isTrue();
+        assertThat(UNCLOSED_BEFORE_THE_RULE).doesNotContain(OperatorWarningCode.TOPIC_TIER_MISMATCH);
+    }
+
+    /// #241: a worker left without a community is a WARNING with an INFO recovery for the same subject.
+    @Test
+    void communityAssignmentUnplaced_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED);
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED.code()).isEqualTo("community-assignment-unplaced");
     }
 
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(

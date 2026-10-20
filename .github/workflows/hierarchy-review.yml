@@ -27,6 +27,12 @@ on:
 permissions:
   contents: read
 
+# A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
+# cancelled: each merged commit's own run is evidence.
+concurrency:
+  group: hierarchy-review-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   foundation-mutations:
     runs-on: ubuntu-latest

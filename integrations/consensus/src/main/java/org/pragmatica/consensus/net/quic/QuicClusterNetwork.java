@@ -279,6 +279,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// ([#journalDialerHello]). Diagnostic-only; defaults to a no-op.
     private volatile Consumer<PeerTransitionRecord> peerTransitionListener = ignored -> {};
 
+    /// Test hook (transport overhaul N33): told of every attach decision, DUPLICATE and REJECTED included, which
+    /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
+    private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
+
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
     /// `QuicDisconnectListener`, a v1 surface whose only consumer was deleted with the
@@ -700,11 +704,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var serverRef = server;
         // #1461: arming is a DEPENDENT step (`withSuccess`), not an `onSuccess` handler, which runs asynchronously and
         // may land after the returned promise resolves: a completed start then implies the periodic tasks are armed.
+        // The same holds for the ready hooks (a caller that awaited the start has them fired) and for the failed-start
+        // reset of `isRunning` (a retry after the failure is not turned away by a CAS the late handler had not cleared).
+        // The start promise resolves on a Netty I/O thread and a dependent step runs on the resolving thread, so the hooks
+        // themselves are an ASYNC chain step (`fireReadyHooks`): the start still waits for them, but they never run on the
+        // I/O thread (the only production hook binds SWIM's UDP port and awaits it).
         return serverRef.start(port)
                         .map(unit -> captureLoopbackLoop(serverRef, unit))
                         .withSuccess(_ -> armPeriodicTasks())
-                        .onSuccess(_ -> fireReadyHooks())
-                        .onFailure(this::onStartFailed)
+                        .withSuccess(_ -> transportReady.set(true))
+                        .flatMap(this::fireReadyHooks)
+                        .withFailure(this::onStartFailed)
                         .mapToUnit();
     }
 
@@ -734,11 +744,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// Runs as an async chain step of the start (off the I/O thread, before the start resolves), so a hook that throws must not fail the start it reports on: each hook is
+    /// isolated and a throw is logged (the hooks after it still run, as the detached handler never guaranteed).
+    ///
+    /// FER (degrade forward): the start has already succeeded, so a hook's throw is absorbed with a WARN rather than reported
+    /// as a failed start. Guarantee earned: the start's outcome is the transport's, not a hook's. Mechanism: a single run per
+    /// hook; the WARN is the only record of a lost hook.
+    private Promise<Unit> fireReadyHooks(Unit unit) {
+        return Promise.promise(this::runReadyHooks);
+    }
+
     @Contract
-    private void fireReadyHooks() {
-        transportReady.set(true);
-        readyHooks.forEach(Runnable::run);
+    private void runReadyHooks(Promise<Unit> done) {
+        readyHooks.forEach(this::runReadyHook);
         readyHooks.clear();
+        done.succeed(unit());
+    }
+
+    @Contract
+    private void runReadyHook(Runnable hook) {
+        Result.lift(hook::run).onFailure(cause -> log.warn("Transport-ready hook failed: {}", cause.message()));
     }
 
     /// #487: pin ONE event loop from the (now-started) server's group as the self-loopback lane, so a
@@ -1528,11 +1553,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         if (!state.beginConnecting(System.nanoTime())) {
             // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
+            attachObserver.accept(new AttachObservation(peerId, "dial skipped", Option.none()));
+
             return;
         }
 
         var address = new InetSocketAddress(inetAddress, port);
         var attempt = dialAttempts.incrementAndGet();
+        // #2138: the dial's generation outranks every link of this pair seen so far, so both ends rank this link
+        // against any other identically; taken after beginConnecting succeeded, so each dial gets its own.
+        var generation = state.nextDialGeneration();
 
         log.info("Dial journal: attempt #{} to {} at {} started", attempt, peerId, address);
         // Per-ATTEMPT dial timeout (H10, Wave 5): the timeout must NOT fail the dial promise —
@@ -1547,7 +1577,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // over another link first, which abandons this attempt while its QUIC handshake is
         // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
         // it only restarts the attach-grace phase age, see PeerState#markInbound.
-        clientRef.connect(peerId, address)
+        clientRef.connect(peerId, address, generation)
                  .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
                  .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
@@ -1779,6 +1809,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
         outcome.superseded().onPresent(old -> closeSupersededConnection(old, connection));
+        attachObserver.accept(new AttachObservation(peerId,
+                                                    origin,
+                                                    Option.some(outcome.result())));
         boolean isReconnect;
 
         switch (outcome.result()) {
@@ -2738,17 +2771,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         reconnectBackoff.compute(peerId,
                                  (_, prior) -> {
                                      if (prior == null) {
-                                     allowed[0] = true;
+                                         allowed[0] = true;
 
-                                     return new ReconnectBackoff(nowMs + jittered(BACKOFF_INITIAL_MS),
-                                                                 BACKOFF_INITIAL_MS);
-                                 }
+                                         return new ReconnectBackoff(nowMs + jittered(BACKOFF_INITIAL_MS),
+                                                                     BACKOFF_INITIAL_MS);
+                                     }
 
                                      if (nowMs < prior.nextAttemptMs) {
-                                     allowed[0] = false;
+                                         allowed[0] = false;
 
-                                     return prior;
-                                 }
+                                         return prior;
+                                     }
 
                                      allowed[0] = true;
                                      var nextDelay = Math.min(prior.currentDelayMs * 2, BACKOFF_CAP_MS);
@@ -3333,6 +3366,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// survived a simultaneous dial.
     Option<QuicPeerConnection> activeConnectionForTests(NodeId peerId) {
         return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
+    }
+
+    /// What [#attachObserverForTests] is told: where the connection came from (`inbound Hello` or `dial attempt #n`,
+    /// as in the dial journal) and what the attach decided. Reported after the displaced incumbent was closed; for
+    /// DUPLICATE and REJECTED the new connection's own close follows in the same call. A dial that found the peer
+    /// already CONNECTED over the inbound link never produces a connection: it is reported as `dial skipped`, with no
+    /// result, so a test can tell its own dial will not be decided.
+    record AttachObservation(NodeId peerId, String origin, Option<PeerState.AttachResult> result) {}
+
+    /// Package-private test hook (transport overhaul N33) — observe every attach decision. Lets a test tell that
+    /// this end's own dial of a simultaneous pair has been decided, which is not visible in the peer's phase: the
+    /// inbound link has already made it CONNECTED. A null observer restores the no-op.
+    @Contract
+    void attachObserverForTests(Consumer<AttachObservation> observer) {
+        this.attachObserver = observer == null
+                              ? ignored -> {}
+                              : observer;
     }
 
     /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally
