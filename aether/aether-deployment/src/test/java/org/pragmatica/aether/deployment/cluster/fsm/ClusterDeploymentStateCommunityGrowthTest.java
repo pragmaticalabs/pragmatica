@@ -184,6 +184,19 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aRefusedAttempt_keepsItsEntry_becauseADuplicateMayHaveCommitted() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.racedBy(() -> fixture.seedCommunity(FIRST));
+        fixture.joinAll(1);
+
+        assertThat(fixture.hasDirective(1)).isFalse();
+        assertThat(fixture.context().communityAdmission().isRecent(worker(1), fixture.context().nowMs()))
+            .as("a refusal says nothing about the other attempt for the same worker (events arrive twice): the entry stays until the retry replaces it")
+            .isTrue();
+    }
+
+    @Test
     void join_growthOn_aRetryOfAJoinerStillInFlight_isNotCountedAgainstItself() {
         var fixture = fixture(config(true, 1, 5));
 
@@ -194,41 +207,6 @@ class ClusterDeploymentStateCommunityGrowthTest {
         assertThat(fixture.context().communityAdmission().pendingByCommunity(fixture.context().nowMs(), _ -> false))
             .as("the retry chose the same community, not the next one for lack of room it took itself")
             .isEqualTo(Map.of(FIRST, 1));
-    }
-
-    @Test
-    void join_growthOn_aJoinerWhoseCommitFailsOutright_doesNotKeepHoldingItsSlot() {
-        var fixture = fixture(config(true, 1, 5));
-
-        fixture.failNext();
-        fixture.joinAll(1);
-        fixture.joinAll(1);
-
-        assertThat(fixture.communityOf(2)).as("nothing was committed for the first joiner, so the second takes the first community").isEqualTo(FIRST);
-    }
-
-    @Test
-    void join_growthOn_aDuplicateRefusedAfterTheFirstAttemptCommitted_leavesTheWorkerCountedAsPlaced() {
-        var fixture = fixture(config(true, 2, 5));
-
-        fixture.racedBy(() -> fixture.seedMembers(FIRST, 1));
-        fixture.joinAll(1);
-
-        assertThat(fixture.hasDirective(1)).as("the first attempt's directive is there; this attempt was the refused duplicate").isTrue();
-        assertThat(fixture.context().communityAdmission().isRecent(worker(1), fixture.context().nowMs()))
-            .as("the worker stays counted through its join grace")
-            .isTrue();
-    }
-
-    @Test
-    void join_growthOn_aRefusedJoiner_doesNotKeepHoldingItsSlot() {
-        var fixture = fixture(config(true, 1, 5));
-
-        fixture.racedBy(() -> fixture.seedCommunity(FIRST));
-        fixture.joinAll(1);
-        fixture.joinAll(1);
-
-        assertThat(fixture.communityOf(2)).as("the refused joiner released the slot of the empty community").isEqualTo(FIRST);
     }
 
     @Test

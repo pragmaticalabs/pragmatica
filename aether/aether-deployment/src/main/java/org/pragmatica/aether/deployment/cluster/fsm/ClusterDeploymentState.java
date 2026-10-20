@@ -1398,23 +1398,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                             .filter(KVCommand.TransactionResult.class::isInstance)
                                             .map(KVCommand.TransactionResult.class::cast)
                                             .filter(result -> !result.accepted())
-                                            .forEach(_ -> releaseRefusedAssignment(targetNode)))
-               .onFailure(cause -> {
-                              ctx.communityAdmission()
-                                 .forget(targetNode);
-                              log.error("Failed to submit activation directive for {}: {}",
-                                        targetNode,
-                                        cause.message());
-                          });
-        }
-
-        /// A refused assignment that left no directive holds no slot: the growth policy counts it only while it is in flight (#241), and the node's retry decides afresh. A duplicate's refusal after the first attempt committed leaves that attempt's entry alone.
-        private void releaseRefusedAssignment(NodeId targetNode) {
-            if (ctx.kvStore().get(ActivationDirectiveKey.activationDirectiveKey(targetNode)).isEmpty()) {
-                ctx.communityAdmission().forget(targetNode);
-            }
-
-            log.debug("Assignment changed before commit for {}; fresh admission will retry", targetNode);
+                                            .forEach(_ -> log.debug("Assignment changed before commit for {}; fresh admission will retry",
+                                                                    targetNode)))
+               .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
+                                             targetNode,
+                                             cause.message()));
         }
 
         /// The CORE membership the CDM allocates/counts over (cluster-topology-overhaul spec,
