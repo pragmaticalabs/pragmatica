@@ -373,6 +373,7 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.aether.node.assembly.DrainAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
@@ -405,6 +406,9 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.aether.node.assembly.DrainAssembly.clearOperatorDrainOnDeath;
+import static org.pragmatica.aether.node.assembly.DrainAssembly.requestDrainThroughFsm;
 
 
 public interface AetherNode extends ManageableNode {
@@ -1131,22 +1135,6 @@ public interface AetherNode extends ManageableNode {
                                   AtomicReference<LeaderReconciler> leaderReconcilerRef) {
         dropDeadPeerLink.accept(departed);
         onNttReconcile(quorumLossDetectorRef, leaderReconcilerRef);
-    }
-
-    /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
-    /// is BOTH enqueued into the `DrainCommandRegistry` (the leader's cluster-sync ping carries it;
-    /// the target self-drains via its `DrainProcedure`, unchanged) AND routed through the
-    /// authoritative `MembershipFsm` as a `DrainRequested` event — the target transitions to
-    /// DEPARTING (stops counting toward effective, H2 timeout terminalizes it if it goes silent,
-    /// higher-incarnation `SwimHealthy` recovers it mid-drain) instead of the drain bypassing the
-    /// FSM entirely. The FSM holder is deref'd lazily: the registry-backed sinks are wired before
-    /// the FSM exists; pre-FSM the registry path alone applies (boot window only).
-    @Contract
-    static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
-                                       AtomicReference<MembershipFsm> membershipFsmRef,
-                                       NodeId target) {
-        drainCommandRegistry.requestDrain(target);
-        Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
     }
 
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
@@ -1984,27 +1972,6 @@ public interface AetherNode extends ManageableNode {
         if ("Dead".equals(record.toState())) {
             managementServerRef.get().onPresent(server -> server.onMemberDeparted(record.nodeId()));
         }
-    }
-
-    /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the
-    /// drains the topology manager started itself had a removal path. A node that was drained, left and came back under the
-    /// SAME id (ids come from config) was then told to drain again by the same leader. The entry ends with the node's
-    /// departure, on either of two edges: into DEAD (the departure the drain was for), and out of DEAD (a drain commanded on
-    /// an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise be inherited by the
-    /// rejoin). It deliberately does NOT end on DEPARTING back to MEMBER: that edge is the FSM's VIEW refuting or withdrawing
-    /// the drain (a higher-incarnation `SwimHealthy` from a live SWIM refutation, or the #1054 undelivered-drain withdrawal),
-    /// while the command is still in flight and the target is still to be told to drain. Clearing there stops the leader
-    /// pinging the DRAIN and the node never leaves.
-    @Contract
-    static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry,
-                                          MembershipTransitionRecord record) {
-        if (isDrainEpisodeEnd(record)) {
-            drainCommandRegistry.clearDrain(record.nodeId());
-        }
-    }
-
-    private static boolean isDrainEpisodeEnd(MembershipTransitionRecord record) {
-        return "Dead".equals(record.toState()) || "Dead".equals(record.fromState());
     }
 
     @Contract
@@ -3562,77 +3529,24 @@ public interface AetherNode extends ManageableNode {
                                                                                             .map(v -> (AetherValue.ClusterConfigValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var leaderAwareSnapshotSource = snapshotSource;
-        // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
-        // The DRAINING-atom-writing ConsensusDrainCoordinator was removed in Phase 2b — the
-        // FSM-integrated DrainCoordinator wired into MembershipFsm/CTM is now a no-op stub.
-        // The §8.2 unified drain procedure is owned by DrainProcedure (constructed below).
-        var inFlightTrackerForDrain = InFlightRequestTracker.inFlightRequestTracker();
-
-        invocationHandler.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
-                                                                                                        () -> workerProjectionFreshRef.get()
-                                                                                                                                      .getAsBoolean()));
-        // E2 Phase 2b (2026-05-28): DrainProcedure replaces SelfDrainCoordinator's execution
-        // surface. It is a *pure procedure* — no triggers, no periodic ticks, no orphan
-        // checker. The single caller in Phase 2b is the QuorumLossDetector quorum-loss
-        // listener wired further down. Operator/CTM-initiated drain is delivered as a `DRAIN`
-        // command on the leader↔node heartbeat (membership v2 §7.5.4) — there is no KV drain
-        // record. Drain is heartbeat-reported and leader-cached, never stored in the KV-Store.
-        //
-        // `jvmExit` is threaded in from the factory: production is
-        // `Runtime.getRuntime().halt(2)`, single-JVM hosts (Forge/Ember) pass a per-node
-        // callback that stops the node gracefully without taking down the whole test JVM.
-        //
-        // `swimLeaveEmitter` is a no-op for Phase 2b — the SWIM `LEAVE` acceleration wiring
-        // (spec §8.2 step 3) lands in Phase 6 once the SwimHealthDetector exposes a
-        // `voluntaryLeave` API. The drain still halts the node; LEAVE is purely an
-        // acceleration of peer-side suspect aging, not a correctness requirement.
-        // Item-8 graft (stream-namespaces rebuild): forward-declared best-effort emitter resolved
-        // once the ClusterEventAggregator is constructed below. DrainProcedure invokes it once at
-        // the INACTIVE→DRAINING transition (single-shot via its CAS gate); the lambda no-ops until
-        // the aggregator is bound. Kept as a Consumer<DrainReason> so aether-deployment stays free
-        // of any ClusterEvent dependency.
-        var clusterEventDrainEmitterRef = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<org.pragmatica.aether.deployment.cluster.DrainReason>>(reason -> {});
-        // #427 graceful-departure push: the leaving node pushes its held DHT chunks to their new
-        // replicas, ack-gated, before it halts. The DrainProcedure invokes this supplier once at
-        // DRAINING and its quiesced-fork exit waits for it (bounded by the push's own budget; the
-        // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
-        // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
-        // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
-        // #1818: the push excludes every node the leader commanded to drain alongside this one (the
-        // ping's global drain set), so it never lands on, or counts as a survivor, a co-drainer.
-        var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
-        var movementDrain = new AtomicReference<Option<CommunityDrainCoordinator>>(Option.none());
-
-        departingSendersRef.set(DhtDeparturePush.departingSenders(metricsCollector, dhtTopologyListener));
-        var dhtDeparturePush = DhtDeparturePush.dhtDeparturePush(dhtRebalancer,
-                                                                 metricsCollector,
-                                                                 departurePushObserverRef::get);
-        Supplier<Promise<Unit>> departurePush = () -> dhtDeparturePush.get()
-                                                                      .flatMap(_ -> movementDrain.get()
-                                                                                                 .fold(Promise::unitPromise,
-                                                                                                       CommunityDrainCoordinator::onQuiesced));
-        // #273 item 1: forward-declared hook resolved once the ScheduledTaskManager is built below. The
-        // drain edge for scheduled tasks is THIS emitter, not a MembershipDecision — `NodeDraining` has
-        // no producer since the membership-v2 finale removed the per-node lifecycle projection.
-        var scheduledTaskDrainHookRef = new java.util.concurrent.atomic.AtomicReference<Runnable>(() -> {});
-        var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
-                                                           () -> {},
-                                                           drainInitiatedEmitter(scheduledTaskDrainHookRef,
-                                                                                 () -> stopStorageMaintenance(storageSetups),
-                                                                                 clusterEventDrainEmitterRef),
-                                                           departurePush,
-                                                           jvmExit);
-        var communityDrain = CommunityDrainCoordinator.communityDrainCoordinator(config.self(),
-                                                                                 () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                                        LeaderValue.class)
-                                                                                              .map(LeaderValue::leader),
-                                                                                 () -> selfPlacementOperation(kvStore,
-                                                                                                              config.self()),
-                                                                                 clusterNode.network()::send,
-                                                                                 () -> commandedDrain(drainProcedure,
-                                                                                                      nodeReportedStateHolder));
-
-        movementDrain.set(Option.some(communityDrain));
+        var drain = DrainAssembly.drainInfrastructure(new DrainAssembly.InfrastructureInputs(config,
+                                                                                             kvStore,
+                                                                                             clusterNode,
+                                                                                             invocationHandler,
+                                                                                             workerProjectionFreshRef,
+                                                                                             departingSendersRef,
+                                                                                             metricsCollector,
+                                                                                             dhtRebalancer,
+                                                                                             dhtTopologyListener,
+                                                                                             nodeReportedStateHolder,
+                                                                                             storageSetups,
+                                                                                             jvmExit));
+        var inFlightTrackerForDrain = drain.inFlightTrackerForDrain();
+        var clusterEventDrainEmitterRef = drain.clusterEventDrainEmitterRef();
+        var departurePushObserverRef = drain.departurePushObserverRef();
+        var scheduledTaskDrainHookRef = drain.scheduledTaskDrainHookRef();
+        var drainProcedure = drain.drainProcedure();
+        var communityDrain = drain.communityDrain();
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
         // P3 (membership unification): ClusterPhase derives from QUIC quorum + leader presence.
@@ -4958,11 +4872,7 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(governorRecovery::poll,
                                                                       config.timeouts().cluster().pingInterval()));
         // End hierarchical health assembly. Missing reports affect placement, never membership death.
-        // #1054: every DRAINING pong the leader records is a drain acknowledgement, latched by the FSM for the
-        // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
-        // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
-        // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
-        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, clusterDeploymentManager));
+        DrainAssembly.bindDrainReport(pongSignalFan, membershipFsm, clusterDeploymentManager);
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
@@ -5172,61 +5082,23 @@ public interface AetherNode extends ManageableNode {
         // #1050 (verify-1057-r2 S1): the FAULTY edge is the death evidence that re-arms a departed-node reap the CTM
         // abandoned while SWIM still reported the node SUSPECTED. Pinned by `SwimFaultyToCtmRoutingTest`.
         swimHealthDetector.addObservationListener(obs -> routeSwimFaultyToCtm(obs, clusterTopologyManager));
-        // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
-        // unified tracker's stable membership (armed after first quorum; grace =
-        // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
-        // Trigger detection (QuorumLossDetector) and procedure execution (DrainProcedure)
-        // stay separated.
-        Consumer<QuorumLossIntent> quorumLossChain = ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent).andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS))
-                                                                                                                        .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
-
-        quorumLossDetector.setQuorumLossListener(quorumLossChain);
-        wireQuorumCountTriggers(quorumLossDetector, membershipFsm, clusterNode::onVoterConfiguration);
-        // Fix C (split-brain self-fence co-confirmation): before the QUORUM_LOSS drain commits, the
-        // detector consults this snapshot of the FSM's counted (MEMBER+SUSPECT) set vs raw-SWIM
-        // liveness of the members missing from the STRICT (MEMBER-only) count. The strict count is
-        // the detector's numerator; a false-FAULTY storm can wedge a still-present, SWIM-alive peer
-        // pre-MEMBER (SUSPECT), dropping strict below quorum while the cluster is intact. Suppression
-        // requires counted-still-quorate AND every stuck member SWIM-alive — a genuine partition
-        // fails both (unreachable members are NOT SWIM-alive and age out of SUSPECT), so the real
-        // self-fence is never masked.
-        quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm,
-                                                                                     swimHealthDetector::healthOf,
-                                                                                     installedVoterIds(clusterNode)));
-        // A6: gate the quorum-loss self-drain with the SAME cold-boot window the SWIM FAULTY-suppression
-        // uses. On a simultaneous full-cluster restart SWIM's first probe-acks lag the QUIC attach, so the
-        // detector's SWIM-alive count momentarily decays below threshold and healthy nodes would self-fence
-        // before convergence (the 3/5-wedge root cause). Deferring the fence during the bounded cold-boot
-        // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
-        quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
-        metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
-        // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
-        // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
-        var nodeReadyAgain = nodeReadyAgain(metricsCollector::reportedStates);
-
-        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), nodeReadyAgain));
-        // The leader never processes its own ping, so it re-derives its mark from its own registry each interval. Only
-        // the LEADER: an operator drain never leaves the registry, so a node that was leader once and is not now would
-        // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
-        var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
-                                                       drainCommandRegistry::drainTargets,
-                                                       drainSetObserver(alertManager, config.self(), nodeReadyAgain));
-
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
-                                                                      config.timeouts().cluster().pingInterval()));
-        // Workers renew core contact from identified core ping OR pong responses. This is
-        // reachability evidence only; all mutations still require committed core authority.
-        var coreAbsenceDetector = CoreAbsenceDetector.coreAbsenceDetector(config.timeouts().cluster().coreAbsence(),
-                                                                          config.timeouts().cluster().pingInterval());
-
-        coreAbsenceDetector.setCoreAbsenceListener(_ -> initiateDrain(drainProcedure,
-                                                                      nodeReportedStateHolder,
-                                                                      DrainReason.CORE_ABSENCE));
-        coreAbsenceDetector.setFenceSuppressor(() -> !configuredWorker(config));
-        coreAbsenceDetector.setOperatorWarningSink(operatorWarningSink);
-        metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
-        coreAbsenceDetector.start();
+        var quorumLossDrain = DrainAssembly.quorumLossDrain(new DrainAssembly.QuorumLossInputs(config,
+                                                                                               clusterNode,
+                                                                                               leaderReconciler,
+                                                                                               quorumLossDetector,
+                                                                                               membershipFsm,
+                                                                                               swimHealthDetector,
+                                                                                               swimIsBootingSupplier,
+                                                                                               metricsCollector,
+                                                                                               nodeReportedStateHolder,
+                                                                                               drainProcedure,
+                                                                                               alertManager,
+                                                                                               isLeaderSupplier,
+                                                                                               drainCommandRegistry,
+                                                                                               operatorWarningSink,
+                                                                                               periodicTasks::defer));
+        var quorumLossChain = quorumLossDrain.quorumLossChain();
+        var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
         // Assigned workers use challenge-bound governor evidence. Report expiry blocks new
         // placement; it never synthesizes individual member death or provider termination.
         var communityReachability = org.pragmatica.aether.deployment.cluster.fsm.CommunityReachability.communityReachability(config.timeouts()
@@ -7614,7 +7486,7 @@ public interface AetherNode extends ManageableNode {
                         .or(true);
     }
 
-    private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
+    static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
                    .or(Set.of());
@@ -8024,89 +7896,13 @@ public interface AetherNode extends ManageableNode {
                             .or(topologyCoreNodes);
     }
 
-    @Contract
-    private static void commandedDrain(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
-        initiateDrain(drainProcedure, holder, DrainReason.COMMANDED);
-    }
-
-    private static void initiateDrain(DrainProcedure drainProcedure,
-                                      NodeReportedStateHolder holder,
-                                      DrainReason reason) {
-        holder.onDrainStarted();
-        drainProcedure.initiate(reason);
-    }
-
-    /// `DrainProcedure`'s single-shot `drainInitiatedEmitter`, invoked once inside the INACTIVE->DRAINING
-    /// CAS and therefore the node's one drain edge, shared by all three triggers (QUORUM_LOSS,
-    /// CORE_ABSENCE, COMMANDED). Three consumers, in falling order of consequence:
-    ///
-    ///   1. #273 item 1 — stop this node's ALL-mode scheduled fires. A correctness action.
-    ///   2. Stop this node's storage promotion and per-node demotion.
-    ///   3. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
-    ///
-    /// The two hooks run FIRST but each inside its own no-throw guard, so neither can delay nor
-    /// suppress (3). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
-    /// outer guard would let a throw from (1) or (2) swallow (3) — the exact loss #565 was filed for.
-    ///
-    /// Package-private and named rather than an inline lambda so the composition itself is testable:
-    /// `ScheduledTaskDrainWiringBootTest` drives a real drain through it. Both arguments are
-    /// forward-declared refs — the manager and the event aggregator are both constructed after
-    /// `DrainProcedure`.
-    static Consumer<DrainReason> drainInitiatedEmitter(AtomicReference<Runnable> scheduledTaskDrainHookRef,
-                                                       Runnable storageMaintenanceStop,
-                                                       AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef) {
-        return reason -> {
-            runDrainHookSafely("Scheduled-task", scheduledTaskDrainHookRef.get());
-            runDrainHookSafely("Storage-maintenance", storageMaintenanceStop);
-            clusterEventDrainEmitterRef.get()
-                                       .accept(reason);
-        };
-    }
-
-    private static void runDrainHookSafely(String name, Runnable hook) {
-        try {
-            hook.run();
-        } catch (Throwable t) {
-            LOG.warn("{} drain hook failed: {} — drain proceeds", name, t.getMessage());
-        }
-    }
-
     /// Promotion and demotion of this node's storage stop when the node starts draining, not only when it stops: a
     /// draining node is leaving, and a cycle that copies blocks into tiers about to be torn down gains nothing. FER: a
     /// manager that will not deactivate is logged and the drain goes on. Also run first thing in `shutdownStorage()`.
     @Contract
-    private static void stopStorageMaintenance(Map<String, StorageFactory.StorageSetup> storageSetups) {
+    static void stopStorageMaintenance(Map<String, StorageFactory.StorageSetup> storageSetups) {
         StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be deactivated: {}",
                                                                                             cause.message()));
-    }
-
-    /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
-    /// node is the leader. Package-private so the gate and the feed are pinned without booting a node.
-    static Runnable leaderOnlyDrainRecordTick(BooleanSupplier isLeader,
-                                              Supplier<Set<NodeId>> registryTargets,
-                                              Consumer<Set<NodeId>> record) {
-        return () -> {
-            if (isLeader.getAsBoolean()) {
-                record.accept(registryTargets.get());
-            }
-        };
-    }
-
-    /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
-    /// (never self) as an announced departure on this observer. `nodeReadyAgain` is the only thing that ends a mark
-    /// early. Package-private so the composition is pinned without booting a node.
-    static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager,
-                                                  NodeId self,
-                                                  java.util.function.Predicate<NodeId> nodeReadyAgain) {
-        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), nodeReadyAgain);
-    }
-
-    /// The node reports itself READY in the readiness view this observer holds (the leader's pong fan, or a
-    /// follower's cache of it): alive, responsive and not draining. The only evidence that ends a planned-departure
-    /// mark short of the DEAD edge (#2014). Absence from the view is NOT evidence. Package-private for the pin.
-    static java.util.function.Predicate<NodeId> nodeReadyAgain(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates) {
-        return id -> reportedStates.get()
-                                   .get(id) == NodeReportedState.READY;
     }
 
     /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`
@@ -8121,18 +7917,6 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
-    /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
-    /// (#1054) and the leader-side eviction loop. The CDM's `MembershipDecision.NodeDraining` arm is
-    /// never emitted (membership-v2 finale), so this listener is the ONLY production entry to
-    /// `startDrainEviction`. Package-private so the composition is pinned without booting a node.
-    static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm,
-                                                ClusterDeploymentManager clusterDeploymentManager) {
-        return drainingNode -> {
-            membershipFsm.onDrainAcknowledged(drainingNode);
-            clusterDeploymentManager.onNodeDraining(drainingNode);
-        };
-    }
-
     @Contract
     private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                                       AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
@@ -9163,8 +8947,8 @@ public interface AetherNode extends ManageableNode {
                : "never a verified voter and the installed voter roster is not fully ready";
     }
 
-    private static Option<AetherValue.CommunityPlacementOperationValue> selfPlacementOperation(KVStore<AetherKey, AetherValue> store,
-                                                                                               NodeId self) {
+    static Option<AetherValue.CommunityPlacementOperationValue> selfPlacementOperation(KVStore<AetherKey, AetherValue> store,
+                                                                                       NodeId self) {
         return store.getTyped(AetherKey.ActivationDirectiveKey.activationDirectiveKey(self),
                               AetherValue.ActivationDirectiveValue.class)
                     .flatMap(directive -> store.getTyped(new AetherKey.CommunityPlacementOperationKey(directive.communityId()),
@@ -9449,7 +9233,7 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static boolean configuredWorker(AetherNodeConfig config) {
+    static boolean configuredWorker(AetherNodeConfig config) {
         return config.workerConfig()
                      .isPresent() || config.topology()
                                            .coreNodes()

@@ -11,6 +11,7 @@ import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.node.assembly.DrainAssembly;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,7 +25,7 @@ class DrainInitiatedEmitterTest {
     void emitter_runsTheScheduledHook_thenTheStorageStop_thenTheEvent() {
         var scheduled = new AtomicReference<Runnable>(() -> calls.add("scheduled"));
 
-        AetherNode.drainInitiatedEmitter(scheduled, () -> calls.add("storage"), eventEmitter).accept(DrainReason.COMMANDED);
+        DrainAssembly.drainInitiatedEmitter(scheduled, () -> calls.add("storage"), eventEmitter).accept(DrainReason.COMMANDED);
 
         assertThat(calls).containsExactly("scheduled", "storage", "event");
     }
@@ -33,7 +34,7 @@ class DrainInitiatedEmitterTest {
     void emitter_aStorageStopThatThrows_stillEmitsTheEvent() {
         var scheduled = new AtomicReference<Runnable>(() -> calls.add("scheduled"));
 
-        AetherNode.drainInitiatedEmitter(scheduled, DrainInitiatedEmitterTest::boom, eventEmitter).accept(DrainReason.COMMANDED);
+        DrainAssembly.drainInitiatedEmitter(scheduled, DrainInitiatedEmitterTest::boom, eventEmitter).accept(DrainReason.COMMANDED);
 
         assertThat(calls).containsExactly("scheduled", "event");
     }
@@ -42,7 +43,7 @@ class DrainInitiatedEmitterTest {
     void emitter_aScheduledHookThatThrows_stillStopsStorageAndEmitsTheEvent() {
         var scheduled = new AtomicReference<Runnable>(DrainInitiatedEmitterTest::boom);
 
-        AetherNode.drainInitiatedEmitter(scheduled, () -> calls.add("storage"), eventEmitter).accept(DrainReason.COMMANDED);
+        DrainAssembly.drainInitiatedEmitter(scheduled, () -> calls.add("storage"), eventEmitter).accept(DrainReason.COMMANDED);
 
         assertThat(calls).containsExactly("storage", "event");
     }
