@@ -4,7 +4,6 @@
 package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.aether.config.CommunitySizing;
-import org.pragmatica.config.toml.ConfigKeyLive;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -23,11 +22,8 @@ import org.pragmatica.lang.Verify;
 ///   it off a source keeps its single `<source>-w-0` community exactly as before.
 public record CommunityPolicy(int maxSize,
                               int viabilityFloor,
-                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows")
                               int maxCommunities,
-                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows")
                               int dissolveGraceSeconds,
-                              @ConfigKeyLive("#241: read by the derived-community growth policy in the change that follows")
                               boolean growth) {
     /// Hard ceiling on a community's size (worker-membership-spec section 8: the SWIM view of one community stays below it).
     public static final int CEILING = 200;
