@@ -28,24 +28,49 @@ class CommunityAdmissionLedgerTest {
     }
 
     @Test
-    void pendingByCommunity_dropsAssignmentsWhoseDirectiveIsVisible() {
+    void pendingByCommunity_leavesOutAssignmentsWhoseDirectiveIsVisible() {
         var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
 
         ledger.register(A, "eu-w-0", 1_000L);
         ledger.register(B, "eu-w-0", 1_000L);
 
         assertThat(ledger.pendingByCommunity(1_001L, A::equals)).isEqualTo(Map.of("eu-w-0", 1));
-        assertThat(ledger.pendingByCommunity(1_002L, _ -> false)).as("the visible one stays dropped").isEqualTo(Map.of("eu-w-0", 1));
+        assertThat(ledger.isRecent(A, 1_001L)).as("a visible assignment is still recent: the liveness view has not seen the worker yet").isTrue();
     }
 
     @Test
-    void pendingByCommunity_expiresAssignmentsAfterTheTtl() {
+    void pendingByCommunity_stopsCountingAfterTheTtl_butTheAssignmentStaysRecent() {
         var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
 
         ledger.register(A, "eu-w-0", 1_000L);
 
         assertThat(ledger.pendingByCommunity(1_000L + CommunityAdmissionLedger.PENDING_TTL_MS, _ -> false)).as("at the TTL it still counts").hasSize(1);
-        assertThat(ledger.pendingByCommunity(1_001L + CommunityAdmissionLedger.PENDING_TTL_MS, _ -> false)).as("past the TTL it is gone").isEmpty();
+        assertThat(ledger.pendingByCommunity(1_001L + CommunityAdmissionLedger.PENDING_TTL_MS, _ -> false)).as("past the TTL it is no longer in flight").isEmpty();
+        assertThat(ledger.isRecent(A, 1_001L + CommunityAdmissionLedger.PENDING_TTL_MS)).isTrue();
+    }
+
+    @Test
+    void isRecent_endsWithTheJoinGrace_andForgottenOrUnknownNodesAreNeverRecent() {
+        var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
+
+        ledger.register(A, "eu-w-0", 1_000L);
+        ledger.register(B, "eu-w-0", 1_000L);
+        ledger.forget(B);
+
+        assertThat(ledger.isRecent(A, 1_000L + CommunityAdmissionLedger.JOIN_GRACE_MS)).as("at the grace it still counts").isTrue();
+        assertThat(ledger.isRecent(A, 1_001L + CommunityAdmissionLedger.JOIN_GRACE_MS)).as("past the grace the liveness view decides").isFalse();
+        assertThat(ledger.isRecent(B, 1_001L)).as("a forgotten assignment is not recent").isFalse();
+        assertThat(ledger.isRecent(C, 1_001L)).as("a node never assigned here is not recent").isFalse();
+    }
+
+    @Test
+    void pendingByCommunity_dropsAssignmentsOlderThanTheJoinGrace() {
+        var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
+
+        ledger.register(A, "eu-w-0", 1_000L);
+        ledger.pendingByCommunity(1_001L + CommunityAdmissionLedger.JOIN_GRACE_MS, _ -> false);
+
+        assertThat(ledger.pending()).as("the ledger does not grow without bound").isEmpty();
     }
 
     @Test

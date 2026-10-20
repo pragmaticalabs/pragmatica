@@ -27,7 +27,7 @@ import org.pragmatica.lang.Contract;
 /// leader's own [CommunityAdmissionLedger] until its directive is visible.
 sealed interface DerivedCommunities {
     static List<Candidate> candidates(ClusterDeploymentContext ctx, String source, long nowMs) {
-        var loads = liveLoads(ctx);
+        var loads = liveLoads(ctx, nowMs);
         var pending = ctx.communityAdmission()
                          .pendingByCommunity(nowMs,
                                              node -> ctx.kvStore()
@@ -84,23 +84,24 @@ sealed interface DerivedCommunities {
         }
     }
 
-    private static Map<String, Integer> liveLoads(ClusterDeploymentContext ctx) {
+    private static Map<String, Integer> liveLoads(ClusterDeploymentContext ctx, long nowMs) {
         var loads = new HashMap<String, Integer>();
 
         ctx.kvStore()
            .forEach(ActivationDirectiveKey.class,
                     ActivationDirectiveValue.class,
-                    (key, directive) -> countIfLive(ctx, loads, key, directive));
+                    (key, directive) -> countIfLive(ctx, nowMs, loads, key, directive));
 
         return loads;
     }
 
     @Contract
     private static void countIfLive(ClusterDeploymentContext ctx,
+                                    long nowMs,
                                     Map<String, Integer> loads,
                                     ActivationDirectiveKey key,
                                     ActivationDirectiveValue directive) {
-        if (!ctx.communityLiveness().isAbsent(key.nodeId())) {
+        if (ctx.communityAdmission().isRecent(key.nodeId(), nowMs) || !ctx.communityLiveness().isAbsent(key.nodeId())) {
             loads.merge(directive.communityId(), 1, Integer::sum);
         }
     }
