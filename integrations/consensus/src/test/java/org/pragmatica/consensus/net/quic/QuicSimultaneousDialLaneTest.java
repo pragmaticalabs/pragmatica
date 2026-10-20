@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.RepeatedTest;
@@ -80,6 +81,11 @@ class QuicSimultaneousDialLaneTest {
         var toHigh = new CopyOnWriteArrayList<LaneProbe>();
         var lowNet = liveNetwork(low, toLow);
         var highNet = liveNetwork(high, toHigh);
+        var lowAttaches = new CopyOnWriteArrayList<QuicClusterNetwork.AttachObservation>();
+        var highAttaches = new CopyOnWriteArrayList<QuicClusterNetwork.AttachObservation>();
+
+        lowNet.attachObserverForTests(lowAttaches::add);
+        highNet.attachObserverForTests(highAttaches::add);
         var spraying = new AtomicBoolean(true);
         var spray = CompletableFuture.runAsync(() -> sprayUntilStopped(lowNet, low, highNet, high, spraying));
 
@@ -87,18 +93,47 @@ class QuicSimultaneousDialLaneTest {
                                 CompletableFuture.runAsync(() -> highNet.dialForTests(infoOf(low, lowNet), true)))
                          .orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS)
                          .join();
-        awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
+        awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), () -> "both ends CONNECTED");
+        // CONNECTED is not settled: each end is first CONNECTED over the INBOUND link, and its own dial then completes
+        // and decides which of the two links survives (the loser is closed, with whatever was written on it). Under
+        // CPU load that decision comes hundreds of milliseconds after CONNECTED, so a probe sent on CONNECTED + a
+        // fixed settle can ride the link about to be closed. Wait for the decision at BOTH ends.
+        awaitTrue(() -> ownDialDecided(lowNet, lowAttaches) && ownDialDecided(highNet, highAttaches),
+                  () -> "both ends' own dials decided");
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MILLIS));
         spraying.set(false);
         spray.orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS).join();
+        // A lane refuses a write while its stream is not writable (backpressure, by contract: only CONSENSUS and DHT
+        // retry), and the spray leaves each stream a backlog that a CPU-starved peer drains slowly. A refused probe
+        // says nothing about whether the lane carries traffic, so probe once the backlog is gone at both ends. A lane
+        // that never becomes writable still fails here.
+        awaitTrue(() -> everyLaneWritable(lowNet, high) && everyLaneWritable(highNet, low),
+                  () -> "every lane writable after the spray: low " + unwritableLanes(lowNet, high) + ", high "
+                        + unwritableLanes(highNet, low));
 
         Arrays.stream(StreamType.values())
               .forEach(lane -> sendFinalProbes(round, lane, lowNet, low, highNet, high));
 
         awaitTrue(() -> everyLaneDelivered(toHigh, "final-" + round + "-low-to-high-"),
-                  "low -> high on every lane: missing " + missing(toHigh, "final-" + round + "-low-to-high-"));
+                  () -> "low -> high on every lane: missing " + missing(toHigh, "final-" + round + "-low-to-high-"));
         awaitTrue(() -> everyLaneDelivered(toLow, "final-" + round + "-high-to-low-"),
-                  "high -> low on every lane: missing " + missing(toLow, "final-" + round + "-high-to-low-"));
+                  () -> "high -> low on every lane: missing " + missing(toLow, "final-" + round + "-high-to-low-"));
+    }
+
+    /// Every lane stream the network's bound connection to `peer` holds is writable. A lane with no stream yet is not
+    /// held against it: a write opens the lane on demand.
+    private static boolean everyLaneWritable(QuicClusterNetwork network, NodeId peer) {
+        return unwritableLanes(network, peer).isEmpty();
+    }
+
+    private static List<StreamType> unwritableLanes(QuicClusterNetwork network, NodeId peer) {
+        return network.activeConnectionForTests(peer)
+                      .map(connection -> Arrays.stream(StreamType.values())
+                                               .filter(lane -> connection.stream(lane)
+                                                                         .filter(stream -> !stream.isWritable())
+                                                                         .isPresent())
+                                               .toList())
+                      .or(List.of(StreamType.values()));
     }
 
     private static void sendFinalProbes(int round,
@@ -148,6 +183,14 @@ class QuicSimultaneousDialLaneTest {
                      .toList();
     }
 
+    /// This end's own dial is decided: it attached (superseded the inbound link, or lost to it as a duplicate), was
+    /// abandoned because the inbound link made the peer CONNECTED first, or failed.
+    private static boolean ownDialDecided(QuicClusterNetwork network, List<QuicClusterNetwork.AttachObservation> attaches) {
+        return attaches.stream().anyMatch(attach -> attach.origin().startsWith("dial attempt"))
+               || network.quicMetrics().dialAbandonedCount() > 0
+               || network.quicMetrics().snapshot().get("quic_dial_failures_total").longValue() > 0;
+    }
+
     private static boolean connected(QuicClusterNetwork network, NodeId peer) {
         return network.peerPhaseForTests(peer)
                       .filter(phase -> phase == PeerState.Phase.CONNECTED)
@@ -178,7 +221,8 @@ class QuicSimultaneousDialLaneTest {
         return network;
     }
 
-    private static void awaitTrue(BooleanSupplier condition, String what) {
+    /// `what` is a supplier because it describes the state at the moment of the timeout, not at the call.
+    private static void awaitTrue(BooleanSupplier condition, Supplier<String> what) {
         var deadline = System.nanoTime() + AWAIT.nanos();
 
         while (System.nanoTime() < deadline) {
@@ -187,7 +231,7 @@ class QuicSimultaneousDialLaneTest {
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
         }
-        fail("Timed out waiting for: " + what);
+        fail("Timed out waiting for: " + what.get());
     }
 
     private static TopologyObserver stubTopology(NodeInfo self) {

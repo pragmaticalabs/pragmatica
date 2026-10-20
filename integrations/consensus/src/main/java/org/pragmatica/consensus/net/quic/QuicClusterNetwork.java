@@ -278,6 +278,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// earlier) and fed directly with the dialer expected-vs-actual Hello diagnostic
     /// ([#journalDialerHello]). Diagnostic-only; defaults to a no-op.
     private volatile Consumer<PeerTransitionRecord> peerTransitionListener = ignored -> {};
+    /// Test hook (transport overhaul N33): told of every attach decision, DUPLICATE and REJECTED included, which
+    /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
+    private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
 
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
@@ -1771,6 +1774,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
         outcome.superseded().onPresent(old -> closeSupersededConnection(old, connection));
+        attachObserver.accept(new AttachObservation(peerId, origin, outcome.result()));
         boolean isReconnect;
 
         switch (outcome.result()) {
@@ -3319,6 +3323,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// survived a simultaneous dial.
     Option<QuicPeerConnection> activeConnectionForTests(NodeId peerId) {
         return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
+    }
+
+    /// What [#attachObserverForTests] is told: where the connection came from (`inbound Hello` or `dial attempt #n`,
+    /// as in the dial journal), and what the attach decided. Reported after the displaced incumbent was closed; for
+    /// DUPLICATE and REJECTED the new connection's own close follows in the same call.
+    record AttachObservation(NodeId peerId, String origin, PeerState.AttachResult result) {}
+
+    /// Package-private test hook (transport overhaul N33) — observe every attach decision. Lets a test tell that
+    /// this end's own dial of a simultaneous pair has been decided, which is not visible in the peer's phase: the
+    /// inbound link has already made it CONNECTED. A null observer restores the no-op.
+    @Contract
+    void attachObserverForTests(Consumer<AttachObservation> observer) {
+        this.attachObserver = observer == null
+                              ? ignored -> {}
+                              : observer;
     }
 
     /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally
