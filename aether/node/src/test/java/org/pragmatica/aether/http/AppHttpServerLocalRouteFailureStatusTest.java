@@ -51,7 +51,7 @@ class AppHttpServerLocalRouteFailureStatusTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("failure-node").unwrap();
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
     private static final NodeId OWNER = NodeId.nodeId("dead-owner").unwrap();
-    private static final int TEST_PORT = 18096;
+    private int port;
 
     record Refused(String message) implements Cause.Transient {}
 
@@ -69,7 +69,7 @@ class AppHttpServerLocalRouteFailureStatusTest {
     }
 
     private HttpResponse<String> answerFor(Cause failure) throws Exception {
-        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(0),
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
                                                  registry,
@@ -78,10 +78,11 @@ class AppHttpServerLocalRouteFailureStatusTest {
                                                  Option.none(), Option.none(), Option.none(),
                                                  Option.<org.pragmatica.aether.update.DeploymentManager>none());
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             return httpClient.send(java.net.http.HttpRequest.newBuilder()
-                                                            .uri(URI.create("http://localhost:" + TEST_PORT + "/local/thing"))
+                                                            .uri(URI.create("http://localhost:" + port + "/local/thing"))
                                                             .GET()
                                                             .build(),
                                    HttpResponse.BodyHandlers.ofString());

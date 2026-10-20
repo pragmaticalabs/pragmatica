@@ -381,6 +381,17 @@ public enum OperatorWarningCode {
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// An ephemeral-tier publisher fanned an event out to a subscriber whose handler takes the delivery context (#1337): that
+    /// handler belongs to a durable topic, and an ephemeral delivery carries no envelope to build the context from. The delivery
+    /// was refused and the event NOT delivered to that subscriber. The message names the topic, the publishing slice and the
+    /// subscribing method. Subject is `<topic address>/<subscriber slice without its version>:<method>`, so redeploying the subscriber
+    /// at a new version stays the same subject.
+    TOPIC_TIER_MISMATCH("topic-tier-mismatch", "topic", WarningLevel.WARNING),
+    /// The end of a `topic-tier-mismatch` (#1337): a later delivery from the same publisher reached the same subscriber slice (any
+    /// version), the subscriber is no longer registered, or the publisher was released. INFO,
+    /// published only after a published mismatch event for the same subject (#752 mechanism); a subscriber that was never refused
+    /// publishes nothing.
+    TOPIC_TIER_MISMATCH_RESOLVED("topic-tier-mismatch-resolved", "topic", WarningLevel.INFO, TOPIC_TIER_MISMATCH),
     /// A worker joined a source whose derived communities cannot take it (#241): every community of the source is at the hard ceiling and
     /// the source is at its `community_policy.max_communities`, so the worker gets no community. Subject is the source; the message names the
     /// worker and the bounds. Raise `max_communities` or `max_size` in the cluster config, or add worker capacity under another source; the

@@ -445,10 +445,10 @@ public interface DhtReplicationSettlement {
                 filing.set(Option.some(desired));
                 inputs.submit()
                       .apply(List.of(new KVCommand.Put<>(key, desired)))
-                      .onSuccess(_ -> filed.set(Option.some(desired)))
-                      .onResultRun(() -> filing.set(Option.none()))
-                      .onFailure(cause -> LOG.debug("DHT replication report not filed: {}",
-                                                    cause.message()));
+                      .withSuccess(_ -> filed.set(Option.some(desired)))
+                      .withResult(_ -> filing.set(Option.none()))
+                      .withFailure(cause -> LOG.debug("DHT replication report not filed: {}",
+                                                      cause.message()));
             }
 
             private Option<DhtReplicationChangeValue> committed() {
@@ -519,10 +519,10 @@ public interface DhtReplicationSettlement {
                 inFlight.set(Option.some(next));
                 inputs.submit()
                       .apply(List.of(transaction))
-                      .onResultRun(() -> inFlight.set(Option.none()))
-                      .onFailure(cause -> LOG.debug("DHT replication change {} not committed: {}",
-                                                    next.version(),
-                                                    cause.message()));
+                      .withResult(_ -> inFlight.set(Option.none()))
+                      .withFailure(cause -> LOG.debug("DHT replication change {} not committed: {}",
+                                                      next.version(),
+                                                      cause.message()));
             }
         }
 

@@ -62,7 +62,7 @@ class AppHttpServerRouteAgreementTest {
     private static final String METHOD = "GET";
     private static final String OUTER_PREFIX = "/api/agree/";
     private static final String INNER_PREFIX = "/api/agree/inner/";
-    private static final int TEST_PORT = 18099;
+    private int port;
 
     private HttpRouteRegistry registry;
     private HttpClient httpClient;
@@ -83,8 +83,8 @@ class AppHttpServerRouteAgreementTest {
     void aPathUnderTheNestedPrefix_isServedByTheSliceWhosePolicyAdmittedIt() throws Exception {
         var server = serverWith(nestedPairPublisher());
 
-        server.start()
-              .await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             var response = get("/api/agree/inner/report");
 
@@ -108,8 +108,8 @@ class AppHttpServerRouteAgreementTest {
     void aPathOutsideTheNestedPrefix_isGovernedByTheOuterRoutesStricterPolicy() throws Exception {
         var server = serverWith(nestedPairPublisher());
 
-        server.start()
-              .await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             var response = get("/api/agree/items/42");
 
@@ -141,7 +141,7 @@ class AppHttpServerRouteAgreementTest {
     }
 
     private AppHttpServer serverWith(HttpRoutePublisher publisher) {
-        return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+        return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(0),
                                            ForwardingTimeouts.forwardingTimeouts(),
                                            SELF_NODE,
                                            registry,
@@ -162,7 +162,7 @@ class AppHttpServerRouteAgreementTest {
 
     private HttpResponse<String> get(String path) throws Exception {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + TEST_PORT + path))
+                                 .uri(URI.create("http://localhost:" + port + path))
                                  .GET()
                                  .build();
 

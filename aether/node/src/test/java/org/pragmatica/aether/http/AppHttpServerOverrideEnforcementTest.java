@@ -94,7 +94,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class AppHttpServerOverrideEnforcementTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("test-node-override-enf").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact(OverrideEnforcementRouteFactory.ARTIFACT_COORD).unwrap();
-    private static final int PORT = 19117;
+    private int port;
 
     /// Two keys, identical except for their roles. The escalation is that the FIRST one works.
     private static final String SERVICE_KEY = "override-enf-service-key-11223";
@@ -123,7 +123,7 @@ class AppHttpServerOverrideEnforcementTest {
 
     private void startServer() {
         var config = AppHttpConfig.appHttpConfig(true,
-                                                 PORT,
+                                                 0,
                                                  apiKeys(),
                                                  AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
                                                  SecurityMode.API_KEY,
@@ -144,7 +144,8 @@ class AppHttpServerOverrideEnforcementTest {
                                              Option.none(),
                                              Option.none(),
                                              Option.none());
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
     }
 
     private static Map<String, ApiKeyEntry> apiKeys() {
@@ -368,7 +369,7 @@ class AppHttpServerOverrideEnforcementTest {
 
     private HttpResponse<String> get(String path) throws Exception {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + PORT + path))
+                                 .uri(URI.create("http://localhost:" + port + path))
                                  .GET()
                                  .build();
 
@@ -377,7 +378,7 @@ class AppHttpServerOverrideEnforcementTest {
 
     private HttpResponse<String> getWithApiKey(String path, String apiKey) throws Exception {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + PORT + path))
+                                 .uri(URI.create("http://localhost:" + port + path))
                                  .header("X-API-Key", apiKey)
                                  .GET()
                                  .build();

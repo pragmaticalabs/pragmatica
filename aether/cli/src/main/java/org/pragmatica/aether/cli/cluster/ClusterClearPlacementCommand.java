@@ -71,8 +71,13 @@ class ClusterClearPlacementCommand implements Callable<Integer> {
         return MAPPER.writeAsString(fields);
     }
 
+    /// The route parameters of the clear: the community id, which is the route's one path parameter.
+    static List<String> routeParameters(String community) {
+        return List.of(community);
+    }
+
     private static Result<String> request(String community, String body) {
-        return ClusterHttpClient.post(COMMUNITY_PLACEMENT_CLEAR, List.of(community), body);
+        return ClusterHttpClient.post(COMMUNITY_PLACEMENT_CLEAR, routeParameters(community), body);
     }
 
     private int onCleared(String body) {

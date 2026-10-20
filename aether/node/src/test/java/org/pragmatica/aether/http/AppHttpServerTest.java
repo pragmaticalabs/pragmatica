@@ -41,14 +41,12 @@ class AppHttpServerTest {
     private HttpClient httpClient;
     private int port;
 
-    private static final int TEST_PORT = 18080;
 
     @BeforeEach
     void setUp() {
         registry = HttpRouteRegistry.httpRouteRegistry();
-        // Use fixed port (pragmatica-lite HttpServer doesn't properly return OS-assigned ports)
-        var config = AppHttpConfig.insecureAppHttpConfig(TEST_PORT);
-        port = TEST_PORT;
+        // Port 0: the listener binds a port nobody else can hold; the test reads it back after start (#2152).
+        var config = AppHttpConfig.insecureAppHttpConfig(0);
         // Create server without HTTP forwarding support for basic tests
         server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
@@ -75,14 +73,16 @@ class AppHttpServerTest {
 
     @Test
     void start_binds_to_port() {
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         assertThat(server.boundPort().isPresent()).isTrue();
-        assertThat(server.boundPort().unwrap()).isEqualTo(TEST_PORT);
+        assertThat(server.boundPort().unwrap()).isPositive();
     }
 
     @Test
     void request_to_unknown_route_returns_404() throws Exception {
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/unknown/path"))
@@ -101,7 +101,8 @@ class AppHttpServerTest {
         // Register a route (not local, so needs forwarding)
         registerNodeRoute("GET", "/users/", NODE_1);
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/users/123"))
@@ -132,7 +133,7 @@ class AppHttpServerTest {
                                                          Option.none(),
                                                          Option.<org.pragmatica.aether.update.DeploymentManager>none());
 
-        disabledServer.start().await();
+        TlsProbe.requireStarted(disabledServer.start().await(), "disabled app listener");
 
         assertThat(disabledServer.boundPort().isEmpty()).isTrue();
     }
@@ -141,7 +142,8 @@ class AppHttpServerTest {
     void post_request_routes_correctly() throws Exception {
         registerNodeRoute("POST", "/orders/", NODE_1);
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/orders/"))
@@ -157,7 +159,8 @@ class AppHttpServerTest {
 
     @Test
     void problem_detail_includes_request_id() throws Exception {
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/not-found"))
@@ -175,7 +178,7 @@ class AppHttpServerTest {
     @Test
     void request_exceeding_max_size_returns_413() throws Exception {
         // Create server with very small max request size (1KB)
-        var smallConfig = AppHttpConfig.appHttpConfig(true, TEST_PORT, Map.of(), 1024,
+        var smallConfig = AppHttpConfig.appHttpConfig(true, 0, Map.of(), 1024,
                                                           SecurityMode.NONE, Option.none(), HttpProtocol.H1).unwrap();
         var smallServer = AppHttpServer.appHttpServer(smallConfig,
                                                        ForwardingTimeouts.forwardingTimeouts(),
@@ -190,12 +193,13 @@ class AppHttpServerTest {
                                                        Option.none(),
                                                        Option.none(),
                                                        Option.<org.pragmatica.aether.update.DeploymentManager>none());
-        smallServer.start().await();
+        TlsProbe.requireStarted(smallServer.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(smallServer.boundPort(), "app listener");
 
         // Send a request body larger than 1KB
         var largeBody = "x".repeat(2048);
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + TEST_PORT + "/test"))
+                                 .uri(URI.create("http://localhost:" + port + "/test"))
                                  .POST(HttpRequest.BodyPublishers.ofString(largeBody))
                                  .header("Content-Type", "application/json")
                                  .build();
