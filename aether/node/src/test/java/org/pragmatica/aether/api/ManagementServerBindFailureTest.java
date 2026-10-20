@@ -111,6 +111,7 @@ class ManagementServerBindFailureTest {
             int port = server.boundPort().or(0);
 
             assertThat(port).as("a port-0 listener reports the port it bound").isPositive();
+            assertThat(server.boundPort()).as("reading the port does not consume it").isEqualTo(Option.some(port));
             try (var client = new Socket()) {
                 client.connect(new InetSocketAddress("127.0.0.1", port), 3_000);
                 assertThat(client.isConnected()).as("the reported port is the one listening").isTrue();

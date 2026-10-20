@@ -150,9 +150,10 @@ public interface ManagementServer {
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
 
-    /// The port the listener actually bound: the HTTP/1.1 listener's when there is one, else the HTTP/3 one. Empty until a
-    /// listener has bound, again after `stop()`, and for the instant a certificate rotation swaps the listener. For tests and diagnostics: a server configured with port 0 learns its
-    /// real port here, so a test never probes a free port and then loses the race to rebind it.
+    /// The port the HTTP/1.1 listener actually bound. Empty until that listener has bound, again after `stop()`, for the
+    /// instant a certificate rotation swaps the listener, and always for an HTTP/3-only server (the QUIC listener reports only
+    /// its configured port). For tests and diagnostics: a server configured with port 0 learns its real port here, so a test
+    /// never probes a free port and then loses the race to rebind it.
     Option<Integer> boundPort();
 
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
@@ -468,7 +469,6 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public Option<Integer> boundPort() {
         return serverSlot.current()
-                         .orElse(h3ServerSlot::current)
                          .map(HttpServer::port);
     }
 
