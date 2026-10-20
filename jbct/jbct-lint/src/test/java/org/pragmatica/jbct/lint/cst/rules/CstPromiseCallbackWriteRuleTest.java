@@ -293,6 +293,38 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
+        void clean_methodReferenceOnAnotherObjectWithTheNameOfAWriter() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> p, Foo other) {
+                            p.onSuccess(other::land);
+                        }
+                        private void land(String v) {
+                            done = true;
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_staticMethodReferenceToWriter() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private static boolean done;
+                        void run(Promise<String> p) {
+                            p.onSuccess(Foo::land);
+                        }
+                        private static void land(String v) {
+                            done = true;
+                        }
+                    }
+                    """));
+        }
+
+        @Test
         void flags_lambdaCallingWriter() {
             assertTrue(flags("""
                     package org.example;

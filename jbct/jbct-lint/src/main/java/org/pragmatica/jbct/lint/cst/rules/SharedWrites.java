@@ -66,7 +66,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
     Pattern SETTER_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(set[A-Z][A-Za-z0-9_$]*)\\s*\\(");
     Pattern PLAIN_CALL = Pattern.compile("(?<![\\w$.])(?:this\\s*\\.\\s*)?(" + IDENT + ")\\s*\\(");
-    Pattern METHOD_REF = Pattern.compile("^\\s*(?:this|" + IDENT + ")\\s*::\\s*(" + IDENT + ")\\s*$");
+    Pattern METHOD_REF = Pattern.compile("^\\s*(?:this|[A-Z][A-Za-z0-9_$]*)\\s*::\\s*(" + IDENT + ")\\s*$");
     Pattern NEW_BEFORE = Pattern.compile("\\bnew\\s+$");
     Pattern ARGUMENT_ROOT = Pattern.compile("(?:this\\s*\\.\\s*)?(" + IDENT + ")");
     Pattern LAMBDA = Pattern.compile("^\\s*(?:\\(([^()]*)\\)|(" + IDENT + "))\\s*->\\s*(.*)$",
@@ -82,7 +82,8 @@ sealed interface SharedWrites permits SharedWrites.unused {
     Set<String> NOT_SHARED_ROOTS = Set.of("MDC", "String");
     Set<String> LITERALS = Set.of("new", "true", "false", "null");
 
-    /// First shared write reachable from a callback argument (`x -> ...`, `() -> ...`, `this::name`, `Type::name`), or none.
+    /// First shared write reachable from a callback argument (`x -> ...`, `() -> ...`, `this::name`, `Type::name`), or none. A
+    /// reference on any other object (`holder::resolve`) is that object's method, not this file's, and is not followed.
     static Option<Write> inCallback(String argument, Declarations.FileFacts facts, String masked) {
         var lambda = LAMBDA.matcher(argument);
 
