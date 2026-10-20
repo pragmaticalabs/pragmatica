@@ -510,7 +510,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private void raiseOverdueIfHeld() {
         synchronized (assignmentGate) {
-            if (heldAnnounce.isPresent() && !overdueRaised) {
+            if (heldAnnounce.isPresent()) {
                 overdueRaised = true;
                 OperatorWarnings.raise(log,
                                        warningSink(),
@@ -537,7 +537,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
             assigned = true;
             heldAnnounce = none();
-            overdueRaised = false;
             overdueTimer.onPresent(timer -> timer.cancel(false));
             overdueTimer = none();
             held.onPresent(call -> releaseHeld(call, wasOverdue));
