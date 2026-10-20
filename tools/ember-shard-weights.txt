@@ -48,6 +48,7 @@ EmberStopDeactivatesLeaderTogglesTest 17
 EmberTestPortsTest 26
 EmberUpgradeRunTest 108
 EmberWorkerDeadSeedTest 40
+EmberWorkerAssignmentOverdueWiringTest 40
 EmberWorkerDhtReplicationTest 16
 MinimumLiveIsrTest 0
 EmberVoterHealTest 116

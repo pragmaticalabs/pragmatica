@@ -157,6 +157,18 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
     }
 
     @Test
+    void announceJoinWhenAssigned_insideTheBound_raisesNothingUntilTheBoundPasses() throws InterruptedException {
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), timeSpan(900).millis());
+
+        Thread.sleep(300);
+
+        assertThat(warnings).as("held inside the bound: nothing raised yet").isEmpty();
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(codes()).as("raised once the bound has passed")
+                                                       .containsExactly(OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE));
+    }
+
+    @Test
     void markAssigned_afterTheOverdueWarning_raisesTheRecovery() {
         detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), SHORT_BOUND);
         await().atMost(5, TimeUnit.SECONDS).until(() -> !warnings.isEmpty());
