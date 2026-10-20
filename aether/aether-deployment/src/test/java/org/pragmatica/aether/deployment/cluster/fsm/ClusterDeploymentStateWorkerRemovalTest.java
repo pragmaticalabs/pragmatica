@@ -626,6 +626,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
             activeState().reconcile();
             assertThat(unloads(key)).as("reconcile() runs the orphan sweep").isTrue();
 
+            kvStore.put(key, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
             cluster.commands.clear();
             activeState().rebuildStateFromKVStore();
             assertThat(unloads(key)).as("the KV rebuild runs the orphan sweep").isTrue();

@@ -2832,6 +2832,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// One reconcile / KV-rebuild / deferred-recheck pass: ONE placement snapshot for every stale-entry sweep (#1337). Each sweep
         /// reading the set afresh could see different sets within a tick, and a node entering the set between two sweeps would lose its
         /// topic rows while keeping its slices, a silent delivery stop.
+        @Contract
         void sweepStaleEntries(boolean includeOrphans) {
             var placement = placementNodes();
             var cleaner = staleEntryCleaner();
