@@ -311,7 +311,7 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         return cluster.commands()
                       .stream()
                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
-                                           && put.value() instanceof AetherValue.SliceNodeValue value
+                                           && put.value() instanceof NodeArtifactValue value
                                            && value.state() == SliceState.FAILED
                                            && value.failureReason().map(reason -> reason.contains(text)).or(false));
     }
@@ -375,7 +375,7 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(sliceFailedWith("topic tier mismatch")).isTrue());
 
         assertThat(subscriptionTiers()).as("a refused activation writes no subscription row").doesNotContainKey(CONTEXT_SLICE.asString());
-        assertThat(cluster.commands().stream().filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof AetherValue.SliceNodeValue value && value.failureReason().map(r -> r.contains("other-pub") && r.contains("EPHEMERAL")).or(false)).count())
+        assertThat(cluster.commands().stream().filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof NodeArtifactValue value && value.failureReason().map(r -> r.contains("other-pub") && r.contains("EPHEMERAL")).or(false)).count())
             .as("the refusal names the conflicting publisher").isPositive();
     }
 
