@@ -385,7 +385,16 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     @Contract
     public void stop() {
+        cancelOverdueTimer();
         context.dispatch(new SwimHealthEvents.StopRequested());
+    }
+
+    /// A stopped node must not raise an overdue warning for a hold nobody will release.
+    private void cancelOverdueTimer() {
+        synchronized (assignmentGate) {
+            overdueTimer.onPresent(timer -> timer.cancel(false));
+            overdueTimer = none();
+        }
     }
 
     public SwimHealthState lifecycleState() {
@@ -537,8 +546,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
             assigned = true;
             heldAnnounce = none();
-            overdueTimer.onPresent(timer -> timer.cancel(false));
-            overdueTimer = none();
+            cancelOverdueTimer();
             held.onPresent(call -> releaseHeld(call, wasOverdue));
         }
     }

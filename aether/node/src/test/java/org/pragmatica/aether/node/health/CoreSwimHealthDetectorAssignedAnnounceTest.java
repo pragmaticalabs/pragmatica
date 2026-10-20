@@ -173,6 +173,16 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
         assertThat(warnings).as("released inside the bound: no warning, no recovery").isEmpty();
     }
 
+    @Test
+    void stop_whileHeld_cancelsTheOverdueWarning() throws InterruptedException {
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), timeSpan(600).millis());
+
+        detector.stop();
+        Thread.sleep(QUIET_MILLIS);
+
+        assertThat(warnings).as("a stopped node raises no overdue warning").isEmpty();
+    }
+
     /// The directive commits while the hold is being set: the holder has decided to hold but has not stored the
     /// call. The assignment must wait for the hold and then release it, not slip between decision and store.
     @Test
