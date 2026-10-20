@@ -101,6 +101,16 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #241: a refused join into a full source is a WARNING with an INFO recovery for the same subject.
+    @Test
+    void communityGrowthBlocked_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_RESUMED.recoveryOf()
+                                                              .unwrap()).isEqualTo(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED);
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_RESUMED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.code()).isEqualTo("community-growth-blocked");
+    }
+
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
         OperatorWarningCode.SWIM_KILL_GATE_HELD,
         OperatorWarningCode.CORE_ABSENCE_FENCE,

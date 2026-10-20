@@ -246,6 +246,14 @@ public final class ClusterDeploymentContext {
     /// A slice whose LOAD the gate refused since `since`; `warned` once the warning was raised, `lastResubmitMs` when its target put was last re-submitted.
     public record AwaitedTarget(long since, boolean warned, long lastResubmitMs) {}
 
+    /// #241: what the derived-community growth policy has decided but not yet seen commit, and the sources it has refused. Kept here, not in
+    /// `Active`, so it survives a leader FSM rebuild on this node.
+    private final CommunityAdmissionLedger communityAdmission = CommunityAdmissionLedger.communityAdmissionLedger();
+
+    public CommunityAdmissionLedger communityAdmission() {
+        return communityAdmission;
+    }
+
     public org.pragmatica.utility.warning.OperatorWarningSink operatorWarnings() {
         return operatorWarnings.get();
     }
