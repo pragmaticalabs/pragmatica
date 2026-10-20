@@ -100,7 +100,14 @@ public record TopicPublisher<T>(String topicName,
                                                        SliceInvoker invoker,
                                                        Option<MeterRegistry> meters,
                                                        OperatorWarningSink sink) {
-        return topicPublisher(topicName, topicAddress, publisherSlice, registry, invoker, meters, sink, TimeSource.system());
+        return topicPublisher(topicName,
+                              topicAddress,
+                              publisherSlice,
+                              registry,
+                              invoker,
+                              meters,
+                              sink,
+                              TimeSource.system());
     }
 
     /// The clock is an input so the rate limit can be pinned without waiting a minute.
@@ -206,7 +213,10 @@ public record TopicPublisher<T>(String topicName,
     }
 
     private Promise<Unit> deliverToSubscriber(TopicSubscriber subscriber, T message) {
-        return invoker.invoke(subscriber.artifact(), subscriber.methodName(), message, UNIT_TYPE_TOKEN)
+        return invoker.invoke(subscriber.artifact(),
+                              subscriber.methodName(),
+                              message,
+                              UNIT_TYPE_TOKEN)
                       .replaceResult(result -> settle(subscriber, result));
     }
 
@@ -234,6 +244,7 @@ public record TopicPublisher<T>(String topicName,
 
     private Unit reportTierMismatch(TopicSubscriber subscriber, Cause cause) {
         countUndelivered(REASON_TIER_MISMATCH);
+
         return openRefusals.add(subjectOf(subscriber))
                ? raiseMismatch(subscriber)
                : logRepeatedMismatch(subscriber, cause);
@@ -250,6 +261,7 @@ public record TopicPublisher<T>(String topicName,
                                                   "reason",
                                                   reason))
               .onPresent(Counter::increment);
+
         return Unit.unit();
     }
 
@@ -262,8 +274,7 @@ public record TopicPublisher<T>(String topicName,
                                       topicName,
                                       publisherSlice,
                                       subscriber.artifact(),
-                                      subscriber.methodName()
-                                                .name(),
+                                      subscriber.methodName().name(),
                                       topicAddress);
     }
 
@@ -276,8 +287,7 @@ public record TopicPublisher<T>(String topicName,
                                       topicName,
                                       publisherSlice,
                                       subscriber.artifact(),
-                                      subscriber.methodName()
-                                                .name(),
+                                      subscriber.methodName().name(),
                                       topicAddress);
     }
 
@@ -286,9 +296,9 @@ public record TopicPublisher<T>(String topicName,
                   topicName,
                   publisherSlice,
                   subscriber.artifact(),
-                  subscriber.methodName()
-                            .name(),
+                  subscriber.methodName().name(),
                   cause.message());
+
         return Unit.unit();
     }
 

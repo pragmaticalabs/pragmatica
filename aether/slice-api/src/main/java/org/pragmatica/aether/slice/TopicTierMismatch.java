@@ -26,7 +26,8 @@ public record TopicTierMismatch(String method, String message) implements Cause 
     /// The stable lead of every refusal's text; what a publisher matches when the refusal came back as a string.
     public static final String MARKER = "Topic tier mismatch";
 
-    public static final Fn1<TopicTierMismatch, String> FACTORY = Causes.forOneValue(MARKER + ": method '%s' takes a ContextualEvent (a durable-topic handler) but was delivered a bare event by an ephemeral-tier publisher; declare the publisher's topic durable or drop the context parameter",
+    public static final Fn1<TopicTierMismatch, String> FACTORY = Causes.forOneValue(MARKER
+                                                                                   + ": method '%s' takes a ContextualEvent (a durable-topic handler) but was delivered a bare event by an ephemeral-tier publisher; declare the publisher's topic durable or drop the context parameter",
                                                                                     TopicTierMismatch::new);
 
     /// Whether `cause` is a tier-mismatch refusal, produced here or relayed from another node as text.
