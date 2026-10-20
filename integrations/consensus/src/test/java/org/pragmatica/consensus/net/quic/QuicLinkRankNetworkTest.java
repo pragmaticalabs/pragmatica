@@ -19,7 +19,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.RepetitionInfo;
@@ -48,6 +50,8 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 class QuicLinkRankNetworkTest {
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(30).seconds();
     private static final TimeSpan HOLD = TimeSpan.timeSpan(400).millis();
+
+    private static final AtomicInteger EXERCISED = new AtomicInteger();
 
     private final List<QuicClusterNetwork> networks = new ArrayList<>();
 
@@ -79,23 +83,31 @@ class QuicLinkRankNetworkTest {
 
         assertThat(holdsFor(() -> agreeOnARankedLink(lowNet, high, highNet, low), HOLD)).as("the agreement holds once reached")
                                                                                          .isTrue();
-        assertThat(inboundAttaches(lowAttaches)).as("each end first attaches the inbound link").isNotEmpty();
-        assertThat(inboundAttaches(highAttaches)).isNotEmpty();
         assertThat(decided(lowAttaches)).as("every reported attach carries its decision").allMatch(Option::isPresent);
         assertThat(decided(highAttaches)).allMatch(Option::isPresent);
-        assertTheLowerDialerWins(lowNet, high, highNet, low);
-    }
-
-    /// Both dials carry generation 1 here (a pair's first link), so the tie goes to the link the lower id dialed. Only
-    /// checkable when both dials completed: a dial abandoned for the inbound link leaves that link the only one.
-    private static void assertTheLowerDialerWins(QuicClusterNetwork lowNet,
-                                                 NodeId high,
-                                                 QuicClusterNetwork highNet,
-                                                 NodeId low) {
-        if (lowNet.quicMetrics().dialAbandonedCount() + highNet.quicMetrics().dialAbandonedCount() == 0) {
-            assertThat(rankOf(lowNet, high)).isEqualTo(new LinkRank(1L, low));
+        if (bothLinksReachedBothEnds(lowAttaches, highAttaches)) {
+            EXERCISED.incrementAndGet();
+            assertThat(rankOf(lowNet, high)).as("equal generations: the link the lower id dialed").isEqualTo(new LinkRank(1L, low));
             assertThat(rankOf(highNet, low)).isEqualTo(new LinkRank(1L, low));
         }
+    }
+
+    /// Whether this repetition really was a simultaneous dial: the dials race, and on a loaded runner either end's dial
+    /// may be skipped or abandoned for the inbound link, leaving ONE link. That repetition still has to agree (above)
+    /// but says nothing about the tie-break, so it is not counted as exercising it.
+    private static boolean bothLinksReachedBothEnds(List<QuicClusterNetwork.AttachObservation> low,
+                                                    List<QuicClusterNetwork.AttachObservation> high) {
+        return reachedBoth(low) && reachedBoth(high);
+    }
+
+    private static boolean reachedBoth(List<QuicClusterNetwork.AttachObservation> seen) {
+        return !inboundAttaches(seen).isEmpty() && seen.stream().anyMatch(attach -> attach.origin().startsWith("dial attempt"));
+    }
+
+    /// Simultaneity cannot be forced, so require that some repetition exercised the tie-break at all.
+    @AfterAll
+    static void tieBreakWasExercised() {
+        assertThat(EXERCISED.get()).as("repetitions in which both links reached both ends").isPositive();
     }
 
     private static List<Option<PeerState.AttachResult>> decided(List<QuicClusterNetwork.AttachObservation> seen) {
