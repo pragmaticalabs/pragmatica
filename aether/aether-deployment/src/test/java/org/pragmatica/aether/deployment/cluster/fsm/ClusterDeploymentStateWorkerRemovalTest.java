@@ -286,6 +286,28 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(kvStore.get(workerSub).isPresent()).as("a live registered worker's row stays").isTrue();
         }
 
+        /// The sweep is WIRED into the three paths that run the other stale sweeps: reconcile, the leader's KV rebuild and the deferred
+        /// topology recheck. A sweep nothing calls would pass the direct test above.
+        @Test
+        void staleTopicRows_areSweptByReconcile_theKvRebuild_andTheDeferredRecheck() {
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var ghost = new NodeId("node-ghost");
+            var key = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, ghost);
+            var value = TopicPublisherValue.topicPublisherValue(ghost, TopicTier.EPHEMERAL);
+
+            kvStore.put(key, value);
+            activeState().reconcile();
+            assertThat(kvStore.get(key)).as("reconcile() sweeps it").isEqualTo(Option.empty());
+
+            kvStore.put(key, value);
+            activeState().rebuildStateFromKVStore();
+            assertThat(kvStore.get(key)).as("the KV rebuild sweeps it").isEqualTo(Option.empty());
+
+            kvStore.put(key, value);
+            activeState().deferredTopologyRecheckForTest();
+            assertThat(kvStore.get(key)).as("the deferred recheck sweeps it").isEqualTo(Option.empty());
+        }
+
         @Test
         void workerLeave_outstandingBlueprintShortfall_reconcileRePlacesOntoRemainingPool() {
             joinWorker(WORKER_1);
