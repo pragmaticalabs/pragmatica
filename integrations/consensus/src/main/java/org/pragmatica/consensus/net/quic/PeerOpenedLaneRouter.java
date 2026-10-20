@@ -21,6 +21,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Deserializer;
 
+import java.nio.ByteBuffer;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -55,6 +57,35 @@ record PeerOpenedLaneRouter(Deserializer deserializer,
         return buf.readableBytes() < 1
                ? Option.none()
                : StreamType.fromIndex(buf.readByte());
+    }
+
+    /// Bytes of the generation tail a dialer appends to its CONTROL preamble (a big-endian `long`).
+    static final int GENERATION_TAIL_BYTES = Long.BYTES;
+
+    /// The CONTROL preamble frame of a dial: the lane byte, then the dialer's link generation as 8 big-endian
+    /// bytes (see [LinkRank]). A generation outside `[1, LinkRank.MAX_GENERATION]` writes the bare lane byte, which
+    /// is byte-identical to the pre-#2138 preamble — a node that reads one byte and ignores the rest (every earlier
+    /// node) accepts both.
+    static byte[] controlPreamble(long generation) {
+        var lane = (byte) StreamType.CONTROL.streamIndex();
+
+        return LinkRank.isValidGeneration(generation)
+               ? ByteBuffer.allocate(1 + GENERATION_TAIL_BYTES).put(lane).putLong(generation).array()
+               : new byte[]{lane};
+    }
+
+    /// The generation tail of a CONTROL preamble, read after [#preambleLane] consumed the lane byte. 0 (no
+    /// generation) when fewer than 8 bytes remain or the value is outside `[1, LinkRank.MAX_GENERATION]`.
+    static long preambleGeneration(ByteBuf buf) {
+        return buf.readableBytes() < GENERATION_TAIL_BYTES
+               ? 0L
+               : validGenerationOrZero(buf.readLong());
+    }
+
+    private static long validGenerationOrZero(long generation) {
+        return LinkRank.isValidGeneration(generation)
+               ? generation
+               : 0L;
     }
 
     /// Attach a peer-opened stream to the verified connection stamped on its parent channel, or close

@@ -137,12 +137,12 @@ public final class PeerState {
     static final String CAUSE_EVICT_STALE_CONNECTING = "evict-stale-connecting";
     static final String CAUSE_AUTHORITATIVE_REMOVE = "authoritative-remove";
     static final String CAUSE_READMIT = "readmit";
-    /// Minimum age of a still-`isActive()` CONNECTED incumbent before a fresh inbound handshake
-    /// is allowed to supersede it (adopt-newer). 3s comfortably separates a sub-millisecond
+    /// Legacy rule only (a pair where either link has no [LinkRank]). Minimum age of a still-`isActive()` CONNECTED
+    /// incumbent before a fresh inbound handshake is allowed to supersede it (adopt-newer). 3s comfortably separates a sub-millisecond
     /// dual-dial race during formation (kept as DUPLICATE) from a post-partition reconnect
     /// (adopted) where `isActive()` lies indefinitely on a partition-orphaned link.
     private static final long SUPERSEDE_MIN_AGE_NANOS = TimeUnit.SECONDS.toNanos(3);
-    /// A lower-id link that arrives within this long of the incumbent's attach is the dual-dial race
+    /// Legacy rule only. A lower-id link that arrives within this long of the incumbent's attach is the dual-dial race
     /// of formation, and BOTH ends must converge on the lower-id link (#1390) whatever traffic the
     /// incumbent already carried: receipts are not symmetric across the two ends, so the receipt floor
     /// must not apply inside the race. Beyond it the incumbent is an established link. A guess sized
@@ -250,6 +250,10 @@ public final class PeerState {
     /// for this peer up to a configured cap, reset by `resetReconcileBackoff` on a
     /// successful attach.
     private long reconcileCurrentDelayMs;
+    /// The greatest link generation this process has dialed or seen on a link that reached [#attach] for this
+    /// peer (see [LinkRank]). Raised under the monitor by [#nextDialGeneration] and by every ranked attach, so a
+    /// dial never reuses a number either end has seen. Guarded by `this`.
+    private long highestGeneration;
     /// How recently the peer must have been heard from for an established incumbent to survive a fresh
     /// handshake of either direction. At least [SUPERSEDE_MIN_AGE_NANOS], and the network raises it to
     /// three keepalive intervals so a healthy idle link is never mistaken for a silent one.
@@ -384,6 +388,8 @@ public final class PeerState {
     }
 
     private synchronized AttachOutcome attachInternal(QuicPeerConnection newConnection, long nowNanos) {
+        newConnection.linkRank().onPresent(rank -> raiseHighestGeneration(rank.generation()));
+
         return switch (phase) {
             case REMOVED -> new AttachOutcome(AttachResult.REJECTED, Option.empty());
             case CONNECTED -> attachOverConnected(newConnection, nowNanos);
@@ -413,27 +419,36 @@ public final class PeerState {
                                  Option.empty());
     }
 
+    /// The generation for the next dial to this peer: one greater than every generation dialed or attached for
+    /// the pair in this process, so two dials of one dialer never share a generation and a redial outranks the
+    /// link it replaces. Returns 0 (no generation: the dial carries no rank and is arbitrated by the legacy
+    /// rule) once the counter has reached [LinkRank#MAX_GENERATION], which only a peer claiming an enormous
+    /// generation can cause.
+    public synchronized long nextDialGeneration() {
+        if (highestGeneration >= LinkRank.MAX_GENERATION) {
+            return 0L;
+        }
+
+        highestGeneration++;
+
+        return highestGeneration;
+    }
+
+    private void raiseHighestGeneration(long generation) {
+        highestGeneration = Math.max(highestGeneration, generation);
+    }
+
     /// CONNECTED-branch of [attach]. An incumbent that is null or reports `!isActive()` is a
     /// stale link and is transparently replaced (RECONNECTED, no superseded). An incumbent that
-    /// still reports `isActive()` is normally a duplicate — UNLESS it is older than
-    /// [SUPERSEDE_MIN_AGE_NANOS], in which case the fresh handshake adopts-newer and the OLD
-    /// connection is handed back for the caller to close. Rationale: a completed Hello handshake
-    /// proves the peer is dialable NOW, whereas `isActive()` can lie indefinitely on a
-    /// partition-orphaned link (QUIC idle timeout disabled) — but it is still OUR outbound
-    /// evidence, so the receipt clock is NOT refreshed; the restarted phase age supplies the
-    /// fresh link's TTL grace. `ConnectionDirection.shouldInitiate` guarantees exactly one
-    /// dialer per pair, so a fresh inbound handshake means the designated dialer detected death
-    /// and re-dialed — defer to it. The age guard preserves the existing protection against a
-    /// sub-millisecond dual-dial race during formation.
+    /// still reports `isActive()` is arbitrated against the new link by [#isIncumbentKept]: DUPLICATE
+    /// keeps it, otherwise the fresh handshake displaces it and the OLD connection is handed back for
+    /// the caller to close. A completed Hello handshake proves the peer is dialable NOW, whereas
+    /// `isActive()` can lie indefinitely on a partition-orphaned link (QUIC idle timeout disabled) — but
+    /// it is still OUR outbound evidence, so the receipt clock is NOT refreshed; the restarted phase age
+    /// supplies the fresh link's TTL grace.
     private AttachOutcome attachOverConnected(QuicPeerConnection newConnection, long nowNanos) {
         if (connection != null && connection.isActive()) {
-            var directionOrder = connection.initiator()
-                                           .flatMap(current -> newConnection.initiator()
-                                                                            .map(current::compareTo))
-                                           .or(0);
-            // Both ends choose the physical link dialed by the lower identity, independently of
-            // arrival order. Same-direction reconnects retain the existing age-based policy.
-            if (isIncumbentKept(directionOrder, nowNanos)) {
+            if (isIncumbentKept(newConnection, nowNanos)) {
                 return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
             }
 
@@ -453,18 +468,36 @@ public final class PeerState {
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }
 
-    /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). A same-direction link
-    /// within [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial race. Across
-    /// directions both ends prefer the link dialed by the LOWER id (#1390). A lower-id incumbent survives
-    /// while it is younger than [#receiptFloorNanos] (the race is live, and BOTH ends must keep the same
-    /// link even when one end's handshake is delayed past [CONVERGENCE_WINDOW_NANOS] and both are still
-    /// silent) or while its peer was heard within that floor; an older receipt-silent one is superseded —
-    /// a completed Hello from the verified peer proves it abandoned the old link, and answering every
-    /// redial with DUPLICATE until this end's own liveness sweep evicts it is the M5 outage. A higher-id
-    /// incumbent yields to the lower-id link inside [CONVERGENCE_WINDOW_NANOS] and survives beyond it only
-    /// while heard from. A stray handshake (a dial aimed at a recycled address) cannot tear down a
+    /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). When BOTH links carry a
+    /// [LinkRank] the answer is the rank order — the greater generation, then the lower dialer id — which both
+    /// ends of the pair compute identically from the same two attributes of each link, reading no clock (#2138).
+    /// Otherwise (a link from a dialer that sent no generation) the legacy rule decides; see
+    /// [#isLegacyIncumbentKept].
+    private boolean isIncumbentKept(QuicPeerConnection challenger, long nowNanos) {
+        return connection.linkRank()
+                         .flatMap(incumbent -> challenger.linkRank()
+                                                         .map(incoming -> !incoming.survivesOver(incumbent)))
+                         .or(() -> isLegacyIncumbentKept(legacyDirectionOrder(challenger), nowNanos));
+    }
+
+    private int legacyDirectionOrder(QuicPeerConnection challenger) {
+        return connection.initiator()
+                         .flatMap(current -> challenger.initiator()
+                                                       .map(current::compareTo))
+                         .or(0);
+    }
+
+    /// The pre-#2138 rule, kept for a pair where either link has no rank (a mixed-version peer). Each end applies it
+    /// to its OWN clocks, so the two ends can disagree — that window is exactly what [LinkRank] closes for ranked
+    /// links. A same-direction link within [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial
+    /// race. Across directions both ends prefer the link dialed by the LOWER id (#1390). A lower-id incumbent
+    /// survives while it is younger than [#receiptFloorNanos] or while its peer was heard within that floor; an
+    /// older receipt-silent one is superseded — a completed Hello from the verified peer proves it abandoned the old
+    /// link, and answering every redial with DUPLICATE until this end's own liveness sweep evicts it is the M5
+    /// outage. A higher-id incumbent yields to the lower-id link inside [CONVERGENCE_WINDOW_NANOS] and survives
+    /// beyond it only while heard from. A stray handshake (a dial aimed at a recycled address) cannot tear down a
     /// heard-from link.
-    private boolean isIncumbentKept(int directionOrder, long nowNanos) {
+    private boolean isLegacyIncumbentKept(int directionOrder, long nowNanos) {
         return switch (Integer.signum(directionOrder)) {
             case -1 -> phaseAgeNanos(nowNanos) <= receiptFloorNanos || isHeardFromRecently(nowNanos);
             case 0 -> phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;

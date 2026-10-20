@@ -1522,6 +1522,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         var address = new InetSocketAddress(inetAddress, port);
         var attempt = dialAttempts.incrementAndGet();
+        // #2138: the dial's generation outranks every link of this pair seen so far, so both ends rank this link
+        // against any other identically; taken after beginConnecting succeeded, so each dial gets its own.
+        var generation = state.nextDialGeneration();
 
         log.info("Dial journal: attempt #{} to {} at {} started", attempt, peerId, address);
         // Per-ATTEMPT dial timeout (H10, Wave 5): the timeout must NOT fail the dial promise —
@@ -1536,7 +1539,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // over another link first, which abandons this attempt while its QUIC handshake is
         // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
         // it only restarts the attach-grace phase age, see PeerState#markInbound.
-        clientRef.connect(peerId, address)
+        clientRef.connect(peerId, address, generation)
                  .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
                  .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
