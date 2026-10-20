@@ -110,6 +110,18 @@ class NodeReplacementWiringBootTest {
         assertThat(sink).as("a hand-off sink to the event aggregator, not the log-only default").isNotSameAs(OperatorWarningSink.logOnly());
     }
 
+    /// #241: the node hands its operator-warning sink to the placement reconciler, so a parked placement operation is an operator event and
+    /// not only a log line. Without the wiring the reconciler keeps the log-only sink.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void thePlacementReconciler_isWiredToTheNodesOperatorWarningSink() {
+        node = bootedNode();
+
+        var sink = ((ClusterTopologyManager) accessor(node, "clusterTopologyManagerInstance")).installedCommunityPlacement().unwrap().operatorWarningSink();
+
+        assertThat(sink).as("a hand-off sink to the event aggregator, not the log-only default").isNotSameAs(OperatorWarningSink.logOnly());
+    }
+
     /// #2062: the marks of retired nodes whose termination is unconfirmed are read from the node's replicated store, so a new leader inherits
     /// them. Without the wiring the topology manager reads an empty map and a successor never sees an open mark.
     @Test

@@ -80,6 +80,11 @@ public interface CommunityPlacementReconciler {
         return Unit.unit();
     }
 
+    /// The sink the parked-operation events go to. Read-only, for the boot test that pins the node's wiring.
+    default OperatorWarningSink operatorWarningSink() {
+        return OperatorWarningSink.logOnly();
+    }
+
     /// #241: the operator clears ONE parked operation of `communityId` (DRAIN_UNCERTAIN, or BLOCKED with a target the reconciler has not observed)
     /// after looking at the nodes it names. The operation is closed
     /// without effect: the previous worker is NOT removed, drained or terminated by the clear, and neither is the replacement. The next pass
@@ -247,6 +252,11 @@ record PlacementReconciler(NodeId self,
         warnings.set(sink);
 
         return Unit.unit();
+    }
+
+    @Override
+    public OperatorWarningSink operatorWarningSink() {
+        return warnings.get();
     }
 
     @Override

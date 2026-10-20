@@ -71,9 +71,10 @@ class CommunityPlacementParkedTest {
     private final List<CommunityPlacementOperationValue> escalations = new CopyOnWriteArrayList<>();
     private Runnable beforeCommit = () -> {};
 
+    private volatile String binding = "binding";
     private final CommunityPlacementReconciler.Actuator actuator = new CommunityPlacementReconciler.Actuator() {
         @Override public org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source) {
-            return org.pragmatica.lang.Result.success("binding");
+            return org.pragmatica.lang.Result.success(binding);
         }
         @Override public Promise<Unit> create(CommunityPlacementOperationValue operation) { return Promise.unitPromise(); }
         @Override public Promise<Boolean> retirementSafe(CommunityPlacementOperationValue operation) { return Promise.success(true); }
@@ -180,6 +181,34 @@ class CommunityPlacementParkedTest {
         awaitCode("community-placement-parked");
         assertThat(messages.getFirst()).contains("stable").contains("DRAIN_UNCERTAIN").contains("old-worker").contains("aether cluster clear-placement stable");
         assertThat(escalations).as("the existing escalation event still fires").hasSize(1);
+    }
+
+    @Test
+    void reconcile_aConflictBlocksACreate_parksTheOperationWithTheAdviceForABlockedOne() {
+        start();
+        seedOperation(PlacementOperationPhase.RESERVED, now.get());
+        seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(NEW), new AetherValue.NodePlacementValue("pool", Option.some("old"), "elsewhere")));
+
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.BLOCKED);
+        awaitCode("community-placement-parked");
+        assertThat(messages.getFirst()).contains("BLOCKED").contains("resumes by itself when its target node is observed").contains("clear-placement stable");
+    }
+
+    @Test
+    void reconcile_aParkedOperationThatStaysParkedWithANewReason_raisesNoRecovery() {
+        start();
+        seedOperation(PlacementOperationPhase.BLOCKED, now.get());
+        binding = "another-binding";
+
+        reconciler.reconcile().await().unwrap();
+        awaitCode("community-placement-parked");
+        settle();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.BLOCKED);
+        assertThat(current().detail()).contains("Source identity changed");
+        assertThat(codes).as("BLOCKED to BLOCKED is not a recovery").doesNotContain("community-placement-resumed");
     }
 
     @Test
