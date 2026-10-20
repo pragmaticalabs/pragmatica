@@ -1899,8 +1899,8 @@ public final class LeaderReconciler {
                                  none(),
                                  currentMembers,
                                  NodeRole.CORE)
-           .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
-           .onFailure(cause -> reapFailedProvision(placeholder, cause));
+           .withSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
+           .withFailure(cause -> reapFailedProvision(placeholder, cause));
     }
 
     /// #1111 — a failed create is a drop like the other three, with one exception: a failure that PROVES no instance was made (a capacity
@@ -2077,8 +2077,8 @@ public final class LeaderReconciler {
         }
 
         ctm.replacementInstanceState(id)
-           .onResult(_ -> statusQueriesOutstanding.remove(id))
-           .onSuccess(state -> applyInstanceState(id, entry, state));
+           .withResult(_ -> statusQueriesOutstanding.remove(id))
+           .withSuccess(state -> applyInstanceState(id, entry, state));
     }
 
     /// #1049 — act on one provider answer. Every transition is guarded against the entry the query was

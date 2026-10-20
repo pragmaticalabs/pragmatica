@@ -140,6 +140,53 @@ class QuicClusterNetworkLifecycleTest {
         assertThat(network.periodicTasksScheduledForTests()).isTrue();
     }
 
+    /// A caller that awaited the start finds the transport-ready hooks already fired. The hook here is slow, so a hook fired by a
+    /// handler that runs beside the start's dependents (not as one of them) is still running when the await returns.
+    @Test
+    void startedNetwork_awaitedStart_hasAlreadyFiredASlowReadyHook() {
+        var network = network();
+        var hookDone = new java.util.concurrent.atomic.AtomicBoolean();
+
+        network.whenReady(() -> {
+            java.util.concurrent.locks.LockSupport.parkNanos(150_000_000L);
+            hookDone.set(true);
+        });
+        network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));
+
+        assertThat(hookDone.get()).as("the ready hook finished before the awaited start resolved").isTrue();
+    }
+
+    /// A failed start has released `isRunning` by the time its promise resolves, so a retry right after the failure binds. Reset by a
+    /// handler beside the dependents, the retry was turned away as already running and bound nothing. Each trial fails a start for a
+    /// held UDP port, then retries on a free one.
+    @Test
+    void failedStart_retryRightAfterTheFailure_isNotTurnedAwayAsAlreadyRunning() throws Exception {
+        var turnedAway = 0;
+        var trials = 30;
+
+        for (var trial = 0; trial < trials; trial++) {
+            var network = network();
+            var held = freeUdpPort();
+
+            try (var holder = new java.net.DatagramSocket(held)) {
+                assertThat(network.startOnPort(held).await(AWAIT).isFailure()).as("a start on a held port fails").isTrue();
+            }
+
+            network.startOnPort(0).await(AWAIT);
+            if (network.boundPort().isEmpty()) {
+                turnedAway++;
+            }
+        }
+
+        assertThat(turnedAway).as("retries (of %d) turned away as already running right after a failed start", trials).isZero();
+    }
+
+    private static int freeUdpPort() throws Exception {
+        try (var socket = new java.net.DatagramSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
     private QuicClusterNetwork started() {
         var network = network();
 

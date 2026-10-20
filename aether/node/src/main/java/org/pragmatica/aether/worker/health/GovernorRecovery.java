@@ -144,7 +144,7 @@ public final class GovernorRecovery {
                              candidate,
                              term,
                              address.apply(candidate).or(""))
-                  .onResult(_ -> grantFinished(community, term));
+                  .withResult(_ -> grantFinished(community, term));
 
             return;
         }

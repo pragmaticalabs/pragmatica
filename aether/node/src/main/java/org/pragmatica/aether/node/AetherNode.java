@@ -2826,26 +2826,48 @@ public interface AetherNode extends ManageableNode {
                 return formationUnlessSwimFails(startClusterAsync(), outcome);
             }
 
+            /// The in-process formation effects (event-loop metrics, the first election kick) are a DEPENDENT step
+            /// (`withSuccess`): whoever awaited the start proceeds with them in place. Discovery registration blocks on the
+            /// provider and the instance tag is an external signal bootstrap polls, so those two stay detached.
             private Promise<Unit> startClusterAsync() {
                 return clusterNode.start()
-                                  .onSuccess(_ -> {
-                                                 log.info("Aether node {} cluster formation complete",
-                                                          self());
-                                                 clusterNode.network()
-                                                            .server()
-                                                            .onPresent(server -> {
-                                                                           eventLoopMetricsCollector.register(server.bossGroup());
-                                                                           eventLoopMetricsCollector.register(server.workerGroup());
-                                                                           log.info("Registered EventLoopGroups for metrics collection");
-                                                                       });
-                                                 clusterNode.leaderManager()
-                                                            .triggerElection();
-                                                 discoveryProvider.onPresent(this::registerWithDiscovery);
-                                                 applyNodeIdTag();
-                                             })
+                                  .withSuccess(_ -> runFormationEffects())
+                                  .onSuccess(_ -> registerFormedNode())
                                   .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
+            }
+
+            // A dependent step must not fail the start it follows: a throw from the effects is logged, not propagated.
+            @Contract
+            private void runFormationEffects() {
+                Result.lift(this::onClusterFormed)
+                      .onFailure(cause -> log.warn("Cluster formation effects failed: {}", cause.message()));
+            }
+
+            @Contract
+            private void onClusterFormed() {
+                log.info("Aether node {} cluster formation complete",
+                         self());
+                clusterNode.network()
+                           .server()
+                           .onPresent(this::registerEventLoopGroups);
+                clusterNode.leaderManager()
+                           .triggerElection();
+            }
+
+            private void registerEventLoopGroups(Server server) {
+                eventLoopMetricsCollector.register(server.bossGroup());
+                eventLoopMetricsCollector.register(server.workerGroup());
+                log.info("Registered EventLoopGroups for metrics collection");
+            }
+
+            // Detached on purpose: `registerSelf` is awaited (it blocks its thread) and the tag is an external signal;
+            // nothing in this process reads either after the start resolves.
+            @Contract
+            private void registerFormedNode() {
+                discoveryProvider.onPresent(this::registerWithDiscovery);
+                applyNodeIdTag();
             }
 
             private void registerWithDiscovery(DiscoveryProvider dp) {
@@ -7379,7 +7401,7 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReadyOnceDhtAdmitted(Promise<Unit> dhtAdmission,
                                                            Runnable signalReady,
                                                            NodeReportedStateHolder holder) {
-        dhtAdmission.onSuccess(_ -> markSubsystemsReady(signalReady, holder));
+        dhtAdmission.withSuccess(_ -> markSubsystemsReady(signalReady, holder));
     }
 
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
@@ -8703,9 +8725,12 @@ public interface AetherNode extends ManageableNode {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
 
+        // `startOutcome::fail` and the announcement are dependent steps (`withFailure`/`withSuccess`), so they have run
+        // when `start` resolves for whoever awaits it. `failNode` may block (Ember awaits the node's own stop), so it stays
+        // a detached handler, registered on the DERIVED promise: it can run only after `startOutcome` was failed.
         return swimHealthDetector.start(workerGroup, guarded)
-                                 .onFailure(startOutcome::fail)
-                                 .onSuccessRun(() -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
+                                 .withFailure(startOutcome::fail)
+                                 .withSuccess(_ -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
                                  .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
                                                                             cause,
                                                                             failNode));
@@ -8714,9 +8739,14 @@ public interface AetherNode extends ManageableNode {
     /// A start refused because `stop()` already closed the detector resolves as a no-op success (it must
     /// not run `failNode`: in a single-JVM host a stale one could stop a same-id relaunch). There is no
     /// protocol to announce for, so the announcement is skipped.
+    ///
+    /// A dependent step of the start: a trigger that throws must not fail the start it follows (that would run `failNode`),
+    /// so a throw is logged instead.
+    @Contract
     private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
         if (!swimHealthDetector.isClosed()) {
-            announceJoinTrigger.run();
+            Result.lift(announceJoinTrigger::run)
+                  .onFailure(cause -> LOG.warn("SWIM join announcement failed: {}", cause.message()));
         }
     }
 

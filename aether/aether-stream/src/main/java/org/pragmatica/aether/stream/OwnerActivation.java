@@ -723,7 +723,7 @@ public final class OwnerActivation {
             return ActivationError.IN_PROGRESS.promise();
         }
 
-        return runGate(stream, partition, key).onResultRun(() -> inFlight.remove(key));
+        return runGate(stream, partition, key).withResult(_ -> inFlight.remove(key));
     }
 
     /// Quorum-state hook: on PASSIVE (quorum lost) drop every activation, so no partition is served as owner
@@ -797,8 +797,8 @@ public final class OwnerActivation {
                               restarted)
                       .flatMap(_ -> ownedRecord(stream, partition))
                       .flatMap(this::requireCommittedStart)
-                      .onSuccess(_ -> landed(key, incarnation))
-                      .onFailure(cause -> refused(stream, partition, key, cause));
+                      .withSuccess(_ -> landed(key, incarnation))
+                      .withFailure(cause -> refused(stream, partition, key, cause));
     }
 
     private Unit landed(PartitionKey key, long incarnation) {
@@ -1110,7 +1110,7 @@ public final class OwnerActivation {
             ended(unreachableBlocks.remove(key));
         }
 
-        return catchUpFromResponders(stream, partition, answered).onSuccessRun(() -> pendingEscapes.put(key, escape));
+        return catchUpFromResponders(stream, partition, answered).withSuccess(_ -> pendingEscapes.put(key, escape));
     }
 
     /// The unreachable condition's timer and block, kept apart from every other block (#1937): once the members in `silent`
@@ -1292,7 +1292,7 @@ public final class OwnerActivation {
     /// a lower (or equal) peer that disagrees means the local tail, or the peer's, belongs to another lineage.
     private Promise<Unit> verifyAgreement(String stream, int partition, long local, List<PeerWatermark> others) {
         return Promise.allOf(others.stream()
-                                   .map(peer -> verifyOverlap(stream, partition, local, peer).onFailure(cause -> flagBudgetHolder(stream,
+                                   .map(peer -> verifyOverlap(stream, partition, local, peer).withFailure(cause -> flagBudgetHolder(stream,
                                                                                                                                   partition,
                                                                                                                                   local,
                                                                                                                                   peer,
@@ -1334,7 +1334,7 @@ public final class OwnerActivation {
                                                                                                             highest,
                                                                                                             others))
                                   .flatMap(_ -> pullSuffix(stream, partition, highest))
-                                  .onFailure(cause -> flagBudgetHolder(stream, partition, local, highest, cause));
+                                  .withFailure(cause -> flagBudgetHolder(stream, partition, local, highest, cause));
     }
 
     /// Pairwise agreement of the source with every other responder (v1555 on #1555). The local log covers only

@@ -700,11 +700,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var serverRef = server;
         // #1461: arming is a DEPENDENT step (`withSuccess`), not an `onSuccess` handler, which runs asynchronously and
         // may land after the returned promise resolves: a completed start then implies the periodic tasks are armed.
+        // The same holds for the ready hooks (a caller that awaited the start has them fired) and for the failed-start
+        // reset of `isRunning` (a retry after the failure is not turned away by a CAS the late handler had not cleared).
         return serverRef.start(port)
                         .map(unit -> captureLoopbackLoop(serverRef, unit))
                         .withSuccess(_ -> armPeriodicTasks())
-                        .onSuccess(_ -> fireReadyHooks())
-                        .onFailure(this::onStartFailed)
+                        .withSuccess(_ -> fireReadyHooks())
+                        .withFailure(this::onStartFailed)
                         .mapToUnit();
     }
 
@@ -734,11 +736,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// Runs as a dependent step of the start, so a hook that throws must not fail the start it reports on: each hook is
+    /// isolated and a throw is logged (the hooks after it still run, as the detached handler never guaranteed).
     @Contract
     private void fireReadyHooks() {
         transportReady.set(true);
-        readyHooks.forEach(Runnable::run);
+        readyHooks.forEach(this::runReadyHook);
         readyHooks.clear();
+    }
+
+    @Contract
+    private void runReadyHook(Runnable hook) {
+        Result.lift(hook::run).onFailure(cause -> log.warn("Transport-ready hook failed: {}", cause.message()));
     }
 
     /// #487: pin ONE event loop from the (now-started) server's group as the self-loopback lane, so a
