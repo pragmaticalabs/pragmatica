@@ -176,6 +176,15 @@ class ReactorRootsTest {
         assertTrue(thrown.getMessage().contains("ghost"), thrown.getMessage());
     }
 
+    @Test
+    void declaredModules_rootWithoutModulesBlock_failsLoudly(@TempDir Path aether) throws IOException {
+        Files.writeString(aether.resolve("pom.xml"), POM_OPEN + "</project>");
+
+        var thrown = assertThrows(IllegalStateException.class, () -> ReactorRoots.declaredModules(aether));
+
+        assertTrue(thrown.getMessage().contains("No <modules> block"), thrown.getMessage());
+    }
+
     // --- helpers --------------------------------------------------------------------------------------
 
     /// `aether/pom.xml` -> aggregator `agg` -> `leaf`; the aggregator also lists `gated` inside a
@@ -186,7 +195,7 @@ class ReactorRootsTest {
         Files.createDirectories(aether.resolve("agg/leaf"));
         Files.createDirectories(aether.resolve("agg/gated"));
         Files.writeString(aether.resolve("agg/pom.xml"),
-                          POM_OPEN + "<packaging>pom</packaging><modules><module>leaf</module></modules>" +
+                          POM_OPEN + "<packaging>pom</packaging><modules><module> leaf </module></modules>" +
                           "<profiles><profile><id>gated</id><modules><module>gated</module></modules></profile>" +
                           "</profiles></project>");
         Files.writeString(aether.resolve("agg/leaf/pom.xml"), POM_OPEN + "</project>");
