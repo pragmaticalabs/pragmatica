@@ -212,12 +212,26 @@ public record TopicPublisher<T>(String topicName,
         }
     }
 
+    /// #1337: a subscriber whose row records that its handler needs the delivery context cannot be served by this ephemeral
+    /// publisher, so the delivery is refused here, with no RPC, as the same `TopicTierMismatch` the bridge would answer. A row
+    /// that records no requirement (one written before the tier existed, or a bare handler) goes through [SliceInvoker], where
+    /// the bridge refuses a context handler itself.
     private Promise<Unit> deliverToSubscriber(TopicSubscriber subscriber, T message) {
-        return invoker.invoke(subscriber.artifact(),
-                              subscriber.methodName(),
-                              message,
-                              UNIT_TYPE_TOKEN)
-                      .replaceResult(result -> settle(subscriber, result));
+        return subscriber.tier()
+                         .requiresDurable()
+               ? refuseWithoutDelivery(subscriber)
+               : invoker.invoke(subscriber.artifact(),
+                                subscriber.methodName(),
+                                message,
+                                UNIT_TYPE_TOKEN)
+                        .replaceResult(result -> settle(subscriber, result));
+    }
+
+    private Promise<Unit> refuseWithoutDelivery(TopicSubscriber subscriber) {
+        return Promise.resolved(settle(subscriber,
+                                       TopicTierMismatch.FACTORY.apply(subscriber.methodName()
+                                                                                 .name())
+                                                                .<Unit> result()));
     }
 
     /// FER (degrade forward): a failed delivery is absorbed here into a counter and, for a tier mismatch, an operator

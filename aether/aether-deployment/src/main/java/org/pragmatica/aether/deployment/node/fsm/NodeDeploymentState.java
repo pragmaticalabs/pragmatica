@@ -70,6 +70,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
@@ -1269,7 +1270,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                 artifact,
                                                                 entry.methodName(),
                                                                 ctx.self());
-            var value = TopicSubscriptionValue.topicSubscriptionValue(ctx.self());
+            var value = TopicSubscriptionValue.topicSubscriptionValue(ctx.self(), entry.tier());
 
             return new KVCommand.Put<>(key, value);
         }
@@ -1317,7 +1318,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return new KVCommand.Remove<>(key);
         }
 
-        private record SubscriptionManifestEntry(ResourceAddress address, MethodName methodName) {}
+        /// `tier` is what the handler requires of delivery (#1337): [TopicTier#DURABLE] for the context-carrying shape, which the
+        /// slice processor marks `context=message` in the manifest, [TopicTier#ANY] for a bare handler.
+        private record SubscriptionManifestEntry(ResourceAddress address, MethodName methodName, TopicTier tier) {}
 
         private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
 
@@ -1385,13 +1388,21 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             for (var entry : reactive) {
                 if ("subscription".equals(entry.category())) {
                     resolveSubscriptionAddress(artifact, entry).flatMap(address -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(address,
-                                                                                                                                                                     method)))
+                                                                                                                                                                     method,
+                                                                                                                                                                     requiredTier(entry))))
                                               .option()
                                               .onPresent(result::add);
                 }
             }
 
             return result;
+        }
+
+        /// #1337: the manifest's `context=message` marker (#386 D5) is the only thing that makes a handler need the durable tier.
+        private static TopicTier requiredTier(ReactiveManifestEntry entry) {
+            return "message".equals(entry.getProperty("context"))
+                   ? TopicTier.DURABLE
+                   : TopicTier.ANY;
         }
 
         /// Resolve a subscription's topic address, preferring the manifest-generated `topicName`

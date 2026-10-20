@@ -44,5 +44,13 @@ public record SliceTopology(String sliceName,
     public record TopicPub(String config, String address, String messageType) {}
 
     /// A subscribed topic. See [TopicPub] for the `config` vs. `address` distinction.
-    public record TopicSub(String config, String address, String method, String messageType) {}
+    ///
+    /// `contextual` is true when the handler takes the delivery context (`(T event, MessageContext context)`, the manifest's
+    /// `context=message` marker). That shape needs the envelope only durable delivery carries, so it is what a deploy-time tier
+    /// check keys on (#1337).
+    public record TopicSub(String config, String address, String method, String messageType, boolean contextual) {
+        public TopicSub(String config, String address, String method, String messageType) {
+            this(config, address, method, messageType, false);
+        }
+    }
 }

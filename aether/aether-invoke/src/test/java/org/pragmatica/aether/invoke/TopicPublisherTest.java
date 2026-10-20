@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -65,8 +66,12 @@ class TopicPublisherTest {
     }
 
     private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId) {
+        registerSubscriptionAt(address, artifact, method, nodeId, TopicTier.UNDECLARED);
+    }
+
+    private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId, TopicTier tier) {
         var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method, nodeId);
-        var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
+        var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId, tier);
         var put = new KVCommand.Put<>(key, value);
         registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
     }
@@ -328,6 +333,47 @@ class TopicPublisherTest {
         }
 
         /// A subscriber that failed for its own reasons is counted, but is not a tier mismatch and raises no event.
+        /// #1337: a subscriber whose ROW records that its handler needs the delivery context is refused before any RPC. The stub invoker
+        /// would have delivered (it fails nothing), so a recorded invocation would mean the row was ignored.
+        @Test
+        void publish_rowRecordsDurableTier_isRefusedWithoutInvoking_countedAndNamed() {
+            registerSubscriptionAt(resourceAddress("orders"), artifact, method, nodeA, TopicTier.DURABLE);
+            var publisher = TopicPublisher.topicPublisher("orders",
+                                                          routingKey("orders"),
+                                                          PUBLISHER_SLICE,
+                                                          registry,
+                                                          new StubSliceInvoker(invocations, outcome::get),
+                                                          Option.some(meters),
+                                                          org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+            var result = publisher.<String>publish("order-1").await();
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(invocations).as("refused before the RPC").isEmpty();
+            assertThat(count(TopicPublisher.REASON_TIER_MISMATCH)).isEqualTo(1.0);
+            assertThat(codesAfter(1)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH);
+        }
+
+        /// Control: rows that record ANY or nothing are invoked, so the refusal above keys on the recorded tier.
+        @Test
+        void publish_rowRecordsAnyOrNoTier_isInvoked() {
+            registerSubscriptionAt(resourceAddress("orders"), artifact, method, nodeA, TopicTier.ANY);
+            registerSubscription("orders", Artifact.artifact("org.example:old-slice:1.0.0").unwrap(), method, nodeB);
+            var publisher = TopicPublisher.topicPublisher("orders",
+                                                          routingKey("orders"),
+                                                          PUBLISHER_SLICE,
+                                                          registry,
+                                                          new StubSliceInvoker(invocations, outcome::get),
+                                                          Option.some(meters),
+                                                          org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+            publisher.<String>publish("order-1").await();
+
+            assertThat(invocations).hasSize(2);
+            assertThat(count(TopicPublisher.REASON_TIER_MISMATCH)).isZero();
+            assertThat(events).isEmpty();
+        }
+
         @Test
         void publish_otherSubscriberFailure_isCountedAsFailed_andRaisesNoEvent() {
             outcome.set(Option.some(SUBSCRIBER_FAILED));

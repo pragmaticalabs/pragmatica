@@ -32,6 +32,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -84,6 +86,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final Artifact SLICE = Artifact.artifact("org.example:order-audit:1.0.0").unwrap();
+    private static final Artifact CONTEXT_SLICE = Artifact.artifact("org.example:order-context:1.0.0").unwrap();
     private static final Artifact BLUEPRINT = Artifact.artifact("org.example:orders-app:1.0.0").unwrap();
     private static final MethodName EXECUTE = MethodName.methodName("execute").unwrap();
 
@@ -192,6 +195,37 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
                                              .containsExactlyElementsOf(published);
     }
 
+    /// #1337 — THE TIER THE WRITER RECORDS, which no reader of the row can check. A bare handler's row says ANY; a handler the
+    /// slice processor marked `context=message` says DURABLE, which is what lets a publisher refuse it without an RPC. Each is paired
+    /// with the other so a writer that recorded one value for both would fail.
+    @Test
+    void publishedSubscriptionRow_recordsWhatTheHandlerRequires() {
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, CONTEXT_SLICE, SliceState.ACTIVE)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(subscriptionTiers()).as("both slices published a subscription row")
+                                                                   .containsKeys(SLICE.asString(), CONTEXT_SLICE.asString()));
+
+        assertThat(subscriptionTiers().get(SLICE.asString())).as("a bare handler requires nothing of the tier").isEqualTo(TopicTier.ANY);
+        assertThat(subscriptionTiers().get(CONTEXT_SLICE.asString())).as("a context handler (manifest context=message) requires the durable tier")
+                                                                     .isEqualTo(TopicTier.DURABLE);
+    }
+
+    private java.util.Map<String, TopicTier> subscriptionTiers() {
+        var tiers = new java.util.HashMap<String, TopicTier>();
+
+        cluster.commands()
+               .stream()
+               .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put && put.key() instanceof TopicSubscriptionKey)
+               .map(command -> (KVCommand.Put<AetherKey, ?>) command)
+               .forEach(put -> tiers.put(((TopicSubscriptionKey) put.key()).artifact().asString(),
+                                         ((TopicSubscriptionValue) put.value()).tier()));
+
+        return tiers;
+    }
+
     private List<TopicSubscriptionKey> subscriptionKeys() {
         return cluster.commands()
                       .stream()
@@ -239,7 +273,11 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     }
 
     private static ValuePut<NodeArtifactKey, NodeArtifactValue> putFor(NodeId node, SliceState state) {
-        var key = NodeArtifactKey.nodeArtifactKey(node, SLICE);
+        return putFor(node, SLICE, state);
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> putFor(NodeId node, Artifact slice, SliceState state) {
+        var key = NodeArtifactKey.nodeArtifactKey(node, slice);
         var value = NodeArtifactValue.nodeArtifactValue(state);
 
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
@@ -250,7 +288,12 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     /// sibling tests' lambda slices declare no bindings).
     interface TopicSubscriberSlice extends Slice {}
 
-    private static final class SubscribingSlice implements TopicSubscriberSlice {
+    /// The same slice with the context-carrying binding (#1337); its manifest is `ContextSubscriberSlice.manifest`.
+    interface ContextSubscriberSlice extends Slice {}
+
+    private static final class ContextSubscribingSlice extends SubscribingSlice implements ContextSubscriberSlice {}
+
+    private static class SubscribingSlice implements TopicSubscriberSlice {
         @Override
         public List<SliceMethod<?, ?>> methods() {
             return List.of(SliceMethod.sliceMethod(EXECUTE,
@@ -265,7 +308,9 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
         private final List<LoadedSlice> loadedSlices = new CopyOnWriteArrayList<>();
 
         private static LoadedSlice loadedSlice(Artifact artifact) {
-            Slice slice = new SubscribingSlice();
+            Slice slice = artifact.equals(CONTEXT_SLICE)
+                          ? new ContextSubscribingSlice()
+                          : new SubscribingSlice();
 
             return new LoadedSlice() {
                 @Override public Artifact artifact() {

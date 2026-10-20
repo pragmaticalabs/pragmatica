@@ -688,9 +688,44 @@ public sealed interface AetherValue {
         }
     }
 
-    record TopicSubscriptionValue(NodeId nodeId) implements AetherValue {
+    /// The row one instance of a topic subscriber writes (#1448 made it node-scoped).
+    ///
+    /// `tier` is the delivery tier the subscriber's handler REQUIRES (#1337), read by the publisher before it delivers and by
+    /// the operator. It was added under a NEW wire tag (2169): tag 1655 still decodes the previous shape
+    /// ([LegacyTopicSubscriptionValue]) as a row whose tier is [TopicTier#UNDECLARED].
+    record TopicSubscriptionValue(NodeId nodeId, TopicTier tier) implements AetherValue {
+        /// A row that states no requirement; what a row written before the tier existed means, and what a writer that does
+        /// not know the handler's shape writes.
         public static TopicSubscriptionValue topicSubscriptionValue(NodeId nodeId) {
-            return new TopicSubscriptionValue(nodeId);
+            return new TopicSubscriptionValue(nodeId, TopicTier.UNDECLARED);
+        }
+
+        public static TopicSubscriptionValue topicSubscriptionValue(NodeId nodeId, TopicTier tier) {
+            return new TopicSubscriptionValue(nodeId, tier);
+        }
+    }
+
+    /// The delivery tier a topic subscriber's handler requires (#1337).
+    ///
+    /// Only [#DURABLE] constrains anything: it is a handler that takes the delivery context
+    /// ([org.pragmatica.aether.slice.topic.ContextualEvent]), which an ephemeral delivery cannot build because it carries no
+    /// envelope. A bare handler works on either tier and records [#ANY]; a row that predates the field, or whose writer could not
+    /// tell, records [#UNDECLARED]. Readers treat [#UNDECLARED], [#ANY] and [#UNKNOWN] alike: no requirement.
+    @Codec
+    enum TopicTier {
+        /// No tier recorded: a row written before the field existed, or by a writer that could not tell.
+        UNDECLARED,
+        /// A bare handler: works on either tier.
+        ANY,
+        /// A context-carrying handler: needs the envelope only durable delivery carries.
+        DURABLE,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing. Imposes no requirement.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as UNKNOWN by an older node either way.
+        UNKNOWN;
+
+        /// Whether a subscriber recording this tier cannot be served by an ephemeral publisher.
+        public boolean requiresDurable() {
+            return this == DURABLE;
         }
     }
 

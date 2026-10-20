@@ -224,8 +224,9 @@ public final class TopologyParser {
                 var config = props.getProperty(prefix + "config", "");
                 var method = props.getProperty(prefix + "method", "");
                 var messageType = props.getProperty(prefix + "messageType", "");
+                var contextual = "message".equals(props.getProperty(prefix + "context", ""));
 
-                subs.add(new SliceTopology.TopicSub(config, resolveTopicAddress(config, artifact), method, messageType));
+                subs.add(new SliceTopology.TopicSub(config, resolveTopicAddress(config, artifact), method, messageType, contextual));
             }
         }
 
