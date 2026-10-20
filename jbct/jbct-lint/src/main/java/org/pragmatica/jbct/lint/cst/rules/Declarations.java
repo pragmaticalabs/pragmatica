@@ -223,7 +223,7 @@ sealed interface Declarations permits Declarations.unused {
     Pattern PROMISE_FACTORY_BEFORE = Pattern.compile("\\bPromise\\s*\\.\\s*(?:<[^>]*>\\s*)?promise\\s*\\(\\s*$");
 
     Set<String> NOT_A_TYPE = Set.of("return", "new", "else", "case", "throw", "import", "package", "instanceof", "extends",
-                                    "implements", "throws", "yield", "assert", "var");
+                                    "implements", "throws", "yield", "assert", "var", "record", "class", "interface", "enum");
     Set<String> CONTROL = Set.of("if", "for", "while", "switch", "catch", "synchronized", "try", "do", "return", "new", "else",
                                  "throw", "super", "this");
 
