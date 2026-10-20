@@ -3604,6 +3604,11 @@ public sealed interface AetherValue {
         public CommunityValue withState(CommunityState newState) {
             return new CommunityValue(sourceName, role, targetSize, newState, createdAt, dissolvedAt);
         }
+
+        /// The placement pass re-stamps only the `targetSize` when the committed policy changes it (#241), preserving every other field.
+        public CommunityValue withTargetSize(int newTargetSize) {
+            return new CommunityValue(sourceName, role, newTargetSize, state, createdAt, dissolvedAt);
+        }
     }
 
     /// Canonical field order: `(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId)`.

@@ -2421,6 +2421,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                              OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
                              OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                             OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
                              OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
                              OperatorWarningCode.WORKER_ASSIGNED,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
@@ -2449,6 +2451,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                              OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                             OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
                              OperatorWarningCode.STORAGE_PROMOTION_STALLED,
                              OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH);
