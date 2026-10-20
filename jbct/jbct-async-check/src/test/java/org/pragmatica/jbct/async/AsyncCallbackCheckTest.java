@@ -615,6 +615,23 @@ class AsyncCallbackCheckTest {
         }
 
         @Test
+        void flags_sameNamedStaticsOfOtherTypes() {
+            assertThat(lines(body("""
+                    static class Other {
+                        static String success(String v) { System.out.println(v); return v; }
+                        static String promise() { return "x"; }
+                        static String unit() { return "x"; }
+                    }
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> Other.success(v));
+                        p.onSuccessRun(() -> Other.promise());
+                        p.onSuccessRun(() -> Other.unit());
+                        p.onSuccess(Other::success);
+                    }
+                    """))).hasSize(4);
+        }
+
+        @Test
         void flags_theArgumentsOfAFactoryAreStillScanned() {
             assertThat(lines(body("""
                     java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger();
