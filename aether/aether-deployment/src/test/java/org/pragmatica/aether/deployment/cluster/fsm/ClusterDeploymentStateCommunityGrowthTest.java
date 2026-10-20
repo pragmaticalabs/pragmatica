@@ -402,7 +402,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         /// Time passes for the leader: past the join grace a silent worker is no longer given the benefit of the doubt.
         void passTheJoinGrace() {
-            clock.addAndGet(CommunityAdmissionLedger.JOIN_GRACE_MS + 1);
+            clock.addAndGet(61_000L);
         }
 
         void markAbsent(int number) {
