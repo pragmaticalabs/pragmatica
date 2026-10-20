@@ -18,6 +18,8 @@ package org.pragmatica.consensus.net.quic;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+
 
 /// The rank of one physical link of a node pair: the connection generation its dialer chose, and the dialer's id.
 ///
@@ -40,7 +42,7 @@ record LinkRank(long generation, NodeId dialer) {
     static Option<LinkRank> linkRank(Option<NodeId> dialer, long generation) {
         return isValidGeneration(generation)
                ? dialer.map(id -> new LinkRank(generation, id))
-               : Option.none();
+               : none();
     }
 
     static boolean isValidGeneration(long generation) {

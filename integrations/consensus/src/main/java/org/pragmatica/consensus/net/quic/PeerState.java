@@ -474,18 +474,19 @@ public final class PeerState {
     /// Otherwise (a link from a dialer that sent no generation) the legacy rule decides; see
     /// [#isLegacyIncumbentKept].
     private boolean isIncumbentKept(QuicPeerConnection challenger, long nowNanos) {
-        return connection.linkRank()
-                         .flatMap(incumbent -> challenger.linkRank()
-                                                         .map(incoming -> !incoming.survivesOver(incumbent)))
-                         .or(() -> isLegacyIncumbentKept(legacyDirectionOrder(challenger),
-                                                         nowNanos));
+        return Option.all(connection.linkRank(), challenger.linkRank())
+                     .map(PeerState::survivesIncoming)
+                     .or(() -> isLegacyIncumbentKept(legacyDirectionOrder(challenger), nowNanos));
+    }
+
+    private static boolean survivesIncoming(LinkRank incumbent, LinkRank incoming) {
+        return !incoming.survivesOver(incumbent);
     }
 
     private int legacyDirectionOrder(QuicPeerConnection challenger) {
-        return connection.initiator()
-                         .flatMap(current -> challenger.initiator()
-                                                       .map(current::compareTo))
-                         .or(0);
+        return Option.all(connection.initiator(), challenger.initiator())
+                     .map(NodeId::compareTo)
+                     .or(0);
     }
 
     /// The pre-#2138 rule, kept for a pair where either link has no rank (a mixed-version peer). Each end applies it
