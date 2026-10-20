@@ -159,6 +159,26 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
+        void message_namesTheUpdatedField_forPrefixIncrement() {
+            var found = lint("""
+                    package org.example;
+                    class Foo {
+                        private int failures;
+                        void run(Promise<Integer> p) {
+                            p.onFailure(_ -> ++failures);
+                        }
+                    }
+                    """);
+
+            assertEquals(1, found.size());
+            assertTrue(found.getFirst()
+                            .message()
+                            .contains("updates failures"),
+                       found.getFirst()
+                            .message());
+        }
+
+        @Test
         void flags_thisQualifiedAssignment_evenWhenAParameterHasTheSameName() {
             assertTrue(flags("""
                     package org.example;
@@ -353,6 +373,21 @@ class CstPromiseCallbackWriteRuleTest {
                             p.onSuccess(values -> fill(values));
                         }
                         private static void fill(List<String> target) {
+                            target.add("x");
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_whenCallPassesAFreshObjectToTheDelegate() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        void run(Promise<String> p) {
+                            p.onSuccess(_ -> fill(new ArrayList<String>(), true, null));
+                        }
+                        private static void fill(List<String> target, boolean flag, Object extra) {
                             target.add("x");
                         }
                     }
@@ -846,8 +881,9 @@ class CstPromiseCallbackWriteRuleTest {
                                      "for (var item : items) { item.add(v); }",
                                      "items.forEach(item -> item.add(v));",
                                      "items.forEach((a, b) -> a.add(b));",
-                                     "try { run(); } catch (RuntimeException failure) { failure.addSuppressed(null); }",
-                                     "if (v instanceof Holder holder) { holder.set(v); }")) {
+                                     "try { run(); } catch (RuntimeException failure) { failure.add(v); }",
+                                     "if (v instanceof Holder holder) { holder.set(v); }",
+                                     "switch (v) { case Holder holder -> holder.set(v); default -> { } }")) {
                 assertFalse(flags("""
                         package org.example;
                         class Foo {

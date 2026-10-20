@@ -69,7 +69,6 @@ sealed interface SharedWrites permits SharedWrites.unused {
                                          + ")\\s*(?:=|;|:|,|\\))");
     Pattern LAMBDA_PARAM = Pattern.compile("(" + IDENT + ")\\s*->");
     Pattern LAMBDA_PARAMS = Pattern.compile("\\(([^()]*)\\)\\s*->");
-    Pattern CATCH_PARAM = Pattern.compile("\\bcatch\\s*\\([^)]*?(" + IDENT + ")\\s*\\)");
     Pattern PATTERN_BINDING = Pattern.compile("\\b(?:instanceof|case)\\s+(?:final\\s+)?[A-Z][\\w$.<>]*\\s+(" + IDENT + ")\\b");
 
     /// Roots whose mutating-looking calls touch nothing shared: `MDC.put` is thread-local, `String.format(..).replace(..)` is a value.
@@ -179,13 +178,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
         var matcher = PLAIN_CALL.matcher(body);
 
         while (matcher.find()) {
-            var name = matcher.group(1);
-
-            if (Declarations.CONTROL.contains(name)) {
-                continue;
-            }
-
-            var found = viaMethod(name, facts, masked, depth, sharedArguments(locals, body, matcher.end() - 1));
+            var found = viaMethod(matcher.group(1), facts, masked, depth, sharedArguments(locals, body, matcher.end() - 1));
 
             if (found.isPresent()) {
                 return found;
@@ -216,8 +209,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
         var text = argument.strip();
         var matcher = ARGUMENT_ROOT.matcher(text);
 
-        return matcher.lookingAt() && !LITERALS.contains(matcher.group(1)) && !locals.contains(matcher.group(1))
-               && !text.contains("->");
+        return matcher.lookingAt() && !LITERALS.contains(matcher.group(1)) && !locals.contains(matcher.group(1));
     }
 
     private static Option<Write> viaMethod(String name,
@@ -274,7 +266,6 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         collect(LOCAL_DECL, body, names, 1);
         collect(LAMBDA_PARAM, body, names, 1);
-        collect(CATCH_PARAM, body, names, 1);
         collect(PATTERN_BINDING, body, names, 1);
 
         var multi = LAMBDA_PARAMS.matcher(body);
