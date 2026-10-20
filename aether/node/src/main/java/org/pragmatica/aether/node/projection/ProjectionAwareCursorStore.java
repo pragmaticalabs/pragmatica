@@ -83,11 +83,11 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                          Epoch ownerEpoch) {
         return delegate.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch, ownerEpoch)
                        .withSuccess(outcome -> reportGuarded(outcome,
-                                                              consumerGroup,
-                                                              streamName,
-                                                              partition,
-                                                              offset,
-                                                              rewindEpoch));
+                                                             consumerGroup,
+                                                             streamName,
+                                                             partition,
+                                                             offset,
+                                                             rewindEpoch));
     }
 
     @Override
@@ -117,8 +117,10 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                int partition,
                                long offset,
                                RewindEpoch epoch) {
-        Result.lift(() -> reportUnlessFenced(outcome, consumerGroup, streamName, partition, offset, epoch))
-              .onFailure(cause -> countFailure(HOOK, consumerGroup, partition, cause));
+        Result.lift(() -> reportUnlessFenced(outcome, consumerGroup, streamName, partition, offset, epoch)).onFailure(cause -> countFailure(HOOK,
+                                                                                                                                            consumerGroup,
+                                                                                                                                            partition,
+                                                                                                                                            cause));
     }
 
     private void reportUnlessFenced(CommitOutcome outcome,
