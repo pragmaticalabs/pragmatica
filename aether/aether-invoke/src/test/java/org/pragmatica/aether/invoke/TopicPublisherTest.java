@@ -370,6 +370,87 @@ class TopicPublisherTest {
             assertThat(events.stream().map(org.pragmatica.utility.warning.OperatorWarning::subject).distinct().count()).isEqualTo(2);
         }
 
+        private static final Cause MISMATCH = org.pragmatica.aether.slice.TopicTierMismatch.FACTORY.apply("onMessage");
+
+        private void removeSubscriptionRow(Artifact slice) {
+            var key = TopicSubscriptionKey.topicSubscriptionKey(resourceAddress("orders"), slice, method, nodeA);
+
+            registry.onSubscriptionRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(new KVCommand.Remove<TopicSubscriptionKey>(key), Option.none()));
+        }
+
+        /// F1: the real remediation is a new subscriber VERSION. The open refusal is keyed by the slice without its version, so a
+        /// successful delivery to the new version closes it.
+        @Test
+        void publish_subscriberRedeployedAtANewVersion_closesTheRefusal() {
+            var v1 = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
+            var v2 = Artifact.artifact("org.example:my-slice:2.0.0").unwrap();
+            var publisher = publisherUnderTest();
+
+            outcome.set(Option.some(MISMATCH));
+            publisher.publish("order-1").await();
+            removeSubscriptionRow(v1);
+            registerSubscription("orders", v2, method, nodeA);
+            outcome.set(Option.none());
+            publisher.publish("order-2").await();
+
+            assertThat(codesAfter(2)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                                                      org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
+        }
+
+        /// F1: an undeployed subscriber is never delivered to again, so the next publish closes its refusal.
+        @Test
+        void publish_subscriberUndeployed_closesTheRefusal() {
+            var publisher = publisherUnderTest();
+
+            outcome.set(Option.some(MISMATCH));
+            publisher.publish("order-1").await();
+            removeSubscriptionRow(artifact);
+            publisher.publish("order-2").await();
+
+            assertThat(codesAfter(2)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                                                      org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
+        }
+
+        /// F1: a released publisher (its slice undeployed or replaced) closes what it left open.
+        @Test
+        void close_closesTheOpenRefusals() {
+            var publisher = publisherUnderTest();
+
+            outcome.set(Option.some(MISMATCH));
+            publisher.publish("order-1").await();
+            publisher.close();
+
+            assertThat(codesAfter(2)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                                                      org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
+        }
+
+        /// F2: recovery CLEARS the open state, so a mismatch that recurs afterwards is raised again.
+        @Test
+        void publish_mismatchRecurringAfterRecovery_isRaisedAgain() {
+            var publisher = publisherUnderTest();
+
+            outcome.set(Option.some(MISMATCH));
+            publisher.publish("order-1").await();
+            outcome.set(Option.none());
+            publisher.publish("order-2").await();
+            outcome.set(Option.some(MISMATCH));
+            publisher.publish("order-3").await();
+
+            assertThat(codesAfter(3)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                                                      org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
+                                                      org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH);
+        }
+
+        /// The subject names the topic: the same slice and method on another topic is another refusal.
+        @Test
+        void publish_mismatch_subjectCarriesTheTopicAddressAndNoVersion() {
+            outcome.set(Option.some(MISMATCH));
+            publisherUnderTest().publish("order-1").await();
+            codesAfter(1);
+
+            assertThat(events.getFirst().subject()).isEqualTo(routingKey("orders") + "/org.example:my-slice:onMessage");
+        }
+
         /// A subscriber that was never refused publishes no recovery.
         @Test
         void publish_withoutAMismatch_raisesNothing() {

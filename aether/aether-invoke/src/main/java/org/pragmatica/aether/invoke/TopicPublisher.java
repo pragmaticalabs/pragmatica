@@ -5,15 +5,18 @@
 package org.pragmatica.aether.invoke;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.TopicSubscriber;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.TopicTierMismatch;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -58,7 +61,7 @@ public record TopicPublisher<T>(String topicName,
                                 AtomicLong suppressedWarns,
                                 Option<MeterRegistry> meters,
                                 OperatorWarningSink sink,
-                                Set<String> openRefusals) implements Publisher<T> {
+                                Set<String> openRefusals) implements Publisher<T>, AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(TopicPublisher.class);
 
     private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
@@ -179,6 +182,7 @@ public record TopicPublisher<T>(String topicName,
     public Promise<Unit> publish(T message) {
         var subscribers = registry.findSubscribers(topicAddress);
 
+        closeRefusalsOfGoneSubscribers(subscribers);
         if (subscribers.isEmpty()) {
             reportUndelivered();
 
@@ -231,9 +235,45 @@ public record TopicPublisher<T>(String topicName,
     }
 
     private Unit reportDelivered(TopicSubscriber subscriber) {
-        return openRefusals.remove(subjectOf(subscriber))
-               ? raiseResolved(subscriber)
+        return openRefusals.isEmpty()
+               ? Unit.unit()
+               : closeRefusal(subjectOf(subscriber), "a delivery to it succeeded");
+    }
+
+    /// #1337 (F1): an open refusal is keyed by the subscriber SLICE (version-independent) and its method, so redeploying the
+    /// subscriber at a new version, which is how the mismatch is actually fixed, reaches the same subject. A refusal whose
+    /// subscriber is no longer registered at all (undeployed) is closed here too, on the next publish.
+    private Unit closeRefusalsOfGoneSubscribers(List<TopicSubscriber> subscribers) {
+        if (openRefusals.isEmpty()) {
+            return Unit.unit();
+        }
+
+        var present = subscribers.stream()
+                                 .map(this::subjectOf)
+                                 .collect(Collectors.toSet());
+
+        openRefusals.stream()
+                    .filter(subject -> !present.contains(subject))
+                    .toList()
+                    .forEach(subject -> closeRefusal(subject, "its subscriber is no longer registered"));
+
+        return Unit.unit();
+    }
+
+    private Unit closeRefusal(String subject, String why) {
+        return openRefusals.remove(subject)
+               ? raiseResolved(subject, why)
                : Unit.unit();
+    }
+
+    /// The publisher is released (its slice is undeployed or replaced): nothing will deliver again to the subscribers it was
+    /// refusing, so their open warnings are closed rather than left standing.
+    @Override
+    @Contract
+    public void close() {
+        openRefusals.stream()
+                    .toList()
+                    .forEach(subject -> closeRefusal(subject, "the publisher was released"));
     }
 
     private Unit reportRefused(TopicSubscriber subscriber, Cause cause) {
@@ -278,17 +318,16 @@ public record TopicPublisher<T>(String topicName,
                                       topicAddress);
     }
 
-    private Unit raiseResolved(TopicSubscriber subscriber) {
+    private Unit raiseResolved(String subject, String why) {
         return OperatorWarnings.raise(log,
                                       sink,
                                       OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
-                                      subjectOf(subscriber),
-                                      "Topic '{}' published by {} reached subscriber {}.{} at address {} again after a tier-mismatch refusal",
+                                      subject,
+                                      "Topic '{}' published by {}: the tier-mismatch refusal of {} is over, because {}",
                                       topicName,
                                       publisherSlice,
-                                      subscriber.artifact(),
-                                      subscriber.methodName().name(),
-                                      topicAddress);
+                                      subject,
+                                      why);
     }
 
     private Unit logRepeatedMismatch(TopicSubscriber subscriber, Cause cause) {
@@ -302,8 +341,10 @@ public record TopicPublisher<T>(String topicName,
         return Unit.unit();
     }
 
+    /// Topic address, subscriber slice WITHOUT its version, and method.
     private String subjectOf(TopicSubscriber subscriber) {
         return topicAddress + "/" + subscriber.artifact()
+                                              .base()
                                               .asString() + ":" + subscriber.methodName()
                                                                             .name();
     }
