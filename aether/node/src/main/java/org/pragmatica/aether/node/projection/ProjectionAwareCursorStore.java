@@ -81,12 +81,12 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                          RewindEpoch rewindEpoch,
                                          Epoch ownerEpoch) {
         return delegate.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch, ownerEpoch)
-                       .onSuccess(outcome -> reportUnlessFenced(outcome,
-                                                                consumerGroup,
-                                                                streamName,
-                                                                partition,
-                                                                offset,
-                                                                rewindEpoch));
+                       .withSuccess(outcome -> reportUnlessFenced(outcome,
+                                                                  consumerGroup,
+                                                                  streamName,
+                                                                  partition,
+                                                                  offset,
+                                                                  rewindEpoch));
     }
 
     @Override

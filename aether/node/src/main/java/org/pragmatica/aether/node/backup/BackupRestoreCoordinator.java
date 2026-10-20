@@ -301,7 +301,7 @@ public final class BackupRestoreCoordinator {
             return;
         }
 
-        pass().onSuccess(_ -> latchSuccess()).onFailure(this::onFailure);
+        pass().withSuccess(_ -> latchSuccess()).withFailure(this::onFailure);
     }
 
     /// Continue from the committed marker, or take the decision when there is none.

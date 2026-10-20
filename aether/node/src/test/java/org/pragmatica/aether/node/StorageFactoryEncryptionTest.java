@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -72,6 +73,8 @@ class StorageFactoryEncryptionTest {
     /// never-responding-client test proves the timeout cause in milliseconds. Mirrors
     /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`.
     private static final TimeSpan SHORT_MARKER_TIMEOUT = timeSpan(150).millis();
+
+    private static final int LATE_DHT_TRIALS = 25;
 
     @TempDir
     Path tempDir;
@@ -1090,6 +1093,77 @@ class StorageFactoryEncryptionTest {
                 .isFalse();
     }
 
+    /// Async-callback probes (a late-resolving DHT, not an inline one): the failed-start handler (`Main#exitWithError`
+    /// stops the process) runs on the admission's failure, so the disk-marker rollback, and the settling of every DHT
+    /// gate, must land BEFORE the refusal is observable. A DHT that answers inline hides the race (`onFailure` then runs
+    /// on the caller); here every answer comes from another thread after a delay. Repeated, because each trial is a
+    /// race the detached callback loses most of the time, not always.
+    @Test
+    void admitDhtMarkers_rollsBackDiskMarkerBeforeRefusalIsObservable_whenDhtAnswersLaterOnAnotherThread() throws IOException {
+        var staleMarkers = 0;
+
+        for (var trial = 0; trial < LATE_DHT_TRIALS; trial++) {
+            var base = new InMemoryDHTClient();
+            var vaultDisk = tempDir.resolve("vault-late-" + trial);
+            var boot = bootRefusedByDht(base, tempDir.resolve("plain-late-" + trial), vaultDisk);
+
+            refusedAfterLateAnswers(base, boot);
+            staleMarkers += Files.exists(vaultDisk.resolve(EncryptingStorageTier.MARKER_FILE_NAME)) ? 1 : 0;
+        }
+
+        assertThat(staleMarkers).as("trials where the caller saw the refusal before the disk marker was rolled back")
+                                .isZero();
+    }
+
+    @Test
+    void admitDhtMarkers_settlesEveryGateBeforeRefusalIsObservable_whenDhtAnswersLaterOnAnotherThread() throws IOException {
+        var pendingGates = 0;
+
+        for (var trial = 0; trial < LATE_DHT_TRIALS; trial++) {
+            var base = new InMemoryDHTClient();
+            var boot = bootRefusedByDht(base, tempDir.resolve("plain-gates-" + trial), tempDir.resolve("vault-gates-" + trial));
+
+            StorageFactory.verifyDhtMarkers(new LateDHTClient(base), checksOf(boot), () -> false)
+                          .await()
+                          .onSuccess(_ -> fail("the DHT check must refuse a boot without a keyring over an encrypted namespace"));
+            pendingGates += StorageFactory.pendingDhtAdmissions(boot).isEmpty() ? 0 : 1;
+        }
+
+        assertThat(pendingGates).as("trials where the caller saw the refusal before every DHT gate was settled")
+                                .isZero();
+    }
+
+    /// The gate a check settles is read by the next stage of the very promise the check returns, so it must be settled
+    /// before ANY dependent of that promise runs. The dependent here is the tightest observer there is: it runs on the
+    /// thread that resolves the outcome, the moment it resolves.
+    @Test
+    void verifyDhtMarker_settlesTheGateBeforeAnyDependentOfTheOutcome_whenDhtAnswersLaterOnAnotherThread() throws IOException {
+        var stillPending = 0;
+
+        for (var trial = 0; trial < LATE_DHT_TRIALS; trial++) {
+            var base = new InMemoryDHTClient();
+            var boot = bootRefusedByDht(base, tempDir.resolve("plain-gate-" + trial), tempDir.resolve("vault-gate-" + trial));
+            var refusing = checksOf(boot).stream()
+                                         .filter(check -> check.effectiveKeyring().isEmpty())
+                                         .findFirst()
+                                         .orElseThrow();
+
+            stillPending += StorageFactory.verifyDhtMarker(new LateDHTClient(base), refusing)
+                                          .<Boolean> fold(_ -> Promise.success(!refusing.readGate().isResolved()))
+                                          .await()
+                                          .or(true) ? 1 : 0;
+        }
+
+        assertThat(stillPending).as("trials where a dependent of the check's outcome ran before the check settled its gate")
+                                .isZero();
+    }
+
+    private static void refusedAfterLateAnswers(DHTClient base, Map<String, StorageFactory.StorageSetup> boot) {
+        StorageFactory.admitDhtMarkers(new LateDHTClient(base), boot, () -> false)
+                      .await()
+                      .onSuccess(_ -> fail("the DHT check must refuse a boot without a keyring over an encrypted namespace"));
+    }
+
     @Test
     void admitDhtMarkers_allowsBackOut_afterTheDhtCheckRefusedTheBoot() throws IOException {
         var dhtClient = new InMemoryDHTClient();
@@ -1613,6 +1687,61 @@ class StorageFactoryEncryptionTest {
               .onSuccess(_ -> fail("a raw plaintext block predating encryption must not decrypt or pass through "
                                    + "silently just because a later boot enabled encryption over this DHT namespace"))
               .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.LegacyPlaintextBlock.class));
+    }
+
+    /// Answers every call from another thread after a short delay, so the promise it returns is resolved LATER, off the
+    /// caller's thread -- the shape a real DHT round trip has and an inline stub hides.
+    private static final class LateDHTClient implements DHTClient {
+        private static final long ANSWER_DELAY_MS = 2;
+
+        private final DHTClient delegate;
+
+        LateDHTClient(DHTClient delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(byte[] key) {
+            return later(() -> delegate.get(key));
+        }
+
+        @Override
+        public Promise<Unit> put(byte[] key, byte[] value) {
+            return later(() -> delegate.put(key, value));
+        }
+
+        @Override
+        public Promise<Boolean> remove(byte[] key) {
+            return later(() -> delegate.remove(key));
+        }
+
+        @Override
+        public Promise<Boolean> exists(byte[] key) {
+            return later(() -> delegate.exists(key));
+        }
+
+        @Override
+        public Partition partitionFor(byte[] key) {
+            return delegate.partitionFor(key);
+        }
+
+        private static <T> Promise<T> later(Supplier<Promise<T>> call) {
+            var promise = Promise.<T> promise();
+
+            Thread.ofVirtual()
+                  .start(() -> answer(promise, call));
+
+            return promise;
+        }
+
+        private static <T> void answer(Promise<T> promise, Supplier<Promise<T>> call) {
+            try {
+                Thread.sleep(ANSWER_DELAY_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            call.get().onResult(promise::resolve);
+        }
     }
 
     /// In-memory `DHTClient` stub backed by a `ConcurrentHashMap`, plus a raw-value accessor so a
