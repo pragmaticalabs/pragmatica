@@ -200,6 +200,19 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aRefusalBecauseTheWorkerWasPlacedByAnotherAttempt_isNotRetried() {
+        var fixture = fixture(config(true, 2, 5));
+        var codes = fixture.captureWarnings();
+
+        fixture.racedBy(() -> fixture.seedMembers(FIRST, 1));
+        fixture.joinAll(1);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+        assertThat(fixture.cluster().applies.get()).as("a duplicate's refusal after the first attempt committed decides nothing afresh").isEqualTo(1);
+        assertThat(codes).doesNotContain("community-assignment-unplaced");
+    }
+
+    @Test
     void join_growthOn_aWorkerPlacedAtOnce_raisesNoPlacedRecovery() {
         var fixture = fixture(config(true, 2, 5));
         var codes = fixture.captureWarnings();
