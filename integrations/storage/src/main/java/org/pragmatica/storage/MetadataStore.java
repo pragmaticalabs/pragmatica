@@ -24,7 +24,9 @@ public interface MetadataStore {
     void createLifecycle(BlockLifecycle lifecycle);
 
     /// Atomically claim a block ID with a sentinel lifecycle entry.
-    /// Returns true if this call won the race (no prior entry existed).
+    /// Returns true if this call won the race (no prior entry existed). A cache-only marker
+    /// ([BlockLifecycle#cacheOnly]) is not a prior entry for a claim of a real block: the claim replaces it,
+    /// keeping the tiers the marker was tracking. A claim for a marker, itself, never replaces anything.
     boolean claimBlock(BlockId blockId, BlockLifecycle sentinel);
     /// Conditionally release a previously made claim. Removes the lifecycle entry
     /// for the block only if it is still mapped to exactly the given sentinel

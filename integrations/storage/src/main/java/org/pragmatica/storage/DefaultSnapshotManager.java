@@ -822,10 +822,24 @@ final class DefaultSnapshotManager implements SnapshotManager {
         if (parts.length > 6) {
             var orphanedAt = Long.parseLong(parts[6]);
 
-            return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created, accessCount, orphanedAt);
+            return BlockLifecycle.blockLifecycle(id,
+                                                 tiers,
+                                                 refCount,
+                                                 lastAccessed,
+                                                 created,
+                                                 accessCount,
+                                                 orphanedAt,
+                                                 hasCacheOnlyFlag(parts));
         }
 
         return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created, accessCount);
+    }
+
+    /// The optional 8th field. Absent for every line an earlier encoder wrote; present means the record is a
+    /// cache-only marker. An unknown flag fails the line (and with it the snapshot) rather than being
+    /// dropped: a flag this code cannot read could be one whose absence changes what the record means.
+    private static boolean hasCacheOnlyFlag(String[] parts) {
+        return parts.length > 7 && MetadataSnapshot.LineFlag.valueOf(parts[7]) == MetadataSnapshot.LineFlag.CACHE_ONLY;
     }
 
     private static Set<TierLevel> parseTierSet(String tierString) {
