@@ -691,7 +691,8 @@ public final class StorageFactory {
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
                                  encrypted,
-                                 defaults.prefetch());
+                                 defaults.prefetch(),
+                                 defaults.prefetchMaxInFlight());
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
@@ -738,7 +739,8 @@ public final class StorageFactory {
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
                                  encrypted,
-                                 defaults.prefetch());
+                                 defaults.prefetch(),
+                                 defaults.prefetchMaxInFlight());
     }
 
     /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream
@@ -1528,7 +1530,7 @@ public final class StorageFactory {
     /// It starts dormant: the node activates it when it reports ready ([#activatePrefetch]).
     private static PrefetchManager prefetchManagerFor(StorageConfig config, StorageInstance instance) {
         return config.prefetch()
-               ? PrefetchManager.prefetchManager(instance, PrefetchConfig.prefetchConfig())
+               ? PrefetchManager.prefetchManager(instance, PrefetchConfig.prefetchConfig(config.prefetchMaxInFlight()))
                : PrefetchManager.NOOP;
     }
 

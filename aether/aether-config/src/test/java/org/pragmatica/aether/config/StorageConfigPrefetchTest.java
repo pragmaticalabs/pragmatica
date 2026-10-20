@@ -35,4 +35,19 @@ class StorageConfigPrefetchTest {
         assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, false).prefetch()).isFalse();
         assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true).prefetch()).isTrue();
     }
+
+    @Test
+    void storageConfig_everyShapeWithoutACap_takesTheDefaultCap() {
+        assertThat(StorageConfig.storageConfig().prefetchMaxInFlight()).isEqualTo(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", true, false).prefetchMaxInFlight())
+            .isEqualTo(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+        assertThat(new StorageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false).prefetchMaxInFlight())
+            .isEqualTo(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+    }
+
+    @Test
+    void storageConfig_explicitCap_isKept() {
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true, 7).prefetchMaxInFlight())
+            .isEqualTo(7);
+    }
 }

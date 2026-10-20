@@ -32,13 +32,11 @@ import static org.pragmatica.lang.Unit.unit;
 /// A hint is acted on through [StorageInstance#warm], which fetches the block into the local cache tiers
 /// unless a node-private tier already holds it. (It cannot be `exists` followed by `get`: `exists` on a
 /// cluster-shared tier is true for every block ever written, so that pair never fetched anything.) At most
-/// [#MAX_IN_FLIGHT] prefetches run at once; a hint that finds none free is dropped and counted, not queued --
+/// [PrefetchConfig#maxInFlight] prefetches run at once (an operator key, `prefetch_max_in_flight`); a hint that finds none free is dropped and counted, not queued --
 /// hints go stale in seconds, and a queue would only delay the ones that are still worth acting on.
 final class DefaultPrefetchManager implements PrefetchManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultPrefetchManager.class);
     private static final long RECLAIM_INTERVAL_MS = 1_000L;
-    /// The most prefetches running at once (the hierarchical-storage design's `max-concurrent`).
-    static final int MAX_IN_FLIGHT = 4;
 
     private final StorageInstance storage;
     private final PrefetchConfig config;
@@ -241,7 +239,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
 
     /// The slot is taken before the attempt and given back when it ends, whatever way it ends.
     private void startIfSlotFree(BlockId id, String blockIdHex) {
-        if (inFlight.incrementAndGet() > MAX_IN_FLIGHT) {
+        if (inFlight.incrementAndGet() > config.maxInFlight()) {
             inFlight.decrementAndGet();
             droppedInFlight.incrementAndGet();
 

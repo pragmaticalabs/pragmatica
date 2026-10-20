@@ -243,6 +243,7 @@ Per-instance opt-in (any `[storage.<name>]` section, e.g. `[storage.artifacts]`)
 |-----------|---------|-------------|
 | `encrypted` | false | Wraps this instance's disk/DHT tiers in `EncryptingStorageTier`. Requires `[storage.encryption]` to be present with at least one key |
 | `prefetch` | true | Cross-node block prefetching for this instance: the node gossips hints about the blocks it reads often (one instance, one random peer, once per SWIM probe round) and copies hinted blocks into its own memory tier. `false` switches it off for the instance. Not read for `streams`, which prefetches its own segments |
+| `prefetch_max_in_flight` | 4 | The most prefetches running at once on this instance. A hint that finds every slot taken is dropped and counted (`droppedInFlight` under `prefetch` in `GET /api/v1/storage/{name}`), never queued. Must be a positive integer; a value that is not is refused at load. Not read for `streams` |
 
 **Boot behavior.** Every key in `keys` is resolved through the live `SecretsProvider` once, at boot,
 bounded by a 30-second timeout. Boot fails — naming the key id, never the secret value — if any key

@@ -4,6 +4,7 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Cause;
@@ -23,12 +24,16 @@ import static org.pragmatica.storage.PrefetchManager.prefetchManager;
 /// runs more than [DefaultPrefetchManager#MAX_IN_FLIGHT] at once and gives a slot back however an attempt ends, and
 /// its counters say what happened.
 class PrefetchWarmTest {
-    private static final int HINT_COUNT = DefaultPrefetchManager.MAX_IN_FLIGHT + 2;
+    /// Deliberately not the default (4): the tests must be reading the configured cap, not a constant.
+    private static final int CAP = 3;
+    private static final int HINT_COUNT = CAP + 2;
 
     /// A storage instance whose `warm` stays pending until the test resolves it; everything else it refuses.
     private static final class PendingWarmStorage {
         final List<Promise<Boolean>> pending = new CopyOnWriteArrayList<>();
         final List<BlockId> warmed = new CopyOnWriteArrayList<>();
+        final AtomicInteger running = new AtomicInteger();
+        final AtomicInteger peak = new AtomicInteger();
         final StorageInstance instance = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                                                   new Class<?>[]{StorageInstance.class},
                                                                                   (_, method, args) -> invoke(method.getName(), args));
@@ -46,6 +51,8 @@ class PrefetchWarmTest {
 
             warmed.add(id);
             pending.add(promise);
+            peak.accumulateAndGet(running.incrementAndGet(), Math::max);
+            promise.onResultRun(running::decrementAndGet);
 
             return promise;
         }
@@ -65,29 +72,65 @@ class PrefetchWarmTest {
     @BeforeEach
     void setUp() {
         storage = new PendingWarmStorage();
-        manager = prefetchManager(storage.instance, prefetchConfig(3, 5, 60_000));
+        manager = prefetchManager(storage.instance, prefetchConfig(3, 5, 60_000, 300_000, 10_000, CAP));
         manager.activate();
     }
 
     @Nested
     class InFlightCap {
         @Test
+        void processHints_aBurstOverManyRounds_neverHasMoreThanTheCapRunning() {
+            var next = 0;
+
+            for (var round = 0; round < 20; round++) {
+                manager.processHints(IntStream.range(next, next + 15).mapToObj(PrefetchWarmTest::hintFor).toList());
+                next += 15;
+                // Some attempts end between rounds, so slots are given back and taken again all the way through.
+                storage.pending.stream().filter(promise -> !promise.isResolved()).limit(2).forEach(promise -> promise.succeed(true));
+            }
+
+            assertThat(storage.peak.get()).as("peak attempts running at once").isLessThanOrEqualTo(CAP);
+            assertThat(storage.peak.get()).as("control: the cap was actually reached").isEqualTo(CAP);
+            assertThat(manager.stats().droppedInFlight()).as("control: the burst did overflow the cap").isPositive();
+            assertThat(manager.stats().started() + manager.stats().droppedInFlight()).as("every hint is started or counted").isEqualTo(300);
+        }
+
+        @Test
+        void prefetchConfig_withoutACap_allowsTheDefaultFour() {
+            var defaulted = prefetchManager(storage.instance, prefetchConfig(3, 5, 60_000));
+
+            defaulted.activate();
+            defaulted.processHints(IntStream.range(100, 106).mapToObj(PrefetchWarmTest::hintFor).toList());
+
+            assertThat(PrefetchConfig.DEFAULT_MAX_IN_FLIGHT).isEqualTo(4);
+            assertThat(defaulted.stats().started()).isEqualTo(4);
+            assertThat(defaulted.stats().droppedInFlight()).isEqualTo(2);
+        }
+
+        @Test
+        void prefetchConfig_aCapBelowOne_isRaisedToOne_soPrefetchIsNeverSilentlyStarved() {
+            assertThat(prefetchConfig(0).maxInFlight()).isEqualTo(1);
+            assertThat(prefetchConfig(-7).maxInFlight()).isEqualTo(1);
+            assertThat(prefetchConfig(9).maxInFlight()).isEqualTo(9);
+        }
+
+        @Test
         void processHints_pastTheCap_dropsTheExcessAndCountsIt_neverQueuesIt() {
             manager.processHints(IntStream.range(0, HINT_COUNT).mapToObj(PrefetchWarmTest::hintFor).toList());
 
-            assertThat(storage.warmed).as("only the free slots start").hasSize(DefaultPrefetchManager.MAX_IN_FLIGHT);
-            assertThat(manager.stats().started()).isEqualTo(DefaultPrefetchManager.MAX_IN_FLIGHT);
-            assertThat(manager.stats().droppedInFlight()).isEqualTo(HINT_COUNT - DefaultPrefetchManager.MAX_IN_FLIGHT);
+            assertThat(storage.warmed).as("only the free slots start").hasSize(CAP);
+            assertThat(manager.stats().started()).isEqualTo(CAP);
+            assertThat(manager.stats().droppedInFlight()).isEqualTo(HINT_COUNT - CAP);
 
             // Nothing was queued: finishing every attempt starts nothing by itself.
             storage.pending.forEach(promise -> promise.succeed(true));
 
-            assertThat(storage.warmed).hasSize(DefaultPrefetchManager.MAX_IN_FLIGHT);
+            assertThat(storage.warmed).hasSize(CAP);
         }
 
         @Test
         void processHints_afterAnAttemptSucceeds_itsSlotIsFreeAgain() {
-            manager.processHints(IntStream.range(0, DefaultPrefetchManager.MAX_IN_FLIGHT).mapToObj(PrefetchWarmTest::hintFor).toList());
+            manager.processHints(IntStream.range(0, CAP).mapToObj(PrefetchWarmTest::hintFor).toList());
             manager.processHints(List.of(hintFor(HINT_COUNT)));
 
             assertThat(manager.stats().droppedInFlight()).as("control: the cap is full").isEqualTo(1);
@@ -95,20 +138,20 @@ class PrefetchWarmTest {
             storage.pending.getFirst().succeed(true);
             manager.processHints(List.of(hintFor(HINT_COUNT + 1)));
 
-            assertThat(storage.warmed).hasSize(DefaultPrefetchManager.MAX_IN_FLIGHT + 1);
+            assertThat(storage.warmed).hasSize(CAP + 1);
             assertThat(manager.stats().droppedInFlight()).isEqualTo(1);
         }
 
         @Test
         void processHints_afterAnAttemptFails_itsSlotIsFreeAgain() {
-            manager.processHints(IntStream.range(0, DefaultPrefetchManager.MAX_IN_FLIGHT).mapToObj(PrefetchWarmTest::hintFor).toList());
+            manager.processHints(IntStream.range(0, CAP).mapToObj(PrefetchWarmTest::hintFor).toList());
 
             Cause failure = Causes.cause("the shared tier is unreachable");
 
             storage.pending.getFirst().fail(failure);
             manager.processHints(List.of(hintFor(HINT_COUNT)));
 
-            assertThat(storage.warmed).hasSize(DefaultPrefetchManager.MAX_IN_FLIGHT + 1);
+            assertThat(storage.warmed).hasSize(CAP + 1);
             assertThat(manager.stats().warmed()).isZero();
         }
 

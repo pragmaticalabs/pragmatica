@@ -10,6 +10,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,6 +23,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.PrefetchConfig;
 import org.pragmatica.storage.PrefetchHint;
 import org.pragmatica.storage.PrefetchManager;
 import org.pragmatica.storage.StorageInstance.TierInfo;
@@ -49,6 +53,14 @@ class StorageFactoryPrefetchWiringTest {
     Path nodeBDir;
 
     private Map<String, StorageFactory.StorageSetup> createNode(Path dir, String nodeId, DHTClient dht, boolean artifactsPrefetch) {
+        return createNode(dir, nodeId, dht, artifactsPrefetch, StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+    }
+
+    private Map<String, StorageFactory.StorageSetup> createNode(Path dir,
+                                                                String nodeId,
+                                                                DHTClient dht,
+                                                                boolean artifactsPrefetch,
+                                                                int prefetchMaxInFlight) {
         var defaults = StorageConfig.storageConfig();
         var artifactsConfig = StorageConfig.storageConfig(defaults.memoryMaxBytes(),
                                                           defaults.diskMaxBytes(),
@@ -59,7 +71,8 @@ class StorageFactoryPrefetchWiringTest {
                                                           defaults.snapshotRetentionCount(),
                                                           defaults.walPath(),
                                                           false,
-                                                          artifactsPrefetch);
+                                                          artifactsPrefetch,
+                                                          prefetchMaxInFlight);
         var setups = StorageFactory.createAll(Map.of(ARTIFACTS, artifactsConfig), nodeId, Option.some(dht), Option.none())
                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
                                    .unwrap();
@@ -152,6 +165,38 @@ class StorageFactoryPrefetchWiringTest {
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(b.prefetchManager().stats().warmed()).isEqualTo(1));
     }
 
+    @Test
+    void processHints_aBurstOnTheRealInstance_neverHasMoreFetchesRunningThanTheConfiguredCap() {
+        var dht = new HoldableDHTClient();
+        var cap = 2;
+        var nodeA = createNode(nodeADir, "node-a", dht, true);
+        var nodeB = createNode(nodeBDir, "node-b", dht, true, cap);
+        var ids = IntStream.range(0, 7)
+                           .mapToObj(i -> nodeA.get(ARTIFACTS).instance().put(("burst-block-" + i).getBytes(StandardCharsets.UTF_8)).await().unwrap())
+                           .toList();
+        var b = nodeB.get(ARTIFACTS);
+
+        b.prefetchManager().activate();
+        dht.holdGets();
+        b.prefetchManager().processHints(ids.stream().map(id -> PrefetchHint.prefetchHint(id.hexString(), 50)).toList());
+
+        var stats = b.prefetchManager().stats();
+
+        assertThat(stats.started()).as("[storage.artifacts] prefetch_max_in_flight = 2").isEqualTo(cap);
+        assertThat(stats.droppedInFlight()).as("the excess is dropped and counted, not queued").isEqualTo(ids.size() - cap);
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(dht.heldGets()).isEqualTo(cap));
+        assertThat(dht.peakHeldGets()).as("fetches that reached the shared tier at once").isLessThanOrEqualTo(cap);
+
+        dht.releaseGets();
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(b.prefetchManager().stats().warmed()).isEqualTo(cap));
+    }
+
+    @Test
+    void defaultCap_inTheConfigRecord_matchesTheManagersOwnDefault() {
+        assertThat(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT).isEqualTo(PrefetchConfig.DEFAULT_MAX_IN_FLIGHT);
+        assertThat(StorageConfig.storageConfig().prefetchMaxInFlight()).isEqualTo(PrefetchConfig.DEFAULT_MAX_IN_FLIGHT);
+    }
+
     private static long memoryBytes(StorageFactory.StorageSetup setup) {
         return setup.instance()
                     .tierInfo()
@@ -159,6 +204,66 @@ class StorageFactoryPrefetchWiringTest {
                     .filter(info -> info.level() == TierLevel.MEMORY)
                     .mapToLong(TierInfo::usedBytes)
                     .sum();
+    }
+
+    /// An in-memory DHT whose `get` can be held pending, so a burst of fetches genuinely overlaps.
+    private static final class HoldableDHTClient implements DHTClient {
+        private final InMemoryDHTClient delegate = new InMemoryDHTClient();
+        private final List<Runnable> held = new CopyOnWriteArrayList<>();
+        private final AtomicInteger peak = new AtomicInteger();
+        private volatile boolean holding;
+
+        void holdGets() {
+            holding = true;
+        }
+
+        void releaseGets() {
+            holding = false;
+            held.forEach(Runnable::run);
+            held.clear();
+        }
+
+        int heldGets() {
+            return held.size();
+        }
+
+        int peakHeldGets() {
+            return peak.get();
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(byte[] key) {
+            return holding ? holdGet(key) : delegate.get(key);
+        }
+
+        private Promise<Option<byte[]>> holdGet(byte[] key) {
+            var pending = Promise.<Option<byte[]>> promise();
+
+            held.add(() -> delegate.get(key).onResult(pending::resolve));
+            peak.accumulateAndGet(held.size(), Math::max);
+
+            return pending;
+        }
+
+        @Override
+        public Promise<Unit> put(byte[] key, byte[] value) {
+            return delegate.put(key, value);
+        }
+
+        @Override
+        public Promise<Boolean> remove(byte[] key) {
+            return delegate.remove(key);
+        }
+
+        @Override
+        public Promise<Boolean> exists(byte[] key) {
+            return delegate.exists(key);
+        }
+
+        @Override
+        public Partition partitionFor(byte[] key) {
+            return null;
+        }
     }
 
     private static final class InMemoryDHTClient implements DHTClient {
