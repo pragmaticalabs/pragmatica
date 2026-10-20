@@ -20,12 +20,14 @@ import org.pragmatica.aether.http.security.HttpAuthenticator;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.routing.*;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.terra.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +54,22 @@ public class TerraJsonBodyTest {
         public SliceRouter create(T slice) { return create(slice, JsonMapper.defaultJsonMapper()); }
         public SliceRouter create(T slice, JsonMapper mapper) { return create(slice, mapper, RouteMountMode.pathMode()); }
         public SliceRouter create(T slice, JsonMapper mapper, RouteMountMode mode) { return router(routes, mapper, mode); }
+    }
+    /// A router codec no mapper reproduces: every body it decodes is the same marker, so a body that reaches the
+    /// handler as the marker was decoded by the router's codec and by nothing Terra built itself.
+    static final class MarkerCodec implements JsonCodec {
+        private final JsonCodec writer = JsonCodecAdapter.forMapper(JsonMapper.defaultJsonMapper());
+        public Result<byte[]> serialize(Object value) { return writer.serialize(value); }
+        @SuppressWarnings("unchecked")
+        public <T> Result<T> deserialize(byte[] bytes, TypeToken<T> token) { return Result.success((T) new Echo("router-codec", 0)); }
+    }
+    record MarkedRoutes<T>(Class<T> sliceType, List<Route<?>> routes) implements SliceRouterFactory<T> {
+        public int routeSecurityContract() { return ROUTE_SECURITY_CONTRACT; }
+        public SliceRouter create(T slice) { return create(slice, JsonMapper.defaultJsonMapper()); }
+        public SliceRouter create(T slice, JsonMapper mapper) { return create(slice, mapper, RouteMountMode.pathMode()); }
+        public SliceRouter create(T slice, JsonMapper mapper, RouteMountMode mode) {
+            return SliceRouter.sliceRouter(source(routes), ErrorMapper.defaultMapper(), mapper, mode, new MarkerCodec());
+        }
     }
     /// Found by `TerraHttpServer.start`'s own discovery (test `META-INF/services`), so the server picks the mapper.
     public static final class VoRoutes implements SliceRouterFactory<VoSlice> {
@@ -105,12 +123,30 @@ public class TerraJsonBodyTest {
         } finally { close(host); }
     }
 
+    // F1's claim is identity, not equivalence: Terra decodes with the codec the router holds (the generated one where
+    // the slice has it), never a codec of its own over a mapper, however that mapper is chosen.
+    @Test void requestBody_isDecodedByTheRoutersOwnCodec() throws Exception {
+        var route = Route.<Echo>post("/echo").withBody(Echo.class).to(body -> Promise.success(body))
+                         .withSecurity(SecurityPolicy.publicRoute()).asJson();
+        var host = TerraHttpServer.start(application(Sample.class, new Sample()), config(), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(new MarkedRoutes<>(Sample.class, List.<Route<?>>of(route))), JsonMapper.valueObjectJsonMapper())
+            .await(timeSpan(10).seconds()).unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            var decoded = post(client, host, "/echo", "{\"name\":\"client\",\"n\":1}");
+
+            assertThat(decoded.statusCode()).isEqualTo(200);
+            assertThat(decoded.body()).isEqualTo("{\"name\":\"router-codec\",\"n\":0}");
+        } finally { close(host); }
+    }
+
     private static SliceRouter router(List<Route<?>> routes, JsonMapper mapper, RouteMountMode mode) {
-        var source = new RouteSource() {
+        return SliceRouter.sliceRouter(source(routes), ErrorMapper.defaultMapper(), mapper, mode);
+    }
+    private static RouteSource source(List<Route<?>> routes) {
+        return new RouteSource() {
             public Stream<Route<?>> routes() { return routes.stream(); }
             public SliceVersionRegistry versionRegistry() { return SliceVersionRegistry.UNVERSIONED; }
         };
-        return SliceRouter.sliceRouter(source, ErrorMapper.defaultMapper(), mapper, mode);
     }
     private static URI uri(TerraHttpServer host, String path) {
         return URI.create("http://127.0.0.1:" + host.port() + path);
