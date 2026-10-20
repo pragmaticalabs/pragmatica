@@ -44,7 +44,7 @@ sink on `127.0.0.1`, so the plugin built and sent its own bundle; the bundle was
 | `checksums=required` | 408 | 15.8 MB / 14.5 MB | 2 (816 files; bytes allow 4) |
 
 612 = 102 files built (33 poms, 23 jars, 23 sources jars, 23 javadoc jars) + 102 `.asc` + 408 checksums (the plugin writes md5, sha1,
-sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. The six modules added for rc5 (five jars, one parent pom) add 126 entries, so a release is about 738. Javadoc is built with
+sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. The six modules added for rc5 (five jars, one parent pom) add 126 entries, and the three JSON codec jars of #2226 (`serialization-json`, `serialization-json-codegen`, `serialization-codec-processor`) 72 more, so a release is about 810 (derived at 24 entries per jar, not measured). Javadoc is built with
 `--no-fonts`: a javadoc jar was about 4.1 MB for the web fonts alone and is now about 0.1 MB for a small module, 10.4 MB for all 23.
 The limits are cumulative per month, so a second release in the same month needs `checksums=required` or a smaller set.
 `[unverified: whether Central counts the checksums it asks the plugin for; only Sonatype support can say]`.
@@ -181,7 +181,10 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/net/tcp` | `org.pragmatica-lite:tcp` | jar | publish | closure: compile dependency of `http-server` |
 | `integrations/serialization` | `org.pragmatica-lite:serialization` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of serialization-api) |
 | `integrations/serialization/api` | `org.pragmatica-lite:serialization-api` | jar | publish | compile/runtime dependency of slice-api |
-| `integrations/serialization/codec-processor` | `org.pragmatica-lite:serialization-codec-processor` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/serialization/codec-processor` | `org.pragmatica-lite:serialization-codec-processor` | jar | publish | seed: the `annotationProcessorPaths` entry for standalone `@Json` codecs (serialization-json README) |
+| `integrations/serialization/json` | `org.pragmatica-lite:serialization-json` | jar | publish | compile/runtime dependency of http-routing-adapter (generated route codecs) |
+| `integrations/serialization/json-codegen` | `org.pragmatica-lite:serialization-json-codegen` | jar | publish | compile/runtime dependency of slice-processor (shared JSON codec generator) |
+| `integrations/serialization/json-tests` | `org.pragmatica-lite:serialization-json-tests` | jar | skip | test-only module (JSON codec agreement and strictness tests) |
 | `integrations/statemachine` | `org.pragmatica-lite:statemachine` | jar | publish | closure: compile dependency of `tcp` |
 | `integrations/storage` | `org.pragmatica-lite:storage` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/swim` | `org.pragmatica-lite:swim` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
@@ -232,4 +235,4 @@ The limits are cumulative per month, so a second release in the same month needs
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-39 modules publish, 138 skip (177 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+42 modules publish, 138 skip (180 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).

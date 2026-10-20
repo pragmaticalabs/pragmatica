@@ -1,0 +1,211 @@
+/*
+ *  Copyright (c) 2020-2025 Sergiy Yevtushenko.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+package org.pragmatica.serialization.json.tests;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.serialization.codec.CodecProcessor;
+import org.pragmatica.serialization.json.JsonCodecs;
+import org.pragmatica.serialization.json.JsonTypeCodec;
+import org.pragmatica.serialization.json.tests.other.Receipt;
+import org.pragmatica.serialization.json.tests.other.ReceiptJson;
+
+import javax.tools.DiagnosticCollector;
+import javax.tools.JavaFileObject;
+import javax.tools.StandardLocation;
+import javax.tools.ToolProvider;
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/// `JsonCodecs.codecFor` over artifacts compiled separately (each its own `javac` run into its own directory, as two
+/// jars or `src/main` and `src/test` would be) and loaded together by a child class loader, while the thread's
+/// context class loader stays the test's own: a type resolves against its own loader's providers.
+class JsonCodecsClassPathTest {
+    private static final String SERVICES = "META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider";
+
+    @TempDir
+    Path dir;
+
+    // Two artifacts with @Json types in one package: each type has its own provider, so both resolve.
+    @Test
+    void splitPackageAcrossTwoArtifacts_bothTypesResolve() throws Exception {
+        var first = compile("first", Map.of("split/A.java", record("split", "A")));
+        var second = compile("second", Map.of("split/B.java", record("split", "B")));
+
+        assertEquals(List.of("split.AJson"), services(first));
+        assertEquals(List.of("split.BJson"), services(second));
+        try (var loader = loader(first, second)) {
+            assertResolves(loader, "split.A");
+            assertResolves(loader, "split.B");
+        }
+    }
+
+    // The same type compiled into two artifacts, alone or beside different other types of its package: the same
+    // provider name in both, which the ServiceLoader loads once, so it resolves; the others resolve too.
+    @Test
+    void sameTypeInTwoArtifacts_isOneProvider_andResolves() throws Exception {
+        var wide = compile("wide", Map.of("dup/A.java", record("dup", "A"), "dup/C.java", record("dup", "C")));
+        var narrow = compile("narrow", Map.of("dup/A.java", record("dup", "A")));
+
+        assertEquals(List.of("dup.AJson", "dup.CJson"), services(wide));
+        assertEquals(List.of("dup.AJson"), services(narrow));
+        for (var order : List.of(List.of(wide, narrow), List.of(narrow, wide))) {
+            try (var loader = loader(order.toArray(Path[]::new))) {
+                assertResolves(loader, "dup.A");
+                assertResolves(loader, "dup.C");
+            }
+        }
+    }
+
+    // A top-level q.A_B in one artifact and a nested q.A.B in a second artifact compiled against the first: the flat
+    // names (A_0BJson, A_BJson) differ, so the second compilation cannot replace the first's entry point, and each type
+    // encodes and decodes with its own codec in either class-path order. The lookup derives the same provider names
+    // from the classes, `$` included (q.Dol$lar is Dol_1larJson).
+    @Test
+    void underscoreTypeAndNestedTypeAcrossDependentArtifacts_eachUseTheirOwnCodec() throws Exception {
+        var first = compile("m1", Map.of("q/A_B.java", record("q", "A_B"), "q/Dol$lar.java", record("q", "Dol$lar")), List.of());
+        var second = compile("m2",
+                             Map.of("q/A.java",
+                                    "package q;\n\npublic interface A {\n    @org.pragmatica.serialization.json.Json\n    record B(int number) {}\n}\n"),
+                             List.of(first));
+
+        assertTrue(Files.exists(first.resolve("q/A_0BJson.class")));
+        assertTrue(Files.exists(first.resolve("q/Dol_1larJson.class")));
+        assertTrue(Files.exists(second.resolve("q/A_BJson.class")));
+        assertTrue(Files.notExists(second.resolve("q/A_0BJson.class")));
+        for (var order : List.of(List.of(first, second), List.of(second, first))) {
+            try (var loader = loader(order.toArray(Path[]::new))) {
+                assertOwnCodec(loader, "q.A_B", "x", "{\"value\":\"x\"}");
+                assertOwnCodec(loader, "q.A$B", 7, "{\"number\":7}");
+                assertOwnCodec(loader, "q.Dol$lar", "d", "{\"value\":\"d\"}");
+            }
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void assertOwnCodec(ClassLoader loader, String name, Object component, String json) throws Exception {
+        var type = loader.loadClass(name);
+        var value = type.getDeclaredConstructors()[0].newInstance(component);
+        var codec = (JsonTypeCodec) JsonCodecs.codecFor(type).unwrap().unwrap();
+
+        assertEquals(json, new String(codec.encode(value), StandardCharsets.UTF_8), name);
+        assertEquals(value, codec.decode(json).unwrap(), name);
+    }
+
+    // A type of the parent loader still resolves through the parent's providers.
+    @Test
+    void typeOfTheParentLoader_stillResolves_besideAChildLoader() throws Exception {
+        var child = compile("child", Map.of("kid/K.java", record("kid", "K")));
+
+        try (var loader = loader(child)) {
+            assertResolves(loader, "kid.K");
+            assertSame(ReceiptJson.CODEC, JsonCodecs.codecFor(Receipt.class).unwrap().unwrap());
+            assertEquals(Thread.currentThread().getContextClassLoader(), JsonCodecsClassPathTest.class.getClassLoader());
+        }
+    }
+
+    private static void assertResolves(ClassLoader loader, String name) throws ClassNotFoundException {
+        var type = loader.loadClass(name);
+        var codec = JsonCodecs.codecFor(type).unwrap();
+
+        assertTrue(codec.isPresent(), name + ": " + codec);
+        assertEquals(loader, type.getClassLoader());
+    }
+
+    private static String record(String packageName, String name) {
+        return "package " + packageName + ";\n\n@org.pragmatica.serialization.json.Json\npublic record " + name + "(String value) {}\n";
+    }
+
+    private static List<String> services(Path classes) throws IOException {
+        return Files.readAllLines(classes.resolve(SERVICES));
+    }
+
+    private static URLClassLoader loader(Path... classes) throws IOException {
+        var urls = new URL[classes.length];
+
+        for (int i = 0; i < classes.length; i++) {
+            urls[i] = classes[i].toUri().toURL();
+        }
+
+        return new URLClassLoader(urls, JsonCodecsClassPathTest.class.getClassLoader());
+    }
+
+    private Path compile(String artifact, Map<String, String> sources) throws IOException {
+        return compile(artifact, sources, List.of());
+    }
+
+    // `dependencies` are earlier artifacts' class directories, on this compilation's class path.
+    private Path compile(String artifact, Map<String, String> sources, List<Path> dependencies) throws IOException {
+        var root = dir.resolve(artifact);
+        var classes = Files.createDirectories(root.resolve("classes"));
+        var files = sources.entrySet()
+                           .stream()
+                           .map(entry -> write(root.resolve("src").resolve(entry.getKey()), entry.getValue()))
+                           .toList();
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        var collector = new DiagnosticCollector<JavaFileObject>();
+
+        try (var fileManager = compiler.getStandardFileManager(collector, null, StandardCharsets.UTF_8)) {
+            fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(classes));
+            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT, List.of(Files.createDirectories(root.resolve("generated"))));
+            fileManager.setLocationFromPaths(StandardLocation.CLASS_PATH,
+                                             Stream.concat(testClasspath().stream(), dependencies.stream()).toList());
+            var task = compiler.getTask(null,
+                                        fileManager,
+                                        collector,
+                                        List.of("--release", Integer.toString(Runtime.version().feature())),
+                                        null,
+                                        fileManager.getJavaFileObjectsFromPaths(files));
+
+            task.setProcessors(List.of(new CodecProcessor()));
+            assertTrue(task.call(), collector.getDiagnostics().toString());
+        }
+
+        return classes;
+    }
+
+    private static Path write(Path file, String text) {
+        try {
+            Files.createDirectories(file.getParent());
+
+            return Files.writeString(file, text);
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static List<Path> testClasspath() {
+        var classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+
+        return Arrays.stream(classpath.split(File.pathSeparator))
+                     .filter(entry -> !entry.isBlank())
+                     .map(Path::of)
+                     .toList();
+    }
+}
