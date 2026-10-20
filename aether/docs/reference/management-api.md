@@ -3334,7 +3334,7 @@ Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
 
 Provisioning diagnostics — answers "why is a core-membership deficit being or not being filled?" without log-scraping. Combines the leader's end-of-pass reconcile decision snapshot, the provisioning circuit-breaker state, and the most recent provisioning failure. Surfaced only on the leader that owns a Cluster Topology Manager; on any other node a `leader: false` body with zeroed counters and an explanatory `lastReason` is returned (the numeric fields are not meaningful in that case).
 
-`deficit` is `configuredCoreCount - effective`, clamped to `>= 0`. `lastTrigger` is the reconcile trigger that produced the snapshot (`NONE` when not leader). `lastProvisionFailure` is `null` when no provisioning failure has been recorded.
+`deficit` is `configuredCoreCount - effective`, clamped to `>= 0`. `lastTrigger` is the reconcile trigger that produced the snapshot (`NONE` when not leader). `lastProvisionFailure` is `null` when no provisioning failure has been recorded; it holds real failures only. A provision that is waiting for a complete inventory (a provider not ready at boot, no cluster configuration committed yet) is not a failure and never counts toward the circuit: it shows as `inventoryWaiting: true` with the reason and time in `lastInventoryWait`, and `inventoryWaits` counts all such waits since the node started. `inventoryWaiting` and `lastInventoryWait` clear when an admission gets past the inventory, when a node becomes ready, the desired count changes or the cluster phase turns NORMAL, and when the leader deactivates, so a wait that no longer exists is not reported.
 
 **RBAC:** VIEWER · **Routing:** LEADER
 
@@ -3357,7 +3357,10 @@ Provisioning diagnostics — answers "why is a core-membership deficit being or 
     "tripped": false,
     "nextAllowedMs": 0
   },
-  "lastProvisionFailure": null
+  "lastProvisionFailure": null,
+  "inventoryWaiting": false,
+  "inventoryWaits": 0,
+  "lastInventoryWait": null
 }
 ```
 
@@ -3376,7 +3379,10 @@ Provisioning diagnostics — answers "why is a core-membership deficit being or 
   "lastReason": "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
   "deficitAgeMs": 0,
   "circuitBreaker": {"consecutiveFailures": 0, "tripped": false, "nextAllowedMs": 0},
-  "lastProvisionFailure": null
+  "lastProvisionFailure": null,
+  "inventoryWaiting": false,
+  "inventoryWaits": 0,
+  "lastInventoryWait": null
 }
 ```
 

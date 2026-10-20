@@ -2402,6 +2402,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
                              OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
                              OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
+                             OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
+                             OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
                              OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
@@ -2415,6 +2417,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                              OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                             OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
+                             OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                              OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,

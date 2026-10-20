@@ -189,6 +189,29 @@ public enum OperatorWarningCode {
                              "replacement",
                              WarningLevel.INFO,
                              NODE_REPLACEMENT_FAILED_KEPT_BOTH),
+    /// A core replacement has been refused by capacity admission (source busy, fleet limit reached, inventory unavailable) and is deferred
+    /// to the next reconcile pass (#1404). Raised on the first refusal of a run, not on every tick; the subject is `core-provisioning`. Closed
+    /// by [#PROVISION_ADMISSION_RESUMED]. A permanent refusal never closes, which is what makes it visible.
+    PROVISION_ADMISSION_DEFERRED("provision-admission-deferred", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#PROVISION_ADMISSION_DEFERRED], same subject: a replacement passed admission and was dispatched.
+    PROVISION_ADMISSION_RESUMED("provision-admission-resumed",
+                                "deployment",
+                                WarningLevel.INFO,
+                                PROVISION_ADMISSION_DEFERRED),
+    /// An allocation dispatched under an earlier leader term, whose instance no provider listing or lookup showed in several
+    /// consecutive passes, was released (#1404). The subject is the node. A one-off resolution that tells the operator a leader decided an
+    /// uncertain create did not happen: nothing stays open, so it is INFO (a condition that stays open would be a WARNING with a recovery); the
+    /// release itself is logged at WARN where it happens.
+    CAPACITY_DISPATCH_RELEASED("capacity-dispatch-released", "deployment", WarningLevel.INFO),
+    /// A core deficit has been held open for longer than the join grace by committed allocations that never joined (#1404): an uncertain
+    /// create (DISPATCHED) counts as capacity for ever, so no replacement is created until the allocation resolves. The subject is `core`.
+    /// Closed by [#CORE_CAPACITY_DURABLE_RESOLVED].
+    CORE_CAPACITY_AWAITING_DURABLE("core-capacity-awaiting-durable", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#CORE_CAPACITY_AWAITING_DURABLE], same subject: durable allocations no longer cover the deficit.
+    CORE_CAPACITY_DURABLE_RESOLVED("core-capacity-durable-resolved",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   CORE_CAPACITY_AWAITING_DURABLE),
     /// A rolling upgrade run (#1543 part F) was started: every node is being replaced, serially, by a node running the target
     /// version, so the cluster runs mixed versions until it ends. The subject is always `upgrade` (there is one run). Closed by
     /// [#UPGRADE_COMPLETED] or [#UPGRADE_ABORTED].

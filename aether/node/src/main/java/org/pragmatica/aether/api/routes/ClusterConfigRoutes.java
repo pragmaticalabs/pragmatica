@@ -158,7 +158,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                                            .or(NOT_LEADER_PROVISIONING));
     }
 
-    private static ProvisioningDiagnosticsResponse toProvisioningResponse(ProvisioningDiagnostics diagnostics) {
+    static ProvisioningDiagnosticsResponse toProvisioningResponse(ProvisioningDiagnostics diagnostics) {
         var decision = diagnostics.decision();
         var breaker = diagnostics.circuitBreaker();
         var deficit = Math.max(0,
@@ -179,7 +179,10 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                       breaker.tripped(),
                                                                                       breaker.nextAllowedMs()),
                                                    diagnostics.lastProvisionFailure()
-                                                              .map(ClusterConfigRoutes::toFailureInfo));
+                                                              .map(ClusterConfigRoutes::toFailureInfo),
+                                                   diagnostics.inventoryWait().isPresent(),
+                                                   diagnostics.inventoryWaits(),
+                                                   diagnostics.inventoryWait().map(ClusterConfigRoutes::toFailureInfo));
     }
 
     private static ProvisionFailureInfo toFailureInfo(ClusterTopologyManager.LastProvisionFailure failure) {
@@ -200,6 +203,9 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                                                        new ProvisioningCircuitBreakerInfo(0,
                                                                                                                                                           false,
                                                                                                                                                           0L),
+                                                                                                                       Option.none(),
+                                                                                                                       false,
+                                                                                                                       0L,
                                                                                                                        Option.none());
 
     // Package-private (matching the #335/#835 handleScale precedent) so

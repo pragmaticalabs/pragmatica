@@ -203,6 +203,279 @@ class LeaderReconcilerTest {
         reconciler.setReconcileListener(listener);
     }
 
+    /// #1404, owner ruling D1: committed capacity allocations count toward core capacity, an UNCERTAIN one (a create that may have
+    /// happened) always, a CONFIRMED one (provider-listed) only while its node is within the join grace (#1783).
+    @Nested
+    class DurableAllocations {
+        /// Five configured cores, three members (SELF, A, B), the given allocations committed; activated and observed once.
+        private void armWithDurable(Supplier<Map<NodeId, LeaderReconciler.DurableAllocation>> durable) {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B));
+            reconciler.setDurableProvisioningSupplier(durable);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            triggerAndFireReconcile();
+        }
+
+        private void armWithDurable(Map<NodeId, LeaderReconciler.DurableAllocation> durable) {
+            armWithDurable(() -> durable);
+        }
+
+        private static NodeId mintedAt(long epochMs) {
+            var bytes = new byte[ULID.BYTE_LENGTH];
+
+            for (var i = 0; i < ULID.TIMESTAMP_LENGTH; i++) {
+                bytes[i] = (byte) (epochMs >>> (8 * (ULID.TIMESTAMP_LENGTH - 1 - i)));
+            }
+
+            return NodeId.nodeId("aether-test-cluster-node-" + ULID.fromBytes(bytes).unwrap().encoded()).unwrap();
+        }
+
+        /// D1 invariant 1: while a create is uncertain no second create is dispatched, however long it stays uncertain and
+        /// whatever became of the local in-flight observation.
+        @Test
+        void uncertainAllocation_neverAuthorizesASecondCreate_whateverTimePasses() {
+            armWithDurable(Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN,
+                                  PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).isEqualTo(5);
+            assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("AWAITING_DURABLE_CAPACITY");
+
+            // Far past the join grace (90s) and the replacement ceiling (10 min).
+            advancePollIntervals(CEILING_WINDOW_INTERVALS * 3);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("an uncertain create is never timed out into a second create").isEmpty();
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).isEqualTo(5);
+        }
+
+        /// The stall is told to the operator once it outlasts the join grace, once per run, and its recovery follows when the ledger resolves it.
+        @Test
+        void uncertainAllocationStall_isAnOperatorEventOnceItOutlastsTheJoinGrace_andRecovers() {
+            var events = new CopyOnWriteArrayList<String>();
+            var durable = new AtomicReference<Map<NodeId, LeaderReconciler.DurableAllocation>>(
+                Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+
+            ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+            armWithDurable(durable::get);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("AWAITING_DURABLE_CAPACITY");
+            org.awaitility.Awaitility.await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5))
+                .alias("no stall event inside the join grace").until(events::isEmpty);
+
+            advancePollIntervals(CEILING_WINDOW_INTERVALS);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            triggerAndFireReconcile();
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
+            assertThat(events).as("raised once per run, not once per pass").containsExactly("core-capacity-awaiting-durable");
+
+            durable.set(Map.of());
+            triggerAndFireReconcile();
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> events.size() == 2);
+            assertThat(events).containsExactly("core-capacity-awaiting-durable", "core-capacity-durable-resolved");
+        }
+
+        /// No "resolved" event without a stall that was raised: a stall that ends inside the join grace never reached the operator.
+        @Test
+        void uncertainAllocationStall_endingInsideTheJoinGrace_raisesNoEventAtAll() {
+            var events = new CopyOnWriteArrayList<String>();
+            var durable = new AtomicReference<Map<NodeId, LeaderReconciler.DurableAllocation>>(
+                Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+
+            ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+            armWithDurable(durable::get);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("AWAITING_DURABLE_CAPACITY");
+            durable.set(Map.of());
+            triggerAndFireReconcile();
+
+            org.awaitility.Awaitility.await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5))
+                .alias("no event for a stall that never outlasted the grace").until(events::isEmpty);
+        }
+
+        /// A stall that ends and then begins again is a new stall: it waits out its own grace and is announced again.
+        @Test
+        void uncertainAllocationStall_afterARecovery_isRaisedAgainAfterItsOwnGrace() {
+            var events = new CopyOnWriteArrayList<String>();
+            var durable = new AtomicReference<Map<NodeId, LeaderReconciler.DurableAllocation>>(
+                Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+
+            ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+            armWithDurable(durable::get);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            advancePollIntervals(CEILING_WINDOW_INTERVALS);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            triggerAndFireReconcile();
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
+            durable.set(Map.of());
+            triggerAndFireReconcile();
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> events.size() == 2);
+
+            durable.set(Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("AWAITING_DURABLE_CAPACITY");
+            org.awaitility.Awaitility.await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5))
+                .alias("the second stall has not outlasted its own grace yet").until(() -> events.size() == 2);
+            advancePollIntervals(CEILING_WINDOW_INTERVALS);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            triggerAndFireReconcile();
+
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> events.size() == 3);
+            assertThat(events).containsExactly("core-capacity-awaiting-durable", "core-capacity-durable-resolved", "core-capacity-awaiting-durable");
+        }
+
+        /// An uncertain create is never aged out by its mint time either: an id minted long before the join grace still counts while the
+        /// create is unresolved.
+        @Test
+        void uncertainAllocation_mintedLongAgo_stillCounts() {
+            var old = mintedAt(System.currentTimeMillis() - 300_000L);
+
+            armWithDurable(Map.of(old, LeaderReconciler.DurableAllocation.UNCERTAIN));
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("one seat is still missing, and the unresolved create, however old its id, covers the other").hasSize(1);
+        }
+
+        /// The only way out of an uncertain allocation is the ledger resolving it: when it is gone the deficit reopens.
+        @Test
+        void uncertainAllocation_resolvedByTheLedger_reopensTheDeficit() {
+            var durable = new AtomicReference<Map<NodeId, LeaderReconciler.DurableAllocation>>(
+                Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+
+            armWithDurable(durable::get);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            durable.set(Map.of());
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// D1 invariant 2 (#1783 through the ledger): an OBSERVED allocation whose node never joins stops masking the deficit once
+        /// the join grace has passed, long before the ten-minute ceiling. Inside the grace it still counts.
+        @Test
+        void confirmedAllocation_stopsCountingAfterTheJoinGrace_theDeficitReappears() {
+            armWithDurable(Map.of(PEER_C, LeaderReconciler.DurableAllocation.CONFIRMED,
+                                  PEER_D, LeaderReconciler.DurableAllocation.CONFIRMED));
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).as("a booting confirmed allocation counts").isEqualTo(5);
+
+            timeSource.advanceTimeMillis(60_000);
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).as("60s in, inside the 90s join grace").isEqualTo(5);
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            timeSource.advanceTimeMillis(40_000);
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).as("100s in, past the join grace: unjoined, so no longer capacity").isEqualTo(3);
+
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).as("the deficit reappears and is filled, well before the ceiling").hasSize(2);
+        }
+
+        @Test
+        void nullSupplier_resetsToNoDurableAllocations() {
+            armWithDurable(Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN));
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).isEqualTo(5);
+
+            reconciler.setDurableProvisioningSupplier(null);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).isEqualTo(3);
+        }
+
+        /// The grace is the in-flight entry's own: a confirmed allocation counts through the grace window and not a millisecond longer.
+        @Test
+        void confirmedAllocation_countsThroughTheGraceAndNotAMillisecondLonger() {
+            armWithDurable(Map.of(PEER_C, LeaderReconciler.DurableAllocation.CONFIRMED,
+                                  PEER_D, LeaderReconciler.DurableAllocation.CONFIRMED));
+
+            timeSource.advanceTimeMillis(90_000);
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).as("exactly at the 90s grace").isEqualTo(5);
+
+            timeSource.advanceTimeMillis(1);
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).as("one millisecond past it").isEqualTo(3);
+        }
+
+        /// An allocation that left the ledger and is observed again is a new sighting: it is not charged the time it was gone.
+        @Test
+        void confirmedAllocation_thatLeftTheLedgerAndReturns_startsAFreshGrace() {
+            var confirmed = Map.of(PEER_C, LeaderReconciler.DurableAllocation.CONFIRMED, PEER_D, LeaderReconciler.DurableAllocation.CONFIRMED);
+            var durable = new AtomicReference<Map<NodeId, LeaderReconciler.DurableAllocation>>(confirmed);
+
+            armWithDurable(durable::get);
+            timeSource.advanceTimeMillis(60_000);
+            durable.set(Map.of());
+            triggerAndFireReconcile();
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).isEqualTo(3);
+
+            timeSource.advanceTimeMillis(50_000);
+            durable.set(confirmed);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).as("110s after the first sighting, but a new sighting 0s ago").isEqualTo(5);
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).as("inside its fresh grace the returned allocations still hide the deficit").isEmpty();
+        }
+
+        /// A node whose id says it was minted before the grace is not given a fresh grace by a leader that sees it for the first time:
+        /// the grace runs from the mint, as it does for an inherited in-flight entry.
+        @Test
+        void confirmedAllocation_mintedLongAgo_isNotGivenAFreshGraceByANewLeader() {
+            var old = mintedAt(System.currentTimeMillis() - 300_000L);
+
+            armWithDurable(Map.of(old, LeaderReconciler.DurableAllocation.CONFIRMED));
+
+            assertThat(reconciler.currentProvisioningSnapshot().effective()).as("minted 300s ago, long past the 90s grace: it does not count").isEqualTo(3);
+        }
+
+        /// The in-flight entry governs an allocation it tracks: once it discounts the unjoined confirmed replacement, the ledger's
+        /// OBSERVED record of the same node must not bring it back.
+        @Test
+        void confirmedAllocation_trackedInFlight_isGovernedByItsEntryAlone() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            var minted = ctm.provisionReplacementCalls().getFirst();
+
+            reconciler.setDurableProvisioningSupplier(() -> Map.of(minted, LeaderReconciler.DurableAllocation.CONFIRMED));
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(5);
+            assertThat(ctm.provisionReplacementCalls()).as("inside the grace the booting replacement counts once").hasSize(1);
+            assertThat(reconciler.currentProvisioningSnapshot().reason()).isEqualTo("NO_DEFICIT");
+
+            advancePollIntervals(2);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("past the grace the in-flight entry withdraws its count and the ledger does not restore it").hasSize(2);
+        }
+    }
+
     @Test
     void healthyUnknownIdentityDoesNotContributeToCoreCapacity() {
         seedClusterWithPeers(PEER_A);
@@ -4189,6 +4462,14 @@ class LeaderReconcilerTest {
         @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
         @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation) {
             return org.pragmatica.lang.Promise.unitPromise();
+        }
+
+        private final java.util.concurrent.atomic.AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink =
+            new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly());
+        @Override public org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() { return warningSink.get(); }
+        @Override public org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+            warningSink.set(sink);
+            return org.pragmatica.lang.Unit.unit();
         }
 
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();

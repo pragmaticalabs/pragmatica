@@ -2076,6 +2076,17 @@ public interface AetherNode extends ManageableNode {
     /// An owner-promotion block as an operator event, and its end as the recovery (#1937). The oversized-event refusal and the
     /// members-unreachable wait each raise on a transition and recover on the opposite one (flood-guarded by the sink); the other
     /// blocks stay a WARN and the partition status read until #1574 gives them a code.
+    /// What `GET /api/v1/cluster/provisioning` reports for the leader: the decision snapshot with the manager's circuit, last failure
+    /// and current inventory wait. Package-private so that the hand-off of each to the endpoint can be pinned.
+    static ProvisioningDiagnostics provisioningDiagnosticsOf(LeaderReconciler.ProvisioningDecisionSnapshot decision,
+                                                             ClusterTopologyManager manager) {
+        return new ProvisioningDiagnostics(decision,
+                                           manager.circuitBreakerState(),
+                                           manager.lastProvisionFailure(),
+                                           manager.inventoryWait(),
+                                           manager.inventoryWaits());
+    }
+
     static OwnerActivation.BlockAlarm ownerPromotionAlarm(OperatorWarningSink sink) {
         return new OwnerActivation.BlockAlarm() {
             @Override
@@ -3032,9 +3043,7 @@ public interface AetherNode extends ManageableNode {
             }
 
             private ProvisioningDiagnostics assembleProvisioningDiagnostics(LeaderReconciler.ProvisioningDecisionSnapshot decision) {
-                return new ProvisioningDiagnostics(decision,
-                                                   clusterTopologyManagerInstance.circuitBreakerState(),
-                                                   clusterTopologyManagerInstance.lastProvisionFailure());
+                return provisioningDiagnosticsOf(decision, clusterTopologyManagerInstance);
             }
 
             @Override
@@ -5028,6 +5037,10 @@ public interface AetherNode extends ManageableNode {
         // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
         leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
+        // #1404 — gossip can be lost with the leader that sent it; the committed capacity reservations are the durable
+        // record of what was requested, and count toward core capacity on the terms LeaderReconciler documents.
+        leaderReconciler.setDurableProvisioningSupplier(() -> pendingCoreAllocations(lifecycleManager.allocatedNodes("core"),
+                                                                                     installedVoterIds(clusterNode)));
         leaderReconciler.setInstalledVotersSupplier(() -> installedVoterIds(clusterNode));
         // Drain-victim slice-owner demotion (Approach 3, #1488): wire the authoritative KV-Store-backed
         // active-slice-ownership predicate so the reconciler drains a node currently serving / hosting
@@ -8935,6 +8948,23 @@ public interface AetherNode extends ManageableNode {
                                      .filter(AetherValue.CommunityPlacementOperationValue.class::isInstance)
                                      .map(AetherValue.CommunityPlacementOperationValue.class::cast)
                                      .toList());
+    }
+
+    /// The committed core allocations that still stand for capacity: those not yet in the installed electorate (an installed voter is
+    /// counted as a member, departed or not), each as how the ledger stands behind it.
+    static Map<NodeId, LeaderReconciler.DurableAllocation> pendingCoreAllocations(Map<NodeId, AetherValue.CapacityReservationPhase> allocated,
+                                                                                  Set<NodeId> installed) {
+        return allocated.entrySet()
+                        .stream()
+                        .filter(entry -> !installed.contains(entry.getKey()))
+                        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                              entry -> durableAllocation(entry.getValue())));
+    }
+
+    private static LeaderReconciler.DurableAllocation durableAllocation(AetherValue.CapacityReservationPhase phase) {
+        return phase == AetherValue.CapacityReservationPhase.OBSERVED
+               ? LeaderReconciler.DurableAllocation.CONFIRMED
+               : LeaderReconciler.DurableAllocation.UNCERTAIN;
     }
 
     private static Set<NodeId> readyCoreCandidates(Set<NodeId> ready, Supplier<MembershipFsm> membership) {
