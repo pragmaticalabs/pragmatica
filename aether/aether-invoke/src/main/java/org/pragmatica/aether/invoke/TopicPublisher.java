@@ -248,9 +248,7 @@ public record TopicPublisher<T>(String topicName,
             return Unit.unit();
         }
 
-        var present = subscribers.stream()
-                                 .map(this::subjectOf)
-                                 .collect(Collectors.toSet());
+        var present = subscribers.stream().map(this::subjectOf).collect(Collectors.toSet());
 
         openRefusals.stream()
                     .filter(subject -> !present.contains(subject))
@@ -271,9 +269,7 @@ public record TopicPublisher<T>(String topicName,
     @Override
     @Contract
     public void close() {
-        openRefusals.stream()
-                    .toList()
-                    .forEach(subject -> closeRefusal(subject, "the publisher was released"));
+        openRefusals.stream().toList().forEach(subject -> closeRefusal(subject, "the publisher was released"));
     }
 
     private Unit reportRefused(TopicSubscriber subscriber, Cause cause) {
