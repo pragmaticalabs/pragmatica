@@ -1202,13 +1202,11 @@ record PlacementReconciler(NodeId self,
         return apply.apply(List.of(command))
                     .map(results -> accepted(results, id))
                     .flatMap(accepted -> accepted
-                                         ? reportCleared(operation, operator, reason)
+                                         ? Promise.success(reportCleared(operation, operator, reason))
                                          : new ParkedClearRefusal.Changed(operation.communityId()).promise());
     }
 
-    private Promise<ParkedClear> reportCleared(CommunityPlacementOperationValue operation,
-                                               String operator,
-                                               String reason) {
+    private ParkedClear reportCleared(CommunityPlacementOperationValue operation, String operator, String reason) {
         OperatorWarnings.raise(LOG,
                                warnings.get(),
                                OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
@@ -1222,7 +1220,7 @@ record PlacementReconciler(NodeId self,
                                operation.targetNode().id(),
                                operation.previousNode().map(NodeId::id).or("none"));
 
-        return Promise.success(ParkedClear.parkedClear(operation));
+        return ParkedClear.parkedClear(operation);
     }
 
     private Promise<Boolean> commit(CommunityPlacementOperationValue value,
