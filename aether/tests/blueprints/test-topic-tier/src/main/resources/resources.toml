@@ -1,0 +1,25 @@
+# Application-level (blueprint) resources for test-topic-tier (#1337).
+#
+# ONE topic address, `tier-orders`, declared by two sections: the publisher's (no `durability`, so the
+# EPHEMERAL default) and the subscriber's (`durable`, which the subscriber's `(event, MessageContext)` handler
+# requires and the slice processor checks against THIS section). Each slice reads only its own section, so the
+# disagreement is invisible to both builds and to the deployment - which is the defect.
+#
+# `tier-bare` is the control: ephemeral on both sides, bare handler.
+
+[tier-context-publisher]
+topic_name = "tier-orders"
+
+[tier-context-subscriber]
+topic_name = "tier-orders"
+durability = "durable"
+partitions = 1
+replication_factor = 3
+confirmation_factor = 3
+retention = "7d"
+
+[tier-bare-publisher]
+topic_name = "tier-bare"
+
+[tier-bare-subscriber]
+topic_name = "tier-bare"
