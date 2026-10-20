@@ -200,6 +200,58 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aForeignAcceptedResultInTheMergedList_doesNotSettleTheJoin() {
+        var fixture = fixture(config(true, 2, 5));
+        var codes = fixture.captureWarnings();
+
+        fixture.seedCommunity(FIRST);
+        fixture.alwaysRace(() -> fixture.toggleCommunityState(FIRST));
+        fixture.foreignResults(true);
+        fixture.joinAll(1);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
+        assertThat(fixture.cluster().applies.get()).as("another submitter's accepted result neither places this worker nor resets its refusal count").isEqualTo(CommunityAdmissionLedger.MAX_ATTEMPTS);
+    }
+
+    @Test
+    void join_growthOn_foreignRefusedResultsInTheMergedList_doNotCountAgainstAPlacedJoin() {
+        var fixture = fixture(config(true, 2, 5));
+        var codes = fixture.captureWarnings();
+
+        fixture.foreignResults(false, false, false);
+        fixture.joinAll(1);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+        org.awaitility.Awaitility.await().pollDelay(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(2)).until(() -> true);
+        assertThat(codes).as("three refusals that belong to other submitters are not this worker's refusals").doesNotContain("community-assignment-unplaced");
+    }
+
+    @Test
+    void join_growthOn_aChosenCommunityThatIsAlreadyDissolved_isDecidedAgainThenReportedUnplaced() {
+        var fixture = fixture(config(true, 2, 5));
+        var codes = fixture.captureWarnings();
+
+        fixture.seedCommunityInState(FIRST, CommunityState.DISSOLVED);
+        fixture.joinAll(1);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
+        assertThat(fixture.hasDirective(1)).isFalse();
+        assertThat(fixture.cluster().applies.get()).as("no transaction is sent for a community that is dissolved").isZero();
+    }
+
+    @Test
+    void join_growthOn_aChosenCommunityThatIsDissolving_isDecidedAgainThenReportedUnplaced() {
+        var fixture = fixture(config(true, 2, 5));
+        var codes = fixture.captureWarnings();
+
+        fixture.seedCommunityInState(FIRST, CommunityState.DISSOLVING);
+        fixture.joinAll(1);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
+        assertThat(fixture.hasDirective(1)).isFalse();
+    }
+
+    @Test
     void join_growthOn_aRefusalBecauseAnotherAttemptPlacedTheWorker_closesTheUnplacedReport() {
         var fixture = fixture(config(true, 2, 5));
         var codes = fixture.captureWarnings();
@@ -452,6 +504,20 @@ class ClusterDeploymentStateCommunityGrowthTest {
                 new org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision(worker(number), "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
         }
 
+        void seedCommunityInState(String id, CommunityState state) {
+            kvStore.put(CommunityKey.communityKey(id), new CommunityValue(SOURCE, "WORKER", 2, state, 1L, Option.none()));
+        }
+
+        /// Results of other submitters' transactions that a merged batch carries beside this join's own result.
+        void foreignResults(boolean... accepted) {
+            var results = new ArrayList<KVCommand.TransactionResult>();
+
+            for (var one : accepted) {
+                results.add(new KVCommand.TransactionResult(java.util.UUID.randomUUID().toString(), one));
+            }
+            cluster.foreign = List.copyOf(results);
+        }
+
         void seedCommunity(String id) {
             kvStore.put(CommunityKey.communityKey(id), new CommunityValue(SOURCE, "WORKER", 2, CommunityState.FORMING, 1L, Option.none()));
         }
@@ -567,6 +633,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
         volatile Runnable beforeEveryApply = () -> {};
         final java.util.concurrent.atomic.AtomicInteger applies = new java.util.concurrent.atomic.AtomicInteger();
         volatile boolean failNext;
+        volatile List<KVCommand.TransactionResult> foreign = List.of();
         volatile Runnable beforeApply = () -> {};
         private final InMemoryKvStore committed;
 
@@ -585,6 +652,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         // Mirror the real consensus → KV replication loop: an applied batch is recorded AND committed
         // into the shared KV store, so a subsequent community read observes it.
+        @SuppressWarnings("unchecked")
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             if (failNext) {
                 failNext = false;
@@ -610,7 +678,13 @@ class ClusterDeploymentStateCommunityGrowthTest {
                         commands.add(new KVCommand.Put<>((AetherKey) mutation.key(), value))));
                 }
             }
-            return Promise.success(committed.process(committed.createBatch(batch)));
+            var own = committed.process(committed.createBatch(batch));
+            var merged = new ArrayList<R>();
+
+            foreign.forEach(result -> merged.add((R) result));
+            merged.addAll(own);
+
+            return Promise.success(merged);
         }
     }
 
