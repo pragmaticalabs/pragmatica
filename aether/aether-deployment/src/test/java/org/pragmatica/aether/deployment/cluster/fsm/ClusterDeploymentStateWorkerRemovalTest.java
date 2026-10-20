@@ -243,13 +243,13 @@ class ClusterDeploymentStateWorkerRemovalTest {
             var method = MethodName.methodName("onOrder").unwrap();
             var departedPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, WORKER_1);
             var departedSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, WORKER_1);
-            var survivingPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, CORE_1);
-            var survivingSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, CORE_1);
+            var survivingPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var survivingSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, SELF);
 
             kvStore.put(departedPub, TopicPublisherValue.topicPublisherValue(WORKER_1, TopicTier.EPHEMERAL));
             kvStore.put(departedSub, TopicSubscriptionValue.topicSubscriptionValue(WORKER_1, TopicTier.DURABLE));
-            kvStore.put(survivingPub, TopicPublisherValue.topicPublisherValue(CORE_1, TopicTier.EPHEMERAL));
-            kvStore.put(survivingSub, TopicSubscriptionValue.topicSubscriptionValue(CORE_1, TopicTier.DURABLE));
+            kvStore.put(survivingPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(survivingSub, TopicSubscriptionValue.topicSubscriptionValue(SELF, TopicTier.DURABLE));
 
             leaveWorker(WORKER_1);
 
