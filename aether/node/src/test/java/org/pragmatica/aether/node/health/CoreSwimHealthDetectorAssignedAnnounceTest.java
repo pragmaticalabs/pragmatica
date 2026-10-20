@@ -33,6 +33,11 @@ import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
@@ -205,6 +210,56 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
 
         await().atMost(3, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(announcesToSeed()).as("the release won the race").isNotEmpty());
+    }
+
+    @Test
+    void markAssigned_waitsForTheAssignmentGate() throws Exception {
+        detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE);
+        var pool = Executors.newSingleThreadExecutor();
+
+        try {
+            var release = new AtomicReference<Future<?>>();
+            var doneWhileGated = new AtomicBoolean(true);
+
+            detector.underAssignmentGateForTest(() -> doneWhileGated.set(submitAndCheck(pool, detector::markAssigned, release)));
+
+            assertThat(doneWhileGated).as("markAssigned must wait for the gate").isFalse();
+            release.get().get(5, TimeUnit.SECONDS);
+            await().atMost(5, TimeUnit.SECONDS).until(() -> !announcesToSeed().isEmpty());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void announceJoinWhenAssigned_waitsForTheAssignmentGate() throws Exception {
+        var pool = Executors.newSingleThreadExecutor();
+
+        try {
+            var call = new AtomicReference<Future<?>>();
+            var doneWhileGated = new AtomicBoolean(true);
+
+            detector.underAssignmentGateForTest(() -> doneWhileGated.set(submitAndCheck(pool,
+                                                                                       () -> detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE),
+                                                                                       call)));
+
+            assertThat(doneWhileGated).as("announceJoinWhenAssigned must wait for the gate").isFalse();
+            call.get().get(5, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /// Submits `task`, gives it time to run if it could, and reports whether it finished while the gate was held.
+    private static boolean submitAndCheck(ExecutorService pool, Runnable task, AtomicReference<Future<?>> submitted) {
+        submitted.set(pool.submit(task));
+        try {
+            Thread.sleep(400);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        return submitted.get().isDone();
     }
 
     private static void park(CountDownLatch parked, CountDownLatch proceed) {

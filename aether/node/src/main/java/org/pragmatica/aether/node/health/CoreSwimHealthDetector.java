@@ -580,6 +580,15 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return context.topologyConfig().self().id();
     }
 
+    /// Test seam (#1840): runs `action` while holding the assignment gate, so a test can show that a hold or a
+    /// release started meanwhile waits for it.
+    @Contract
+    void underAssignmentGateForTest(Runnable action) {
+        synchronized (assignmentGate) {
+            action.run();
+        }
+    }
+
     @Contract
     void afterHoldDecisionForTest(Runnable hook) {
         afterHoldDecision = hook;
