@@ -173,7 +173,7 @@ final class DefaultDemotionManager implements DemotionManager {
                 break;
             }
 
-            var moved = demoteBlock(candidate.blockId(), sourceTier, targetTier);
+            var moved = demoteBlock(candidate, sourceTier, targetTier);
 
             if (moved > 0) {
                 demotedCount++;
@@ -204,12 +204,40 @@ final class DefaultDemotionManager implements DemotionManager {
 
     /// Synchronous block demotion. Uses .await() because demotion runs on a dedicated
     /// background thread, not on the hot path. Blocking here is intentional.
-    private long demoteBlock(BlockId blockId, StorageTier sourceTier, StorageTier targetTier) {
+    private long demoteBlock(BlockLifecycle candidate, StorageTier sourceTier, StorageTier targetTier) {
+        var blockId = candidate.blockId();
+
         return sourceTier.get(blockId)
                          .await()
                          .flatMap(opt -> opt.toResult(BLOCK_MISSING))
                          .fold(_ -> 0L,
-                               content -> writeThenDelete(blockId, content, sourceTier, targetTier));
+                               content -> demoteContent(candidate, content, sourceTier, targetTier));
+    }
+
+    private long demoteContent(BlockLifecycle candidate,
+                               byte[] content,
+                               StorageTier sourceTier,
+                               StorageTier targetTier) {
+        return isEvictable(candidate, sourceTier)
+               ? evictCopy(candidate.blockId(), content.length, sourceTier)
+               : writeThenDelete(candidate.blockId(), content, sourceTier, targetTier);
+    }
+
+    /// A copy this node only cached ([BlockLifecycle#cacheOnly]) is dropped under pressure, never moved down:
+    /// the block is held elsewhere, and moving it would turn a read or a prefetch into a permanent copy on
+    /// a slower tier that nothing collects. Never from a durable tier -- a marker is created for blocks
+    /// served from non-durable tiers only, so one naming a durable tier is not what it says.
+    private static boolean isEvictable(BlockLifecycle candidate, StorageTier sourceTier) {
+        return candidate.cacheOnly() && !sourceTier.isDurable();
+    }
+
+    /// Synchronous deletion. Uses .await() on a dedicated background thread.
+    private long evictCopy(BlockId blockId, int contentLength, StorageTier sourceTier) {
+        sourceTier.delete(blockId).await();
+        metadataStore.computeLifecycle(blockId,
+                                       lc -> lc.withTierRemoved(sourceTier.level()));
+
+        return contentLength;
     }
 
     /// Synchronous write-then-delete. Uses .await() on a dedicated background thread.
