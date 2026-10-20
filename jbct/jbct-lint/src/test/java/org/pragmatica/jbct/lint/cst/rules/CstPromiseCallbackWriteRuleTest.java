@@ -1001,6 +1001,20 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
+        void flags_pragmaticaFunctionReturningPromiseInItsFirstTypeArgument() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        private Fn1<Promise<String>, String> loader;
+                        void run() {
+                            loader.apply("id").onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
         void clean_qualifiedCallToANameDeclaredWithOtherReturnTypesToo() {
             assertFalse(flags("""
                     package org.example;
