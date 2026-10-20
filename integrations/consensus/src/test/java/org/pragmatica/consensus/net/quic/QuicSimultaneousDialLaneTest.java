@@ -37,6 +37,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -102,14 +103,6 @@ class QuicSimultaneousDialLaneTest {
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MILLIS));
         spraying.set(false);
         spray.orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS).join();
-        // A lane refuses a write while its stream is not writable (backpressure, by contract: only CONSENSUS and DHT
-        // retry), and the spray leaves each stream a backlog that a CPU-starved peer drains slowly. A refused probe
-        // says nothing about whether the lane carries traffic, so probe once the backlog is gone at both ends. A lane
-        // that never becomes writable still fails here.
-        awaitTrue(() -> everyLaneWritable(lowNet, high) && everyLaneWritable(highNet, low),
-                  () -> "every lane writable after the spray: low " + unwritableLanes(lowNet, high) + ", high "
-                        + unwritableLanes(highNet, low));
-
         Arrays.stream(StreamType.values())
               .forEach(lane -> sendFinalProbes(round, lane, lowNet, low, highNet, high));
 
@@ -119,30 +112,36 @@ class QuicSimultaneousDialLaneTest {
                   () -> "high -> low on every lane: missing " + missing(toLow, "final-" + round + "-high-to-low-"));
     }
 
-    /// Every lane stream the network's bound connection to `peer` holds is writable. A lane with no stream yet is not
-    /// held against it: a write opens the lane on demand.
-    private static boolean everyLaneWritable(QuicClusterNetwork network, NodeId peer) {
-        return unwritableLanes(network, peer).isEmpty();
-    }
-
-    private static List<StreamType> unwritableLanes(QuicClusterNetwork network, NodeId peer) {
-        return network.activeConnectionForTests(peer)
-                      .map(connection -> Arrays.stream(StreamType.values())
-                                               .filter(lane -> connection.stream(lane)
-                                                                         .filter(stream -> !stream.isWritable())
-                                                                         .isPresent())
-                                               .toList())
-                      .or(List.of(StreamType.values()));
-    }
-
+    /// One probe on `lane` in each direction. A lane refuses a write while its stream is not writable
+    /// ([WriteOutcome.BackpressureRefused]: only CONSENSUS and DHT retry inside the transport), and the spray leaves each
+    /// stream a backlog that a CPU-starved peer drains slowly. A refused probe says nothing about whether the lane
+    /// carries traffic, so it is offered again until the transport accepts it; only an ACCEPTED probe must arrive. A
+    /// lane that never accepts, or an outcome other than a refusal, still fails here.
     private static void sendFinalProbes(int round,
                                         StreamType lane,
                                         QuicClusterNetwork lowNet,
                                         NodeId low,
                                         QuicClusterNetwork highNet,
                                         NodeId high) {
-        lowNet.send(high, LaneProbe.laneProbe(low, lane, "final-" + round + "-low-to-high-" + lane));
-        highNet.send(low, LaneProbe.laneProbe(high, lane, "final-" + round + "-high-to-low-" + lane));
+        offerUntilAccepted(lowNet, high, LaneProbe.laneProbe(low, lane, "final-" + round + "-low-to-high-" + lane));
+        offerUntilAccepted(highNet, low, LaneProbe.laneProbe(high, lane, "final-" + round + "-high-to-low-" + lane));
+    }
+
+    private static void offerUntilAccepted(QuicClusterNetwork network, NodeId peer, LaneProbe probe) {
+        var deadline = System.nanoTime() + AWAIT.nanos();
+
+        while (true) {
+            var outcome = network.sendOutcome(peer, probe).await(AWAIT).fold(cause -> fail("send failed: " + cause.message()),
+                                                                              written -> written);
+
+            if (outcome.isSent()) {
+                return;
+            }
+            if (!(outcome instanceof WriteOutcome.BackpressureRefused) || System.nanoTime() > deadline) {
+                fail("probe " + probe.marker() + " was not accepted: " + outcome);
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+        }
     }
 
     private static void sprayUntilStopped(QuicClusterNetwork lowNet,

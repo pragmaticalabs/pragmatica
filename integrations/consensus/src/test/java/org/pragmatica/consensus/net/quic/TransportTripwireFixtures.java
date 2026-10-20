@@ -102,10 +102,10 @@ final class TransportTripwireFixtures {
     }
 
     /// This end's own dial of a simultaneous pair is decided: it attached (superseded the inbound link, or lost to it as
-    /// a duplicate), was abandoned because the inbound link made the peer CONNECTED first, or failed. Not visible in the
-    /// peer's phase: the inbound link has already made it CONNECTED.
+    /// a duplicate), was skipped or abandoned because the inbound link made the peer CONNECTED first, or failed. Not
+    /// visible in the peer's phase: the inbound link has already made it CONNECTED.
     static boolean ownDialDecided(QuicClusterNetwork network, List<QuicClusterNetwork.AttachObservation> attaches) {
-        return attaches.stream().anyMatch(attach -> attach.origin().startsWith("dial attempt"))
+        return attaches.stream().anyMatch(attach -> attach.origin().startsWith("dial"))
                || network.quicMetrics().dialAbandonedCount() > 0
                || network.quicMetrics().snapshot().get("quic_dial_failures_total").longValue() > 0;
     }

@@ -1521,6 +1521,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         if (!state.beginConnecting(System.nanoTime())) {
             // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
+            attachObserver.accept(new AttachObservation(peerId, "dial skipped", Option.none()));
+
             return;
         }
 
@@ -1775,7 +1777,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
         outcome.superseded().onPresent(old -> closeSupersededConnection(old, connection));
-        attachObserver.accept(new AttachObservation(peerId, origin, outcome.result()));
+        attachObserver.accept(new AttachObservation(peerId, origin, Option.some(outcome.result())));
         boolean isReconnect;
 
         switch (outcome.result()) {
@@ -3327,9 +3329,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// What [#attachObserverForTests] is told: where the connection came from (`inbound Hello` or `dial attempt #n`,
-    /// as in the dial journal), and what the attach decided. Reported after the displaced incumbent was closed; for
-    /// DUPLICATE and REJECTED the new connection's own close follows in the same call.
-    record AttachObservation(NodeId peerId, String origin, PeerState.AttachResult result) {}
+    /// as in the dial journal) and what the attach decided. Reported after the displaced incumbent was closed; for
+    /// DUPLICATE and REJECTED the new connection's own close follows in the same call. A dial that found the peer
+    /// already CONNECTED over the inbound link never produces a connection: it is reported as `dial skipped`, with no
+    /// result, so a test can tell its own dial will not be decided.
+    record AttachObservation(NodeId peerId, String origin, Option<PeerState.AttachResult> result) {}
 
     /// Package-private test hook (transport overhaul N33) — observe every attach decision. Lets a test tell that
     /// this end's own dial of a simultaneous pair has been decided, which is not visible in the peer's phase: the
