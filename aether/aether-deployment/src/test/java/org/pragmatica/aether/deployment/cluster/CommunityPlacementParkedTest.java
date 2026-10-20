@@ -144,10 +144,16 @@ class CommunityPlacementParkedTest {
                                                     "");
     }
 
+    /// The operation record is leader-authorized: it is written as the leader writes it, replacing whatever is there.
     private void seedOperation(PlacementOperationPhase phase, long phaseChangedAt) {
         var key = new AetherKey.CommunityPlacementOperationKey(COMMUNITY);
+        var value = operation(phase, phaseChangedAt);
 
-        seed(new KVCommand.Put<>(key, operation(phase, phaseChangedAt)));
+        seed(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                      java.util.UUID.randomUUID().toString(),
+                                                                      leader(),
+                                                                      List.of(),
+                                                                      List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(value)))));
     }
 
     private CommunityPlacementOperationValue current() {
@@ -278,8 +284,7 @@ class CommunityPlacementParkedTest {
     void clear_whenTheOperationChangesUnderIt_isRefusedAsChanged() {
         start();
         seedOperation(PlacementOperationPhase.DRAIN_UNCERTAIN, now.get());
-        beforeCommit = () -> seed(new KVCommand.Put<>(new AetherKey.CommunityPlacementOperationKey(COMMUNITY),
-                                                      operation(PlacementOperationPhase.DRAINED, now.get())));
+        beforeCommit = () -> seedOperation(PlacementOperationPhase.DRAINED, now.get());
 
         var refused = reconciler.clearParked(COMMUNITY, "alice", "checked").await();
 
