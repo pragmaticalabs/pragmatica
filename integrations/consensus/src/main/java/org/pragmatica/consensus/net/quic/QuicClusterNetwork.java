@@ -1006,6 +1006,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// The new connection lost the arbitration. When the incumbent was dialed by the other end this is the dual-dial
+    /// race: the peer may already have written on the loser, so it drains like [#closeSupersededConnection] (#2030).
+    private void closeDuplicate(QuicPeerConnection loser, PeerState state) {
+        var drain = state.activeConnection().filter(kept -> isDualDialLoser(loser, kept)).isPresent();
+
+        if (drain) {
+            loser.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        } else {
+            loser.close();
+        }
+    }
+
     private void closeDroppedConnection(QuicPeerConnection connection) {
         connection.close()
                   .onFailure(cause -> log.warn("Failed to close dropped connection for peer {}: {}",
@@ -1018,7 +1030,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void closeSupersededConnection(QuicPeerConnection superseded, QuicPeerConnection replacement) {
         observeSupersede(superseded, replacement);
         quicMetrics.onConnectionClosed();
-        closeDroppedConnection(superseded);
+        if (isDualDialLoser(superseded, replacement)) {
+            // #2030 shape 2: both peers are alive and dialed each other, so the loser still carries frames the peer
+            // is reading; let what is written on it flush before it closes. Shape 1 (the same dialer re-dialed over a
+            // link it judged dead) keeps the immediate close: its peer has abandoned the link, a drain would only burn
+            // its bound.
+            superseded.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        } else {
+            closeDroppedConnection(superseded);
+        }
+    }
+
+    /// The two links were dialed by different ends — the dual-dial race — as opposed to one end re-dialing.
+    static boolean isDualDialLoser(QuicPeerConnection loser, QuicPeerConnection winner) {
+        return loser.initiator()
+                    .flatMap(old -> winner.initiator().map(current -> !old.equals(current)))
+                    .or(false);
     }
 
     /// #1727 — what is at risk when a superseded connection is closed at once. The close discards frames
@@ -1811,7 +1838,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             }
             case PeerState.AttachResult.DUPLICATE -> {
                 log.debug("Duplicate connection from {}, closing new (existing is active)", peerId);
-                connection.close();
+                closeDuplicate(connection, state);
 
                 return;
             }
