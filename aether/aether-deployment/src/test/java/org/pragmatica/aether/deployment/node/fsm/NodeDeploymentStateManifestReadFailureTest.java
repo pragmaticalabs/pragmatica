@@ -124,7 +124,9 @@ class NodeDeploymentStateManifestReadFailureTest {
         assertThat(withCause.stream().filter(line -> line.startsWith("Could not read reactive manifest")).count()).isEqualTo(3);
         assertThat(withCause.stream().filter(line -> line.startsWith("Could not read config update manifest")).count()).isEqualTo(1);
         assertThat(withCause.stream().filter(line -> line.startsWith("Could not read stream role declarations")).count()).isEqualTo(1);
-        assertThat(withCause).hasSize(5);
+        // #1337: the publisher bindings are read once at ACTIVE, for the topic publisher row.
+        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read publisher manifest")).count()).isEqualTo(1);
+        assertThat(withCause).hasSize(6);
     }
 
     /// The quiet branch: a slice whose jar ships no manifest answers `null`, which is not a read
