@@ -2388,7 +2388,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal and the storage promotion stall); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2421,6 +2421,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                              OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
                              OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                             OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
+                             OperatorWarningCode.WORKER_ASSIGNED,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
@@ -2447,6 +2449,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                              OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                             OperatorWarningCode.STORAGE_PROMOTION_STALLED,
+                             OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
