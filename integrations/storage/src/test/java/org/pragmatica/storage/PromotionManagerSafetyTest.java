@@ -290,6 +290,7 @@ class PromotionManagerSafetyTest {
 
             assertThat(pm.stats().cycles()).isEqualTo(2);
             assertThat(pm.stats().blocksPromoted()).isEqualTo(1);
+            assertThat(pm.stats().failed()).as("a successful copy is not a failed one").isZero();
             assertThat(pm.stats().bytesMoved()).isEqualTo(BLOCK_BYTES);
         }
 

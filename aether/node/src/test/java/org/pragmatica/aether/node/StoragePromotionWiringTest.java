@@ -155,6 +155,7 @@ class StoragePromotionWiringTest {
                                                          + "into memory by the node's maintenance tick", HOT_READS)
                                                      .isTrue();
         assertThat(content.promotionManager().stats().blocksPromoted()).isEqualTo(1);
+        assertThat(content.promotionManager().stats().failed()).as("a successful copy is not a failed one").isZero();
         assertThat(content.instance().tierInfo().stream()
                           .filter(info -> info.level() == TierLevel.MEMORY)
                           .findFirst().orElseThrow().usedBytes())

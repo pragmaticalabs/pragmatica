@@ -82,16 +82,65 @@ class PromotionStallWatchTest {
                           .containsExactly(OperatorWarningCode.STORAGE_PROMOTION_STALLED,
                                            OperatorWarningCode.STORAGE_PROMOTION_RESUMED);
         assertThat(events.getLast().code().code()).isEqualTo("storage-promotion-resumed");
+        assertThat(events.getLast().message()).as("'works again' says a copy worked").contains("copied a block successfully");
         assertThat(events.getLast().code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
         assertThat(events.getLast().code().recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STORAGE_PROMOTION_STALLED));
     }
 
+    /// "Works again" must mean a copy worked: a broken tier with no hot candidate left looks exactly like a healthy idle
+    /// one, so a cycle that attempted nothing leaves a raised stall raised, and only a successful copy ends it.
     @Test
-    void observe_anIdleCycle_endsTheStallToo() {
+    void observe_anIdleCycle_leavesTheStallRaised_untilACopySucceeds() {
         var watch = watchOver(promotion);
 
         stallFor(watch, PromotionStallWatch.STALLED_AFTER_CYCLES);
         promotion.cycle(0, 0);
+        watch.observe();
+        promotion.cycle(0, 0);
+        watch.observe();
+
+        assertThat(events()).as("two idle cycles raise no recovery")
+                            .extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STORAGE_PROMOTION_STALLED);
+
+        promotion.cycle(1, 0);
+        watch.observe();
+
+        assertThat(events()).extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STORAGE_PROMOTION_STALLED,
+                                             OperatorWarningCode.STORAGE_PROMOTION_RESUMED);
+    }
+
+    @Test
+    void observe_afterAnIdleCycleInAStall_aFailingCycleDoesNotRaiseTheStallAgain() {
+        var watch = watchOver(promotion);
+
+        stallFor(watch, PromotionStallWatch.STALLED_AFTER_CYCLES);
+        promotion.cycle(0, 0);
+        watch.observe();
+        stallFor(watch, 2);
+
+        assertThat(events()).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.STORAGE_PROMOTION_STALLED);
+    }
+
+    @Test
+    void observe_anIdleCycleBeforeTheStallIsRaised_restartsTheCount() {
+        var watch = watchOver(promotion);
+
+        stallFor(watch, PromotionStallWatch.STALLED_AFTER_CYCLES - 1);
+        promotion.cycle(0, 0);
+        watch.observe();
+        stallFor(watch, PromotionStallWatch.STALLED_AFTER_CYCLES - 1);
+
+        assertThat(events()).as("the stall is consecutive failing cycles; an idle one in between breaks the run").isEmpty();
+    }
+
+    @Test
+    void observe_aCycleThatCopiedAndAlsoFailed_endsTheStall() {
+        var watch = watchOver(promotion);
+
+        stallFor(watch, PromotionStallWatch.STALLED_AFTER_CYCLES);
+        promotion.cycle(1, 2);
         watch.observe();
 
         assertThat(events()).extracting(OperatorWarning::code)

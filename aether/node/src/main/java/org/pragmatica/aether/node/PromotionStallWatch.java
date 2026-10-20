@@ -23,13 +23,16 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 /// Turns the one promotion condition that needs an operator into an operator event, and its recovery: a storage
-/// instance whose promotion cycles keep failing without copying a single block. The cause is almost always a full or
-/// broken fast tier, and nothing else surfaces it (a failed copy logs at DEBUG).
+/// instance whose promotion cycles keep failing without copying a single block. It detects FAILING COPIES (the faster
+/// tier rejects a write, or the source cannot be read), and nothing else surfaces them (a failed copy logs at DEBUG). It
+/// does not detect a tier that sits above its promotion watermark: promotion skips such a tier without attempting a copy.
 ///
 /// A cycle is STALLED when it failed at least one copy and promoted none. [#STALLED_AFTER_CYCLES] such cycles in a row
-/// raise `storage-promotion-stalled` once; the next cycle that is not stalled raises `storage-promotion-resumed`. An
-/// idle cycle (no candidates, nothing failed) is not stalled, so it also ends a stall: promotion is not failing then.
-/// A skipped tick, one where the previous cycle was still running, runs no cycle and moves nothing.
+/// raise `storage-promotion-stalled` once. Once raised, it ends only with a cycle that copied a block successfully
+/// (`storage-promotion-resumed`): an idle cycle (no candidates, nothing attempted) leaves it raised, because a broken tier
+/// with no hot candidate looks exactly like a healthy idle one, and "works again" must mean a copy worked. Before the
+/// event is raised, an idle or successful cycle restarts the count. A skipped tick, one where the previous cycle was still
+/// running, runs no cycle and moves nothing.
 ///
 /// [#observe] runs on the promotion thread after each cycle. The driver starts one cycle at a time, and each start
 /// happens-after the previous finish, so the per-instance state needs no further coordination.
@@ -80,9 +83,10 @@ final class PromotionStallWatch {
                                           sink,
                                           OperatorWarningCode.STORAGE_PROMOTION_STALLED,
                                           instance,
-                                          "Storage '{}' promotion copied nothing in {} consecutive cycles while copies failed: its faster tier "
-                                         + "cannot be written or its source cannot be read. Free or resize the tier ([storage.{}] "
-                                         + "memory_max_bytes or disk_max_bytes), or stop promoting this instance with [storage.{}] promotion = false",
+                                          "Storage '{}' promotion copied nothing in {} consecutive cycles while copy attempts failed: its faster tier "
+                                         + "rejects the write or its source tier cannot be read. Check both tiers' health and free space "
+                                         + "([storage.{}] memory_max_bytes or disk_max_bytes), or stop promoting this instance with "
+                                         + "[storage.{}] promotion = false",
                                           instance,
                                           after.streak(),
                                           instance,
@@ -94,7 +98,7 @@ final class PromotionStallWatch {
                                           sink,
                                           OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
                                           instance,
-                                          "Storage '{}' promotion works again: a cycle copied a block or no longer failed",
+                                          "Storage '{}' promotion works again: a cycle copied a block successfully",
                                           instance);
         }
 
@@ -118,10 +122,23 @@ final class PromotionStallWatch {
                 return this;
             }
 
-            return new Tracker(now,
-                               isStalledSince(now)
-                               ? streak + 1
-                               : 0);
+            return new Tracker(now, nextStreak(now));
+        }
+
+        /// A stalled cycle adds one. Otherwise the count restarts, except that a raised stall holds through a cycle that
+        /// copied nothing: only a successful copy ends it.
+        private int nextStreak(PromotionStats now) {
+            if (isStalledSince(now)) {
+                return streak + 1;
+            }
+
+            return isStalled() && !copiedSince(now)
+                   ? streak
+                   : 0;
+        }
+
+        private boolean copiedSince(PromotionStats now) {
+            return now.blocksPromoted() > seen.blocksPromoted();
         }
 
         private boolean isStalledSince(PromotionStats now) {

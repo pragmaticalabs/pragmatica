@@ -2793,10 +2793,7 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
-                // FER: a manager that will not deactivate is logged and the stop goes on; the node is going away, and the
-                // periodic tasks that tick it were already cancelled first thing in stop().
-                StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> log.warn("Storage maintenance could not be deactivated: {}",
-                                                                                                    cause.message()));
+                stopStorageMaintenance(storageSetups);
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
 
                 return Unit.unit();
@@ -3601,6 +3598,7 @@ public interface AetherNode extends ManageableNode {
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                            () -> {},
                                                            drainInitiatedEmitter(scheduledTaskDrainHookRef,
+                                                                                 () -> stopStorageMaintenance(storageSetups),
                                                                                  clusterEventDrainEmitterRef),
                                                            departurePush,
                                                            jvmExit);
@@ -8000,34 +7998,46 @@ public interface AetherNode extends ManageableNode {
 
     /// `DrainProcedure`'s single-shot `drainInitiatedEmitter`, invoked once inside the INACTIVE->DRAINING
     /// CAS and therefore the node's one drain edge, shared by all three triggers (QUORUM_LOSS,
-    /// CORE_ABSENCE, COMMANDED). Two consumers, in falling order of consequence:
+    /// CORE_ABSENCE, COMMANDED). Three consumers, in falling order of consequence:
     ///
     ///   1. #273 item 1 — stop this node's ALL-mode scheduled fires. A correctness action.
-    ///   2. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
+    ///   2. Stop this node's storage promotion and per-node demotion.
+    ///   3. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
     ///
-    /// The scheduled-task hook runs FIRST but inside its own no-throw guard, so it can neither delay nor
-    /// suppress (2). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
-    /// outer guard would let a throw from (1) swallow (2) — the exact loss #565 was filed for.
+    /// The two hooks run FIRST but each inside its own no-throw guard, so neither can delay nor
+    /// suppress (3). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
+    /// outer guard would let a throw from (1) or (2) swallow (3) — the exact loss #565 was filed for.
     ///
     /// Package-private and named rather than an inline lambda so the composition itself is testable:
     /// `ScheduledTaskDrainWiringBootTest` drives a real drain through it. Both arguments are
     /// forward-declared refs — the manager and the event aggregator are both constructed after
     /// `DrainProcedure`.
     static Consumer<DrainReason> drainInitiatedEmitter(AtomicReference<Runnable> scheduledTaskDrainHookRef,
+                                                       Runnable storageMaintenanceStop,
                                                        AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef) {
         return reason -> {
-            runScheduledTaskDrainHookSafely(scheduledTaskDrainHookRef.get());
+            runDrainHookSafely("Scheduled-task", scheduledTaskDrainHookRef.get());
+            runDrainHookSafely("Storage-maintenance", storageMaintenanceStop);
             clusterEventDrainEmitterRef.get()
                                        .accept(reason);
         };
     }
 
-    private static void runScheduledTaskDrainHookSafely(Runnable hook) {
+    private static void runDrainHookSafely(String name, Runnable hook) {
         try {
             hook.run();
         } catch (Throwable t) {
-            LOG.warn("Scheduled-task drain hook failed: {} — drain proceeds", t.getMessage());
+            LOG.warn("{} drain hook failed: {} — drain proceeds", name, t.getMessage());
         }
+    }
+
+    /// Promotion and demotion of this node's storage stop when the node starts draining, not only when it stops: a
+    /// draining node is leaving, and a cycle that copies blocks into tiers about to be torn down gains nothing. FER: a
+    /// manager that will not deactivate is logged and the drain goes on. Also run first thing in `shutdownStorage()`.
+    @Contract
+    private static void stopStorageMaintenance(Map<String, StorageFactory.StorageSetup> storageSetups) {
+        StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be deactivated: {}",
+                                                                                            cause.message()));
     }
 
     /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
