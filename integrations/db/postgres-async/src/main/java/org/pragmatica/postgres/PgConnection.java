@@ -529,7 +529,7 @@ public class PgConnection implements Connection {
                 // COMMIT: on server failure, the tx is automatically rolled back per PG semantics —
                 // fire rollback hooks. On wire/connection failure, also fire rollback hooks (best effort).
                 return PgConnection.this.completeScript("COMMIT")
-                                   .onResult(result -> exitTx(result.isSuccess()))
+                                   .withResult(result -> exitTx(result.isSuccess()))
                                    .map(Unit::toUnit);
             }
 
@@ -544,7 +544,7 @@ public class PgConnection implements Connection {
                 // ROLLBACK: fire rollback hooks regardless — on wire failure the connection is broken
                 // anyway, so unsubscribing local handlers is the right cleanup.
                 return PgConnection.this.completeScript("ROLLBACK")
-                                   .onResultRun(() -> exitTx(false))
+                                   .withResult(_ -> exitTx(false))
                                    .map(Unit::toUnit);
             }
 
