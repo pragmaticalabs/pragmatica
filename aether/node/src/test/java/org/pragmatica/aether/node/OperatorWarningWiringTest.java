@@ -35,6 +35,21 @@ class OperatorWarningWiringTest {
     }
 
     /// #752: the declarative consumer manager reports a divergence from its consumer runtime to this node's sink.
+    /// A storage instance whose promotion keeps failing without copying anything reaches this node's sink through the stall
+    /// watch the maintenance driver runs after every promotion cycle. The watch and the driver are tested with their own sink
+    /// and managers, so un-binding either here, or handing the watch a different sink or a partial setup map, left them green.
+    @Test
+    void assembly_givesTheMaintenanceDriverAStallWatchOverEverySetupOnThisNodesSink() {
+        assertThat(assemblyCode()).contains("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector);");
+    }
+
+    /// The ready signal can fire again after a drain began; the node tells it whether it is draining from the drain procedure's own
+    /// state. `StoragePromotionWiringTest` tests the guard with a supplied predicate, so binding a constant here left it green.
+    @Test
+    void assembly_tellsTheStorageReadySignalWhetherTheDrainProcedureHasStarted() {
+        assertThat(assemblyCode()).contains("signalReadyActivatingStorage(nodeLifecycle::signalReady,storageSetups,()->drainProcedure.state()!=DrainProcedure.DrainState.INACTIVE)");
+    }
+
     @Test
     void assembly_givesTheSinkToTheStreamConsumerManager() {
         assertThat(assemblyCode()).contains("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");

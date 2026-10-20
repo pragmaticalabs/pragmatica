@@ -15,6 +15,9 @@ import org.pragmatica.lang.Verify;
 /// set, the effective directory is still suffixed with the node id (`<walPath>/<nodeId>`): multiple
 /// nodes on one host (EmberCluster, co-located containers) must never share a WAL directory, and the
 /// suffix is what keeps that invariant independent of operator input.
+///
+/// `promotion` is a kill switch for background tier promotion on this instance (default on): promotion copies hot
+/// blocks into the node's faster tiers, per node. It has no effect on `streams`, which never promotes.
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -23,7 +26,30 @@ public record StorageConfig(long memoryMaxBytes,
                             String snapshotMaxInterval,
                             int snapshotRetentionCount,
                             String walPath,
-                            boolean encrypted) {
+                            boolean encrypted,
+                            boolean promotion) {
+    /// Pre-promotion-key shape, kept so existing callers stay source-compatible; `promotion` defaults to on.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             true);
+    }
+
     /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
     /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
     /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
@@ -43,7 +69,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  "60s",
                                  5,
                                  "",
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// Pre-#634-3 shape, kept so existing callers (and the defaults they encode) stay source-compatible;
@@ -63,7 +90,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  "",
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// Pre-#253 shape, kept so existing callers stay source-compatible; `encrypted` defaults to false.
@@ -83,7 +111,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  walPath,
-                                 false);
+                                 false,
+                                 true);
     }
 
     /// #253: `encrypted` opts this instance's disk/DHT tiers into [org.pragmatica.storage.EncryptingStorageTier],
@@ -106,7 +135,31 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotMaxInterval,
                                  snapshotRetentionCount,
                                  walPath,
-                                 encrypted);
+                                 encrypted,
+                                 true);
+    }
+
+    /// `promotion` switches background tier promotion on this instance on or off (`[storage.<name>] promotion`).
+    public static StorageConfig storageConfig(long memoryMaxBytes,
+                                              long diskMaxBytes,
+                                              String diskPath,
+                                              String snapshotPath,
+                                              int snapshotMutationThreshold,
+                                              String snapshotMaxInterval,
+                                              int snapshotRetentionCount,
+                                              String walPath,
+                                              boolean encrypted,
+                                              boolean promotion) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion);
     }
 
     /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.

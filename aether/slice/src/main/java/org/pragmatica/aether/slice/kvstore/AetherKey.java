@@ -641,6 +641,35 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// Per-publisher registry key, namespaced AND node-scoped: `topic-pub/{namespace}/{topic}/{version}/{artifact}/{node}` (#1337).
+    ///
+    /// The publisher-side twin of [TopicSubscriptionKey]. The node component keeps one row per publishing slice INSTANCE, so an unload
+    /// removes only its own row; it is last so the `topic-pub/{namespace}/{topic}/{version}` prefix stays intact.
+    record TopicPublisherKey(ResourceAddress address, Artifact artifact, NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "topic-pub/";
+
+        @Override
+        public String asString() {
+            return PREFIX + address.namespace()
+                                   .value()
+                 + "/" + address.name()
+                                .value()
+                 + "/" + address.version()
+                                .asString()
+                 + "/" + artifact.asString()
+                 + "/" + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static TopicPublisherKey topicPublisherKey(ResourceAddress address, Artifact artifact, NodeId nodeId) {
+            return new TopicPublisherKey(address, artifact, nodeId);
+        }
+    }
+
     /// Runtime: republished by slice activation, and its value names the registering node
     /// (`ScheduledTaskValue.registeredBy`). The operator's pause is NOT here — it is cluster state and
     /// lives in [ScheduledTaskPauseKey], so a cold restart keeps it.
