@@ -1044,7 +1044,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// The two links were dialed by different ends — the dual-dial race — as opposed to one end re-dialing.
     static boolean isDualDialLoser(QuicPeerConnection loser, QuicPeerConnection winner) {
         return loser.initiator()
-                    .flatMap(old -> winner.initiator().map(current -> !old.equals(current)))
+                    .flatMap(old -> winner.initiator()
+                                          .map(current -> !old.equals(current)))
                     .or(false);
     }
 
