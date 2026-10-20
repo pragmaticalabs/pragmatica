@@ -3518,9 +3518,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A ring released in the meantime has no reader left to expose the event to.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
-                                 .onSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
-                                                                                                                                streamName,
-                                                                                                                                partition)));
+                                 .withSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
+                                                                                                                                  streamName,
+                                                                                                                                  partition)));
     }
 
     /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind
