@@ -51,7 +51,7 @@ import static org.pragmatica.lang.Unit.unit;
 class AppHttpServerLocalDeadlineTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("deadline-node").unwrap();
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
-    private static final int TEST_PORT = 18095;
+    private int port;
 
     private HttpRouteRegistry registry;
     private HttpClient httpClient;
@@ -66,7 +66,7 @@ class AppHttpServerLocalDeadlineTest {
     void localDispatch_overRealHttp_routeHandlerObservesBoundedDeadline() throws Exception {
         var observed = new AtomicReference<Deadline>();
         var router = new DeadlineObservingRouter(observed);
-        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(0),
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
                                                  registry,
@@ -80,10 +80,11 @@ class AppHttpServerLocalDeadlineTest {
                                                  Option.none(),
                                                  Option.<org.pragmatica.aether.update.DeploymentManager>none());
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             var response = httpClient.send(java.net.http.HttpRequest.newBuilder()
-                                                                    .uri(URI.create("http://localhost:" + TEST_PORT + "/local/thing"))
+                                                                    .uri(URI.create("http://localhost:" + port + "/local/thing"))
                                                                     .GET()
                                                                     .build(),
                                            HttpResponse.BodyHandlers.ofString());
@@ -107,15 +108,16 @@ class AppHttpServerLocalDeadlineTest {
         var tracker = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
         var execution = Promise.<HttpResponseData>promise();
         var router = new DeadlineObservingRouter(new AtomicReference<>(), execution);
-        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(0),
             ForwardingTimeouts.forwardingTimeouts(), SELF_NODE, registry,
             Option.some(new StubRoutePublisher("GET", "/local/", SELF_NODE, router)),
             Option.none(), Option.none(), Option.none(), Option.none(), Option.none(), Option.none(), Option.none(),
             Option.<org.pragmatica.aether.update.DeploymentManager>none());
         server.setInvocationAdmission(tracker);
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
-            var request = java.net.http.HttpRequest.newBuilder(URI.create("http://localhost:" + TEST_PORT + "/local/held")).GET().build();
+            var request = java.net.http.HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/local/held")).GET().build();
             var response = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
             org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(tracker.count()).isEqualTo(1));
             tracker.setAcceptingNewWork(false);
