@@ -43,12 +43,18 @@ record StaleEntryCleaner(Active active) {
     // is the correct contract — propagating Promise<Unit> would just be discarded one level up.
     @Contract
     void cleanupStaleNodeRoutes() {
+        cleanupStaleNodeRoutes(placementNodes());
+    }
+
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
+    @Contract
+    void cleanupStaleNodeRoutes(Set<NodeId> currentNodes) {
         if (!active.coreMembershipResolved()) {
             return;
         }
 
-        var currentNodes = placementNodes();
-        var commands = new ArrayList<KVCommand<AetherKey>>();
+                var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
               .kvStore()
@@ -71,12 +77,18 @@ record StaleEntryCleaner(Active active) {
     // opposite-tier activation forever.
     @Contract
     void cleanupStaleTopicRows() {
+        cleanupStaleTopicRows(placementNodes());
+    }
+
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
+    @Contract
+    void cleanupStaleTopicRows(Set<NodeId> currentNodes) {
         if (!active.coreMembershipResolved()) {
             return;
         }
 
-        var currentNodes = placementNodes();
-        var commands = new ArrayList<KVCommand<AetherKey>>();
+                var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
               .kvStore()
@@ -132,12 +144,18 @@ record StaleEntryCleaner(Active active) {
     // KV apply reports its own failure via .onFailure(log.error).
     @Contract
     void cleanupStaleSliceEntries() {
+        cleanupStaleSliceEntries(placementNodes());
+    }
+
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
+    @Contract
+    void cleanupStaleSliceEntries(Set<NodeId> currentNodes) {
         if (!active.coreMembershipResolved()) {
             return;
         }
 
-        var currentNodes = placementNodes();
-        var staleKeys = active.sliceStates()
+                var staleKeys = active.sliceStates()
                               .keySet()
                               .stream()
                               .filter(key -> !currentNodes.contains(key.nodeId()))
@@ -164,12 +182,18 @@ record StaleEntryCleaner(Active active) {
     // KV apply reports its own failure via .onFailure(log.error).
     @Contract
     void cleanupStaleNodeArtifactEntries() {
+        cleanupStaleNodeArtifactEntries(placementNodes());
+    }
+
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
+    @Contract
+    void cleanupStaleNodeArtifactEntries(Set<NodeId> currentNodes) {
         if (!active.coreMembershipResolved()) {
             return;
         }
 
-        var currentNodes = placementNodes();
-        var staleKeys = new ArrayList<NodeArtifactKey>();
+                var staleKeys = new ArrayList<NodeArtifactKey>();
 
         active.ctx()
               .kvStore()
@@ -211,14 +235,20 @@ record StaleEntryCleaner(Active active) {
     // cleanupStaleNodeArtifactEntries, which removes them outright.
     @Contract
     void cleanupOrphanedSliceEntries() {
+        cleanupOrphanedSliceEntries(placementNodes());
+    }
+
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
+    @Contract
+    void cleanupOrphanedSliceEntries(Set<NodeId> currentNodes) {
         if (!active.coreMembershipResolved()) {
             return;
         }
         // #850: the inclusion filter is the placement set (core ∪ registered workers), not the core
         // set alone — a worker-hosted orphan must be unloaded too, and the stale-entry sweeps no longer
         // remove a live worker's key for it.
-        var currentNodes = placementNodes();
-        var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
+                var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
 
         active.ctx()
               .kvStore()

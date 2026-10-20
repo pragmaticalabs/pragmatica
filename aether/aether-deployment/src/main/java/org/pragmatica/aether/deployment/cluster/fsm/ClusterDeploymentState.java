@@ -604,11 +604,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             sweepDeadRestoredWorkers();
             rebuildSliceStateFromKVStoreEntries();
             triggerLoadedSliceActivation();
-            cleanupStaleNodeRoutes();
-            cleanupStaleTopicRows();
-            cleanupStaleSliceEntries();
-            cleanupStaleNodeArtifactEntries();
-            cleanupOrphanedSliceEntries();
+            sweepStaleEntries(true);
             resumeDrainEvictions();
             recoverStalledSchemaMigrations();
         }
@@ -623,10 +619,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // 2s-deferred retry is what actually catches the dead-restored-worker case on a
             // freshly elected leader; see `sweepDeadRestoredWorkers`'s doc comment.
             sweepDeadRestoredWorkers();
-            cleanupStaleNodeRoutes();
-            cleanupStaleTopicRows();
-            cleanupStaleSliceEntries();
-            cleanupStaleNodeArtifactEntries();
+            sweepStaleEntries(false);
             reconcile();
         }
 
@@ -2836,6 +2829,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        /// One reconcile / KV-rebuild / deferred-recheck pass: ONE placement snapshot for every stale-entry sweep (#1337). Each sweep
+        /// reading the set afresh could see different sets within a tick, and a node entering the set between two sweeps would lose its
+        /// topic rows while keeping its slices, a silent delivery stop.
+        void sweepStaleEntries(boolean includeOrphans) {
+            var placement = placementNodes();
+            var cleaner = staleEntryCleaner();
+
+            cleaner.cleanupStaleNodeRoutes(placement);
+            cleaner.cleanupStaleTopicRows(placement);
+            cleaner.cleanupStaleSliceEntries(placement);
+            cleaner.cleanupStaleNodeArtifactEntries(placement);
+            if (includeOrphans) {
+                cleaner.cleanupOrphanedSliceEntries(placement);
+            }
+        }
+
         @Contract
         public void cleanupStaleNodeRoutes() {
             staleEntryCleaner().cleanupStaleNodeRoutes();
@@ -2943,11 +2952,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.debug("Reconciliation complete: {} of {} blueprints required adjustment", reconciled, blueprints.size());
             resumeDrainEvictions();
             evaluateCommunityStates();
-            cleanupOrphanedSliceEntries();
-            cleanupStaleNodeRoutes();
-            cleanupStaleTopicRows();
-            cleanupStaleNodeArtifactEntries();
-            cleanupStaleSliceEntries();
+            sweepStaleEntries(true);
             detectStuckTransitionalStates();
             // A schema sweep does NOT belong here. It was added and reverted on 2026-08-31: sweeping
             // PENDING records on every reconcile re-dispatches a migration that is already running —

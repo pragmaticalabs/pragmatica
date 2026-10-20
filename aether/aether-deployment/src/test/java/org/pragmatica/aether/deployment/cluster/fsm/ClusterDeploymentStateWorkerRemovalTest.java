@@ -100,6 +100,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
 
     /// The core members the leader counts; mutable so a test can keep a node counted while its removal decision arrives.
     private final Set<NodeId> countedCores = ConcurrentHashMap.newKeySet();
+    private java.util.function.Supplier<Set<NodeId>> coreSource = () -> Set.copyOf(countedCores);
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
@@ -125,7 +126,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    () -> Set.copyOf(countedCores),
+                                                    () -> coreSource.get(),
                                                     () -> Set.of(SELF),
                                                     Set::of,
                                                     Set.of(SELF),
@@ -558,6 +559,49 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(kvStore.get(departedSub)).as("handleNodeRemoval removes the departed subscription row").isEqualTo(Option.empty());
             assertThat(kvStore.get(survivingPub).isPresent()).as("another node's publisher row stays").isTrue();
             assertThat(kvStore.get(survivingSub).isPresent()).as("another node's subscription row stays").isTrue();
+        }
+    }
+
+    /// #1337 (v-2332): the sweeps of ONE pass see ONE placement set. The counted-core supplier below answers `{SELF, GHOST}` to the
+    /// first call only; a sweep that read the set afresh would see `{SELF}` and remove GHOST's rows while another sweep kept GHOST's
+    /// slices, which silently stops delivery to a node that is still placing.
+    @Nested
+    class OnePlacementSnapshotPerPass {
+        @Test
+        void sweepsOfOnePass_allSeeTheFirstPlacementSet() {
+            var ghost = new NodeId("node-ghost");
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var routes = NodeRoutesKey.nodeRoutesKey(ghost, ARTIFACT);
+            var artifact = NodeArtifactKey.nodeArtifactKey(ghost, ARTIFACT);
+            var topicRow = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, ghost);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            kvStore.put(routes, NodeRoutesValue.empty());
+            kvStore.put(artifact, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            kvStore.put(topicRow, TopicPublisherValue.topicPublisherValue(ghost, TopicTier.EPHEMERAL));
+            coreSource = () -> calls.getAndIncrement() == 0 ? Set.of(SELF, ghost) : Set.of(SELF);
+
+            activeState().sweepStaleEntries(false);
+
+            assertThat(kvStore.get(routes).isPresent()).as("node-routes sweep used the pass's snapshot").isTrue();
+            assertThat(kvStore.get(artifact).isPresent()).as("node-artifact sweep used the pass's snapshot").isTrue();
+            assertThat(kvStore.get(topicRow).isPresent()).as("topic-row sweep used the pass's snapshot").isTrue();
+        }
+
+        /// Control for the instrument: with the supplier steady at `{SELF}` the same sweeps DO remove the ghost's rows.
+        @Test
+        void control_aSteadySetWithoutTheGhost_sweepsItsRows() {
+            var ghost = new NodeId("node-ghost");
+            var topicRow = TopicPublisherKey.topicPublisherKey(ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap(), ARTIFACT, ghost);
+            var routes = NodeRoutesKey.nodeRoutesKey(ghost, ARTIFACT);
+
+            kvStore.put(routes, NodeRoutesValue.empty());
+            kvStore.put(topicRow, TopicPublisherValue.topicPublisherValue(ghost, TopicTier.EPHEMERAL));
+
+            activeState().sweepStaleEntries(false);
+
+            assertThat(kvStore.get(routes)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(topicRow)).isEqualTo(Option.empty());
         }
     }
 
