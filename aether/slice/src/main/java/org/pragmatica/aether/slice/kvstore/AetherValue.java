@@ -729,7 +729,6 @@ public sealed interface AetherValue {
         public boolean requiresDurable() {
             return this == DURABLE;
         }
-
         /// Whether a publisher recording this tier delivers on the ephemeral tier.
         public boolean deliversEphemeral() {
             return this == EPHEMERAL;

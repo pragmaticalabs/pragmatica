@@ -1255,7 +1255,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             var commands = Stream.concat(entries.stream()
-                                                .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact, entry)),
+                                                .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact,
+                                                                                                                      entry)),
                                          publishers.stream()
                                                    .filter(publisher -> publisher.tier() != TopicTier.UNDECLARED)
                                                    .<KVCommand<AetherKey>> map(publisher -> buildTopicPublisherPutCommand(artifact,
@@ -1285,19 +1286,25 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var conflicts = new ArrayList<String>();
 
             subscriptions.stream()
-                         .filter(subscription -> subscription.tier().requiresDurable())
-                         .forEach(subscription -> ephemeralPublishersAt(subscription.address(), artifact)
-                                                      .forEach(publisher -> conflicts.add("topic " + subscription.address().asString()
-                                                                                          + " is subscribed by " + artifact.asString() + "." + subscription.methodName().name()
-                                                                                          + ", whose handler takes a MessageContext and needs a durable topic, but " + publisher
-                                                                                          + " publishes it on the EPHEMERAL tier")));
+                         .filter(subscription -> subscription.tier()
+                                                             .requiresDurable())
+                         .forEach(subscription -> ephemeralPublishersAt(subscription.address(),
+                                                                        artifact).forEach(publisher -> conflicts.add("topic " + subscription.address()
+                                                                                                                                            .asString()
+                                                                                                                    + " is subscribed by " + artifact.asString()
+                                                                                                                    + "." + subscription.methodName()
+                                                                                                                                        .name()
+                                                                                                                    + ", whose handler takes a MessageContext and needs a durable topic, but " + publisher
+                                                                                                                    + " publishes it on the EPHEMERAL tier")));
             publishers.stream()
-                      .filter(publisher -> publisher.tier().deliversEphemeral())
-                      .forEach(publisher -> durableSubscribersAt(publisher.address(), artifact)
-                                                .forEach(subscriber -> conflicts.add("topic " + publisher.address().asString()
-                                                                                     + " is published on the EPHEMERAL tier by " + artifact.asString()
-                                                                                     + " but subscribed by " + subscriber
-                                                                                     + ", whose handler takes a MessageContext and needs a durable topic")));
+                      .filter(publisher -> publisher.tier()
+                                                    .deliversEphemeral())
+                      .forEach(publisher -> durableSubscribersAt(publisher.address(),
+                                                                 artifact).forEach(subscriber -> conflicts.add("topic " + publisher.address()
+                                                                                                                                   .asString()
+                                                                                                              + " is published on the EPHEMERAL tier by " + artifact.asString()
+                                                                                                              + " but subscribed by " + subscriber
+                                                                                                              + ", whose handler takes a MessageContext and needs a durable topic")));
 
             return conflicts.isEmpty()
                    ? Result.unitResult()
@@ -1310,7 +1317,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             ctx.kvStore()
                .forEach(TopicPublisherKey.class,
                         TopicPublisherValue.class,
-                        (key, value) -> collectConflictingRow(found, key.address(), key.artifact(), key.nodeId(), value.tier().deliversEphemeral(), address, self));
+                        (key, value) -> collectConflictingRow(found,
+                                                              key.address(),
+                                                              key.artifact(),
+                                                              key.nodeId(),
+                                                              value.tier().deliversEphemeral(),
+                                                              address,
+                                                              self));
 
             return found;
         }
@@ -1351,7 +1364,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private KVCommand<AetherKey> buildTopicPublisherPutCommand(Artifact artifact, PublisherManifestEntry entry) {
             var key = TopicPublisherKey.topicPublisherKey(entry.address(), artifact, ctx.self());
 
-            return new KVCommand.Put<>(key, TopicPublisherValue.topicPublisherValue(ctx.self(), entry.tier()));
+            return new KVCommand.Put<>(key,
+                                       TopicPublisherValue.topicPublisherValue(ctx.self(), entry.tier()));
         }
 
         /// #1448: the key is node-scoped, so this node's subscription record is its own row. Before the
@@ -1503,15 +1517,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private List<PublisherManifestEntry> readPublishersFromManifest(Artifact artifact, Slice slice) {
             return readPublishBindingsFromManifest(artifact, slice).stream()
-                                                                   .flatMap(entry -> publisherEntry(artifact, entry).stream())
-                                                                   .toList();
+                                                  .flatMap(entry -> publisherEntry(artifact, entry).stream())
+                                                  .toList();
         }
 
         private Option<PublisherManifestEntry> publisherEntry(Artifact artifact, ReactiveManifestEntry entry) {
             return resolveSubscriptionAddress(artifact, entry).option()
-                                                              .map(address -> new PublisherManifestEntry(address,
-                                                                                                         declaredPublisherTier(artifact,
-                                                                                                                               entry.config())));
+                                             .map(address -> new PublisherManifestEntry(address,
+                                                                                        declaredPublisherTier(artifact,
+                                                                                                              entry.config())));
         }
 
         /// What the publisher's topic section declares, read through the same slice composite the publisher factory binds from. An ABSENT
@@ -1519,8 +1533,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// at all, is [TopicTier#UNDECLARED].
         private TopicTier declaredPublisherTier(Artifact artifact, String section) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
-                                               .map(service -> publisherTierIn(service, section))
-                                               .or(TopicTier.UNDECLARED);
+                                     .map(service -> publisherTierIn(service, section))
+                                     .or(TopicTier.UNDECLARED);
         }
 
         private static TopicTier publisherTierIn(ConfigService service, String section) {
@@ -1555,7 +1569,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                         for (int i = 0; i < count; i++) {
                             var prefix = "publish.topic." + i + ".";
 
-                            result.add(new ReactiveManifestEntry("publisher", "", props.getProperty(prefix + "config", ""), props, prefix));
+                            result.add(new ReactiveManifestEntry("publisher",
+                                                                 "",
+                                                                 props.getProperty(prefix + "config", ""),
+                                                                 props,
+                                                                 prefix));
                         }
                     }
                 } catch (Exception e) {

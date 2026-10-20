@@ -2791,11 +2791,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             ctx.kvStore()
                .forEach(AetherKey.TopicSubscriptionKey.class,
                         AetherValue.TopicSubscriptionValue.class,
-                        (key, _) -> collectTopicRowKeyForNode(commands, key, key.nodeId(), removedNode));
+                        (key, _) -> collectTopicRowKeyForNode(commands,
+                                                              key,
+                                                              key.nodeId(),
+                                                              removedNode));
             ctx.kvStore()
                .forEach(AetherKey.TopicPublisherKey.class,
                         AetherValue.TopicPublisherValue.class,
-                        (key, _) -> collectTopicRowKeyForNode(commands, key, key.nodeId(), removedNode));
+                        (key, _) -> collectTopicRowKeyForNode(commands,
+                                                              key,
+                                                              key.nodeId(),
+                                                              removedNode));
 
             return commands;
         }
