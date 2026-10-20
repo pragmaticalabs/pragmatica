@@ -118,9 +118,13 @@ final class DefaultPromotionManager implements PromotionManager {
                          .reduce(PromotionResult.NONE, PromotionResult::add);
     }
 
-    private PromotionResult promoteToTargetOf(BlockLifecycle candidate, StorageTier sourceTier, StorageTier adjacentTier) {
-        return targetFor(candidate, adjacentTier).map(target -> promoteBlock(candidate.blockId(), sourceTier, target))
-                                                 .or(PromotionResult.NONE);
+    private PromotionResult promoteToTargetOf(BlockLifecycle candidate,
+                                              StorageTier sourceTier,
+                                              StorageTier adjacentTier) {
+        return targetFor(candidate, adjacentTier).map(target -> promoteBlock(candidate.blockId(),
+                                                                             sourceTier,
+                                                                             target))
+                        .or(PromotionResult.NONE);
     }
 
     private List<BlockLifecycle> selectCandidates(TierLevel sourceLevel, StorageTier adjacentTarget) {
@@ -161,9 +165,9 @@ final class DefaultPromotionManager implements PromotionManager {
         return lifecycle.accessCount() > config.accessThreshold()
                && lifecycle.lastAccessedAt() >= windowStart
                && targetFor(lifecycle, adjacentTarget).filter(target -> !lifecycle.presentIn()
-                                                                                   .contains(target.level()))
-                                                      .filter(target -> !isAtTargetWatermark(target))
-                                                      .isPresent();
+                                                                                  .contains(target.level()))
+                           .filter(target -> !isAtTargetWatermark(target))
+                           .isPresent();
     }
 
     /// Synchronous block promotion. Uses .await() because promotion runs on a dedicated

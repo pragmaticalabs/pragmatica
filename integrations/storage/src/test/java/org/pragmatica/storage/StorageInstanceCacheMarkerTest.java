@@ -387,6 +387,11 @@ class StorageInstanceCacheMarkerTest {
 
             assertThat(readerStore.listAllLifecycles()).extracting(BlockLifecycle::blockId)
                                                        .containsExactlyInAnyOrder(ids.get(3), ids.get(4), ids.get(5));
+
+            // The swept-in markers took their slots: the cap is full again, not one short of full.
+            bounded.get(ids.get(6)).await().unwrap();
+
+            assertThat(readerStore.getLifecycle(ids.get(6)).isPresent()).as("the table is full again after the sweep").isFalse();
         }
 
         @Test
