@@ -22,10 +22,12 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
+import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PlacementOperationPhase;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -35,6 +37,12 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// Serial leader-side placement workflow. The durable phase precedes every provider effect;
@@ -64,6 +72,75 @@ public interface CommunityPlacementReconciler {
     /// The pairings' replacements not counted as an excess now. Read-only, for the boot test that pins the node's wiring.
     default java.util.Set<NodeId> surgeView() {
         return java.util.Set.of();
+    }
+
+    /// #241: where the parked-operation events go. Late-wired, like [#protectReplacements]: the node binds its own sink after the reconciler is
+    /// built, and until then the log line is the whole report.
+    default Unit operatorWarnings(OperatorWarningSink sink) {
+        return Unit.unit();
+    }
+
+    /// The sink the parked-operation events go to. Read-only, for the boot test that pins the node's wiring.
+    default OperatorWarningSink operatorWarningSink() {
+        return OperatorWarningSink.logOnly();
+    }
+
+    /// #241: the operator clears ONE parked operation of `communityId` (DRAIN_UNCERTAIN, or BLOCKED with a target the reconciler has not observed)
+    /// after looking at the nodes it names. The operation is closed
+    /// without effect: the previous worker is NOT removed, drained or terminated by the clear, and neither is the replacement. The next pass
+    /// recomputes the community from what is there. Refused for a community with no operation, for an operation that is not parked, and
+    /// by a node that is not the active leader.
+    default Promise<ParkedClear> clearParked(String communityId, String operator, String reason) {
+        return new ParkedClearRefusal.NotActive().promise();
+    }
+
+    /// What a clear closed.
+    record ParkedClear(String communityId,
+                       String operationId,
+                       PlacementOperationPhase phase,
+                       NodeId targetNode,
+                       Option<NodeId> previousNode) {
+        public static ParkedClear parkedClear(CommunityPlacementOperationValue operation) {
+            return new ParkedClear(operation.communityId(),
+                                   operation.operationId(),
+                                   operation.phase(),
+                                   operation.targetNode(),
+                                   operation.previousNode());
+        }
+    }
+
+    /// Why [#clearParked] cleared nothing.
+    sealed interface ParkedClearRefusal extends org.pragmatica.lang.Cause {
+        record NotActive() implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "Only the active leader clears a parked community placement operation";
+            }
+        }
+
+        record NoOperation(String communityId) implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "Community " + communityId + " has no placement operation";
+            }
+        }
+
+        record NotParked(String communityId, PlacementOperationPhase phase) implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "The placement operation of community " + communityId
+                     + " is " + phase
+                     + ", not parked: it is either progressing or resumes by itself, so there is nothing to clear";
+            }
+        }
+
+        record Changed(String communityId) implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "The placement operation of community " + communityId
+                     + " changed or the clear was not confirmed committed; read the operation again before retrying";
+            }
+        }
     }
 
     interface Actuator {
@@ -132,7 +209,9 @@ public interface CommunityPlacementReconciler {
                                        new AtomicBoolean(),
                                        new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
                                        new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
-                                       clock);
+                                       clock,
+                                       new java.util.concurrent.ConcurrentHashMap<>(),
+                                       new java.util.concurrent.atomic.AtomicReference<>(OperatorWarningSink.logOnly()));
     }
 }
 
@@ -151,7 +230,11 @@ record PlacementReconciler(NodeId self,
                            AtomicBoolean running,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> protectedNodes,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes,
-                           java.util.function.LongSupplier clock) implements CommunityPlacementReconciler {
+                           java.util.function.LongSupplier clock,
+                           java.util.concurrent.ConcurrentHashMap<String, Long> emptySince,
+                           java.util.concurrent.atomic.AtomicReference<OperatorWarningSink> warnings) implements CommunityPlacementReconciler {
+    private static final Logger LOG = LoggerFactory.getLogger(CommunityPlacementReconciler.class);
+
     @Override
     public java.util.Set<NodeId> protectedView() {
         return protectedNodes.get()
@@ -162,6 +245,18 @@ record PlacementReconciler(NodeId self,
     public java.util.Set<NodeId> surgeView() {
         return surgeNodes.get()
                          .get();
+    }
+
+    @Override
+    public Unit operatorWarnings(OperatorWarningSink sink) {
+        warnings.set(sink);
+
+        return Unit.unit();
+    }
+
+    @Override
+    public OperatorWarningSink operatorWarningSink() {
+        return warnings.get();
     }
 
     @Override
@@ -318,7 +413,140 @@ record PlacementReconciler(NodeId self,
                                              (identity, cause) -> org.slf4j.LoggerFactory.getLogger(CommunityPlacementReconciler.class)
                                                                                          .warn("Community {} reconciliation deferred: {}",
                                                                                                identity,
-                                                                                               cause.message()));
+                                                                                               cause.message()))
+                                  .flatMap(_ -> reconcileDerived(config));
+    }
+
+    /// #241: the derived communities (`<source>-w-N`) of a cluster that declares no `[community.*]` follow the committed
+    /// `[community_policy]`: their target size is re-stamped to `max_size`, and with growth on an empty one is dissolved after the
+    /// grace. Declared communities are never touched here. Needs a committed policy: without one there is nothing to follow.
+    private Promise<Unit> reconcileDerived(ClusterBootstrapConfig config) {
+        return config.communities()
+                     .isEmpty()
+               ? config.communityPolicy()
+                       .fold(Promise::unitPromise, this::reconcileDerivedCommunities)
+               : Promise.unitPromise();
+    }
+
+    private Promise<Unit> reconcileDerivedCommunities(CommunityPolicy policy) {
+        var snapshot = aetherSnapshot();
+        var views = derivedViews(snapshot);
+        var since = timeEmptiness(views);
+        var actions = DerivedCommunityPlan.plan(views, policy, since, clock.getAsLong());
+
+        return currentLeader().fold(Promise::unitPromise, leader -> applyDerivedActions(actions, leader, snapshot));
+    }
+
+    private static List<DerivedCommunityPlan.View> derivedViews(Map<AetherKey, AetherValue> snapshot) {
+        var members = snapshot.values()
+                              .stream()
+                              .filter(AetherValue.ActivationDirectiveValue.class::isInstance)
+                              .map(AetherValue.ActivationDirectiveValue.class::cast)
+                              .collect(Collectors.groupingBy(AetherValue.ActivationDirectiveValue::communityId,
+                                                             Collectors.counting()));
+
+        return snapshot.entrySet()
+                       .stream()
+                       .flatMap(entry -> derivedView(entry, members).stream())
+                       .toList();
+    }
+
+    private static Option<DerivedCommunityPlan.View> derivedView(Map.Entry<AetherKey, AetherValue> entry,
+                                                                 Map<String, Long> members) {
+        return entry.getKey() instanceof AetherKey.CommunityKey key && entry.getValue() instanceof AetherValue.CommunityValue community
+               ? derivedView(key.communityId(), community, members)
+               : Option.none();
+    }
+
+    private static Option<DerivedCommunityPlan.View> derivedView(String id,
+                                                                 AetherValue.CommunityValue community,
+                                                                 Map<String, Long> members) {
+        return CommunityGrowthPolicy.derivedIndex(community.sourceName(),
+                                                  id)
+                                    .map(_ -> DerivedCommunityPlan.View.view(id,
+                                                                             community.sourceName(),
+                                                                             community.state(),
+                                                                             community.targetSize(),
+                                                                             members.getOrDefault(id, 0L).intValue()));
+    }
+
+    /// Emptiness is timed in this leader's memory: a community first seen empty now starts its grace now, a community seen
+    /// with a member is forgotten. A new leader restarts every grace, which delays a dissolve and never hastens one.
+    private Map<String, Long> timeEmptiness(List<DerivedCommunityPlan.View> views) {
+        var empty = DerivedCommunityPlan.emptyOpen(views);
+
+        emptySince.keySet().retainAll(empty);
+        empty.forEach(id -> emptySince.putIfAbsent(id, clock.getAsLong()));
+
+        return Map.copyOf(emptySince);
+    }
+
+    private Promise<Unit> applyDerivedActions(List<DerivedCommunityPlan.Action> actions,
+                                              LeaderValue leader,
+                                              Map<AetherKey, AetherValue> snapshot) {
+        return actions.stream()
+                      .reduce(Promise.unitPromise(),
+                              (previous, action) -> previous.flatMap(_ -> applyDerived(action, leader, snapshot)),
+                              (_, later) -> later);
+    }
+
+    // FER (degrade forward): a refused or failed write for one derived community is dropped, and the pass carries on to the next. Guarantee: the
+    // community is left exactly as committed, because every write is an expected-value transaction; nothing is half-applied. Mechanism: the
+    // next pass (every 10 s) recomputes the actions from the committed state, so a dropped write is retried by construction.
+    private Promise<Unit> applyDerived(DerivedCommunityPlan.Action action,
+                                       LeaderValue leader,
+                                       Map<AetherKey, AetherValue> snapshot) {
+        return (switch (action) {
+            case DerivedCommunityPlan.Action.Restamp restamp -> rewriteCommunity(restamp.communityId(),
+                                                                                 community -> community.withTargetSize(restamp.targetSize()),
+                                                                                 leader,
+                                                                                 snapshot);
+            case DerivedCommunityPlan.Action.BeginDissolve begin -> rewriteCommunity(begin.communityId(),
+                                                                                     community -> community.withState(CommunityState.DISSOLVING),
+                                                                                     leader,
+                                                                                     snapshot);
+            case DerivedCommunityPlan.Action.Reopen reopen -> rewriteCommunity(reopen.communityId(),
+                                                                               community -> community.withState(CommunityState.FORMING),
+                                                                               leader,
+                                                                               snapshot);
+            case DerivedCommunityPlan.Action.CompleteDissolve complete -> markDissolved(complete.communityId(),
+                                                                                        leader,
+                                                                                        snapshot);
+        }).recover(_ -> Unit.unit());
+    }
+
+    private Promise<Unit> rewriteCommunity(String communityId,
+                                           Function<AetherValue.CommunityValue, AetherValue.CommunityValue> change,
+                                           LeaderValue leader,
+                                           Map<AetherKey, AetherValue> snapshot) {
+        var key = new AetherKey.CommunityKey(communityId);
+
+        return store.getTyped(key, AetherValue.CommunityValue.class)
+                    .fold(Promise::unitPromise,
+                          before -> commitRewrite(key,
+                                                  before,
+                                                  change.apply(before),
+                                                  leader,
+                                                  snapshot));
+    }
+
+    private Promise<Unit> commitRewrite(AetherKey.CommunityKey key,
+                                        AetherValue.CommunityValue before,
+                                        AetherValue.CommunityValue after,
+                                        LeaderValue leader,
+                                        Map<AetherKey, AetherValue> snapshot) {
+        var id = UUID.randomUUID().toString();
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                              id,
+                                                                              leader,
+                                                                              reservationGuardsFromSnapshot(snapshot),
+                                                                              List.of(new KVCommand.Mutation<>(key,
+                                                                                                               Option.some(before),
+                                                                                                               Option.some(after))));
+
+        return apply.apply(List.of(command))
+                    .map(results -> accepted(results, id))
+                    .mapToUnit();
     }
 
     private Promise<Unit> reconcileIdentity(String identity) {
@@ -809,10 +1037,11 @@ record PlacementReconciler(NodeId self,
         var uncertain = operation.withPhase(phase, leader, reason, clock.getAsLong());
 
         return transition(operation, uncertain).onSuccess(accepted -> {
-                             if (accepted) {
-                                 escalation.accept(uncertain);
-                             }
-                         })
+                                                              if (accepted) {
+                                                                  escalation.accept(uncertain);
+                                                                  reportParked(uncertain);
+                                                              }
+                                                          })
                          .mapToUnit();
     }
 
@@ -872,7 +1101,126 @@ record PlacementReconciler(NodeId self,
 
     private Promise<Boolean> transition(CommunityPlacementOperationValue before,
                                         CommunityPlacementOperationValue after) {
-        return commit(after, Option.some(before), List.of());
+        return commit(after, Option.some(before), List.of()).onSuccess(accepted -> reportResumed(accepted, before, after));
+    }
+
+    /// #241: phases that need an operator unless the reconciler sees them resolve by itself. A drain acknowledgement that never came
+    /// (DRAIN_UNCERTAIN, ended by a late acknowledgement) and a conflict the reconciler cannot resolve (BLOCKED, ended when the target is
+    /// observed). The other uncertain phases wait on the provider and are not parked here.
+    private static boolean isParkedPhase(PlacementOperationPhase phase) {
+        return phase == PlacementOperationPhase.DRAIN_UNCERTAIN || phase == PlacementOperationPhase.BLOCKED;
+    }
+
+    @Contract
+    private void reportParked(CommunityPlacementOperationValue operation) {
+        if (isParkedPhase(operation.phase())) {
+            OperatorWarnings.raise(LOG,
+                                   warnings.get(),
+                                   OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
+                                   operation.communityId(),
+                                   "Community placement operation {} of community {} is parked in {} ({}). Target node {}, previous node {}. {}",
+                                   operation.operationId(),
+                                   operation.communityId(),
+                                   operation.phase(),
+                                   operation.detail(),
+                                   operation.targetNode().id(),
+                                   operation.previousNode().map(NodeId::id).or("none"),
+                                   parkedAdvice(operation));
+        }
+    }
+
+    private static String parkedAdvice(CommunityPlacementOperationValue operation) {
+        var clear = "Verify both nodes at the provider, then clear it with: aether cluster clear-placement " + operation.communityId()
+                  + " --reason <what you verified>. The clear removes and terminates nothing.";
+
+        return operation.phase() == PlacementOperationPhase.DRAIN_UNCERTAIN
+               ? "The previous node may or may not be drained; a late drain acknowledgement resumes the operation by itself. " + clear
+               : "The operation resumes by itself when its target node is observed. " + clear;
+    }
+
+    @Contract
+    private void reportResumed(boolean accepted,
+                               CommunityPlacementOperationValue before,
+                               CommunityPlacementOperationValue after) {
+        if (accepted && isParkedPhase(before.phase()) && !isParkedPhase(after.phase())) {
+            OperatorWarnings.raise(LOG,
+                                   warnings.get(),
+                                   OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                                   before.communityId(),
+                                   "Community placement operation {} of community {} left {} for {}",
+                                   before.operationId(),
+                                   before.communityId(),
+                                   before.phase(),
+                                   after.phase());
+        }
+    }
+
+    @Override
+    public Promise<ParkedClear> clearParked(String communityId, String operator, String reason) {
+        return currentLeader().fold(() -> new ParkedClearRefusal.NotActive().<ParkedClear> promise(),
+                                    leader -> operation(communityId).fold(() -> new ParkedClearRefusal.NoOperation(communityId).<ParkedClear> promise(),
+                                                                          operation -> clearOn(operation,
+                                                                                               leader,
+                                                                                               operator,
+                                                                                               reason)));
+    }
+
+    private Promise<ParkedClear> clearOn(CommunityPlacementOperationValue operation,
+                                         LeaderValue leader,
+                                         String operator,
+                                         String reason) {
+        return isParkedNow(operation)
+               ? commitClear(operation, leader, operator, reason)
+               : new ParkedClearRefusal.NotParked(operation.communityId(), operation.phase()).promise();
+    }
+
+    /// Parked now: in a parked phase and, for BLOCKED, with a target the reconciler has not observed (an observed target resumes by itself).
+    private boolean isParkedNow(CommunityPlacementOperationValue operation) {
+        return isParkedPhase(operation.phase()) && (operation.phase() != PlacementOperationPhase.BLOCKED || observedTarget(operation).isEmpty());
+    }
+
+    // The close is a single expected-value transaction on the operation: COMPLETE, with the operator and reason in its detail. It does not use
+    // [#commit], whose COMPLETE removes the previous worker's directive and placement: a clear attests nothing about that worker, so it stays.
+    private Promise<ParkedClear> commitClear(CommunityPlacementOperationValue operation,
+                                             LeaderValue leader,
+                                             String operator,
+                                             String reason) {
+        var cleared = operation.withPhase(PlacementOperationPhase.COMPLETE,
+                                          leader,
+                                          "Cleared by operator " + operator + ": " + reason,
+                                          clock.getAsLong());
+        var key = new AetherKey.CommunityPlacementOperationKey(operation.communityId());
+        var id = UUID.randomUUID().toString();
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                              id,
+                                                                              leader,
+                                                                              List.of(),
+                                                                              List.of(new KVCommand.Mutation<>(key,
+                                                                                                               Option.some(operation),
+                                                                                                               Option.some(cleared))));
+
+        return apply.apply(List.of(command))
+                    .map(results -> accepted(results, id))
+                    .flatMap(accepted -> accepted
+                                         ? Promise.success(reportCleared(operation, operator, reason))
+                                         : new ParkedClearRefusal.Changed(operation.communityId()).promise());
+    }
+
+    private ParkedClear reportCleared(CommunityPlacementOperationValue operation, String operator, String reason) {
+        OperatorWarnings.raise(LOG,
+                               warnings.get(),
+                               OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+                               operation.communityId(),
+                               "Community placement operation {} of community {} was cleared by operator {} ({}); it was {}, target node {}, previous node {}, both left as they were",
+                               operation.operationId(),
+                               operation.communityId(),
+                               operator,
+                               reason,
+                               operation.phase(),
+                               operation.targetNode().id(),
+                               operation.previousNode().map(NodeId::id).or("none"));
+
+        return ParkedClear.parkedClear(operation);
     }
 
     private Promise<Boolean> commit(CommunityPlacementOperationValue value,
@@ -920,7 +1268,7 @@ record PlacementReconciler(NodeId self,
             return Option.from(members.entrySet()
                                       .stream()
                                       .sorted(Map.Entry.comparingByKey(Comparator.comparing(NodeId::id)))
-                                      .findFirst()).fold(() -> markDissolved(policy, leader, snapshot),
+                                      .findFirst()).fold(() -> markDissolved(policy.id(), leader, snapshot),
                                                          member -> reserveRetirement(config,
                                                                                      policy,
                                                                                      leader,
@@ -1047,10 +1395,8 @@ record PlacementReconciler(NodeId self,
                              });
     }
 
-    private Promise<Unit> markDissolved(CommunityPlacement policy,
-                                        LeaderValue leader,
-                                        Map<AetherKey, AetherValue> snapshot) {
-        var key = new AetherKey.CommunityKey(policy.id());
+    private Promise<Unit> markDissolved(String communityId, LeaderValue leader, Map<AetherKey, AetherValue> snapshot) {
+        var key = new AetherKey.CommunityKey(communityId);
 
         return store.getTyped(key, AetherValue.CommunityValue.class)
                     .fold(Promise::unitPromise,

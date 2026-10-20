@@ -1675,7 +1675,20 @@ class ClusterEventAggregatorTest {
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED);
+                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED, OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                                  OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED);
+    }
+
+    /// #241: a parked placement operation is kept by the next leader, so either of its recoveries may come from a node that never raised the
+    /// warning, and each is its own event.
+    @Test
+    void onOperatorWarning_theParkedPlacementRecoveries_arePublishedByANodeThatDidNotRaiseTheWarning() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED, "stable", "cleared by alice"));
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED, "other", "left DRAIN_UNCERTAIN"));
+
+        assertThat(codes(successor)).containsExactly("community-placement-cleared", "community-placement-resumed");
     }
 
     /// Amendment B: the rejoin resolution closes the previous leader's warning the same way, and is a different event from a confirmation.
@@ -2421,6 +2434,10 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                              OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
                              OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                             OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
                              OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
                              OperatorWarningCode.WORKER_ASSIGNED,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
@@ -2449,6 +2466,9 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                              OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                             OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                             OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
+                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
                              OperatorWarningCode.STORAGE_PROMOTION_STALLED,
                              OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                              OperatorWarningCode.TOPIC_TIER_MISMATCH);

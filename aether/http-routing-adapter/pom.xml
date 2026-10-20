@@ -38,12 +38,23 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>http-routing</artifactId>
         </dependency>
+        <!-- Generated route codecs run on this runtime; slices get it through their provided dependency here. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>jackson</artifactId>
         </dependency>
 
         <!-- Testing -->
+        <!-- Runs over @Json test records, so the generated-codec path is tested with real generated code. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-codec-processor</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>

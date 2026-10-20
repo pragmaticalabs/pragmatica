@@ -117,6 +117,8 @@ public final class QuicPeerConnection {
 
     private final NodeId peerId;
     private final Option<NodeId> initiator;
+    /// The generation the dialer chose for this link (0 = none: a legacy dialer, or a link built without one).
+    private final long generation;
     private final QuicChannel connection;
     private final QuicStreamChannel[] longLivedStreams;
     private final int consensusWatermarkLowBytes;
@@ -139,11 +141,13 @@ public final class QuicPeerConnection {
 
     private QuicPeerConnection(NodeId peerId,
                                Option<NodeId> initiator,
+                               long generation,
                                QuicChannel connection,
                                int consensusWatermarkLowBytes,
                                int consensusWatermarkHighBytes) {
         this.peerId = peerId;
         this.initiator = initiator;
+        this.generation = generation;
         this.connection = connection;
         this.longLivedStreams = new QuicStreamChannel[StreamType.values().length];
         this.consensusWatermarkLowBytes = consensusWatermarkLowBytes;
@@ -155,6 +159,7 @@ public final class QuicPeerConnection {
     public static QuicPeerConnection quicPeerConnection(NodeId peerId, QuicChannel connection) {
         return new QuicPeerConnection(peerId,
                                       Option.none(),
+                                      0L,
                                       connection,
                                       QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
                                       QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);
@@ -168,6 +173,7 @@ public final class QuicPeerConnection {
                                                         int consensusWatermarkHighBytes) {
         return new QuicPeerConnection(peerId,
                                       Option.none(),
+                                      0L,
                                       connection,
                                       consensusWatermarkLowBytes,
                                       consensusWatermarkHighBytes);
@@ -175,8 +181,18 @@ public final class QuicPeerConnection {
 
     /// The verified Hello endpoint identifies the dialer at both ends of the same connection.
     public static QuicPeerConnection quicPeerConnection(NodeId peerId, NodeId initiator, QuicChannel connection) {
+        return quicPeerConnection(peerId, initiator, 0L, connection);
+    }
+
+    /// As above, for a link whose dialer chose `generation` (see [LinkRank]). A generation outside
+    /// `[1, LinkRank.MAX_GENERATION]` leaves the link without a rank.
+    public static QuicPeerConnection quicPeerConnection(NodeId peerId,
+                                                        NodeId initiator,
+                                                        long generation,
+                                                        QuicChannel connection) {
         return new QuicPeerConnection(peerId,
                                       Option.some(initiator),
+                                      generation,
                                       connection,
                                       QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
                                       QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);
@@ -184,6 +200,12 @@ public final class QuicPeerConnection {
 
     public Option<NodeId> initiator() {
         return initiator;
+    }
+
+    /// The rank of this link in an arbitration against another link of the same pair; empty when the link has
+    /// no dialer or no valid generation, in which case [PeerState] falls back to the legacy rule.
+    Option<LinkRank> linkRank() {
+        return LinkRank.linkRank(initiator, generation);
     }
 
     public NodeId peerId() {

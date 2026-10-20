@@ -279,6 +279,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// ([#journalDialerHello]). Diagnostic-only; defaults to a no-op.
     private volatile Consumer<PeerTransitionRecord> peerTransitionListener = ignored -> {};
 
+    /// Test hook (transport overhaul N33): told of every attach decision, DUPLICATE and REJECTED included, which
+    /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
+    private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
+
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
     /// `QuicDisconnectListener`, a v1 surface whose only consumer was deleted with the
@@ -1566,11 +1570,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         if (!state.beginConnecting(System.nanoTime())) {
             // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
+            attachObserver.accept(new AttachObservation(peerId, "dial skipped", Option.none()));
+
             return;
         }
 
         var address = new InetSocketAddress(inetAddress, port);
         var attempt = dialAttempts.incrementAndGet();
+        // #2138: the dial's generation outranks every link of this pair seen so far, so both ends rank this link
+        // against any other identically; taken after beginConnecting succeeded, so each dial gets its own.
+        var generation = state.nextDialGeneration();
 
         log.info("Dial journal: attempt #{} to {} at {} started", attempt, peerId, address);
         // Per-ATTEMPT dial timeout (H10, Wave 5): the timeout must NOT fail the dial promise —
@@ -1585,7 +1594,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // over another link first, which abandons this attempt while its QUIC handshake is
         // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
         // it only restarts the attach-grace phase age, see PeerState#markInbound.
-        clientRef.connect(peerId, address)
+        clientRef.connect(peerId, address, generation)
                  .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
                  .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
@@ -1817,6 +1826,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
         outcome.superseded().onPresent(old -> closeSupersededConnection(old, connection));
+        attachObserver.accept(new AttachObservation(peerId,
+                                                    origin,
+                                                    Option.some(outcome.result())));
         boolean isReconnect;
 
         switch (outcome.result()) {
@@ -3365,6 +3377,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// survived a simultaneous dial.
     Option<QuicPeerConnection> activeConnectionForTests(NodeId peerId) {
         return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
+    }
+
+    /// What [#attachObserverForTests] is told: where the connection came from (`inbound Hello` or `dial attempt #n`,
+    /// as in the dial journal) and what the attach decided. Reported after the displaced incumbent was closed; for
+    /// DUPLICATE and REJECTED the new connection's own close follows in the same call. A dial that found the peer
+    /// already CONNECTED over the inbound link never produces a connection: it is reported as `dial skipped`, with no
+    /// result, so a test can tell its own dial will not be decided.
+    record AttachObservation(NodeId peerId, String origin, Option<PeerState.AttachResult> result) {}
+
+    /// Package-private test hook (transport overhaul N33) — observe every attach decision. Lets a test tell that
+    /// this end's own dial of a simultaneous pair has been decided, which is not visible in the peer's phase: the
+    /// inbound link has already made it CONNECTED. A null observer restores the no-op.
+    @Contract
+    void attachObserverForTests(Consumer<AttachObservation> observer) {
+        this.attachObserver = observer == null
+                              ? ignored -> {}
+                              : observer;
     }
 
     /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally

@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.RepeatedTest;
@@ -36,6 +37,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -49,6 +51,8 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.observeAttaches;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.ownDialDecided;
 
 /// #1578 — the shape the ticket asked for: two real [QuicClusterNetwork]s dial EACH OTHER at the same
 /// moment (the lower id as designated initiator, the higher one forced), with traffic on every lane in
@@ -80,6 +84,8 @@ class QuicSimultaneousDialLaneTest {
         var toHigh = new CopyOnWriteArrayList<LaneProbe>();
         var lowNet = liveNetwork(low, toLow);
         var highNet = liveNetwork(high, toHigh);
+        var lowAttaches = observeAttaches(lowNet);
+        var highAttaches = observeAttaches(highNet);
         var spraying = new AtomicBoolean(true);
         var spray = CompletableFuture.runAsync(() -> sprayUntilStopped(lowNet, low, highNet, high, spraying));
 
@@ -87,28 +93,55 @@ class QuicSimultaneousDialLaneTest {
                                 CompletableFuture.runAsync(() -> highNet.dialForTests(infoOf(low, lowNet), true)))
                          .orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS)
                          .join();
-        awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
+        awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), () -> "both ends CONNECTED");
+        // CONNECTED is not settled: each end is first CONNECTED over the INBOUND link, and its own dial then completes
+        // and decides which of the two links survives (the loser is closed, with whatever was written on it). Under
+        // CPU load that decision comes hundreds of milliseconds after CONNECTED, so a probe sent on CONNECTED + a
+        // fixed settle can ride the link about to be closed. Wait for the decision at BOTH ends.
+        awaitTrue(() -> ownDialDecided(lowNet, lowAttaches) && ownDialDecided(highNet, highAttaches),
+                  () -> "both ends' own dials decided");
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MILLIS));
         spraying.set(false);
         spray.orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS).join();
-
         Arrays.stream(StreamType.values())
               .forEach(lane -> sendFinalProbes(round, lane, lowNet, low, highNet, high));
 
         awaitTrue(() -> everyLaneDelivered(toHigh, "final-" + round + "-low-to-high-"),
-                  "low -> high on every lane: missing " + missing(toHigh, "final-" + round + "-low-to-high-"));
+                  () -> "low -> high on every lane: missing " + missing(toHigh, "final-" + round + "-low-to-high-"));
         awaitTrue(() -> everyLaneDelivered(toLow, "final-" + round + "-high-to-low-"),
-                  "high -> low on every lane: missing " + missing(toLow, "final-" + round + "-high-to-low-"));
+                  () -> "high -> low on every lane: missing " + missing(toLow, "final-" + round + "-high-to-low-"));
     }
 
+    /// One probe on `lane` in each direction. A lane refuses a write while its stream is not writable
+    /// ([WriteOutcome.BackpressureRefused]: only CONSENSUS and DHT retry inside the transport), and the spray leaves each
+    /// stream a backlog that a CPU-starved peer drains slowly. A refused probe says nothing about whether the lane
+    /// carries traffic, so it is offered again until the transport accepts it; only an ACCEPTED probe must arrive. A
+    /// lane that never accepts, or an outcome other than a refusal, still fails here.
     private static void sendFinalProbes(int round,
                                         StreamType lane,
                                         QuicClusterNetwork lowNet,
                                         NodeId low,
                                         QuicClusterNetwork highNet,
                                         NodeId high) {
-        lowNet.send(high, LaneProbe.laneProbe(low, lane, "final-" + round + "-low-to-high-" + lane));
-        highNet.send(low, LaneProbe.laneProbe(high, lane, "final-" + round + "-high-to-low-" + lane));
+        offerUntilAccepted(lowNet, high, LaneProbe.laneProbe(low, lane, "final-" + round + "-low-to-high-" + lane));
+        offerUntilAccepted(highNet, low, LaneProbe.laneProbe(high, lane, "final-" + round + "-high-to-low-" + lane));
+    }
+
+    private static void offerUntilAccepted(QuicClusterNetwork network, NodeId peer, LaneProbe probe) {
+        var deadline = System.nanoTime() + AWAIT.nanos();
+
+        while (true) {
+            var outcome = network.sendOutcome(peer, probe).await(AWAIT).fold(cause -> fail("send failed: " + cause.message()),
+                                                                              written -> written);
+
+            if (outcome.isSent()) {
+                return;
+            }
+            if (!(outcome instanceof WriteOutcome.BackpressureRefused) || System.nanoTime() > deadline) {
+                fail("probe " + probe.marker() + " was not accepted: " + outcome);
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+        }
     }
 
     private static void sprayUntilStopped(QuicClusterNetwork lowNet,
@@ -178,7 +211,8 @@ class QuicSimultaneousDialLaneTest {
         return network;
     }
 
-    private static void awaitTrue(BooleanSupplier condition, String what) {
+    /// `what` is a supplier because it describes the state at the moment of the timeout, not at the call.
+    private static void awaitTrue(BooleanSupplier condition, Supplier<String> what) {
         var deadline = System.nanoTime() + AWAIT.nanos();
 
         while (System.nanoTime() < deadline) {
@@ -187,7 +221,7 @@ class QuicSimultaneousDialLaneTest {
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
         }
-        fail("Timed out waiting for: " + what);
+        fail("Timed out waiting for: " + what.get());
     }
 
     private static TopologyObserver stubTopology(NodeInfo self) {

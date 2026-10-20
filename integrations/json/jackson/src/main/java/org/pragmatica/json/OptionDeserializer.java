@@ -45,6 +45,14 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
         this.valueDeserializer = valueDeserializer;
     }
 
+    /// The deserializer for one concrete `Option<T>` type, typed by its `T` before any property is known. A container
+    /// element (`List<Option<T>>`, `Map<K, Option<T>>`, the inner `Option<T>` of `Option<Option<T>>`) is resolved this
+    /// way and never sees an Option-typed property in [#createContextual], so without the type it would read raw
+    /// `Object` (Integer for a number, LinkedHashMap for a record).
+    static OptionDeserializer optionDeserializer(JavaType optionType) {
+        return elementType(optionType).fold(OptionDeserializer::new, type -> new OptionDeserializer(type, null));
+    }
+
     @Override
     public Option<?> deserialize(JsonParser p, DeserializationContext ctxt) throws JacksonException {
         if (p.currentToken() == JsonToken.VALUE_NULL) {

@@ -59,6 +59,8 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
         var now = System.currentTimeMillis();
         var cutoff = now - config.gracePeriodMs();
+        // A cache-only marker is never orphaned (BlockLifecycle#isOrphaned): this node only read or prefetched
+        // the block, so there is no reference of its own to lose and nothing here for GC to collect.
         // #737 fix round 2: grace runs from orphanedAt (when refCount reached 0), not
         // lastAccessedAt (when it was last read) -- the two diverge for a long-idle-but-still-
         // referenced block, which must get a full grace period from the moment it is orphaned.
