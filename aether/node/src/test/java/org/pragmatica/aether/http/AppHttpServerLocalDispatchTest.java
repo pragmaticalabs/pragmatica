@@ -55,7 +55,7 @@ class AppHttpServerLocalDispatchTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("test-node").unwrap();
     private static final NodeId REMOTE_NODE = NodeId.nodeId("remote-node").unwrap();
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
-    private static final int TEST_PORT = 18091;
+    private int port;
 
     private HttpRouteRegistry registry;
     private HttpClient httpClient;
@@ -67,7 +67,7 @@ class AppHttpServerLocalDispatchTest {
     }
 
     private AppHttpServer serverWithPublisher(Option<HttpRoutePublisher> publisher) {
-        return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+        return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(0),
                                            ForwardingTimeouts.forwardingTimeouts(),
                                            SELF_NODE,
                                            registry,
@@ -87,7 +87,8 @@ class AppHttpServerLocalDispatchTest {
         var publisher = StubRoutePublisher.hosting("GET", "/local/", SELF_NODE);
         var server = serverWithPublisher(Option.some(publisher));
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             // Reproduce the generation-churn window: routing quiesced => snapshot empty and
             // isRouteReady()=false, while the live publisher still hosts the ACTIVE slice.
@@ -110,7 +111,8 @@ class AppHttpServerLocalDispatchTest {
         var publisher = StubRoutePublisher.hosting("GET", "/other/", SELF_NODE);
         var server = serverWithPublisher(Option.some(publisher));
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             quiesceRouting(server);
             assertThat(server.isRouteReady()).isFalse();
@@ -133,7 +135,8 @@ class AppHttpServerLocalDispatchTest {
         var publisher = StubRoutePublisher.hosting("GET", "/local/", SELF_NODE);
         var server = serverWithPublisher(Option.some(publisher));
 
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         try {
             var response = get("/remote/thing");
 
@@ -150,7 +153,7 @@ class AppHttpServerLocalDispatchTest {
 
     private HttpResponse<String> get(String path) throws Exception {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + TEST_PORT + path))
+                                 .uri(URI.create("http://localhost:" + port + path))
                                  .GET()
                                  .build();
 

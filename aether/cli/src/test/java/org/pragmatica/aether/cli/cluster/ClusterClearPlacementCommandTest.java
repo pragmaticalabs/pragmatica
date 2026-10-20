@@ -117,4 +117,12 @@ class ClusterClearPlacementCommandTest {
     void body_isTheJsonThisRouteReads() {
         assertThat(ClusterClearPlacementCommand.body("checked").unwrap()).isEqualTo("{\"reason\":\"checked\"}");
     }
+
+    /// The default request names the community in the route's path: the parameters assemble into the documented path.
+    @Test
+    void routeParameters_nameTheCommunityInTheDocumentedPath() {
+        var path = org.pragmatica.aether.management.route.ManagementRoute.COMMUNITY_PLACEMENT_CLEAR.assemble(ClusterClearPlacementCommand.routeParameters("eu-w-1"));
+
+        assertThat(path.unwrap()).endsWith("/cluster/communities/placement/clear/eu-w-1");
+    }
 }

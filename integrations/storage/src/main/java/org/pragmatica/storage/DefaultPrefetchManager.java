@@ -198,7 +198,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     private void checkAndFetch(BlockId id, String blockIdHex) {
-        storage.exists(id).onSuccess(exists -> initiateIfMissing(exists, id, blockIdHex));
+        storage.exists(id).withSuccess(exists -> initiateIfMissing(exists, id, blockIdHex));
     }
 
     private void initiateIfMissing(boolean exists, BlockId id, String blockIdHex) {

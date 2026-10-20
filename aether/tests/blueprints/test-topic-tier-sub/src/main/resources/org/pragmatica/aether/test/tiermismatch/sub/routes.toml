@@ -1,0 +1,13 @@
+prefix = "/api/tier-sub"
+
+[security]
+default = "public"
+override_policy = "strengthen_only"
+
+# onContextOrder and onBareOrder are deliberately absent: subscribers, reachable only through the runtime's delivery
+# path. Routable, they would let the test drive them itself and the delivery observation would be vacuous.
+[routes]
+status = "POST /status"
+
+[errors]
+default = 500
