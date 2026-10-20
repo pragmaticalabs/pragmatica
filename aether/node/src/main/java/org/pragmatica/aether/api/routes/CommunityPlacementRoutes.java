@@ -61,9 +61,7 @@ public final class CommunityPlacementRoutes implements RouteSource {
     /// The operator is read here, on the request's own thread, where the server bound the authenticated principal.
     Promise<ClearResponse> clear(String community, ClearRequest request) {
         var operator = operator();
-        var reason = Option.option(request.reason())
-                           .map(String::trim)
-                           .filter(value -> !value.isEmpty());
+        var reason = Option.option(request.reason()).map(String::trim).filter(value -> !value.isEmpty());
 
         return reason.isEmpty()
                ? new ManagementServerError.InvalidRequest("reason is required: say what you checked on the nodes before clearing").promise()
@@ -92,7 +90,8 @@ public final class CommunityPlacementRoutes implements RouteSource {
     /// The authenticated management principal bound by the server for this request, or `unknown` when none is bound (a test, or security off).
     private static String operator() {
         return SecurityContextHolder.currentContext()
-                                    .map(context -> context.principal().value())
+                                    .map(context -> context.principal()
+                                                           .value())
                                     .or("unknown");
     }
 

@@ -123,7 +123,8 @@ public interface CommunityPlacementReconciler {
         record NotParked(String communityId, PlacementOperationPhase phase) implements ParkedClearRefusal {
             @Override
             public String message() {
-                return "The placement operation of community " + communityId + " is " + phase
+                return "The placement operation of community " + communityId
+                     + " is " + phase
                      + ", not parked: it is either progressing or resumes by itself, so there is nothing to clear";
             }
         }
@@ -1026,11 +1027,11 @@ record PlacementReconciler(NodeId self,
         var uncertain = operation.withPhase(phase, leader, reason, clock.getAsLong());
 
         return transition(operation, uncertain).onSuccess(accepted -> {
-                             if (accepted) {
-                                 escalation.accept(uncertain);
-                                 reportParked(uncertain);
-                             }
-                         })
+                                                              if (accepted) {
+                                                                  escalation.accept(uncertain);
+                                                                  reportParked(uncertain);
+                                                              }
+                                                          })
                          .mapToUnit();
     }
 
@@ -1120,7 +1121,7 @@ record PlacementReconciler(NodeId self,
 
     private static String parkedAdvice(CommunityPlacementOperationValue operation) {
         var clear = "Verify both nodes at the provider, then clear it with: aether cluster clear-placement " + operation.communityId()
-                    + " --reason <what you verified>. The clear removes and terminates nothing.";
+                  + " --reason <what you verified>. The clear removes and terminates nothing.";
 
         return operation.phase() == PlacementOperationPhase.DRAIN_UNCERTAIN
                ? "The previous node may or may not be drained; a late drain acknowledgement resumes the operation by itself. " + clear
@@ -1128,7 +1129,9 @@ record PlacementReconciler(NodeId self,
     }
 
     @Contract
-    private void reportResumed(boolean accepted, CommunityPlacementOperationValue before, CommunityPlacementOperationValue after) {
+    private void reportResumed(boolean accepted,
+                               CommunityPlacementOperationValue before,
+                               CommunityPlacementOperationValue after) {
         if (accepted && isParkedPhase(before.phase()) && !isParkedPhase(after.phase())) {
             OperatorWarnings.raise(LOG,
                                    warnings.get(),
@@ -1146,10 +1149,16 @@ record PlacementReconciler(NodeId self,
     public Promise<ParkedClear> clearParked(String communityId, String operator, String reason) {
         return currentLeader().fold(() -> new ParkedClearRefusal.NotActive().<ParkedClear> promise(),
                                     leader -> operation(communityId).fold(() -> new ParkedClearRefusal.NoOperation(communityId).<ParkedClear> promise(),
-                                                                          operation -> clearOn(operation, leader, operator, reason)));
+                                                                          operation -> clearOn(operation,
+                                                                                               leader,
+                                                                                               operator,
+                                                                                               reason)));
     }
 
-    private Promise<ParkedClear> clearOn(CommunityPlacementOperationValue operation, LeaderValue leader, String operator, String reason) {
+    private Promise<ParkedClear> clearOn(CommunityPlacementOperationValue operation,
+                                         LeaderValue leader,
+                                         String operator,
+                                         String reason) {
         return isParkedNow(operation)
                ? commitClear(operation, leader, operator, reason)
                : new ParkedClearRefusal.NotParked(operation.communityId(), operation.phase()).promise();
@@ -1162,7 +1171,10 @@ record PlacementReconciler(NodeId self,
 
     // The close is a single expected-value transaction on the operation: COMPLETE, with the operator and reason in its detail. It does not use
     // [#commit], whose COMPLETE removes the previous worker's directive and placement: a clear attests nothing about that worker, so it stays.
-    private Promise<ParkedClear> commitClear(CommunityPlacementOperationValue operation, LeaderValue leader, String operator, String reason) {
+    private Promise<ParkedClear> commitClear(CommunityPlacementOperationValue operation,
+                                             LeaderValue leader,
+                                             String operator,
+                                             String reason) {
         var cleared = operation.withPhase(PlacementOperationPhase.COMPLETE,
                                           leader,
                                           "Cleared by operator " + operator + ": " + reason,
@@ -1184,7 +1196,9 @@ record PlacementReconciler(NodeId self,
                                          : new ParkedClearRefusal.Changed(operation.communityId()).promise());
     }
 
-    private Promise<ParkedClear> reportCleared(CommunityPlacementOperationValue operation, String operator, String reason) {
+    private Promise<ParkedClear> reportCleared(CommunityPlacementOperationValue operation,
+                                               String operator,
+                                               String reason) {
         OperatorWarnings.raise(LOG,
                                warnings.get(),
                                OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,

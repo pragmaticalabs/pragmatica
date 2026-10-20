@@ -76,7 +76,9 @@ class ClusterClearPlacementCommand implements Callable<Integer> {
     }
 
     private int onCleared(String body) {
-        System.out.printf("Cleared the parked placement operation of community %s (reason: %s)%n", community, reason.trim());
+        System.out.printf("Cleared the parked placement operation of community %s (reason: %s)%n",
+                          community,
+                          reason.trim());
 
         return ExitCode.SUCCESS;
     }
