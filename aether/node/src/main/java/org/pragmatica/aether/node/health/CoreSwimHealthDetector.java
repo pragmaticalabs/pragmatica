@@ -130,9 +130,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private long heldSinceNanos;
     private boolean overdueRaised;
     private Option<ScheduledFuture<?>> overdueTimer = none();
+
     /// Test seam (#1840): runs inside the hold, after the decision to hold and before the call is stored, so a
     /// test can park the holder while an assignment arrives. Production never replaces it.
     private volatile Runnable afterHoldDecision = () -> {};
+
     private final MembershipResyncPolicy resync = MembershipResyncPolicy.membershipResyncPolicy();
     /// Test seam (#1308): runs on the starting thread once the SWIM port is bound and before the
     /// protocol is created, so a test can hold the detector in Starting or fail a start after a
@@ -526,9 +528,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                        OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                                        selfIdText(),
                                        "Worker {} has no committed activation directive after {} ms: its SWIM ANNOUNCE is held and "
-                                       + "the cluster's SWIM scope does not include it. Check that the leader admitted it (capacity "
-                                       + "reservation or admission authorisation; the leader logs 'Cannot assign worker') and that its "
-                                       + "directive was committed; otherwise replace the node with a fresh NodeId",
+                                      + "the cluster's SWIM scope does not include it. Check that the leader admitted it (capacity "
+                                      + "reservation or admission authorisation; the leader logs 'Cannot assign worker') and that its "
+                                      + "directive was committed; otherwise replace the node with a fresh NodeId",
                                        selfIdText(),
                                        heldMillis());
             }
@@ -554,9 +556,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private void releaseHeld(AnnounceJoinCall call, boolean wasOverdue) {
         var millis = heldMillis();
 
-        log.info("SWIM ANNOUNCE for {} released after {} ms: its activation directive is committed", call.self().id().id(), millis);
+        log.info("SWIM ANNOUNCE for {} released after {} ms: its activation directive is committed",
+                 call.self().id().id(),
+                 millis);
         announceJoin(call.self(), call.clusterName(), call.incarnation(), call.bootToken(), call.seeds());
-
         if (wasOverdue) {
             OperatorWarnings.raise(log,
                                    warningSink(),
@@ -577,7 +580,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     private String selfIdText() {
-        return context.topologyConfig().self().id();
+        return context.topologyConfig()
+                      .self()
+                      .id();
     }
 
     /// Test seam (#1840): runs `action` while holding the assignment gate, so a test can show that a hold or a
