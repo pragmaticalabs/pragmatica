@@ -8,7 +8,7 @@ on:
     branches: [main, release-*, 'overhaul/**', 'rewrite/**']
   workflow_dispatch:
 
-# A newer run on the same PR supersedes the in-progress one (demo tweak). Pushes get a per-commit group and are never
+# A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
 # cancelled: each merged commit's own run is evidence.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
