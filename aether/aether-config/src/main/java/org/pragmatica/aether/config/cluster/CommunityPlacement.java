@@ -56,11 +56,13 @@ public record CommunityPlacement(String id, int targetSize, List<Location> locat
         }
 
         if (DERIVED_ID.matcher(id).matches()) {
-            return new ClusterConfigError.ParseFailed("Community id " + id + " is reserved for derived communities (<source>-w-<number>)").result();
+            return new ClusterConfigError.ParseFailed("Community id " + id
+                                                     + " is reserved for derived communities (<source>-w-<number>)").result();
         }
 
         if (targetSize > CommunityPolicy.CEILING) {
-            return new ClusterConfigError.ParseFailed("Community target_size exceeds the " + CommunityPolicy.CEILING + " ceiling: " + id).result();
+            return new ClusterConfigError.ParseFailed("Community target_size exceeds the " + CommunityPolicy.CEILING
+                                                     + " ceiling: " + id).result();
         }
 
         if (locations.stream()

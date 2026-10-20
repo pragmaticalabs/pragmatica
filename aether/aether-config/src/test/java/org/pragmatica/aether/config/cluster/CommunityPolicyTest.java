@@ -10,8 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class CommunityPolicyTest {
     @Test
-    void fromSizing_carriesTheSizingAndKeepsGrowthOff() {
-        var policy = CommunityPolicy.fromSizing(CommunitySizing.communitySizing(7, 2));
+    void communityPolicy_fromSizing_carriesTheSizingAndKeepsGrowthOff() {
+        var policy = CommunityPolicy.communityPolicy(CommunitySizing.communitySizing(7, 2));
 
         assertThat(policy.maxSize()).isEqualTo(7);
         assertThat(policy.viabilityFloor()).isEqualTo(2);

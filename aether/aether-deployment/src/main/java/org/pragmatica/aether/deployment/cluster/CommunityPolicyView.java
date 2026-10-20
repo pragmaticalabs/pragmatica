@@ -23,19 +23,25 @@ import org.pragmatica.lang.Option;
 /// The cluster-config TOML is parsed once per distinct text, not once per read: the view is consulted on every worker join
 /// and every community evaluation.
 public final class CommunityPolicyView {
-    private record Parsed(String toml, Option<CommunityPolicy> policy) {}
+    private record Parsed(String toml, Option<CommunityPolicy> policy) {
+        static Parsed parsed(String toml, Option<CommunityPolicy> policy) {
+            return new Parsed(toml, policy);
+        }
+    }
 
     private final KVStore<AetherKey, AetherValue> store;
     private final CommunityPolicy fallback;
-    private final AtomicReference<Parsed> parsed = new AtomicReference<>(new Parsed("", Option.none()));
+
+    private final AtomicReference<Parsed> parsed = new AtomicReference<>(Parsed.parsed("", Option.none()));
 
     private CommunityPolicyView(KVStore<AetherKey, AetherValue> store, CommunityPolicy fallback) {
         this.store = store;
         this.fallback = fallback;
     }
 
-    public static CommunityPolicyView communityPolicyView(KVStore<AetherKey, AetherValue> store, CommunitySizing sizing) {
-        return new CommunityPolicyView(store, CommunityPolicy.fromSizing(sizing));
+    public static CommunityPolicyView communityPolicyView(KVStore<AetherKey, AetherValue> store,
+                                                          CommunitySizing sizing) {
+        return new CommunityPolicyView(store, CommunityPolicy.communityPolicy(sizing));
     }
 
     public CommunityPolicy current() {
@@ -52,7 +58,8 @@ public final class CommunityPolicyView {
     private Option<CommunityPolicy> policyOf(String toml) {
         var cached = parsed.get();
 
-        return cached.toml().equals(toml)
+        return cached.toml()
+                     .equals(toml)
                ? cached.policy()
                : parse(toml);
     }
@@ -62,11 +69,9 @@ public final class CommunityPolicyView {
     // evaluation. Guarantee: the leader never halts on it; the config route refuses the same text at apply time.
     // Mechanism: the unparseable text is cached as "no policy", so it is not re-parsed on every join.
     private Option<CommunityPolicy> parse(String toml) {
-        var policy = ClusterBootstrapConfigParser.parse(toml)
-                                                 .option()
-                                                 .flatMap(ClusterBootstrapConfig::communityPolicy);
+        var policy = ClusterBootstrapConfigParser.parse(toml).option().flatMap(ClusterBootstrapConfig::communityPolicy);
 
-        parsed.set(new Parsed(toml, policy));
+        parsed.set(Parsed.parsed(toml, policy));
 
         return policy;
     }

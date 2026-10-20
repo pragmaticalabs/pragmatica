@@ -4,7 +4,9 @@
 package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.aether.config.CommunitySizing;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 
 /// Cluster-wide community sizing and growth policy, committed with the cluster config (`[community_policy]`) so a new leader
@@ -31,8 +33,10 @@ public record CommunityPolicy(int maxSize,
     /// The DHT replication factor: a floor below it weakens redundancy and needs an explicit `allow_below_rf`.
     public static final int REPLICATION_FACTOR = 3;
 
+    private static final Cause GRACE_NEGATIVE = new ClusterConfigError.ParseFailed("community_policy.dissolve_grace_seconds must not be negative");
+
     /// The policy equivalent of a node-level [CommunitySizing]: growth off, the remaining knobs at their defaults.
-    public static CommunityPolicy fromSizing(CommunitySizing sizing) {
+    public static CommunityPolicy communityPolicy(CommunitySizing sizing) {
         return new CommunityPolicy(sizing.targetSize(),
                                    sizing.viabilityFloor(),
                                    DEFAULT_MAX_COMMUNITIES,
@@ -46,25 +50,43 @@ public record CommunityPolicy(int maxSize,
                                                           int dissolveGraceSeconds,
                                                           boolean growth,
                                                           boolean allowBelowRf) {
-        if (viabilityFloor < 1 || viabilityFloor < REPLICATION_FACTOR && !allowBelowRf) {
-            return new ClusterConfigError.ParseFailed("community_policy.viability_floor must be at least " + REPLICATION_FACTOR
-                                                     + " (the replication factor); set allow_below_rf = true to lower it").result();
-        }
+        return Verify.ensure(viabilityFloor,
+                             Verify.Is::between,
+                             allowBelowRf
+                             ? 1
+                             : REPLICATION_FACTOR,
+                             CEILING,
+                             floor -> floorRefused(floor, allowBelowRf))
+                     .flatMap(floor -> Verify.ensure(maxSize,
+                                                     Verify.Is::between,
+                                                     floor,
+                                                     CEILING,
+                                                     size -> maxSizeRefused(size, floor)))
+                     .flatMap(_ -> Verify.ensure(maxCommunities,
+                                                 Verify.Is::between,
+                                                 1,
+                                                 MAX_COMMUNITIES_LIMIT,
+                                                 CommunityPolicy::maxCommunitiesRefused))
+                     .flatMap(_ -> Verify.ensure(dissolveGraceSeconds, Verify.Is::nonNegative, GRACE_NEGATIVE))
+                     .map(_ -> new CommunityPolicy(maxSize, viabilityFloor, maxCommunities, dissolveGraceSeconds, growth));
+    }
 
-        if (maxSize < viabilityFloor || maxSize > CEILING) {
-            return new ClusterConfigError.ParseFailed("community_policy.max_size must be between viability_floor ("
-                                                     + viabilityFloor + ") and " + CEILING + ", got " + maxSize).result();
-        }
+    private static Cause floorRefused(int floor, boolean allowBelowRf) {
+        return new ClusterConfigError.ParseFailed("community_policy.viability_floor must be at least " + (allowBelowRf
+                                                                                                          ? 1
+                                                                                                          : REPLICATION_FACTOR)
+                                                 + " (the replication factor is " + REPLICATION_FACTOR
+                                                 + "; set allow_below_rf = true to lower it), got " + floor);
+    }
 
-        if (maxCommunities < 1 || maxCommunities > MAX_COMMUNITIES_LIMIT) {
-            return new ClusterConfigError.ParseFailed("community_policy.max_communities must be between 1 and "
-                                                     + MAX_COMMUNITIES_LIMIT + ", got " + maxCommunities).result();
-        }
+    private static Cause maxSizeRefused(int size, int floor) {
+        return new ClusterConfigError.ParseFailed("community_policy.max_size must be between viability_floor (" + floor
+                                                 + ") and " + CEILING
+                                                 + ", got " + size);
+    }
 
-        if (dissolveGraceSeconds < 0) {
-            return new ClusterConfigError.ParseFailed("community_policy.dissolve_grace_seconds must not be negative").result();
-        }
-
-        return Result.success(new CommunityPolicy(maxSize, viabilityFloor, maxCommunities, dissolveGraceSeconds, growth));
+    private static Cause maxCommunitiesRefused(int count) {
+        return new ClusterConfigError.ParseFailed("community_policy.max_communities must be between 1 and " + MAX_COMMUNITIES_LIMIT
+                                                 + ", got " + count);
     }
 }

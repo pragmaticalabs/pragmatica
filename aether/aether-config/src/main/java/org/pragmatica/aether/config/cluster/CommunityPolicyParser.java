@@ -11,12 +11,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Result.success;
+
 
 /// Parses the optional `[community_policy]` table. An absent table is `none`: the node-level
 /// [CommunitySizing] keeps applying and growth stays off. A mistyped value, an out-of-range number or an unknown key refuses
 /// the whole apply, like the neighbouring `[rollback]` and `[replication]` tables.
 public interface CommunityPolicyParser {
     String SECTION = "community_policy";
+
     List<String> KEYS = List.of("max_size",
                                 "viability_floor",
                                 "max_communities",
@@ -27,8 +31,8 @@ public interface CommunityPolicyParser {
     static Result<Option<CommunityPolicy>> parse(TomlDocument document) {
         return document.hasSection(SECTION)
                ? refuseUnknownKeys(document).flatMap(_ -> fromSection(document))
-                                            .map(Option::some)
-               : Result.success(Option.none());
+                                  .map(Option::some)
+               : success(none());
     }
 
     private static Result<CommunityPolicy> fromSection(TomlDocument document) {
@@ -40,22 +44,17 @@ public interface CommunityPolicyParser {
                                                        .or(CommunityPolicy.DEFAULT_MAX_COMMUNITIES),
                                                document.getInt(SECTION, "dissolve_grace_seconds")
                                                        .or(CommunityPolicy.DEFAULT_DISSOLVE_GRACE_SECONDS),
-                                               document.getBoolean(SECTION, "growth")
-                                                       .or(false),
-                                               document.getBoolean(SECTION, "allow_below_rf")
-                                                       .or(false));
+                                               document.getBoolean(SECTION, "growth").or(false),
+                                               document.getBoolean(SECTION, "allow_below_rf").or(false));
     }
 
     private static Result<Unit> refuseUnknownKeys(TomlDocument document) {
-        var unknown = document.keys(SECTION)
-                              .stream()
-                              .filter(key -> !KEYS.contains(key))
-                              .sorted()
-                              .toList();
+        var unknown = document.keys(SECTION).stream().filter(key -> !KEYS.contains(key)).sorted().toList();
 
         return unknown.isEmpty()
                ? Result.unitResult()
-               : new ClusterConfigError.ParseFailed("[" + SECTION + "] unknown key(s) " + String.join(", ", unknown)
+               : new ClusterConfigError.ParseFailed("[" + SECTION
+                                                   + "] unknown key(s) " + String.join(", ", unknown)
                                                    + "; valid keys: " + String.join(", ", KEYS)).result();
     }
 }
