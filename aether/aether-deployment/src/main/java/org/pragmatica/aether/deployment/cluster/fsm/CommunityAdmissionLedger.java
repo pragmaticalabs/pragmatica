@@ -46,7 +46,10 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending,
     }
 
     public static CommunityAdmissionLedger communityAdmissionLedger() {
-        return new CommunityAdmissionLedger(new ConcurrentHashMap<>(), ConcurrentHashMap.newKeySet(), new ConcurrentHashMap<>(), ConcurrentHashMap.newKeySet());
+        return new CommunityAdmissionLedger(new ConcurrentHashMap<>(),
+                                            ConcurrentHashMap.newKeySet(),
+                                            new ConcurrentHashMap<>(),
+                                            ConcurrentHashMap.newKeySet());
     }
 
     @Contract

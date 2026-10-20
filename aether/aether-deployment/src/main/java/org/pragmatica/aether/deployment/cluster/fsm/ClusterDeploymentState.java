@@ -1397,7 +1397,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                .onSuccess(results -> results.stream()
                                             .filter(KVCommand.TransactionResult.class::isInstance)
                                             .map(KVCommand.TransactionResult.class::cast)
-                                            .forEach(result -> settleAssignment(targetNode, result.accepted())))
+                                            .forEach(result -> settleAssignment(targetNode,
+                                                                                result.accepted())))
                .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
                                              targetNode,
                                              cause.message()));
@@ -1428,7 +1429,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void retryOrReport(NodeId node) {
             if (ctx.communityAdmission().refused(node) < CommunityAdmissionLedger.MAX_ATTEMPTS) {
                 log.debug("Assignment changed before commit for {}; deciding its community afresh", node);
-                ctx.dispatch(new WorkerJoinReceived(new WorkerJoinDecision(node, "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
+                ctx.dispatch(new WorkerJoinReceived(new WorkerJoinDecision(node,
+                                                                           "worker",
+                                                                           org.pragmatica.hlc.HlcTimestamp.ZERO)));
             } else {
                 ctx.communityAdmission().giveUp(node);
                 OperatorWarnings.raise(log,
