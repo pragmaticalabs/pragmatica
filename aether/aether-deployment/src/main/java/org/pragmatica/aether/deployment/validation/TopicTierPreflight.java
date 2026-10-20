@@ -31,8 +31,9 @@ import org.pragmatica.lang.utils.Causes;
 /// same view [ReplicationPreflight] reads), and topics are matched on the RESOLVED address, as [org.pragmatica.aether.slice.blueprint.PubSubValidator]
 /// matches them. Every conflict is reported, not the first.
 ///
-/// What it does not check: a publisher whose durability cannot be read (no [ConfigurationProvider] wired and no `resources.toml` in the
-/// jar) is skipped, "not checked" rather than "checked and passed", as in [ConfigSectionPreflightValidator]; a publisher and a
+/// What it does not check: a publisher whose durability cannot be read (no [ConfigurationProvider] wired and a `resources.toml` that
+/// does not parse) is skipped, "not checked" rather than "checked and passed", as in [ConfigSectionPreflightValidator] (a jar with no
+/// `resources.toml` at all declares nothing, which the runtime reads as ephemeral, so that publisher IS checked); a publisher and a
 /// subscriber in different blueprints never share an address, so they are never compared; and a subscriber that is deployed
 /// later than a publisher that is already running is not seen here, only by the runtime refusal of
 /// `TopicPublisher` (the subscription row's `tier`).

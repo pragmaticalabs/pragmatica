@@ -80,11 +80,20 @@ class TopicTierPreflightTest {
         assertThat(message(outcome)).contains("sub-a.onA").contains("sub-b.onB");
     }
 
-    /// Fail-open: with no view of the publisher's durability (no node composite, no resources.toml in its jar) it is "not
-    /// checked", never "checked and refused".
+    /// A jar that ships no `resources.toml` declares nothing, and the runtime reads an absent section as the ephemeral default, so
+    /// its publisher IS ephemeral.
     @Test
-    void publisherWhoseDurabilityCannotBeRead_isNotChecked() {
-        var blind = SliceJar.sliceJar(artifact("order-pub"), List.of(publisherTopology("order-pub")), Option.none());
+    void publisherWhoseJarShipsNoResourcesToml_isEphemeral_andIsRefused() {
+        var bare = SliceJar.sliceJar(artifact("order-pub"), List.of(publisherTopology("order-pub")), Option.none());
+
+        assertThat(message(validate(bare, subscriberJar("order-sub", "onOrderPlaced", true, DURABLE_TOML)))).contains("topic tier mismatch");
+    }
+
+    /// Fail-open: a `resources.toml` that does not parse gives the loader no layer, and with no node composite there is no view of the
+    /// publisher's durability at all. That is "not checked", never "checked and refused".
+    @Test
+    void publisherWhoseResourcesTomlDoesNotParse_isNotChecked() {
+        var blind = SliceJar.sliceJar(artifact("order-pub"), List.of(publisherTopology("order-pub")), Option.some("[order-events\nbroken = ["));
 
         assertThat(validate(blind, subscriberJar("order-sub", "onOrderPlaced", true, DURABLE_TOML)).isSuccess()).isTrue();
     }

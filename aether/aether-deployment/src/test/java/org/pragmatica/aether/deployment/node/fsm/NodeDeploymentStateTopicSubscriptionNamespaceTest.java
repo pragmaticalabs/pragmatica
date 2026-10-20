@@ -195,20 +195,30 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
                                              .containsExactlyElementsOf(published);
     }
 
-    /// #1337 — THE TIER THE WRITER RECORDS, which no reader of the row can check. A bare handler's row says ANY; a handler the
-    /// slice processor marked `context=message` says DURABLE, which is what lets a publisher refuse it without an RPC. Each is paired
-    /// with the other so a writer that recorded one value for both would fail.
+    /// #1337 — THE TIER THE WRITER RECORDS, which no reader of the row can check. A bare handler's row says ANY; a handler the slice
+    /// processor marked `context=message` says DURABLE, which is what lets a publisher refuse it without an RPC. The two tests are a
+    /// pair: a writer that recorded one constant for both would fail one of them.
     @Test
-    void publishedSubscriptionRow_recordsWhatTheHandlerRequires() {
+    void publishedSubscriptionRow_forABareHandler_recordsAny() {
         harness.dispatch(new QuorumEstablished());
         harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(subscriptionTiers()).as("the bare slice published a subscription row")
+                                                                   .containsKey(SLICE.asString()));
+
+        assertThat(subscriptionTiers().get(SLICE.asString())).as("a bare handler requires nothing of the tier").isEqualTo(TopicTier.ANY);
+    }
+
+    @Test
+    void publishedSubscriptionRow_forAContextHandler_recordsDurable() {
+        harness.dispatch(new QuorumEstablished());
         harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, CONTEXT_SLICE, SliceState.ACTIVE)));
 
         await().atMost(5, TimeUnit.SECONDS)
-               .untilAsserted(() -> assertThat(subscriptionTiers()).as("both slices published a subscription row")
-                                                                   .containsKeys(SLICE.asString(), CONTEXT_SLICE.asString()));
+               .untilAsserted(() -> assertThat(subscriptionTiers()).as("the context slice published a subscription row")
+                                                                   .containsKey(CONTEXT_SLICE.asString()));
 
-        assertThat(subscriptionTiers().get(SLICE.asString())).as("a bare handler requires nothing of the tier").isEqualTo(TopicTier.ANY);
         assertThat(subscriptionTiers().get(CONTEXT_SLICE.asString())).as("a context handler (manifest context=message) requires the durable tier")
                                                                      .isEqualTo(TopicTier.DURABLE);
     }
