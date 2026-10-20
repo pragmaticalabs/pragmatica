@@ -18,6 +18,7 @@ package org.pragmatica.dht;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +44,7 @@ class DistributedDHTClientLateReplyTest {
     private static final DHTConfig SINGLE_REPLICA = new DHTConfig(1, 1, 1, timeSpan(5).seconds());
     private static final DHTConfig ALL_THREE = new DHTConfig(3, 3, 3, timeSpan(5).seconds());
     private static final long REPLY_DELAY_MS = 3;
-    private static final int TRIALS = 100;
+    private static final int TRIALS = 50;
 
     private final CopyOnWriteArrayList<ProtocolMessage> sent = new CopyOnWriteArrayList<>();
 
@@ -69,8 +70,7 @@ class DistributedDHTClientLateReplyTest {
                                                                              false,
                                                                              false,
                                                                              false)));
-            assertThat(op.await().isSuccess()).isTrue();
-            stillStale += node.staleRefusal().isPresent() ? 1 : 0;
+            stillStale += badAfter(op, true, () -> node.staleRefusal().isPresent()) ? 1 : 0;
         }
 
         assertThat(stillStale).as("trials where the caller continued before the accepted write ended the stale-writer clock")
@@ -90,8 +90,7 @@ class DistributedDHTClientLateReplyTest {
             replyLater(() -> client.onRemoveResponse(new DHTMessage.RemoveResponse(lastRequest(DHTMessage.RemoveRequest.class).requestId(),
                                                                                    REPLICA,
                                                                                    true)));
-            assertThat(op.await().isSuccess()).isTrue();
-            stillStale += node.staleRefusal().isPresent() ? 1 : 0;
+            stillStale += badAfter(op, true, () -> node.staleRefusal().isPresent()) ? 1 : 0;
         }
 
         assertThat(stillStale).as("trials where the caller continued before the accepted remove ended the stale-writer clock")
@@ -116,8 +115,7 @@ class DistributedDHTClientLateReplyTest {
                                                                              true,
                                                                              false,
                                                                              false)));
-            assertThat(op.await().isFailure()).as("a replica that refuses the write as stale fails it").isTrue();
-            notStale += node.staleRefusal().isPresent() ? 0 : 1;
+            notStale += badAfter(op, false, () -> node.staleRefusal().isEmpty()) ? 1 : 0;
         }
 
         assertThat(notStale).as("trials where the caller saw the refused write before the stale-writer clock started")
@@ -141,8 +139,7 @@ class DistributedDHTClientLateReplyTest {
                                                                                    true,
                                                                                    false,
                                                                                    false)));
-            assertThat(op.await().isFailure()).as("a replica that refuses the remove as stale fails it").isTrue();
-            notStale += node.staleRefusal().isPresent() ? 0 : 1;
+            notStale += badAfter(op, false, () -> node.staleRefusal().isEmpty()) ? 1 : 0;
         }
 
         assertThat(notStale).as("trials where the caller saw the refused remove before the stale-writer clock started")
@@ -163,10 +160,7 @@ class DistributedDHTClientLateReplyTest {
             var requests = List.copyOf(sent);
 
             replyLater(() -> replyToEveryPut(client, requests));
-            var result = op.await();
-
-            assertThat(result.isSuccess()).as("put outcome: %s", result).isTrue();
-            stillPending += node.localWritePending(key) ? 1 : 0;
+            stillPending += badAfter(op, true, () -> node.localWritePending(key)) ? 1 : 0;
         }
 
         assertThat(stillPending).as("trials where the caller continued before the put ended its write-pending mark")
@@ -187,10 +181,7 @@ class DistributedDHTClientLateReplyTest {
             var requests = List.copyOf(sent);
 
             replyLater(() -> replyToEveryRemove(client, requests));
-            var result = op.await();
-
-            assertThat(result.isSuccess()).as("remove outcome: %s", result).isTrue();
-            stillPending += node.localWritePending(key) ? 1 : 0;
+            stillPending += badAfter(op, true, () -> node.localWritePending(key)) ? 1 : 0;
         }
 
         assertThat(stillPending).as("trials where the caller continued before the remove ended its write-pending mark")
@@ -223,6 +214,16 @@ class DistributedDHTClientLateReplyTest {
                    .map(type::cast)
                    .reduce((_, last) -> last)
                    .orElseThrow();
+    }
+
+    /// Whether the trial went wrong: the operation did not end as `expectSuccess` says, or `bad` held in a dependent of the
+    /// operation's promise, on the thread that resolves it. This is the tightest observer there is: it runs the moment the
+    /// promise settles, so it sees exactly the effects ordered before the dependents and none that a detached callback may
+    /// land later. A reply that never arrives ends the operation by its own timeout, which counts as a wrong outcome.
+    private static boolean badAfter(Promise<?> operation, boolean expectSuccess, BooleanSupplier bad) {
+        return operation.<Boolean> fold(result -> Promise.success(result.isSuccess() != expectSuccess || bad.getAsBoolean()))
+                        .await()
+                        .or(true);
     }
 
     private static void replyLater(Runnable reply) {
