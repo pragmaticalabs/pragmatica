@@ -322,6 +322,22 @@ class SwimAppGossipTest {
         }
 
         @Test
+        void onMessage_theRateWindowIsOneSecond() throws InterruptedException {
+            IntStream.range(0, 8).forEach(i -> arrives(peer(0), CHANNEL, new byte[]{1}));
+            var inBurst = delivered.size();
+
+            Thread.sleep(800);
+            arrives(peer(0), CHANNEL, new byte[]{2});
+
+            assertThat(delivered).as("800 ms later the window is still the burst's").hasSize(inBurst);
+
+            Thread.sleep(300);
+            arrives(peer(0), CHANNEL, new byte[]{3});
+
+            assertThat(delivered).as("1.1 s after the burst began a new window has opened").hasSize(inBurst + 1);
+        }
+
+        @Test
         void onMessage_datagramsThatWouldBeDroppedAnyway_doNotUseUpTheRateBudget() {
             IntStream.range(0, 50).forEach(i -> arrives(peer(0), CHANNEL + 1, new byte[]{1}));
             IntStream.range(0, 50).forEach(i -> arrives(peer(99), CHANNEL, new byte[]{1}));

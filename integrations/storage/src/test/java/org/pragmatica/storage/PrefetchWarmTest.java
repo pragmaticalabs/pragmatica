@@ -242,6 +242,7 @@ class PrefetchWarmTest {
             manager.deactivate();
             assertThat(manager.stats().active()).isFalse();
             assertThat(PrefetchManager.NOOP.stats()).isEqualTo(PrefetchStats.empty());
+            assertThat(PrefetchStats.empty().active()).as("a manager that does not exist is not active").isFalse();
         }
     }
 }

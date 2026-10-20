@@ -215,6 +215,14 @@ class StorageFactoryPrefetchWiringTest {
 
     /// No `[storage.*]` section at all: both instances are synthesized from the `defaults` the caller supplies.
     private Map<String, StorageFactory.StorageSetup> createNodeFromDefaults(Path dir, String nodeId, DHTClient dht, int cap) {
+        return createNodeFromDefaults(dir, nodeId, dht, true, cap);
+    }
+
+    private Map<String, StorageFactory.StorageSetup> createNodeFromDefaults(Path dir,
+                                                                           String nodeId,
+                                                                           DHTClient dht,
+                                                                           boolean prefetch,
+                                                                           int cap) {
         var base = StorageConfig.storageConfig();
         var defaults = StorageConfig.storageConfig(base.memoryMaxBytes(),
                                                    base.diskMaxBytes(),
@@ -226,7 +234,7 @@ class StorageFactoryPrefetchWiringTest {
                                                    base.walPath(),
                                                    false,
                                                    true,
-                                                   true,
+                                                   prefetch,
                                                    cap);
         var setups = StorageFactory.createAll(Map.of(), nodeId, Option.some(dht), Option.none(), defaults)
                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
@@ -235,6 +243,15 @@ class StorageFactoryPrefetchWiringTest {
         setups.values().forEach(setup -> admitDht(dht, setup));
 
         return setups;
+    }
+
+    @Test
+    void createAll_synthesizedInstances_takePrefetchOffFromTheSuppliedDefaults() {
+        var off = createNodeFromDefaults(nodeADir, "node-a", new InMemoryDHTClient(), false, 4);
+
+        assertThat(off.get(ARTIFACTS).prefetchManager()).as("prefetch = false in the defaults reaches the derived artifacts config")
+                                                         .isSameAs(PrefetchManager.NOOP);
+        assertThat(off.get(CONTENT).prefetchManager()).as("and the derived content config").isSameAs(PrefetchManager.NOOP);
     }
 
     @Test

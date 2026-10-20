@@ -117,6 +117,44 @@ class StoragePrefetchChannelTest {
     }
 
     @Test
+    void outgoing_whenEveryInstanceHasPrefetchOff_isNoneEveryRound_andNeverThrows() {
+        var bare = StoragePrefetchChannel.storagePrefetchChannel(Map.of(), codec, codec);
+
+        // Prefetch off on every instance leaves the channel registered with no managers: every probe tick asks it, and
+        // a rotation over zero instances is a division by zero unless it is guarded.
+        for (var round = 0; round < 5; round++) {
+            assertThat(bare.outgoing(BUDGET).isEmpty()).isTrue();
+        }
+    }
+
+    @Test
+    void outgoing_aRoundThatSpeaksForOneInstance_leavesTheOthersHintsWhereTheyWere() {
+        artifacts.toCollect.addAll(hints(2));
+        content.toCollect.addAll(hints(3));
+
+        var spoken = decoded(channel.outgoing(BUDGET).unwrap()).instance();
+        var silent = spoken.equals("artifacts") ? content : artifacts;
+
+        assertThat(silent.collections).as("the instance that did not speak was not even asked").isZero();
+        assertThat(silent.toCollect).as("its hints are still there for its own round").isNotEmpty();
+    }
+
+    @Test
+    void outgoing_whenTheBudgetFitsAllButOne_sendsTheLargestFittingPrefix() {
+        artifacts.toCollect.addAll(hints(4));
+
+        var threeFit = codec.encode(StoragePrefetchGossip.from("artifacts", hints(3))).length;
+        var kept = decoded(channel.outgoing(threeFit).unwrap()).toPrefetchHints();
+
+        assertThat(kept).as("trimming drops one hint at a time, so the most that fit go out").hasSize(3);
+    }
+
+    @Test
+    void channel_idIsOne() {
+        assertThat(StoragePrefetchChannel.CHANNEL).as("both ends of the wire agree on this number").isEqualTo(1);
+    }
+
+    @Test
     void outgoing_withNothingToSay_isNone() {
         assertThat(channel.outgoing(BUDGET).isEmpty()).isTrue();
     }
