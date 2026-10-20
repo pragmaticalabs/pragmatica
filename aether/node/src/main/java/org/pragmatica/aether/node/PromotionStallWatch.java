@@ -35,7 +35,6 @@ import static org.pragmatica.lang.Unit.unit;
 /// happens-after the previous finish, so the per-instance state needs no further coordination.
 final class PromotionStallWatch {
     static final int STALLED_AFTER_CYCLES = 3;
-
     private static final Logger log = LoggerFactory.getLogger(PromotionStallWatch.class);
 
     private final Map<String, PromotionManager> managers;
@@ -47,16 +46,16 @@ final class PromotionStallWatch {
         this.sink = sink;
     }
 
-    /// Watches every instance that actually promotes: the inert manager of `streams`, or of an instance with
-    /// `promotion = false`, can neither stall nor recover.
+    /// Watches every instance's promotion manager. The inert one (`streams`, or `promotion = false`) never runs a cycle,
+    /// so its stats never move and it never raises anything.
     static PromotionStallWatch promotionStallWatch(Map<String, StorageSetup> setups, OperatorWarningSink sink) {
-        var promoting = setups.entrySet()
-                              .stream()
-                              .filter(entry -> entry.getValue().promotionManager() != PromotionManager.NOOP)
-                              .collect(Collectors.toMap(Map.Entry::getKey,
-                                                        entry -> entry.getValue().promotionManager()));
+        var managers = setups.entrySet()
+                             .stream()
+                             .collect(Collectors.toMap(Map.Entry::getKey,
+                                                       entry -> entry.getValue()
+                                                                     .promotionManager()));
 
-        return new PromotionStallWatch(Map.copyOf(promoting), sink);
+        return new PromotionStallWatch(Map.copyOf(managers), sink);
     }
 
     /// Looks at each watched instance's stats once.
@@ -67,7 +66,7 @@ final class PromotionStallWatch {
     }
 
     private void observe(String instance, PromotionStats now) {
-        var before = trackers.getOrDefault(instance, Tracker.initial());
+        var before = trackers.getOrDefault(instance, Tracker.tracker());
         var after = before.after(now);
 
         trackers.put(instance, after);
@@ -81,8 +80,8 @@ final class PromotionStallWatch {
                                           OperatorWarningCode.STORAGE_PROMOTION_STALLED,
                                           instance,
                                           "Storage '{}' promotion copied nothing in {} consecutive cycles while copies failed: its faster tier "
-                                          + "cannot be written or its source cannot be read. Free or resize the tier ([storage.{}] "
-                                          + "memory_max_bytes or disk_max_bytes), or stop promoting this instance with [storage.{}] promotion = false",
+                                         + "cannot be written or its source cannot be read. Free or resize the tier ([storage.{}] "
+                                         + "memory_max_bytes or disk_max_bytes), or stop promoting this instance with [storage.{}] promotion = false",
                                           instance,
                                           after.streak(),
                                           instance,
@@ -104,7 +103,7 @@ final class PromotionStallWatch {
     /// What the watch has seen of one instance: the stats at the last cycle it looked at, and how many cycles in a row
     /// were stalled.
     record Tracker(PromotionStats seen, int streak) {
-        static Tracker initial() {
+        static Tracker tracker() {
             return new Tracker(PromotionStats.promotionStats(), 0);
         }
 
@@ -118,7 +117,10 @@ final class PromotionStallWatch {
                 return this;
             }
 
-            return new Tracker(now, isStalledSince(now) ? streak + 1 : 0);
+            return new Tracker(now,
+                               isStalledSince(now)
+                               ? streak + 1
+                               : 0);
         }
 
         private boolean isStalledSince(PromotionStats now) {

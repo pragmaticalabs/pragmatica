@@ -758,9 +758,7 @@ class ManagementServerImpl implements ManagementServer {
     /// from the instance's own manager. `failed` rising while `blocks` stands still is the condition behind the
     /// `storage-promotion-stalled` operator event.
     private void registerStoragePromotionMetrics() {
-        nodeSupplier.get()
-                    .storageSetups()
-                    .forEach(this::registerPromotionGauges);
+        nodeSupplier.get().storageSetups().forEach(this::registerPromotionGauges);
     }
 
     private void registerPromotionGauges(String instance, StorageSetup setup) {

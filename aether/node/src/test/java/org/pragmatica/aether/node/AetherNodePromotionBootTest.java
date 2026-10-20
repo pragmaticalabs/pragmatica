@@ -110,6 +110,14 @@ class AetherNodePromotionBootTest {
 
         assertThat(artifacts.promotionManager().stats().blocksPromoted()).isGreaterThanOrEqualTo(1);
         assertThat(artifacts.promotionManager().stats().cycles()).isGreaterThanOrEqualTo(1);
+
+        var stopping = node;
+
+        node = null;
+        stopping.stop().await(timeSpan(30).seconds()).onFailure(cause -> fail("stop must succeed: " + cause.message()));
+
+        assertThat(artifacts.promotionManager().isActive()).as("stopping the node deactivates promotion").isFalse();
+        assertThat(artifacts.demotionManager().isActive()).as("and demotion").isFalse();
     }
 
     private boolean maintenanceActive(String instance) {

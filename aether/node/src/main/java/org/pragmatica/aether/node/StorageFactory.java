@@ -413,7 +413,7 @@ public final class StorageFactory {
     }
 
     private static PromotionManager.PromotionStats mergePromotionStats(PromotionManager.PromotionStats a,
-                                                                      PromotionManager.PromotionStats b) {
+                                                                       PromotionManager.PromotionStats b) {
         return new PromotionManager.PromotionStats(a.blocksPromoted() + b.blocksPromoted(),
                                                    a.bytesMoved() + b.bytesMoved(),
                                                    a.failed() + b.failed(),
@@ -430,23 +430,17 @@ public final class StorageFactory {
     /// Idempotent, so a node that reports ready again re-activates nothing new.
     public static Result<Unit> activateNodeMaintenance(Map<String, StorageSetup> setups) {
         return Result.allOf(nodeMaintenanceSetups(setups).stream()
-                                                         .flatMap(setup -> Stream.of(setup.demotionManager()
-                                                                                         .activate(),
-                                                                                     setup.promotionManager()
-                                                                                          .activate()))
-                                                         .toList())
-                     .map(_ -> unit());
+                                                 .flatMap(setup -> Stream.of(setup.demotionManager().activate(),
+                                                                             setup.promotionManager().activate()))
+                                                 .toList()).map(_ -> unit());
     }
 
     /// Mirror of [#activateNodeMaintenance], run when the node stops.
     public static Result<Unit> deactivateNodeMaintenance(Map<String, StorageSetup> setups) {
         return Result.allOf(nodeMaintenanceSetups(setups).stream()
-                                                         .flatMap(setup -> Stream.of(setup.demotionManager()
-                                                                                         .deactivate(),
-                                                                                     setup.promotionManager()
-                                                                                          .deactivate()))
-                                                         .toList())
-                     .map(_ -> unit());
+                                                 .flatMap(setup -> Stream.of(setup.demotionManager().deactivate(),
+                                                                             setup.promotionManager().deactivate()))
+                                                 .toList()).map(_ -> unit());
     }
 
     private static List<StorageSetup> nodeMaintenanceSetups(Map<String, StorageSetup> setups) {
@@ -1179,7 +1173,6 @@ public final class StorageFactory {
                                    log.info("Storage 'streams' created: {} tier(s), data dir={}",
                                             tiers.size(),
                                             snapshotDir.getParent());
-
                                    // No promotion manager (the 8-argument shape carries the inert one): streaming is
                                    // append-only, its memory tier is a small hot-hop mirror, and TieredStreamReader
                                    // prefetches its own next segment.

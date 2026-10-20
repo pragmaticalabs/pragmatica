@@ -26,6 +26,7 @@ public interface PromotionManager {
     Result<Unit> activate();
     /// Deactivate the promotion manager. Subsequent promote() calls will no-op.
     Result<Unit> deactivate();
+
     /// Whether the promotion manager is currently active.
     boolean isActive();
 
@@ -35,7 +36,7 @@ public interface PromotionManager {
     /// @param cycles promotion cycles that ran (an inactive manager runs none)
     /// @param lastRunMs completion time of the last cycle that ran
     record PromotionStats(int blocksPromoted, long bytesMoved, int failed, int cycles, long lastRunMs) {
-        static PromotionStats promotionStats() {
+        public static PromotionStats promotionStats() {
             return new PromotionStats(0, 0, 0, 0, 0);
         }
 

@@ -53,9 +53,9 @@ class StorageRoutesMaintenanceTest {
 
     @Test
     void instanceDetail_reportsPromotionDisabled_forAnInstanceWithTheInertManager() {
-        var detail = detailOf(setup("streams", PromotionManager.NOOP));
+        var detail = detailOf(setup("content", PromotionManager.NOOP));
 
-        assertThat(detail.maintenance().promotion().enabled()).as("streams (or promotion = false) never promotes").isFalse();
+        assertThat(detail.maintenance().promotion().enabled()).as("an instance with promotion = false (or streams) never promotes").isFalse();
         assertThat(detail.maintenance().promotion().active()).isFalse();
     }
 

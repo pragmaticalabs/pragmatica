@@ -20,7 +20,10 @@ public record PromotionConfig(int accessThreshold, long windowMs, int batchSize,
     /// Default configuration: threshold 50 accesses, 5 minute window, 10-block batches, the demotion low
     /// watermark as the target ceiling.
     public static PromotionConfig promotionConfig() {
-        return new PromotionConfig(50, 300_000L, 10, DemotionConfig.demotionConfig().lowWatermark());
+        return new PromotionConfig(50,
+                                   300_000L,
+                                   10,
+                                   DemotionConfig.demotionConfig().lowWatermark());
     }
 
     /// Custom thresholds with the default target watermark.

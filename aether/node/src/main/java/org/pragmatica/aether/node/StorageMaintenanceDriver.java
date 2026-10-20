@@ -90,10 +90,7 @@ public final class StorageMaintenanceDriver {
 
     @Contract
     private static void startOnDaemonThread(Runnable cycle) {
-        Thread.ofPlatform()
-              .daemon()
-              .name("storage-promotion")
-              .start(cycle);
+        Thread.ofPlatform().daemon().name("storage-promotion").start(cycle);
     }
 
     /// Runs one demotion pass, starts one promotion cycle unless the previous one is still running, then runs one GC
@@ -106,7 +103,6 @@ public final class StorageMaintenanceDriver {
         var demoted = demotionManager.demote();
 
         startPromotionUnlessRunning();
-
         var collected = garbageCollector.collectGarbage();
 
         if (demoted > 0 || collected > 0) {
@@ -126,7 +122,8 @@ public final class StorageMaintenanceDriver {
     @Contract
     private void runPromotionCycle() {
         Result.lift(Causes::fromThrowable, this::promoteAndObserve)
-              .onFailure(cause -> log.warn("Storage promotion cycle failed: {}", cause.message()))
+              .onFailure(cause -> log.warn("Storage promotion cycle failed: {}",
+                                           cause.message()))
               .onSuccess(StorageMaintenanceDriver::logPromoted);
         promoting.set(false);
     }

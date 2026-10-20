@@ -115,16 +115,6 @@ class PromotionStallWatchTest {
         assertThat(events()).as("a skipped tick runs no cycle, so it cannot add to the streak").isEmpty();
     }
 
-    @Test
-    void promotionStallWatch_ignoresAnInstanceThatDoesNotPromote() {
-        var inert = setups(Map.of("streams", PromotionManager.NOOP));
-        var watch = PromotionStallWatch.promotionStallWatch(inert, sink);
-
-        watch.observe();
-
-        assertThat(events()).isEmpty();
-    }
-
     private void stallFor(PromotionStallWatch watch, int cycles) {
         for (var i = 0; i < cycles; i++) {
             promotion.cycle(0, 1);

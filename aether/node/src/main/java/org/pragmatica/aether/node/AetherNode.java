@@ -2793,8 +2793,8 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
-                StorageFactory.deactivateNodeMaintenance(storageSetups)
-                              .onFailure(cause -> log.warn("Storage maintenance could not be deactivated: {}", cause.message()));
+                StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> log.warn("Storage maintenance could not be deactivated: {}",
+                                                                                                    cause.message()));
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
 
                 return Unit.unit();
@@ -7387,9 +7387,10 @@ public interface AetherNode extends ManageableNode {
     /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. A manager that
     /// cannot start is logged and the node still becomes ready: promotion is an optimization, not a dependency.
     @Contract
-    private static void signalReadyActivatingStorage(Runnable signalReady, Map<String, StorageFactory.StorageSetup> storageSetups) {
-        StorageFactory.activateNodeMaintenance(storageSetups)
-                      .onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}", cause.message()));
+    private static void signalReadyActivatingStorage(Runnable signalReady,
+                                                     Map<String, StorageFactory.StorageSetup> storageSetups) {
+        StorageFactory.activateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}",
+                                                                                          cause.message()));
         signalReady.run();
     }
 

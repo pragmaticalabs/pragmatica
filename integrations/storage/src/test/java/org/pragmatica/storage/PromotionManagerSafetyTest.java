@@ -181,6 +181,55 @@ class PromotionManagerSafetyTest {
     }
 
     @Nested
+    class SourceTier {
+        @Test
+        void promote_sourceReadFails_countsAFailureAndCopiesNothing() {
+            var broken = new ReadFailingTier(disk);
+            var id = storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(1));
+            var pm = promotionManager(List.of(memory, broken), metadata, promotionConfig(5, 300_000L, 10));
+
+            pm.activate();
+
+            assertThat(pm.promote()).isZero();
+            assertThat(pm.stats().failed()).as("a source that cannot be read is a failed copy").isEqualTo(1);
+            assertThat(memory.exists(id).await().unwrap()).isFalse();
+        }
+
+        @Test
+        void promote_recordNamesABlockTheSourceLacks_isSkippedNotCounted() {
+            var now = System.currentTimeMillis();
+            var id = BlockId.blockId(block(1)).unwrap();
+
+            metadata.createLifecycle(BlockLifecycle.blockLifecycle(id, EnumSet.of(TierLevel.LOCAL_DISK), 1, now, now, 100));
+
+            var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
+
+            pm.activate();
+
+            assertThat(pm.promote()).isZero();
+            assertThat(pm.stats().failed()).as("an absent source copy is a stale record, not a failing tier").isZero();
+        }
+    }
+
+    @Nested
+    class Configuration {
+        @Test
+        void promotionConfig_defaultTargetWatermark_isTheDemotionLowWatermark() {
+            assertThat(PromotionConfig.promotionConfig().targetWatermark())
+                    .isEqualTo(DemotionConfig.demotionConfig().lowWatermark());
+            assertThat(promotionConfig(5, 300_000L, 10).targetWatermark())
+                    .as("the three-argument factory keeps the default")
+                    .isEqualTo(DemotionConfig.demotionConfig().lowWatermark());
+        }
+
+        @Test
+        void promotionConfig_targetWatermark_isClampedToARatio() {
+            assertThat(PromotionConfig.promotionConfig(5, 300_000L, 10, 7.0).targetWatermark()).isEqualTo(1.0);
+            assertThat(PromotionConfig.promotionConfig(5, 300_000L, 10, -1.0).targetWatermark()).isEqualTo(0.01);
+        }
+    }
+
+    @Nested
     class Counters {
         @Test
         void stats_countCyclesAndCopies_onlyWhileActive() {
@@ -233,6 +282,50 @@ class PromotionManagerSafetyTest {
         metadata.createLifecycle(BlockLifecycle.blockLifecycle(id, presentIn, 1, now, now, 100));
 
         return id;
+    }
+
+    /// A source tier whose reads fail.
+    private static final class ReadFailingTier implements StorageTier {
+        private final StorageTier delegate;
+
+        ReadFailingTier(StorageTier delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return Causes.cause("simulated read failure").promise();
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            return delegate.put(id, content);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return delegate.exists(id);
+        }
+
+        @Override
+        public TierLevel level() {
+            return delegate.level();
+        }
+
+        @Override
+        public long usedBytes() {
+            return delegate.usedBytes();
+        }
+
+        @Override
+        public long maxBytes() {
+            return delegate.maxBytes();
+        }
     }
 
     /// A tier that counts the calls promotion makes against it.

@@ -237,7 +237,7 @@ final class DefaultPromotionManager implements PromotionManager {
     private static double utilization(StorageTier tier, long incomingBytes) {
         return tier.maxBytes() == 0
                ? 0.0
-               : (double) (tier.usedBytes() + incomingBytes) / tier.maxBytes();
+               : (double)(tier.usedBytes() + incomingBytes) / tier.maxBytes();
     }
 
     private static final Comparator<BlockLifecycle> MOST_ACCESSED_FIRST = Comparator.comparingInt(BlockLifecycle::accessCount).reversed();

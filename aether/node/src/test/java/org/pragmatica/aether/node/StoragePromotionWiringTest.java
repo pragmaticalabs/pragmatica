@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.TierLevel;
@@ -21,6 +23,9 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /// Promotion through the production path: `StorageFactory.createAll` builds the setups exactly as `AetherNode`
 /// does, `activateNodeMaintenance` is what the node's ready signal calls, and `StorageMaintenanceDriver.tick()` is
@@ -49,6 +54,46 @@ class StoragePromotionWiringTest {
                                                              .isNotSameAs(PromotionManager.NOOP);
         assertThat(setups.get(CONTENT).promotionManager()).as("`[storage.content] promotion = false` is the kill switch")
                                                            .isSameAs(PromotionManager.NOOP);
+    }
+
+    @Test
+    void createAll_synthesizedInstances_followTheDefaultsPromotionSwitch() {
+        var defaults = config(StorageConfig.storageConfig(), artifactsDir, MEMORY_MAX_BYTES, false);
+
+        var setups = StorageFactory.createAll(Map.of(), "test-node", Option.none(), Option.none(), defaults)
+                                   .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                   .unwrap();
+
+        assertThat(setups.get(ARTIFACTS).promotionManager()).as("the synthesized `artifacts` carries the defaults' switch")
+                                                             .isSameAs(PromotionManager.NOOP);
+        assertThat(setups.get(CONTENT).promotionManager()).as("so does the synthesized `content`")
+                                                           .isSameAs(PromotionManager.NOOP);
+    }
+
+    @Test
+    void compositePromotionManager_sumsCyclesAndMergesStatsAcrossInstances() {
+        var first = mock(PromotionManager.class);
+        var second = mock(PromotionManager.class);
+
+        when(first.promote()).thenReturn(2);
+        when(second.promote()).thenReturn(3);
+        when(first.stats()).thenReturn(new PromotionManager.PromotionStats(2, 200, 1, 4, 10));
+        when(second.stats()).thenReturn(new PromotionManager.PromotionStats(3, 300, 5, 6, 30));
+        when(first.isActive()).thenReturn(false);
+        when(second.isActive()).thenReturn(true);
+        when(first.activate()).thenReturn(Result.success(Unit.unit()));
+        when(second.activate()).thenReturn(Result.success(Unit.unit()));
+
+        var composite = StorageFactory.compositePromotionManager(Map.of("one", setupWith(first), "two", setupWith(second)));
+
+        assertThat(composite.promote()).isEqualTo(5);
+        assertThat(composite.stats()).isEqualTo(new PromotionManager.PromotionStats(5, 500, 6, 10, 30));
+        assertThat(composite.isActive()).as("active when at least one instance promotes").isTrue();
+
+        composite.activate();
+
+        verify(first).activate();
+        verify(second).activate();
     }
 
     @Test
@@ -161,6 +206,10 @@ class StoragePromotionWiringTest {
                                            defaults.walPath(),
                                            false,
                                            promotion);
+    }
+
+    private static StorageFactory.StorageSetup setupWith(PromotionManager promotion) {
+        return StorageFactory.StorageSetup.storageSetup("instance", null, null, null, null, null, null, Option.none(), promotion);
     }
 
     private Map<String, StorageFactory.StorageSetup> withStreams(Map<String, StorageFactory.StorageSetup> setups) {
