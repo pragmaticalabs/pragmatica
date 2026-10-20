@@ -27,12 +27,20 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
+import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -224,6 +232,31 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .as("#731: the departed worker's SliceNodeKey KV entry must be removed directly, "
                         + "not left to the stale sweep")
                     .isEqualTo(Option.empty());
+        }
+
+        /// #1337: a departed node's topic subscription and publisher rows go with it. Its unload never runs, and a standing row would
+        /// refuse a legitimate deployment of the opposite tier on behalf of a node that no longer exists. Another node's rows stay.
+        @Test
+        void workerLeave_departedWorker_clearsItsTopicRows_andKeepsEveryOthers() {
+            joinWorker(WORKER_1);
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var departedPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, WORKER_1);
+            var departedSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, WORKER_1);
+            var survivingPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, CORE_1);
+            var survivingSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, CORE_1);
+
+            kvStore.put(departedPub, TopicPublisherValue.topicPublisherValue(WORKER_1, TopicTier.EPHEMERAL));
+            kvStore.put(departedSub, TopicSubscriptionValue.topicSubscriptionValue(WORKER_1, TopicTier.DURABLE));
+            kvStore.put(survivingPub, TopicPublisherValue.topicPublisherValue(CORE_1, TopicTier.EPHEMERAL));
+            kvStore.put(survivingSub, TopicSubscriptionValue.topicSubscriptionValue(CORE_1, TopicTier.DURABLE));
+
+            leaveWorker(WORKER_1);
+
+            assertThat(kvStore.get(departedPub)).as("the departed node's publisher row is removed").isEqualTo(Option.empty());
+            assertThat(kvStore.get(departedSub)).as("the departed node's subscription row is removed").isEqualTo(Option.empty());
+            assertThat(kvStore.get(survivingPub).isPresent()).as("another node's publisher row stays").isTrue();
+            assertThat(kvStore.get(survivingSub).isPresent()).as("another node's subscription row stays").isTrue();
         }
 
         @Test
