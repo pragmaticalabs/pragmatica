@@ -194,6 +194,34 @@ class QuicLoserDrainTest {
         }
     }
 
+    /// The drain ends as soon as the last lane stream has closed, long before the bound.
+    @Test
+    void closeAfterDrain_everyLaneClosed_closesWithoutWaitingForTheBound() {
+        var loop = new DefaultEventLoop();
+        var channel = mock(QuicChannel.class);
+        var stream = mock(QuicStreamChannel.class);
+
+        try {
+            var closing = new DefaultChannelPromise(stream, loop);
+
+            when(channel.isActive()).thenReturn(true);
+            when(channel.eventLoop()).thenReturn(loop);
+            when(stream.isActive()).thenReturn(true);
+            when(stream.closeFuture()).thenReturn(closing);
+
+            var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
+            var _ = connection.registerStream(StreamType.KV, stream);
+
+            connection.closeAfterDrain(60_000);
+            verify(channel, never()).close();
+            closing.setSuccess();
+
+            verify(channel, timeout(5_000)).close();
+        } finally {
+            loop.shutdownGracefully();
+        }
+    }
+
     private static QuicPeerConnection connectionFrom(NodeId dialer) {
         var channel = mock(QuicChannel.class);
 
