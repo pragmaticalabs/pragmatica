@@ -43,7 +43,7 @@ class DistributedDHTClientLateReplyTest {
     private static final DHTConfig SINGLE_REPLICA = new DHTConfig(1, 1, 1, timeSpan(5).seconds());
     private static final DHTConfig ALL_THREE = new DHTConfig(3, 3, 3, timeSpan(5).seconds());
     private static final long REPLY_DELAY_MS = 3;
-    private static final int TRIALS = 20;
+    private static final int TRIALS = 100;
 
     private final CopyOnWriteArrayList<ProtocolMessage> sent = new CopyOnWriteArrayList<>();
 
