@@ -16,6 +16,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -60,6 +62,48 @@ record StaleEntryCleaner(Active active) {
                   .apply(commands)
                   .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                 cause.message()));
+        }
+    }
+
+    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes). #1337: topic publisher and subscription rows of a node that is no
+    // longer a placement node. The removal decision (`handleNodeRemoval`) clears them when the leader sees the departure; after a leader
+    // failover, or when no removal decision is ever delivered, this sweep is what stops a vanished node's row from refusing an
+    // opposite-tier activation forever.
+    @Contract
+    void cleanupStaleTopicRows() {
+        if (!active.coreMembershipResolved()) {
+            return;
+        }
+
+        var currentNodes = placementNodes();
+        var commands = new ArrayList<KVCommand<AetherKey>>();
+
+        active.ctx()
+              .kvStore()
+              .forEach(TopicSubscriptionKey.class,
+                       AetherValue.TopicSubscriptionValue.class,
+                       (key, _) -> collectStaleTopicRow(commands, key, key.nodeId(), currentNodes));
+        active.ctx()
+              .kvStore()
+              .forEach(TopicPublisherKey.class,
+                       AetherValue.TopicPublisherValue.class,
+                       (key, _) -> collectStaleTopicRow(commands, key, key.nodeId(), currentNodes));
+        if (!commands.isEmpty()) {
+            log.info("Cleaning up {} stale topic subscription/publisher rows", commands.size());
+            active.ctx()
+                  .cluster()
+                  .apply(commands)
+                  .onFailure(cause -> log.error("Failed to clean up stale topic rows: {}",
+                                                cause.message()));
+        }
+    }
+
+    private void collectStaleTopicRow(List<KVCommand<AetherKey>> commands,
+                                      AetherKey key,
+                                      NodeId rowNode,
+                                      Set<NodeId> currentNodes) {
+        if (!currentNodes.contains(rowNode)) {
+            commands.add(new KVCommand.Remove<>(key));
         }
     }
 

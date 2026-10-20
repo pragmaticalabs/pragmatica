@@ -605,6 +605,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             rebuildSliceStateFromKVStoreEntries();
             triggerLoadedSliceActivation();
             cleanupStaleNodeRoutes();
+            cleanupStaleTopicRows();
             cleanupStaleSliceEntries();
             cleanupStaleNodeArtifactEntries();
             cleanupOrphanedSliceEntries();
@@ -623,6 +624,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // freshly elected leader; see `sweepDeadRestoredWorkers`'s doc comment.
             sweepDeadRestoredWorkers();
             cleanupStaleNodeRoutes();
+            cleanupStaleTopicRows();
             cleanupStaleSliceEntries();
             cleanupStaleNodeArtifactEntries();
             reconcile();
@@ -2840,6 +2842,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         @Contract
+        public void cleanupStaleTopicRows() {
+            staleEntryCleaner().cleanupStaleTopicRows();
+        }
+
+        @Contract
         public void cleanupStaleSliceEntries() {
             staleEntryCleaner().cleanupStaleSliceEntries();
         }
@@ -2938,6 +2945,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             evaluateCommunityStates();
             cleanupOrphanedSliceEntries();
             cleanupStaleNodeRoutes();
+            cleanupStaleTopicRows();
             cleanupStaleNodeArtifactEntries();
             cleanupStaleSliceEntries();
             detectStuckTransitionalStates();

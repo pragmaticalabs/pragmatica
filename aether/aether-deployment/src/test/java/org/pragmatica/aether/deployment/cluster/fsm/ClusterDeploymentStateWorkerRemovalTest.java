@@ -259,6 +259,33 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(kvStore.get(survivingSub).isPresent()).as("another node's subscription row stays").isTrue();
         }
 
+        /// #1337 (v-2339 F1): after a leader failover, or whenever no removal decision is delivered, a vanished node's topic rows would
+        /// refuse opposite-tier activations forever. The periodic sweep removes rows of nodes that are no longer placement nodes
+        /// (core members and registered workers) and keeps the rows of every live one.
+        @Test
+        void staleTopicRowSweep_removesRowsOfAVanishedNode_andKeepsLiveNodesRows() {
+            joinWorker(WORKER_1);
+            var vanished = new NodeId("node-vanished");
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var vanishedPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, vanished);
+            var vanishedSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, vanished);
+            var selfPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var workerSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, WORKER_1);
+
+            kvStore.put(vanishedPub, TopicPublisherValue.topicPublisherValue(vanished, TopicTier.EPHEMERAL));
+            kvStore.put(vanishedSub, TopicSubscriptionValue.topicSubscriptionValue(vanished, TopicTier.DURABLE));
+            kvStore.put(selfPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(workerSub, TopicSubscriptionValue.topicSubscriptionValue(WORKER_1, TopicTier.DURABLE));
+
+            activeState().cleanupStaleTopicRows();
+
+            assertThat(kvStore.get(vanishedPub)).as("a vanished node's publisher row is swept").isEqualTo(Option.empty());
+            assertThat(kvStore.get(vanishedSub)).as("a vanished node's subscription row is swept").isEqualTo(Option.empty());
+            assertThat(kvStore.get(selfPub).isPresent()).as("a live core node's row stays").isTrue();
+            assertThat(kvStore.get(workerSub).isPresent()).as("a live registered worker's row stays").isTrue();
+        }
+
         @Test
         void workerLeave_outstandingBlueprintShortfall_reconcileRePlacesOntoRemainingPool() {
             joinWorker(WORKER_1);
