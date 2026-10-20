@@ -2793,6 +2793,8 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
+                // FER: a manager that will not deactivate is logged and the stop goes on; the node is going away, and the
+                // periodic tasks that tick it were already cancelled first thing in stop().
                 StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> log.warn("Storage maintenance could not be deactivated: {}",
                                                                                                     cause.message()));
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
@@ -7384,8 +7386,9 @@ public interface AetherNode extends ManageableNode {
 
     /// Per-node storage maintenance starts with the node's readiness: promotion and demotion of `artifacts` and
     /// `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
-    /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. A manager that
-    /// cannot start is logged and the node still becomes ready: promotion is an optimization, not a dependency.
+    /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. FER (degrade forward):
+    /// a manager that cannot start is logged and the node still becomes ready, with that instance's tiers unmaintained;
+    /// promotion is an optimization, not a dependency.
     @Contract
     private static void signalReadyActivatingStorage(Runnable signalReady,
                                                      Map<String, StorageFactory.StorageSetup> storageSetups) {

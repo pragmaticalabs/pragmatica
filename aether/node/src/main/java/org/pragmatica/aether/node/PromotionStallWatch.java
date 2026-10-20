@@ -65,12 +65,13 @@ final class PromotionStallWatch {
         return unit();
     }
 
-    private void observe(String instance, PromotionStats now) {
+    private Unit observe(String instance, PromotionStats now) {
         var before = trackers.getOrDefault(instance, Tracker.tracker());
         var after = before.after(now);
 
         trackers.put(instance, after);
-        raiseTransition(instance, before, after);
+
+        return raiseTransition(instance, before, after);
     }
 
     private Unit raiseTransition(String instance, Tracker before, Tracker after) {

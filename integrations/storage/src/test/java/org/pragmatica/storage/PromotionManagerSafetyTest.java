@@ -76,6 +76,19 @@ class PromotionManagerSafetyTest {
         }
 
         @Test
+        void promote_targetExactlyAtWatermark_readsNothing() {
+            fill(memory, 1400);
+            storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(1));
+            var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
+
+            pm.activate();
+
+            assertThat(pm.promote()).isZero();
+            assertThat(disk.gets.get()).as("a tier already AT its ceiling has no room for any block: no source read")
+                                       .isZero();
+        }
+
+        @Test
         void promote_blockWouldPassWatermark_isSkippedWithoutFailure() {
             fill(memory, 1100);
             storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(1));

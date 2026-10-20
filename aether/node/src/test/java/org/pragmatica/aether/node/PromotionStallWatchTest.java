@@ -59,6 +59,10 @@ class PromotionStallWatchTest {
 
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().code()).isEqualTo(OperatorWarningCode.STORAGE_PROMOTION_STALLED);
+        assertThat(events.getFirst().code().code()).as("the kebab string is the operator-facing contract")
+                                                   .isEqualTo("storage-promotion-stalled");
+        assertThat(events.getFirst().code().subsystem()).isEqualTo("storage");
+        assertThat(events.getFirst().code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.WARNING);
         assertThat(events.getFirst().subject()).isEqualTo(INSTANCE);
         assertThat(events.getFirst().message()).contains("[storage.artifacts] memory_max_bytes or disk_max_bytes")
                                                .contains("[storage.artifacts] promotion = false");
@@ -77,6 +81,9 @@ class PromotionStallWatchTest {
         assertThat(events).extracting(OperatorWarning::code)
                           .containsExactly(OperatorWarningCode.STORAGE_PROMOTION_STALLED,
                                            OperatorWarningCode.STORAGE_PROMOTION_RESUMED);
+        assertThat(events.getLast().code().code()).isEqualTo("storage-promotion-resumed");
+        assertThat(events.getLast().code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
+        assertThat(events.getLast().code().recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STORAGE_PROMOTION_STALLED));
     }
 
     @Test
@@ -105,14 +112,17 @@ class PromotionStallWatchTest {
     }
 
     @Test
-    void observe_noCycleSinceTheLastLook_judgesNothing() {
+    void observe_aLookWithNoNewCycle_keepsTheStreak() {
         var watch = watchOver(promotion);
 
         stallFor(watch, PromotionStallWatch.STALLED_AFTER_CYCLES - 1);
         watch.observe();
+        promotion.cycle(0, 1);
         watch.observe();
 
-        assertThat(events()).as("a skipped tick runs no cycle, so it cannot add to the streak").isEmpty();
+        assertThat(events()).as("a skipped tick runs no cycle: it neither adds to the streak nor resets it")
+                            .extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STORAGE_PROMOTION_STALLED);
     }
 
     private void stallFor(PromotionStallWatch watch, int cycles) {

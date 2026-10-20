@@ -117,8 +117,10 @@ public final class StorageMaintenanceDriver {
         }
     }
 
-    /// One promotion cycle, then the stall check on what it did. A failure is logged and the guard released either way,
-    /// or one bad cycle would stop promotion on this node for good.
+    /// One promotion cycle, then the stall check on what it did. FER (degrade forward): a failed cycle is logged and
+    /// dropped, and the next tick starts a fresh one; nothing waits on a cycle having run, and the guard is released
+    /// either way, or one bad cycle would stop promotion on this node for good. The guarantee is only that promotion
+    /// retries every tick; a cycle that keeps failing is surfaced by the stall watch, not by this log line.
     @Contract
     private void runPromotionCycle() {
         Result.lift(Causes::fromThrowable, this::promoteAndObserve)
