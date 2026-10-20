@@ -349,8 +349,6 @@ record PlacementReconciler(NodeId self,
                               .stream()
                               .filter(AetherValue.ActivationDirectiveValue.class::isInstance)
                               .map(AetherValue.ActivationDirectiveValue.class::cast)
-                              .filter(directive -> !directive.communityId()
-                                                             .isBlank())
                               .collect(Collectors.groupingBy(AetherValue.ActivationDirectiveValue::communityId,
                                                              Collectors.counting()));
 

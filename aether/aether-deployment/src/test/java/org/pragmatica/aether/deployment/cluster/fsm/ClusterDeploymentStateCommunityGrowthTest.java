@@ -161,6 +161,16 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_anotherSourcesPendingAssignment_isNotOurCandidate() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.context().communityAdmission().register(new NodeId("elsewhere"), "us-east-w-0", fixture.context().nowMs());
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(1)).as("a pending join of another source is not ours to take").isEqualTo(FIRST);
+    }
+
+    @Test
     void join_growthOn_boundReachedAndCeilingReached_refusesAndWarns() {
         var fixture = fixture(config(true, 2, 1));
         var codes = fixture.captureWarnings();
