@@ -60,10 +60,13 @@ sealed interface DerivedCommunities {
                                        List<Candidate> found,
                                        CommunityKey key,
                                        CommunityValue value) {
-        if (value.sourceName().equals(source) && CommunityGrowthPolicy.derivedIndex(source, key.communityId()).isPresent()) {
+        if (value.sourceName().equals(source) && CommunityGrowthPolicy.derivedIndex(source,
+                                                                                    key.communityId())
+                                                                      .isPresent()) {
             found.add(Candidate.candidate(key.communityId(),
                                           value.state(),
-                                          loads.getOrDefault(key.communityId(), 0) + pending.getOrDefault(key.communityId(), 0)));
+                                          loads.getOrDefault(key.communityId(), 0) + pending.getOrDefault(key.communityId(),
+                                                                                                          0)));
         }
     }
 
@@ -76,8 +79,9 @@ sealed interface DerivedCommunities {
 
     @Contract
     private static void addPendingMint(String source, String communityId, int count, List<Candidate> found) {
-        if (CommunityGrowthPolicy.derivedIndex(source, communityId).isPresent()
-        && found.stream().noneMatch(candidate -> candidate.id().equals(communityId))) {
+        if (CommunityGrowthPolicy.derivedIndex(source, communityId).isPresent() && found.stream()
+                                                                                        .noneMatch(candidate -> candidate.id()
+                                                                                                                         .equals(communityId))) {
             found.add(Candidate.candidate(communityId, CommunityState.FORMING, count));
         }
     }

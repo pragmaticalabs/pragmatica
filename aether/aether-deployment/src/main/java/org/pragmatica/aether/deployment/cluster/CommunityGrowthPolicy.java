@@ -80,26 +80,23 @@ public sealed interface CommunityGrowthPolicy {
         var open = communities.stream().filter(Candidate::isOpen).toList();
 
         return undersized(open, policy).orElse(() -> packed(open, policy))
-                                       .orElse(() -> minted(source, communities, policy))
-                                       .orElse(() -> leastLoaded(open))
-                                       .or(Decision.Refusal.BOUNDS_REACHED);
+                         .orElse(() -> minted(source, communities, policy))
+                         .orElse(() -> leastLoaded(open))
+                         .or(Decision.Refusal.BOUNDS_REACHED);
     }
 
     private static Option<Decision> undersized(List<Candidate> open, CommunityPolicy policy) {
         return Option.from(open.stream()
                                .filter(Candidate::isUndersized)
                                .filter(candidate -> candidate.load() < policy.maxSize())
-                               .min(byLoadThenId()))
-                     .<Decision> map(candidate -> Decision.Join.join(candidate.id()));
+                               .min(byLoadThenId())).<Decision> map(candidate -> Decision.Join.join(candidate.id()));
     }
 
     private static Option<Decision> packed(List<Candidate> open, CommunityPolicy policy) {
         return Option.from(open.stream()
                                .filter(candidate -> !candidate.isUndersized())
                                .filter(candidate -> candidate.load() < policy.maxSize())
-                               .min(byLoadThenId().reversed()
-                                                  .thenComparing(Candidate::id)))
-                     .<Decision> map(candidate -> Decision.Join.join(candidate.id()));
+                               .min(Comparator.comparingInt(Candidate::load).reversed().thenComparing(Candidate::id))).<Decision> map(candidate -> Decision.Join.join(candidate.id()));
     }
 
     private static Option<Decision> minted(String source, List<Candidate> communities, CommunityPolicy policy) {
@@ -113,18 +110,17 @@ public sealed interface CommunityGrowthPolicy {
     private static Option<Decision> leastLoaded(List<Candidate> open) {
         return Option.from(open.stream()
                                .filter(candidate -> candidate.load() < CommunityPolicy.CEILING)
-                               .min(byLoadThenId()))
-                     .<Decision> map(candidate -> Decision.Join.join(candidate.id()));
+                               .min(byLoadThenId())).<Decision> map(candidate -> Decision.Join.join(candidate.id()));
     }
 
     private static Comparator<Candidate> byLoadThenId() {
-        return Comparator.comparingInt(Candidate::load)
-                         .thenComparing(Candidate::id);
+        return Comparator.comparingInt(Candidate::load).thenComparing(Candidate::id);
     }
 
     private static int nextIndex(String source, List<Candidate> communities) {
         return communities.stream()
-                          .flatMap(candidate -> derivedIndex(source, candidate.id()).stream())
+                          .flatMap(candidate -> derivedIndex(source,
+                                                             candidate.id()).stream())
                           .mapToInt(Integer::intValue)
                           .max()
                           .orElse(-1) + 1;

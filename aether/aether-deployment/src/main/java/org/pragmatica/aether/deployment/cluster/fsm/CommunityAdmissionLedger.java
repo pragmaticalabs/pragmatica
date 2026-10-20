@@ -48,7 +48,8 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, S
     /// the TTL. Entries that are visible or expired are dropped on the way.
     public Map<String, Integer> pendingByCommunity(long nowMs, Predicate<NodeId> committed) {
         pending.entrySet()
-               .removeIf(entry -> committed.test(entry.getKey()) || nowMs - entry.getValue().atMs() > PENDING_TTL_MS);
+               .removeIf(entry -> committed.test(entry.getKey()) || nowMs - entry.getValue()
+                                                                                 .atMs() > PENDING_TTL_MS);
 
         return pending.values()
                       .stream()

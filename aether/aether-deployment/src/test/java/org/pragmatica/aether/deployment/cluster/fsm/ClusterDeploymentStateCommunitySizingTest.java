@@ -247,9 +247,16 @@ class ClusterDeploymentStateCommunitySizingTest {
             harness.dispatch(new ClusterDeploymentEvents.WorkerJoinReceived(new org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision(nodeId, "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
         }
 
+        /// The cluster config is version-fenced: a re-commit carries the next version.
+        private long nextConfigVersion() {
+            return kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                          .map(committed -> committed.configVersion() + 1)
+                          .or(1L);
+        }
+
         void seedConfig(String toml) {
             kvStore.put(AetherKey.ClusterConfigKey.CURRENT,
-                        new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
+                        new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 5, "forge", nextConfigVersion(), 1));
         }
 
         void seedCommunity(String communityId, CommunityState state) {

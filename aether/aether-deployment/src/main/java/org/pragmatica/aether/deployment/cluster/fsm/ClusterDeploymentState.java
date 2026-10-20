@@ -114,7 +114,6 @@ import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
-
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarnings;
 
@@ -1172,8 +1171,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                          Option<AetherValue.ClusterConfigValue> configuration,
                                          CommunityGrowthPolicy.Decision decision) {
             switch (decision) {
-                case CommunityGrowthPolicy.Decision.Join join -> admitToCommunity(node, source, join.communityId(), configuration);
-                case CommunityGrowthPolicy.Decision.Mint mint -> admitToCommunity(node, source, mint.communityId(), configuration);
+                case CommunityGrowthPolicy.Decision.Join join -> admitToCommunity(node,
+                                                                                  source,
+                                                                                  join.communityId(),
+                                                                                  configuration);
+                case CommunityGrowthPolicy.Decision.Mint mint -> admitToCommunity(node,
+                                                                                  source,
+                                                                                  mint.communityId(),
+                                                                                  configuration);
                 case CommunityGrowthPolicy.Decision.Refusal _ -> refuseGrowth(node, source);
             }
         }
@@ -1183,8 +1188,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                       String communityId,
                                       Option<AetherValue.ClusterConfigValue> configuration) {
             ctx.communityAdmission().register(node, communityId, ctx.nowMs());
-            commitWorkerCommunity(node, communityId, source, ctx.communityPolicy().current().maxSize(), configuration);
-
+            commitWorkerCommunity(node,
+                                  communityId,
+                                  source,
+                                  ctx.communityPolicy().current().maxSize(),
+                                  configuration);
             if (ctx.communityAdmission().clearBlocked(source)) {
                 OperatorWarnings.raise(log,
                                        ctx.operatorWarnings(),
@@ -1210,8 +1218,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                    OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
                                    source,
                                    "No community can take worker {} of source {}: its communities are at the {} ceiling and the source is at "
-                                   + "the bound of {} (max_size {}). Raise community_policy.max_communities or max_size, or add worker "
-                                   + "capacity under another source; the worker takes a community when it rejoins",
+                                  + "the bound of {} (max_size {}). Raise community_policy.max_communities or max_size, or add worker "
+                                  + "capacity under another source; the worker takes a community when it rejoins",
                                    node,
                                    source,
                                    CommunityPolicy.CEILING,

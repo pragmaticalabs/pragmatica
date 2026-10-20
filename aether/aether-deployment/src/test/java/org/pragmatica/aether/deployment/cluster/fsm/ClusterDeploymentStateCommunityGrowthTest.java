@@ -282,9 +282,16 @@ class ClusterDeploymentStateCommunityGrowthTest {
             cluster.held.clear();
         }
 
+        /// The cluster config is version-fenced: a re-commit carries the next version.
+        private long nextConfigVersion() {
+            return kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                          .map(committed -> committed.configVersion() + 1)
+                          .or(1L);
+        }
+
         void seedConfig(String toml) {
             kvStore.put(AetherKey.ClusterConfigKey.CURRENT,
-                        new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
+                        new AetherValue.ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 5, "forge", nextConfigVersion(), 1));
         }
 
         /// `count` committed members of `communityId`, numbered above anything joined so far, in a FORMING community of the source.

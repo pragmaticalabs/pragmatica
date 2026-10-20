@@ -321,15 +321,17 @@ record PlacementReconciler(NodeId self,
                                                                                          .warn("Community {} reconciliation deferred: {}",
                                                                                                identity,
                                                                                                cause.message()))
-                                 .flatMap(_ -> reconcileDerived(config));
+                                  .flatMap(_ -> reconcileDerived(config));
     }
 
     /// #241: the derived communities (`<source>-w-N`) of a cluster that declares no `[community.*]` follow the committed
     /// `[community_policy]`: their target size is re-stamped to `max_size`, and with growth on an empty one is dissolved after the
     /// grace. Declared communities are never touched here. Needs a committed policy: without one there is nothing to follow.
     private Promise<Unit> reconcileDerived(ClusterBootstrapConfig config) {
-        return config.communities().isEmpty()
-               ? config.communityPolicy().fold(Promise::unitPromise, this::reconcileDerivedCommunities)
+        return config.communities()
+                     .isEmpty()
+               ? config.communityPolicy()
+                       .fold(Promise::unitPromise, this::reconcileDerivedCommunities)
                : Promise.unitPromise();
     }
 
@@ -347,8 +349,10 @@ record PlacementReconciler(NodeId self,
                               .stream()
                               .filter(AetherValue.ActivationDirectiveValue.class::isInstance)
                               .map(AetherValue.ActivationDirectiveValue.class::cast)
-                              .filter(directive -> !directive.communityId().isBlank())
-                              .collect(Collectors.groupingBy(AetherValue.ActivationDirectiveValue::communityId, Collectors.counting()));
+                              .filter(directive -> !directive.communityId()
+                                                             .isBlank())
+                              .collect(Collectors.groupingBy(AetherValue.ActivationDirectiveValue::communityId,
+                                                             Collectors.counting()));
 
         return snapshot.entrySet()
                        .stream()
@@ -363,12 +367,13 @@ record PlacementReconciler(NodeId self,
     private static Option<DerivedCommunityPlan.View> derivedView(String id,
                                                                  AetherValue.CommunityValue community,
                                                                  Map<String, Long> members) {
-        return CommunityGrowthPolicy.derivedIndex(community.sourceName(), id)
+        return CommunityGrowthPolicy.derivedIndex(community.sourceName(),
+                                                  id)
                                     .map(_ -> DerivedCommunityPlan.View.view(id,
-                                                                            community.sourceName(),
-                                                                            community.state(),
-                                                                            community.targetSize(),
-                                                                            members.getOrDefault(id, 0L).intValue()));
+                                                                             community.sourceName(),
+                                                                             community.state(),
+                                                                             community.targetSize(),
+                                                                             members.getOrDefault(id, 0L).intValue()));
     }
 
     /// Emptiness is timed in this leader's memory: a community first seen empty now starts its grace now, a community seen
@@ -399,18 +404,20 @@ record PlacementReconciler(NodeId self,
                                        Map<AetherKey, AetherValue> snapshot) {
         return (switch (action) {
             case DerivedCommunityPlan.Action.Restamp restamp -> rewriteCommunity(restamp.communityId(),
-                                                                                  community -> community.withTargetSize(restamp.targetSize()),
-                                                                                  leader,
-                                                                                  snapshot);
+                                                                                 community -> community.withTargetSize(restamp.targetSize()),
+                                                                                 leader,
+                                                                                 snapshot);
             case DerivedCommunityPlan.Action.BeginDissolve begin -> rewriteCommunity(begin.communityId(),
-                                                                                      community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVING),
-                                                                                      leader,
-                                                                                      snapshot);
+                                                                                     community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVING),
+                                                                                     leader,
+                                                                                     snapshot);
             case DerivedCommunityPlan.Action.Reopen reopen -> rewriteCommunity(reopen.communityId(),
-                                                                                community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.FORMING),
-                                                                                leader,
-                                                                                snapshot);
-            case DerivedCommunityPlan.Action.CompleteDissolve complete -> markDissolved(complete.communityId(), leader, snapshot);
+                                                                               community -> community.withState(org.pragmatica.aether.slice.kvstore.CommunityState.FORMING),
+                                                                               leader,
+                                                                               snapshot);
+            case DerivedCommunityPlan.Action.CompleteDissolve complete -> markDissolved(complete.communityId(),
+                                                                                        leader,
+                                                                                        snapshot);
         }).recover(_ -> Unit.unit());
     }
 
@@ -1164,9 +1171,7 @@ record PlacementReconciler(NodeId self,
                              });
     }
 
-    private Promise<Unit> markDissolved(String communityId,
-                                        LeaderValue leader,
-                                        Map<AetherKey, AetherValue> snapshot) {
+    private Promise<Unit> markDissolved(String communityId, LeaderValue leader, Map<AetherKey, AetherValue> snapshot) {
         var key = new AetherKey.CommunityKey(communityId);
 
         return store.getTyped(key, AetherValue.CommunityValue.class)

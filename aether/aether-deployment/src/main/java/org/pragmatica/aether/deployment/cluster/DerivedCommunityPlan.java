@@ -122,13 +122,20 @@ public sealed interface DerivedCommunityPlan {
                                                    CommunityPolicy policy,
                                                    Map<String, Long> emptySince,
                                                    long nowMs) {
-        return policy.growth() && isIdleLongEnough(view, policy, emptySince, nowMs) && isNewestIdle(view, all, policy, emptySince, nowMs)
-               && hasSibling(view, all)
+        return policy.growth() && isIdleLongEnough(view, policy, emptySince, nowMs) && isNewestIdle(view,
+                                                                                                    all,
+                                                                                                    policy,
+                                                                                                    emptySince,
+                                                                                                    nowMs) && hasSibling(view,
+                                                                                                                         all)
                ? Option.<Action> some(Action.BeginDissolve.beginDissolve(view.id()))
                : Option.<Action> none();
     }
 
-    private static boolean isIdleLongEnough(View view, CommunityPolicy policy, Map<String, Long> emptySince, long nowMs) {
+    private static boolean isIdleLongEnough(View view,
+                                            CommunityPolicy policy,
+                                            Map<String, Long> emptySince,
+                                            long nowMs) {
         return view.members() == 0 && Option.option(emptySince.get(view.id()))
                                             .filter(since -> nowMs - since >= policy.dissolveGraceSeconds() * 1000L)
                                             .isPresent();
@@ -142,14 +149,16 @@ public sealed interface DerivedCommunityPlan {
                                         Map<String, Long> emptySince,
                                         long nowMs) {
         return all.stream()
-                  .filter(other -> other.source().equals(view.source()) && other.isOpen())
+                  .filter(other -> other.source()
+                                        .equals(view.source()) && other.isOpen())
                   .filter(other -> isIdleLongEnough(other, policy, emptySince, nowMs))
                   .allMatch(other -> newer(view, other));
     }
 
     private static boolean newer(View view, View other) {
-        return other.id().equals(view.id()) || index(view).or(-1) > index(other).or(-1)
-               || index(view).equals(index(other)) && view.id().compareTo(other.id()) > 0;
+        return other.id()
+                    .equals(view.id()) || index(view).or(-1) > index(other).or(-1) || index(view).equals(index(other)) && view.id()
+                                                                                                                              .compareTo(other.id()) > 0;
     }
 
     private static Option<Integer> index(View view) {
@@ -159,7 +168,11 @@ public sealed interface DerivedCommunityPlan {
     /// Another open community of the same source stays. The last community of a source is never dissolved by policy.
     private static boolean hasSibling(View view, List<View> all) {
         return all.stream()
-                  .anyMatch(other -> !other.id().equals(view.id()) && other.source().equals(view.source()) && other.isOpen());
+                  .anyMatch(other -> !other.id()
+                                           .equals(view.id())
+                                     && other.source()
+                                             .equals(view.source())
+                                     && other.isOpen());
     }
 
     record unused() implements DerivedCommunityPlan {}
