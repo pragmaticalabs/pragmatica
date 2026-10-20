@@ -160,6 +160,39 @@ class ClusterDeploymentStateCommunitySizingTest {
                                                           .containsExactly(9);
     }
 
+    @Test
+    void reconcile_policyReCommitted_isReadOnTheNextEvaluation() {
+        var fixture = fixture(CommunitySizing.DEFAULT);
+
+        fixture.seedConfig(POLICY_FLOOR_2);
+        fixture.seedCommunity(COMMUNITY_EU, CommunityState.FORMING);
+        fixture.seedAnnouncement(COMMUNITY_EU, 2);
+        fixture.reconcile();
+        fixture.seedConfig(POLICY_FLOOR_2.replace("viability_floor = 2", "viability_floor = 4"));
+        fixture.seedCommunity("other-w-0", CommunityState.FORMING);
+        fixture.seedAnnouncement("other-w-0", 3);
+        fixture.reconcile();
+
+        assertThat(fixture.communityPutsFor("other-w-0"))
+                .as("the floor re-committed as 4 is read on the next evaluation: 3 live members stay FORMING")
+                .isEmpty();
+    }
+
+    @Test
+    void reconcile_unparseableCommittedConfig_fallsBackToNodeSizing() {
+        var fixture = fixture(SMALL);
+
+        fixture.seedConfig("this is [not toml");
+        fixture.seedCommunity(COMMUNITY_EU, CommunityState.FORMING);
+        fixture.seedAnnouncement(COMMUNITY_EU, 2);
+
+        fixture.reconcile();
+
+        assertThat(fixture.communityPutsFor(COMMUNITY_EU)).extracting(CommunityValue::state)
+                                                          .as("the leader keeps evaluating on the node-level floor 2")
+                                                          .containsExactly(CommunityState.ACTIVE);
+    }
+
     private static final String POLICY_FLOOR_2 = """
         config_version = "1.0.0"
         [cluster]

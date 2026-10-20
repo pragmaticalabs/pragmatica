@@ -40,10 +40,6 @@ public record CommunityPolicy(int maxSize,
                                    false);
     }
 
-    public CommunitySizing sizing() {
-        return CommunitySizing.communitySizing(maxSize, viabilityFloor);
-    }
-
     public static Result<CommunityPolicy> communityPolicy(int maxSize,
                                                           int viabilityFloor,
                                                           int maxCommunities,
