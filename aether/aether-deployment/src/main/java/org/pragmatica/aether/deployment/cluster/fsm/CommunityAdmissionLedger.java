@@ -13,14 +13,18 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 
-/// The leader's local memory of what it has decided but not yet seen commit, for the derived-community growth policy (#241).
+/// The leader's local memory of the assignments it has made, for the derived-community growth policy (#241).
 ///
 /// - **Pending assignments.** A joiner's directive commits through consensus, so the next join can be decided before the
 ///   previous one is visible in the KV. Counting the in-flight assignments is what keeps two joiners from both taking the last
-///   free slot of a community inside one leader. An entry ends when its directive is visible, or after [#PENDING_TTL_MS]: a
-///   refused commit then costs a slot for that long, never for good.
+///   free slot of a community inside one leader. An assignment stops being pending when its directive is visible, or after
+///   [#PENDING_TTL_MS]: a commit that was lost then costs a slot for that long, never for good.
+/// - **Recent assignments.** A worker the leader has just placed has not answered the leader's liveness probe yet, so the
+///   liveness view cannot tell it from a dead one. For [#JOIN_GRACE_MS] after the assignment it counts as live anyway; afterwards
+///   the liveness view decides.
 /// - **Blocked sources.** The sources a refused join has been reported for, so the recovery event is raised only for a source
 ///   that was reported.
 ///
@@ -28,6 +32,7 @@ import org.pragmatica.lang.Contract;
 /// replicated: a new leader starts empty, which can only let one extra joiner into a full community, inside the soft cap.
 public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, Set<String> blockedSources) {
     public static final long PENDING_TTL_MS = 30_000L;
+    public static final long JOIN_GRACE_MS = 60_000L;
 
     public record Pending(String communityId, long atMs) {
         public static Pending pending(String communityId, long atMs) {
@@ -51,19 +56,30 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, S
         pending.remove(node);
     }
 
-    /// The in-flight assignments per community whose directive is not yet visible (`committed` answers for a node) and younger than
-    /// the TTL. Entries that are visible or expired are dropped on the way.
+    /// The in-flight assignments per community: directive not yet visible (`committed` answers for a node) and younger than the TTL.
+    /// Assignments older than the join grace are dropped on the way.
     public Map<String, Integer> pendingByCommunity(long nowMs, Predicate<NodeId> committed) {
-        pending.entrySet().removeIf(entry -> isSettled(entry, nowMs, committed));
+        pending.values().removeIf(entry -> nowMs - entry.atMs() > JOIN_GRACE_MS);
 
-        return pending.values()
+        return pending.entrySet()
                       .stream()
-                      .collect(Collectors.toMap(Pending::communityId, _ -> 1, Integer::sum));
+                      .filter(entry -> isInFlight(entry, nowMs, committed))
+                      .collect(Collectors.toMap(entry -> entry.getValue()
+                                                              .communityId(),
+                                                _ -> 1,
+                                                Integer::sum));
     }
 
-    private static boolean isSettled(Map.Entry<NodeId, Pending> entry, long nowMs, Predicate<NodeId> committed) {
-        return committed.test(entry.getKey()) || nowMs - entry.getValue()
-                                                              .atMs() > PENDING_TTL_MS;
+    private static boolean isInFlight(Map.Entry<NodeId, Pending> entry, long nowMs, Predicate<NodeId> committed) {
+        return nowMs - entry.getValue()
+                            .atMs() <= PENDING_TTL_MS && !committed.test(entry.getKey());
+    }
+
+    /// Whether the leader placed `node` within the join grace, so that a silent liveness probe does not yet mean it is gone.
+    public boolean isRecent(NodeId node, long nowMs) {
+        return Option.option(pending.get(node))
+                     .filter(entry -> nowMs - entry.atMs() <= JOIN_GRACE_MS)
+                     .isPresent();
     }
 
     /// Records that a join for `source` was refused; true on the first refusal since the last admission.
