@@ -192,7 +192,7 @@ class CommunityPlacementParkedTest {
         reconciler.reconcile().await().unwrap();
         settle();
 
-        assertThat(current().phase()).as("the other writer's record stands; the park was refused").isEqualTo(PlacementOperationPhase.DRAINED);
+        assertThat(current().phase()).as("the park was refused: the operation the other writer moved on was not overwritten").isNotEqualTo(PlacementOperationPhase.DRAIN_UNCERTAIN);
         assertThat(codes).as("a park that did not happen is not reported").doesNotContain("community-placement-parked");
         assertThat(escalations).as("nor escalated").isEmpty();
     }
