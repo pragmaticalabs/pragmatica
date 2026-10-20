@@ -184,6 +184,20 @@ class CommunityPlacementParkedTest {
     }
 
     @Test
+    void reconcile_aParkRefusedBecauseTheOperationChangedFirst_raisesNeitherTheWarningNorTheEscalation() {
+        start();
+        seedOperation(PlacementOperationPhase.DRAIN_REQUESTED, now.get() - 120_000L);
+        beforeCommit = () -> seedOperation(PlacementOperationPhase.DRAIN_REQUESTED, now.get() - 119_000L);
+
+        reconciler.reconcile().await().unwrap();
+        settle();
+
+        assertThat(current().phase()).as("the other writer's record stands; the park was refused").isEqualTo(PlacementOperationPhase.DRAIN_REQUESTED);
+        assertThat(codes).as("a park that did not happen is not reported").doesNotContain("community-placement-parked");
+        assertThat(escalations).as("nor escalated").isEmpty();
+    }
+
+    @Test
     void reconcile_aConflictBlocksACreate_parksTheOperationWithTheAdviceForABlockedOne() {
         start();
         seedOperation(PlacementOperationPhase.RESERVED, now.get());
