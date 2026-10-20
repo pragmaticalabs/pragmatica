@@ -1,9 +1,13 @@
 package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
+import java.util.AbstractSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -186,6 +190,84 @@ class StorageInstanceWarmDeleteRaceTest {
 
         assertThat(store.getLifecycle(id).isPresent()).isFalse();
         assertThat(shared.exists(id).await().unwrap()).isFalse();
+    }
+
+    /// The delete sets its tombstone BEFORE it looks for prefetches to cancel. The interleaving that tells the two orders apart:
+    /// a prefetch that begins (registers, passes the tombstone check, issues its fetch) at the very moment the tombstone is
+    /// being set. With the tombstone first, the scan that follows finds that prefetch and cancels it. With the scan first, the
+    /// scan has already missed it and the tombstone it passed was not there yet: nothing stops it storing the deleted block.
+    @Test
+    @SuppressWarnings("unchecked")
+    void delete_whoseTombstoneIsBeingSetWhileAPrefetchBegins_stillCancelsThatPrefetch() throws Exception {
+        var id = writeElsewhere("prefetch-begins-as-the-tombstone-is-set");
+        var tombstones = DefaultStorageInstance.class.getDeclaredField("deletesInFlight");
+
+        tombstones.setAccessible(true);
+
+        var hooked = new HookedSet((Set<BlockId>) tombstones.get(reader));
+        var warm = new AtomicReference<Promise<Boolean>>();
+
+        shared.holdGets.set(true);
+        hooked.beforeAdd = () -> beginPrefetchAndAwaitItsFetch(warm, id);
+        tombstones.set(reader, hooked);
+
+        reader.delete(id).await().unwrap();
+        shared.releaseGets();
+
+        assertThat(hooked.added.get()).as("control: the interleaving was actually driven").isTrue();
+        assertThat(warm.get().await().unwrap()).as("the prefetch that began during the tombstone was cancelled").isFalse();
+        assertThat(memory.exists(id).await().unwrap()).as("no cached copy").isFalse();
+        assertThat(store.getLifecycle(id).isPresent()).as("no record").isFalse();
+    }
+
+    private void beginPrefetchAndAwaitItsFetch(AtomicReference<Promise<Boolean>> warm, BlockId id) {
+        warm.set(reader.warm(id));
+
+        try {
+            awaitTrue(() -> shared.heldGets() > 0, "the prefetch's fetch to reach the shared tier");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while driving the interleaving", e);
+        }
+    }
+
+    /// A `deletesInFlight` set that runs a hook just before the tombstone is added.
+    private static final class HookedSet extends AbstractSet<BlockId> {
+        private final Set<BlockId> delegate;
+        final AtomicBoolean added = new AtomicBoolean();
+        volatile Runnable beforeAdd = () -> {};
+
+        HookedSet(Set<BlockId> delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public boolean add(BlockId id) {
+            beforeAdd.run();
+            added.set(true);
+
+            return delegate.add(id);
+        }
+
+        @Override
+        public boolean contains(Object id) {
+            return delegate.contains(id);
+        }
+
+        @Override
+        public boolean remove(Object id) {
+            return delegate.remove(id);
+        }
+
+        @Override
+        public Iterator<BlockId> iterator() {
+            return delegate.iterator();
+        }
+
+        @Override
+        public int size() {
+            return delegate.size();
+        }
     }
 
     @Test
