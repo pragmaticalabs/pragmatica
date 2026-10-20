@@ -64,6 +64,12 @@
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Testing. No test-logging (#953): it is not published to Maven Central, so a standalone build of this
              example (mvn -f examples/pricing-engine/pom.xml install) could not resolve it, and the example has no tests. -->
@@ -89,6 +95,11 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
+                            <version>${project.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>jbct-async-check</artifactId>
                             <version>${project.version}</version>
                         </path>
                     </annotationProcessorPaths>

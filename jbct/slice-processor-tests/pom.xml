@@ -52,6 +52,12 @@
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Testing -->
         <dependency>
@@ -122,6 +128,11 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
+                            <version>${project.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>jbct-async-check</artifactId>
                             <version>${project.version}</version>
                         </path>
                     </annotationProcessorPaths>

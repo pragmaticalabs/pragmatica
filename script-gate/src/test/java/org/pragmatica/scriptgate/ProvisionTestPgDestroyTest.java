@@ -30,17 +30,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// success, so "refused for the reason under test" cannot be confused with "the fixture never worked".
 class ProvisionTestPgDestroyTest {
     private static final String KEY_MISSING = "AETHER_SSH_KEY is not set";
+    /// The script's preflight demands `ssh` and `ssh-keygen` on PATH, but neither `--destroy` nor the
+    /// refusal before the first API call ever runs them; stubbed so a worker image without openssh cannot
+    /// change a verdict. `jq` is different - the script parses every API answer with it - so it stays real.
+    private static final String INERT = "#!/bin/bash\nexit 0\n";
 
     private Path state;
     private Path stubDir;
     private Path envFile;
+    private Path bareDir;
 
     @BeforeEach
     void setUp(@TempDir Path tempDir) {
+        ScriptGate.requiredTool("jq");
+        bareDir = tempDir.resolve("bare");
         state = tempDir.resolve("state");
         stubDir = tempDir.resolve("stub");
         envFile = tempDir.resolve("aether-test-pg.env");
         given(ScriptRunner.writeExecutable(stubDir.resolve("curl"), HetznerCurlStub.SCRIPT).mapToUnit());
+        given(ScriptRunner.writeExecutable(stubDir.resolve("ssh"), INERT).mapToUnit());
+        given(ScriptRunner.writeExecutable(stubDir.resolve("ssh-keygen"), INERT).mapToUnit());
         given(write("servers.json", HetznerCurlStub.SERVERS));
         given(write("ssh_keys.json", HetznerCurlStub.SSH_KEYS));
         given(Result.lift(() -> Files.writeString(envFile, "export PG_URL=stub\n")).mapToUnit());
@@ -105,6 +114,17 @@ class ProvisionTestPgDestroyTest {
                   .contains("DELETE https://api.hetzner.cloud/v1/servers/42");
     }
 
+    /// Same refusal as `pg-firewall.sh`: a missing jq is named up front, before any API call.
+    @Test
+    void destroy_refusesNamingJq_whenJqIsNotInstalled() {
+        given(ScriptGate.linkTools(bareDir, List.of("bash")));
+        var execution = executed(runScript(Map.of(), "--destroy", stubDir + ":" + bareDir));
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(1);
+        assertThat(execution.output()).contains("missing dependency: jq");
+        assertThat(calls()).as("refused before any API call").isEmpty();
+    }
+
     private Result<Unit> write(String name, String content) {
         return Result.lift(() -> Files.createDirectories(state))
                      .flatMap(directory -> Result.lift(() -> Files.writeString(directory.resolve(name),
@@ -117,22 +137,18 @@ class ProvisionTestPgDestroyTest {
     }
 
     private Result<ScriptRunner.Execution> runScript(Map<String, String> extraEnvironment, String flag) {
+        return runScript(extraEnvironment, flag, stubDir + ":" + System.getenv("PATH"));
+    }
+
+    private Result<ScriptRunner.Execution> runScript(Map<String, String> extraEnvironment, String flag, String path) {
         var environment = new HashMap<String, String>();
 
-        environment.put("PATH", stubDir + ":" + System.getenv("PATH"));
+        environment.put("PATH", path);
         environment.put("STUB_STATE", state.toString());
         environment.put("HCLOUD_TOKEN", "stub-token-not-real");
         environment.put("PG_ENV_FILE", envFile.toString());
         environment.putAll(extraEnvironment);
 
-        return ScriptRunner.run(ScriptRunner.repoRoot(), environment, command(extraEnvironment, flag));
-    }
-
-    /// The test JVM may itself carry `AETHER_SSH_KEY`; `env -u` is what makes "unset" true for the
-    /// script, since a process builder can add variables but a map of additions cannot remove one.
-    private List<String> command(Map<String, String> extraEnvironment, String flag) {
-        return extraEnvironment.containsKey("AETHER_SSH_KEY")
-               ? List.of("tools/provision-test-pg.sh", flag)
-               : List.of("env", "-u", "AETHER_SSH_KEY", "tools/provision-test-pg.sh", flag);
+        return ScriptRunner.run(ScriptRunner.repoRoot(), environment, List.of("tools/provision-test-pg.sh", flag));
     }
 }
