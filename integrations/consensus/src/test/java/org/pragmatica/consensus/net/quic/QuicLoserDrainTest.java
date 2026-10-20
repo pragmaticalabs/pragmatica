@@ -16,6 +16,8 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -23,16 +25,26 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.quic.QuicChannel;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
 /// #2030 — the loser of a dual-dial race is closed AFTER what is already written on it has flushed. A burst is written
 /// on a lane of a live connection and the connection is drained-closed at once; every frame must still arrive, and the
@@ -44,11 +56,17 @@ class QuicLoserDrainTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(15).seconds();
     private static final int BURST = 4_000;
 
+    private static final NodeId LOW = new NodeId("aaa-low");
+    private static final NodeId HIGH = new NodeId("zzz-high");
+
+    private final List<QuicClusterNetwork> networks = new ArrayList<>();
     private QuicClusterServer server;
     private QuicClusterClient client;
 
     @AfterEach
     void tearDown() {
+        networks.forEach(network -> network.stop().await(AWAIT));
+        networks.clear();
         if (client != null) {
             client.close().await(AWAIT);
         }
@@ -104,6 +122,52 @@ class QuicLoserDrainTest {
         awaitTrue(() -> received.get() == BURST, AWAIT, "every frame of the burst delivered (got " + received.get() + ")");
         awaitTrue(() -> !loser.isActive(), AWAIT, "the drained connection closed");
         assertThat(received.get()).isEqualTo(BURST);
+    }
+
+    /// Routing: the dual-dial loser (different dialers) is drained, a same-direction re-dial keeps the immediate close.
+    @Test
+    void supersede_dualDialLoser_isDrained_andASameDirectionRedial_isClosedAtOnce() {
+        var network = startedNetwork(new TripwireTopology(LOW, false, TimeSpan.timeSpan(30).seconds()),
+                                     MessageRouter.mutable(),
+                                     networks);
+        var dualLoser = spy(connectionFrom(HIGH));
+        var redialLoser = spy(connectionFrom(HIGH));
+
+        network.closeSupersededConnectionForTests(dualLoser, connectionFrom(LOW));
+        network.closeSupersededConnectionForTests(redialLoser, connectionFrom(HIGH));
+
+        verify(dualLoser).closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        verify(dualLoser, never()).close();
+        verify(redialLoser).close();
+        verify(redialLoser, never()).closeAfterDrain(anyLong());
+    }
+
+    /// Routing of the other loser: a new connection that lost to an incumbent dialed by the other end is drained too.
+    @Test
+    void duplicate_newConnectionDialedByTheOtherEnd_isDrained() {
+        var network = startedNetwork(new TripwireTopology(LOW, false, TimeSpan.timeSpan(30).seconds()),
+                                     MessageRouter.mutable(),
+                                     networks);
+        var state = PeerState.peerState(HIGH, 1L);
+
+        state.beginConnecting(2L);
+        state.attach(connectionFrom(LOW), System.nanoTime());
+        network.seedPeerForTests(HIGH, state);
+
+        var loser = spy(connectionFrom(HIGH));
+
+        network.onPeerConnectedForTests(loser, new NodeAddress("127.0.0.1", 1), Map.of());
+
+        verify(loser).closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        verify(loser, never()).close();
+    }
+
+    private static QuicPeerConnection connectionFrom(NodeId dialer) {
+        var channel = mock(QuicChannel.class);
+
+        when(channel.isActive()).thenReturn(true);
+
+        return QuicPeerConnection.quicPeerConnection(HIGH, dialer, channel);
     }
 
     private static void countProbe(AtomicInteger received, Object message) {
