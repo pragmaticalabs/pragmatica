@@ -1323,6 +1323,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
                               if (community.filter(value -> value.state() == CommunityState.DISSOLVING || value.state() == CommunityState.DISSOLVED)
                                            .isPresent()) {
+                                  retryOrReport(node);
+
                                   return;
                               }
 
@@ -1344,14 +1346,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                   configuration.map(value -> (Object) value)),
                                                                                       new KVCommand.ReadWitness<>(communityKey,
                                                                                                                   community.map(value -> (Object) value)));
+                              var transactionId = java.util.UUID.randomUUID()
+                                                                .toString();
                               var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(directiveKey,
-                                                                                                    java.util.UUID.randomUUID()
-                                                                                                                  .toString(),
+                                                                                                    transactionId,
                                                                                                     leader,
                                                                                                     guards,
                                                                                                     mutations);
 
                               submitActivationCommands(node,
+                                                       transactionId,
                                                        List.of(command));
                           });
         }
@@ -1391,12 +1395,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         cause.message()));
         }
 
-        private void submitActivationCommands(NodeId targetNode, List<KVCommand<AetherKey>> commands) {
+        private void submitActivationCommands(NodeId targetNode,
+                                              String transactionId,
+                                              List<KVCommand<AetherKey>> commands) {
             ctx.cluster()
                .<Object> apply(commands)
                .onSuccess(results -> results.stream()
                                             .filter(KVCommand.TransactionResult.class::isInstance)
                                             .map(KVCommand.TransactionResult.class::cast)
+                                            .filter(result -> result.transactionId()
+                                                                    .equals(transactionId))
                                             .forEach(result -> settleAssignment(targetNode,
                                                                                 result.accepted())))
                .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
