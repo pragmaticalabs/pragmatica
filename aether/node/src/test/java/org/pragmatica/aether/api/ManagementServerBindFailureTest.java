@@ -63,7 +63,7 @@ class ManagementServerBindFailureTest {
     };
 
     /// A TCP port this test deliberately HOLDS (taken by someone else, as in the flake), chosen the way the module's other
-    /// tests choose theirs. Not `new ServerSocket(0)`: that is the reserve-then-release pattern `ClusterTestPortsTest` forbids.
+    /// tests choose theirs. A socket bound to port zero is the reserve-then-release pattern `ClusterTestPortsTest` forbids.
     private static ServerSocket heldPort() throws IOException {
         return new ServerSocket(ClusterTestPorts.freeTcpAndUdpPort());
     }
