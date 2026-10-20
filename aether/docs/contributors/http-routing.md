@@ -128,6 +128,9 @@ HTTP/3. Both transports deliver them as `HttpRequest.trailers()`, a `Headers` va
 
 - **Kept apart from the headers.** Trailers are never merged into `headers()`, as RFC 9110 §6.5.2 requires.
   Security validation, routing and content-type handling read the header section only.
+- **Names are folded with `Locale.ROOT`, and case variants merge.** `x-a` and `X-A` are one field, and their values
+  are kept in arrival order. The JVM default locale never affects matching: under `tr-TR`, `AUTHORIZATION` is still
+  forbidden.
 - **Empty when the client sent none.** The accessor returns `Headers.empty()`, never `null`. A request built
   without a transport, such as a test double, also has no trailers: the interface's default answers empty.
 - **Forbidden fields are discarded; the request is still served.** `Headers.FORBIDDEN_TRAILER_FIELDS` lists the
