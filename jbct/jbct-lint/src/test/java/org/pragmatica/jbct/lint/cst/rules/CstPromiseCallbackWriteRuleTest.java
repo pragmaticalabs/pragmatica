@@ -809,6 +809,274 @@ class CstPromiseCallbackWriteRuleTest {
     }
 
     @Nested
+    class DeclarationScope {
+        @Test
+        void flags_parameterEvenWhenALaterLambdaParameterReusesTheName() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> value, List<String> items) {
+                            value.onSuccess(_ -> done = true);
+                            items.forEach(value -> log.info(value));
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_localPromiseDeclaredAfterALambdaParameterOfTheSameName() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(List<String> items) {
+                            items.forEach(value -> log.info(value));
+                            Promise<String> value = load();
+                            value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_varChainedThroughTwoLocals() {
+            assertTrue(flags(chainIn("""
+                    var first = Promise.success(1);
+                            var second = first;
+                            second.onSuccess(_ -> done = true);
+                    """)));
+        }
+
+        @Test
+        void flags_outerParameterDespiteInnerMethodParameterOfTheSameName() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> value) {
+                            record Local() {
+                                void use(String value) {}
+                            }
+                            value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_fieldNameDeclaredWithDifferentTypesInTwoTypes() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        record A(Promise<String> value) {}
+                        record B(String value) {}
+                        void run() {
+                            value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_fieldWhenAnAbstractMethodParameterReusesTheName() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        private Promise<String> value;
+                        interface Loader {
+                            Promise<String> load(String value);
+                        }
+                        void run() {
+                            value.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_functionReturningPromise() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        private Function<String, Promise<String>> loader;
+                        void run() {
+                            loader.apply("id").onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_qualifiedCallToANameDeclaredWithOtherReturnTypesToo() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<String> load() { return null; }
+                        String load(int index) { return null; }
+                        void run(Foo other) {
+                            other.load().onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_returnInsideAnonymousClassMethodThatReturnsPromise() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run() {
+                            var holder = new Object() {
+                                Promise<String> inner() {
+                                    return repository.find().onSuccess(_ -> done = true);
+                                }
+                            };
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_promiseNameSurvivesComparisonsThatLookLikeGenerics() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> flag, int limit, int max, int count) {
+                            if (limit < max && count > flag) {
+                                log.info("x");
+                            }
+                            flag.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_varWhoseInitializerHoldsABlockLambda() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        private Supplier<Promise<String>> operation;
+                        void run() {
+                            var chained = operation.get().flatMap(v -> {
+                                var twice = v + v;
+                                return Promise.success(twice);
+                            });
+                            chained.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+    }
+
+    @Nested
+    class ChainBoundaries {
+        @Test
+        void flags_callbackAsAnArgumentAfterAnotherArgument() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> pending) {
+                            register("name", pending.onSuccess(_ -> done = true));
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_callbackOnTheRightOfAnAssignment() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> pending) {
+                            var chained = pending.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_callbackInATernaryBranch() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Object run(boolean go, Promise<String> pending) {
+                            return go ? pending.onSuccess(_ -> done = true) : null;
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_callbackAfterABlockStatement() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(boolean go, Promise<String> pending) {
+                            if (go) {
+                                log.info("x");
+                            }
+                            pending.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_callbackInAnElseBranchWithoutBraces() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(boolean go, Promise<String> pending) {
+                            if (go) {
+                                log.info("x");
+                            } else pending.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_callbackAfterAGenericCall() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> pending) {
+                            pending.<String> map(String::trim).onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_callbackAfterAFieldAccessOnAPromise() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> pending) {
+                            pending.inner.onSuccess(_ -> done = true);
+                        }
+                    }
+                    """));
+        }
+    }
+
+    @Nested
     class ExemptEffects {
         @Test
         void clean_loggingOnly() {

@@ -120,11 +120,8 @@ public class CstPromiseCallbackWriteRule implements CstLintRule {
     private boolean isPromise(String masked, Declarations.FileFacts facts, int start, int dot, int close) {
         var chain = SourceText.chain(masked.substring(start, dot));
 
-        return switch (PromiseCarrier.kindOf(chain.text(), facts, start)) {
-            case PROMISE -> true;
-            case RESULT -> false;
-            case UNKNOWN -> returnsPromise(masked, facts, chain.isReturn(), start, close);
-        };
+        return PromiseCarrier.isPromise(chain.text(), facts, start)
+               || returnsPromise(masked, facts, chain.isReturn(), start, close);
     }
 
     /// `return <chain>.onX(...);` in a method declared to return `Promise<...>`: `onX` returns the carrier it is called on.

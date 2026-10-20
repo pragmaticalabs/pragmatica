@@ -16,8 +16,8 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// What one file declares, for JBCT-ASYNC-01: the carrier (`Promise`, `Result`, or a holder of promises) of each field,
-/// parameter, local and lambda parameter, and the methods declared to return `Promise` or `Result`.
+/// What one file declares, for JBCT-ASYNC-01: whether each field, parameter, local and lambda parameter is a `Promise`, a holder
+/// of promises, or anything else, and which methods are declared to return `Promise`.
 ///
 /// A name is resolved **by position**, not by file: the same identifier is routinely a `Promise` parameter in one method and an
 /// unrelated `var` in the next, so a use takes the nearest preceding declaration inside its innermost enclosing method (then the
@@ -32,7 +32,6 @@ sealed interface Declarations permits Declarations.unused {
     /// What a declared name holds.
     enum Slot {
         PROMISE,
-        RESULT,
         HOLDER,
         OTHER
     }
@@ -68,14 +67,12 @@ sealed interface Declarations permits Declarations.unused {
     /// Names, method return carriers and method bodies of one file.
     record FileFacts(Map<String, List<Decl>> names,
                      Set<String> promiseMethods,
-                     Set<String> resultMethods,
                      Map<String, List<MethodDecl>> methods,
                      Map<Integer, Option<MethodDecl>> innermostCache) {
         static FileFacts fileFacts(Map<String, List<Decl>> names,
                                    Set<String> promiseMethods,
-                                   Set<String> resultMethods,
                                    Map<String, List<MethodDecl>> methods) {
-            return new FileFacts(names, promiseMethods, resultMethods, methods, new HashMap<>());
+            return new FileFacts(names, promiseMethods, methods, new HashMap<>());
         }
 
         /// The innermost method whose header or body covers `offset`.
@@ -233,20 +230,17 @@ sealed interface Declarations permits Declarations.unused {
     static FileFacts facts(String masked) {
         var methods = methodTable(masked);
         var promiseMethods = new HashSet<String>();
-        var resultMethods = new HashSet<String>();
         var otherMethods = new HashSet<String>();
         var pending = new ArrayList<Pending>();
         var records = recordHeaders(masked);
 
-        scanTyped(masked, records, pending, promiseMethods, resultMethods, otherMethods);
+        scanTyped(masked, records, pending, promiseMethods, otherMethods);
         scanLambdaParams(masked, pending);
         scanVars(masked, pending);
         promiseMethods.removeAll(otherMethods);
-        promiseMethods.removeAll(resultMethods);
-        resultMethods.removeAll(otherMethods);
 
         var names = new HashMap<String, List<Decl>>();
-        var facts = FileFacts.fileFacts(names, promiseMethods, resultMethods, methods);
+        var facts = FileFacts.fileFacts(names, promiseMethods, methods);
 
         pending.stream()
                .sorted(Comparator.comparingInt(Pending::offset))
@@ -263,14 +257,12 @@ sealed interface Declarations permits Declarations.unused {
     }
 
     private static Slot slotOfInitializer(Pending entry, FileFacts facts) {
-        return switch (PromiseCarrier.kindOf(entry.initializer()
-                                                  .or(""),
-                                             facts,
-                                             entry.offset())) {
-            case PROMISE -> Slot.PROMISE;
-            case RESULT -> Slot.RESULT;
-            case UNKNOWN -> Slot.OTHER;
-        };
+        return PromiseCarrier.isPromise(entry.initializer()
+                                             .or(""),
+                                        facts,
+                                        entry.offset())
+               ? Slot.PROMISE
+               : Slot.OTHER;
     }
 
     /// `Type<Args> name` declarations: fields, parameters, locals, record components, and (when the name is followed by `(`) methods.
@@ -278,7 +270,6 @@ sealed interface Declarations permits Declarations.unused {
                                   List<int[]> records,
                                   List<Pending> pending,
                                   Set<String> promiseMethods,
-                                  Set<String> resultMethods,
                                   Set<String> otherMethods) {
         var matcher = DECLARED.matcher(masked);
 
@@ -305,26 +296,21 @@ sealed interface Declarations permits Declarations.unused {
             var name = named.group(1);
 
             if ("(".equals(named.group(2))) {
-                methodBucket(slot, promiseMethods, resultMethods, otherMethods).add(name);
+                methodBucket(slot, promiseMethods, otherMethods).add(name);
             } else {
                 pending.add(Pending.typed(named.start(1), name, slot));
 
                 if (insideRecordHeader(records, named.start(1))) {
-                    methodBucket(slot, promiseMethods, resultMethods, otherMethods).add(name);
+                    methodBucket(slot, promiseMethods, otherMethods).add(name);
                 }
             }
         }
     }
 
-    private static Set<String> methodBucket(Slot slot,
-                                            Set<String> promiseMethods,
-                                            Set<String> resultMethods,
-                                            Set<String> otherMethods) {
-        return switch (slot) {
-            case PROMISE -> promiseMethods;
-            case RESULT -> resultMethods;
-            default -> otherMethods;
-        };
+    private static Set<String> methodBucket(Slot slot, Set<String> promiseMethods, Set<String> otherMethods) {
+        return slot == Slot.PROMISE
+               ? promiseMethods
+               : otherMethods;
     }
 
     private static boolean insideRecordHeader(List<int[]> records, int offset) {
@@ -371,14 +357,14 @@ sealed interface Declarations permits Declarations.unused {
     }
 
     private static Slot slotOf(String typeName, Option<String> typeArguments) {
-        return switch (typeName) {
-            case "Promise" -> Slot.PROMISE;
-            case "Result" -> Slot.RESULT;
-            default -> typeArguments.filter(arguments -> holdsPromise(typeName, arguments))
-                                    .isPresent()
-                       ? Slot.HOLDER
-                       : Slot.OTHER;
-        };
+        if ("Promise".equals(typeName)) {
+            return Slot.PROMISE;
+        }
+
+        return typeArguments.filter(arguments -> holdsPromise(typeName, arguments))
+                            .isPresent()
+               ? Slot.HOLDER
+               : Slot.OTHER;
     }
 
     private static boolean holdsPromise(String typeName, String arguments) {

@@ -69,7 +69,6 @@ sealed interface SharedWrites permits SharedWrites.unused {
                                          + ")\\s*(?:=|;|:|,|\\))");
     Pattern LAMBDA_PARAM = Pattern.compile("(" + IDENT + ")\\s*->");
     Pattern LAMBDA_PARAMS = Pattern.compile("\\(([^()]*)\\)\\s*->");
-    Pattern PATTERN_BINDING = Pattern.compile("\\b(?:instanceof|case)\\s+(?:final\\s+)?[A-Z][\\w$.<>]*\\s+(" + IDENT + ")\\b");
 
     /// Roots whose mutating-looking calls touch nothing shared: `MDC.put` is thread-local, `String.format(..).replace(..)` is a value.
     Set<String> NOT_SHARED_ROOTS = Set.of("MDC", "String");
@@ -266,7 +265,6 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         collect(LOCAL_DECL, body, names, 1);
         collect(LAMBDA_PARAM, body, names, 1);
-        collect(PATTERN_BINDING, body, names, 1);
 
         var multi = LAMBDA_PARAMS.matcher(body);
 
