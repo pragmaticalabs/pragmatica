@@ -214,7 +214,10 @@ final class DefaultDemotionManager implements DemotionManager {
                                content -> demoteContent(candidate, content, sourceTier, targetTier));
     }
 
-    private long demoteContent(BlockLifecycle candidate, byte[] content, StorageTier sourceTier, StorageTier targetTier) {
+    private long demoteContent(BlockLifecycle candidate,
+                               byte[] content,
+                               StorageTier sourceTier,
+                               StorageTier targetTier) {
         return isEvictable(candidate, sourceTier)
                ? evictCopy(candidate.blockId(), content.length, sourceTier)
                : writeThenDelete(candidate.blockId(), content, sourceTier, targetTier);
@@ -231,7 +234,8 @@ final class DefaultDemotionManager implements DemotionManager {
     /// Synchronous deletion. Uses .await() on a dedicated background thread.
     private long evictCopy(BlockId blockId, int contentLength, StorageTier sourceTier) {
         sourceTier.delete(blockId).await();
-        metadataStore.computeLifecycle(blockId, lc -> lc.withTierRemoved(sourceTier.level()));
+        metadataStore.computeLifecycle(blockId,
+                                       lc -> lc.withTierRemoved(sourceTier.level()));
 
         return contentLength;
     }

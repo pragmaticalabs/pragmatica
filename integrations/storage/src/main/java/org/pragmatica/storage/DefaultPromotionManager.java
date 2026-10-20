@@ -14,6 +14,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -118,8 +119,10 @@ final class DefaultPromotionManager implements PromotionManager {
     }
 
     private long promoteToTargetOf(BlockLifecycle candidate, StorageTier sourceTier, StorageTier adjacentTier) {
-        return targetFor(candidate, adjacentTier).map(target -> promoteBlock(candidate.blockId(), sourceTier, target))
-                                                 .or(0L);
+        return targetFor(candidate, adjacentTier).map(target -> promoteBlock(candidate.blockId(),
+                                                                             sourceTier,
+                                                                             target))
+                        .or(0L);
     }
 
     /// A block this node owns is promoted one tier up. A cache-only block ([BlockLifecycle#cacheOnly]) goes
@@ -128,13 +131,11 @@ final class DefaultPromotionManager implements PromotionManager {
     private Option<StorageTier> targetFor(BlockLifecycle candidate, StorageTier adjacentTier) {
         return candidate.cacheOnly()
                ? nearestCacheTierFrom(tiers.indexOf(adjacentTier))
-               : Option.some(adjacentTier);
+               : some(adjacentTier);
     }
 
     private Option<StorageTier> nearestCacheTierFrom(int index) {
-        return Option.from(IntStream.iterate(index,
-                                             i -> i >= 0,
-                                             i -> i - 1)
+        return Option.from(IntStream.iterate(index, i -> i >= 0, i -> i - 1)
                                     .mapToObj(tiers::get)
                                     .filter(tier -> !tier.isDurable())
                                     .findFirst());

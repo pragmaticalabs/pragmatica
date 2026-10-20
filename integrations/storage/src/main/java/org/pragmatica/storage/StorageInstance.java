@@ -61,6 +61,7 @@ public interface StorageInstance {
     default Promise<Boolean> warm(BlockId id) {
         return Promise.success(false);
     }
+
     /// Adds a named reference to a block this instance ALREADY holds, crediting one reference for the
     /// new name. This is the aliasing primitive -- a second (third, ...) name for a block that some
     /// other reference is already keeping alive.
@@ -279,7 +280,13 @@ public interface StorageInstance {
                                            WritePolicy writePolicy,
                                            Option<Path> logRoot,
                                            AppendLog.TornTailSink tornTailSink) {
-        return storageInstance(name, tiers, metadataStore, writePolicy, logRoot, tornTailSink, DefaultStorageInstance::ignoreAccess);
+        return storageInstance(name,
+                               tiers,
+                               metadataStore,
+                               writePolicy,
+                               logRoot,
+                               tornTailSink,
+                               DefaultStorageInstance::ignoreAccess);
     }
 
     /// As above, plus `accessListener`, told of every [#get] that found its block -- after the access is
@@ -346,8 +353,9 @@ final class DefaultStorageInstance implements StorageInstance {
     private final Set<TierLevel> sharedLevels;
     private final CacheMarkerLimits markerLimits;
     private final LongSupplier clockMillis;
-    /// Cache-only markers this instance has created since the last sweep: an upper-bound estimate (removals
-    /// elsewhere do not decrement it) that [#sweepIdleMarkers] replaces with an exact count.
+    /// An estimate of the cache-only markers in the metadata store: a marker created on a read counts, a
+    /// removal elsewhere, a marker made by [#warm] and one restored from a snapshot do not. Every
+    /// [#sweepIdleMarkers] replaces it with an exact count, so it never drifts for long.
     private final AtomicInteger cacheMarkers = new AtomicInteger();
     private final AtomicLong lastMarkerSweepMillis = new AtomicLong();
 
@@ -358,7 +366,11 @@ final class DefaultStorageInstance implements StorageInstance {
     /// been idle for `idleMs`. A block read while the table is full is simply not tracked: it counts no
     /// access, exactly like the prefetch observation table at its cap.
     record CacheMarkerLimits(int maxMarkers, long idleMs, long sweepIntervalMs) {
-        static final CacheMarkerLimits DEFAULT = new CacheMarkerLimits(100_000, 600_000L, 5_000L);
+        static final CacheMarkerLimits DEFAULT = cacheMarkerLimits(100_000, 600_000L, 5_000L);
+
+        static CacheMarkerLimits cacheMarkerLimits(int maxMarkers, long idleMs, long sweepIntervalMs) {
+            return new CacheMarkerLimits(maxMarkers, idleMs, sweepIntervalMs);
+        }
     }
 
     DefaultStorageInstance(String name,
@@ -441,7 +453,7 @@ final class DefaultStorageInstance implements StorageInstance {
     public Promise<Option<byte[]>> get(BlockId id) {
         return readCache.deduplicate(id,
                                      () -> waterfallRead(id))
-                        .onSuccess(opt -> opt.onPresent(_ -> recordAccess(id)));
+                        .withSuccess(opt -> opt.onPresent(_ -> recordAccess(id)));
     }
 
     @Override
@@ -462,7 +474,9 @@ final class DefaultStorageInstance implements StorageInstance {
     private Promise<Boolean> fetchUnlessHeld(boolean held, BlockId id) {
         return held || cacheTiers.isEmpty()
                ? Promise.success(false)
-               : readCache.deduplicate(id, () -> waterfallRead(id)).flatMap(opt -> copyIfFound(id, opt));
+               : readCache.deduplicate(id,
+                                       () -> waterfallRead(id))
+                          .flatMap(opt -> copyIfFound(id, opt));
     }
 
     private Promise<Boolean> copyIfFound(BlockId id, Option<byte[]> found) {
@@ -474,7 +488,8 @@ final class DefaultStorageInstance implements StorageInstance {
     /// created one when there was room; this covers the full-table case, bounded by the callers' in-flight
     /// cap). Presence is then recorded per tier as each write lands.
     private Promise<Boolean> copyToCacheTiers(BlockId id, byte[] content) {
-        metadataStore.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.noneOf(TierLevel.class)));
+        metadataStore.claimBlock(id,
+                                 BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.noneOf(TierLevel.class)));
 
         return promoteToCacheTiers(id, content).map(_ -> holdsPrivateCopy(id));
     }
@@ -1201,13 +1216,22 @@ final class DefaultStorageInstance implements StorageInstance {
             return Promise.success(false);
         }
 
-        var tier = tiers.get(tierIndex);
+        return existsInScope(tiers.get(tierIndex), id, inScope).flatMap(found -> foundOrNext(found,
+                                                                                             id,
+                                                                                             tierIndex,
+                                                                                             inScope));
+    }
 
-        return (inScope.test(tier)
-                ? tier.exists(id)
-                : Promise.success(false)).flatMap(found -> found
-                                                           ? Promise.success(true)
-                                                           : checkTiersForExistence(id, tierIndex + 1, inScope));
+    private static Promise<Boolean> existsInScope(StorageTier tier, BlockId id, Predicate<StorageTier> inScope) {
+        return inScope.test(tier)
+               ? tier.exists(id)
+               : Promise.success(false);
+    }
+
+    private Promise<Boolean> foundOrNext(boolean found, BlockId id, int tierIndex, Predicate<StorageTier> inScope) {
+        return found
+               ? Promise.success(true)
+               : checkTiersForExistence(id, tierIndex + 1, inScope);
     }
 
     // --- Lifecycle helpers ---
@@ -1229,16 +1253,18 @@ final class DefaultStorageInstance implements StorageInstance {
 
     /// A read found `id` in `tier`. A node with a record just adds the presence. A node with none -- it did
     /// not write the block -- gets a cache-only marker, so its accesses are counted (promotion reads them)
-    /// and any copy it keeps is visible to demotion; unless the copy it just read is on a DURABLE tier, in
-    /// which case the block is this node's own data whose record was lost, and calling it a cache would let
-    /// demotion evict the only durable copy.
+    /// and any copy it keeps is visible to demotion. Two cases are not a cache and get none: the copy it just
+    /// read is on a DURABLE tier (the block is this node's own data whose record was lost, and calling it a
+    /// cache would let demotion evict the only durable copy), or the instance has no shared tier (nothing else
+    /// holds the block, so this node's copy is the block).
     private void recordReadPresence(BlockId id, StorageTier tier) {
-        metadataStore.computeLifecycle(id, lc -> lc.withTierAdded(tier.level()))
+        metadataStore.computeLifecycle(id,
+                                       lc -> lc.withTierAdded(tier.level()))
                      .onEmpty(() -> trackReadOnlyBlock(id, tier));
     }
 
     private void trackReadOnlyBlock(BlockId id, StorageTier tier) {
-        if (!tier.isDurable() && hasRoomForMarker()) {
+        if (!sharedLevels.isEmpty() && !tier.isDurable() && hasRoomForMarker()) {
             createMarker(id, tier.level());
         }
     }
@@ -1246,7 +1272,8 @@ final class DefaultStorageInstance implements StorageInstance {
     /// The claim loses to a writer or another reader that got there first; the presence is then added to
     /// whatever record that left.
     private void createMarker(BlockId id, TierLevel level) {
-        if (metadataStore.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(level)))) {
+        if (metadataStore.claimBlock(id,
+                                     BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(level)))) {
             cacheMarkers.incrementAndGet();
         } else {
             recordTierPresence(id, level);
@@ -1275,7 +1302,8 @@ final class DefaultStorageInstance implements StorageInstance {
         var markers = metadataStore.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).toList();
         var reclaimed = markers.stream()
                                .filter(marker -> isIdleSharedOnly(marker, now))
-                               .filter(marker -> metadataStore.releaseClaim(marker.blockId(), marker))
+                               .filter(marker -> metadataStore.releaseClaim(marker.blockId(),
+                                                                            marker))
                                .count();
         var remaining = markers.size() - (int) reclaimed;
 

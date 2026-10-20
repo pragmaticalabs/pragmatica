@@ -57,7 +57,7 @@ final class InMemoryMetadataStore implements MetadataStore {
     private boolean replaceCacheMarker(BlockId blockId, BlockLifecycle sentinel) {
         var existing = lifecycle.get(blockId);
 
-        return !sentinel.cacheOnly()
+        return ! sentinel.cacheOnly()
                && existing != null
                && existing.cacheOnly()
                && lifecycle.replace(blockId, existing, sentinel.withPresenceOf(existing));

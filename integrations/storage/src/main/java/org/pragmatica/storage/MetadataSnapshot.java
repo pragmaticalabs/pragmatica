@@ -104,7 +104,8 @@ public record MetadataSnapshot(long epoch,
           .append(lifecycle.orphanedAt());
 
         return lifecycle.cacheOnly()
-               ? sb.append('|').append(LineFlag.CACHE_ONLY.name())
+               ? sb.append('|')
+                   .append(LineFlag.CACHE_ONLY.name())
                : sb;
     }
 

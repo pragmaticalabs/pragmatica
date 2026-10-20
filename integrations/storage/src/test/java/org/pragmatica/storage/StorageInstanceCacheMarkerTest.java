@@ -1,10 +1,17 @@
 package org.pragmatica.storage;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import org.pragmatica.lang.Option;
@@ -164,6 +171,123 @@ class StorageInstanceCacheMarkerTest {
         }
     }
 
+    @Test
+    void exists_ofABlockOnlyTheSharedTierHolds_isTrue_butWarmStillFetchesIt() {
+        var id = writeElsewhere("shared-only");
+
+        assertThat(reader.exists(id).await().unwrap()).as("exists answers for the cluster").isTrue();
+        assertThat(readerMemory.exists(id).await().unwrap()).as("and makes nothing local").isFalse();
+        assertThat(reader.warm(id).await().unwrap()).isTrue();
+    }
+
+    @Test
+    void warm_defaultOfAnImplementationWithoutCacheTiers_warmsNothing() {
+        InvocationHandler onlyDefaults = (proxy, method, args) -> InvocationHandler.invokeDefault(proxy, method, args);
+        var storage = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
+                                                               new Class<?>[]{StorageInstance.class},
+                                                               onlyDefaults);
+
+        assertThat(storage.warm(BlockId.blockId(bytes("anything")).unwrap()).await().unwrap()).isFalse();
+    }
+
+    /// The two interleavings a lock-free marker has to survive, forced deterministically: a store double
+    /// performs the interleaved action at the exact call where the race window opens.
+    @Nested
+    class Races {
+        private MetadataStore interleaving(AtomicBoolean fired, BiConsumer<MetadataStore, Method> onCall) {
+            var delegate = readerStore;
+
+            return (MetadataStore) Proxy.newProxyInstance(MetadataStore.class.getClassLoader(),
+                                                          new Class<?>[]{MetadataStore.class},
+                                                          (_, method, args) -> invoke(delegate, method, args, fired, onCall));
+        }
+
+        private Object invoke(MetadataStore delegate,
+                              Method method,
+                              Object[] args,
+                              AtomicBoolean fired,
+                              BiConsumer<MetadataStore, Method> onCall) throws Throwable {
+            var result = invokeOn(delegate, method, args);
+
+            if (fired.compareAndSet(false, true)) {
+                onCall.accept(delegate, method);
+            }
+
+            return result;
+        }
+
+        private Object invokeOn(MetadataStore delegate, Method method, Object[] args) throws Throwable {
+            try {
+                return method.invoke(delegate, args);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+        }
+
+        @Test
+        void put_whoseDedupeFindsAMarkerWhereAnOwnedRecordWas_writesTheRequiredTiersInstead() {
+            var content = bytes("owned-then-marker");
+            var id = BlockId.blockId(content).unwrap();
+            var fired = new AtomicBoolean();
+            // The put's claim fails because an owned record exists; before its credit lands, GC removed that
+            // record and a reader of the block planted a marker.
+            var racing = interleaving(fired, (store, method) -> swapOwnedForMarker(store, method, id));
+            var instance = new DefaultStorageInstance("racing",
+                                                      List.of(readerMemory, readerDisk, shared),
+                                                      racing,
+                                                      WritePolicy.WRITE_THROUGH,
+                                                      Option.none(),
+                                                      AppendLog.TornTailSink.logOnly(),
+                                                      _ -> {},
+                                                      DefaultStorageInstance.CacheMarkerLimits.DEFAULT);
+
+            readerStore.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
+            shared.put(id, content).await().unwrap();
+
+            instance.put(content).await().unwrap();
+
+            assertThat(readerDisk.exists(id).await().unwrap())
+                .as("crediting the marker would acknowledge a put that never reached the durable tier")
+                .isTrue();
+            assertThat(readerStore.getLifecycle(id).unwrap().cacheOnly()).isFalse();
+        }
+
+        private static void swapOwnedForMarker(MetadataStore store, Method method, BlockId id) {
+            if (method.getName().equals("claimBlock")) {
+                store.removeLifecycle(id);
+                store.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.REMOTE)));
+            }
+        }
+
+        @Test
+        void get_whoseMarkerClaimLosesToAWriter_stillRecordsWhereItFoundTheBlock() {
+            var id = writeElsewhere("writer-wins");
+            var fired = new AtomicBoolean();
+            // The reader's presence update saw no record; a writer's record landed before the marker claim.
+            var racing = interleaving(fired, (store, method) -> plantOwnedRecord(store, method, id));
+            var instance = new DefaultStorageInstance("racing",
+                                                      List.of(readerMemory, readerDisk, shared),
+                                                      racing,
+                                                      WritePolicy.WRITE_THROUGH,
+                                                      Option.none(),
+                                                      AppendLog.TornTailSink.logOnly(),
+                                                      _ -> {},
+                                                      DefaultStorageInstance.CacheMarkerLimits.DEFAULT);
+
+            instance.get(id).await().unwrap();
+
+            assertThat(readerStore.getLifecycle(id).unwrap().presentIn())
+                .as("the owned record the writer planted also learns the block was found in the shared tier")
+                .contains(TierLevel.LOCAL_DISK, TierLevel.REMOTE);
+        }
+
+        private static void plantOwnedRecord(MetadataStore store, Method method, BlockId id) {
+            if (method.getName().equals("computeLifecycle")) {
+                store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
+            }
+        }
+    }
+
     @Nested
     class Warming {
         @Test
@@ -238,34 +362,36 @@ class StorageInstanceCacheMarkerTest {
     @Nested
     class Bounds {
         private static final DefaultStorageInstance.CacheMarkerLimits THREE_MARKERS =
-            new DefaultStorageInstance.CacheMarkerLimits(3, 1_000L, 0L);
+            DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(3, 1_000L, 100L);
 
         @Test
         void get_pastTheMarkerCap_createsNoNewMarkerUntilIdleOnesAreSwept() {
-            var clock = new AtomicLong(1_000_000L);
+            var clock = new AtomicLong(System.currentTimeMillis());
             var bounded = readerInstance(THREE_MARKERS, clock, _ -> {});
             var ids = new ArrayList<BlockId>();
 
-            for (var i = 0; i < 5; i++) {
+            for (var i = 0; i < 7; i++) {
                 ids.add(writeElsewhere("bounded-" + i));
             }
 
-            ids.forEach(id -> bounded.get(id).await().unwrap());
+            ids.subList(0, 5).forEach(id -> bounded.get(id).await().unwrap());
 
-            assertThat(readerStore.listAllLifecycles()).as("3 markers, the cap").hasSize(3);
+            assertThat(readerStore.listAllLifecycles()).as("3 markers, the cap; the other two reads are not tracked").hasSize(3);
+            assertThat(readerStore.getLifecycle(ids.get(3)).isPresent()).isFalse();
 
-            // Control: advance the clock past the idle window; the markers are shared-only, so the sweep drops them.
+            // The three markers track only the shared tier and go idle: one sweep drops them, and the room it
+            // makes is the whole cap again -- not just the one slot the read that triggered it needed.
             clock.addAndGet(5_000L);
-            bounded.get(ids.get(4)).await().unwrap();
+            ids.subList(3, 6).forEach(id -> bounded.get(id).await().unwrap());
 
-            assertThat(readerStore.getLifecycle(ids.get(4)).isPresent()).as("a sweep made room").isTrue();
-            assertThat(readerStore.listAllLifecycles().size()).isLessThanOrEqualTo(3);
+            assertThat(readerStore.listAllLifecycles()).extracting(BlockLifecycle::blockId)
+                                                       .containsExactlyInAnyOrder(ids.get(3), ids.get(4), ids.get(5));
         }
 
         @Test
         void sweep_neverDropsAMarkerThatTracksACopyOnThisNode() {
-            var clock = new AtomicLong(1_000_000L);
-            var bounded = readerInstance(new DefaultStorageInstance.CacheMarkerLimits(1, 1_000L, 0L), clock, _ -> {});
+            var clock = new AtomicLong(System.currentTimeMillis());
+            var bounded = readerInstance(DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(1, 1_000L, 100L), clock, _ -> {});
             var warmed = writeElsewhere("warmed-copy");
             var other = writeElsewhere("another");
 
@@ -279,8 +405,8 @@ class StorageInstanceCacheMarkerTest {
 
         @Test
         void warm_createsItsRecordEvenWhenTheMarkerTableIsFull() {
-            var clock = new AtomicLong(1_000_000L);
-            var bounded = readerInstance(new DefaultStorageInstance.CacheMarkerLimits(1, 600_000L, 60_000L), clock, _ -> {});
+            var clock = new AtomicLong(System.currentTimeMillis());
+            var bounded = readerInstance(DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(1, 600_000L, 60_000L), clock, _ -> {});
             var first = writeElsewhere("fills-the-table");
             var second = writeElsewhere("warmed-when-full");
 
@@ -350,6 +476,51 @@ class StorageInstanceCacheMarkerTest {
                 .as("a copy of another node's block must not land on the durable disk, where nothing collects it")
                 .isFalse();
             assertThat(readerStore.getLifecycle(id).unwrap().presentIn()).contains(TierLevel.MEMORY);
+        }
+
+        @Test
+        void demote_ofAMarkerNamingADurableTier_movesTheBlockDown_neverDropsIt() throws Exception {
+            // 1,000 bytes so that one small block puts the tier over the 1% high watermark.
+            var first = LocalDiskTier.localDiskTier(tempDir.resolve("first-disk"), 1_000).flatMap(LocalDiskTier::open).unwrap();
+            var second = LocalDiskTier.localDiskTier(tempDir.resolve("second-disk"), DISK_MAX).flatMap(LocalDiskTier::open).unwrap();
+            var content = bytes("durable-but-marked");
+            var id = BlockId.blockId(content).unwrap();
+
+            first.put(id, content).await().unwrap();
+            readerStore.createLifecycle(BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.LOCAL_DISK)));
+
+            var demotion = DemotionManager.demotionManager(List.of(first, second, shared),
+                                                           readerStore,
+                                                           DemotionConfig.demotionConfig(DemotionStrategy.LRU, 0.01, 0.0, 10));
+
+            demotion.activate();
+
+            assertThat(demotion.demote()).isEqualTo(1);
+            assertThat(second.exists(id).await().unwrap())
+                .as("a marker is only ever made for non-durable copies; one naming a durable tier is not trusted as a cache")
+                .isTrue();
+        }
+
+        @Test
+        void promote_ofAMarkerWithNoNonDurableTierAbove_promotesNothing() {
+            var id = writeElsewhere("nowhere-to-cache");
+            var diskOnly = StorageInstance.storageInstance("disk-only",
+                                                           List.of(readerDisk, shared),
+                                                           readerStore);
+
+            for (var i = 0; i < 6; i++) {
+                diskOnly.get(id).await().unwrap();
+            }
+
+            var promotion = PromotionManager.promotionManager(List.of(readerDisk, shared),
+                                                              readerStore,
+                                                              PromotionConfig.promotionConfig(5, 60_000L, 10));
+
+            promotion.activate();
+
+            assertThat(readerStore.getLifecycle(id).unwrap().cacheOnly()).as("control: it is a marker with enough accesses").isTrue();
+            assertThat(promotion.promote()).isZero();
+            assertThat(readerDisk.exists(id).await().unwrap()).isFalse();
         }
 
         @Test

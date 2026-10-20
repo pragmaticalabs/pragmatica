@@ -107,7 +107,8 @@ sealed interface SnapshotReadBack {
     /// No 8th field for an ordinary record; exactly the `CACHE_ONLY` flag, and nothing after it, for a marker.
     private static boolean flagReadsBack(String line, int bar7, BlockLifecycle expected) {
         return expected.cacheOnly()
-               ? bar7 > 0 && line.substring(bar7 + 1).equals(MetadataSnapshot.LineFlag.CACHE_ONLY.name())
+               ? bar7 > 0 && line.substring(bar7 + 1)
+                                 .equals(MetadataSnapshot.LineFlag.CACHE_ONLY.name())
                : bar7 < 0;
     }
 

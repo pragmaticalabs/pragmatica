@@ -121,7 +121,14 @@ public record BlockLifecycle(BlockId blockId,
 
         tiers.add(tier);
 
-        return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt, accessCount, orphanedAt, cacheOnly);
+        return new BlockLifecycle(blockId,
+                                  tiers,
+                                  refCount,
+                                  lastAccessedAt,
+                                  createdAt,
+                                  accessCount,
+                                  orphanedAt,
+                                  cacheOnly);
     }
 
     public BlockLifecycle withTierRemoved(TierLevel tier) {
@@ -129,7 +136,14 @@ public record BlockLifecycle(BlockId blockId,
 
         tiers.remove(tier);
 
-        return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt, accessCount, orphanedAt, cacheOnly);
+        return new BlockLifecycle(blockId,
+                                  tiers,
+                                  refCount,
+                                  lastAccessedAt,
+                                  createdAt,
+                                  accessCount,
+                                  orphanedAt,
+                                  cacheOnly);
     }
 
     /// Increments refCount. Resurrecting an orphaned block (refCount was already <=0) clears
@@ -140,7 +154,14 @@ public record BlockLifecycle(BlockId blockId,
                           ? 0L
                           : orphanedAt;
 
-        return new BlockLifecycle(blockId, presentIn, refCount + 1, lastAccessedAt, createdAt, accessCount, resurrected, false);
+        return new BlockLifecycle(blockId,
+                                  presentIn,
+                                  refCount + 1,
+                                  lastAccessedAt,
+                                  createdAt,
+                                  accessCount,
+                                  resurrected,
+                                  false);
     }
 
     /// [#withRefCountIncremented] for a record this node owns; a cache-only marker comes back unchanged,
@@ -158,7 +179,14 @@ public record BlockLifecycle(BlockId blockId,
 
         tiers.addAll(other.presentIn);
 
-        return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt, accessCount, orphanedAt, cacheOnly);
+        return new BlockLifecycle(blockId,
+                                  tiers,
+                                  refCount,
+                                  lastAccessedAt,
+                                  createdAt,
+                                  accessCount,
+                                  orphanedAt,
+                                  cacheOnly);
     }
 
     /// Decrements refCount (floored at 0). Stamps orphanedAt with the current instant only on the
@@ -171,7 +199,14 @@ public record BlockLifecycle(BlockId blockId,
                             ? System.currentTimeMillis()
                             : orphanedAt;
 
-        return new BlockLifecycle(blockId, presentIn, newRefCount, lastAccessedAt, createdAt, accessCount, newOrphanedAt, cacheOnly);
+        return new BlockLifecycle(blockId,
+                                  presentIn,
+                                  newRefCount,
+                                  lastAccessedAt,
+                                  createdAt,
+                                  accessCount,
+                                  newOrphanedAt,
+                                  cacheOnly);
     }
 
     public BlockLifecycle withAccessTimestamp() {
