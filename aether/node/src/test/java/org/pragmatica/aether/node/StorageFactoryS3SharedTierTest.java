@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -30,10 +31,14 @@ import org.pragmatica.cloud.aws.AwsCredentialsProvider;
 import org.pragmatica.cloud.aws.AwsSigV4Signer;
 import org.pragmatica.cloud.aws.s3.S3Client;
 import org.pragmatica.cloud.aws.s3.S3Config;
+import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.Partition;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.EncryptingStorageTier;
@@ -215,6 +220,88 @@ class StorageFactoryS3SharedTierTest {
 
         assertThat(new String(Arrays.copyOf(rawObject(keyOf(id)), 4), StandardCharsets.US_ASCII)).as("the bucket must hold ciphertext")
                                                                                                   .isEqualTo("AEC1");
+    }
+
+    /// #249/#2268 (owner ruling): a boot the post-formation DHT check refuses rolls back the disk markers it stamped,
+    /// but never the S3 bucket's marker, because the bucket is shared by the cluster. `plain` was marked encrypted in
+    /// the DHT by a prior boot and is now booted without encryption, which is the refusal; `content` is shared-only
+    /// S3, so this boot stamps both its disk and its bucket. Mutation that reddens it: delete the bucket marker on
+    /// rollback.
+    @Test
+    void dhtRefusedBoot_rollsBackTheDiskMarker_andKeepsTheBucketMarker() throws IOException {
+        var dht = new InMemoryDHTClient();
+        var ring = keyring("k1");
+        var plainDisk = tempDir.resolve("plain-disk");
+        Files.writeString(plainDisk, "a plain file here forces LocalDiskTier construction to fail");
+        var prior = StorageFactory.createAll(Map.of("plain", plainAt(plainDisk, true)), NODE_ID, Option.some(dht), Option.some(ring),
+                                             defaultsInFreshDir())
+                                  .fold(cause -> fail(cause.message()), setups -> setups);
+        prior.get("plain").dhtMarkerCheck().onPresent(check -> StorageFactory.verifyDhtMarker(dht, check)
+                                                                             .await()
+                                                                             .onFailure(cause -> fail(cause.message())));
+        var derived = StorageFactory.withDerivedPaths(Map.of("plain", plainAt(plainDisk, false),
+                                                             "content", StorageConfig.sharedOnly(s3Config(ACCESS_KEY, SECRET_KEY))),
+                                                      defaults(),
+                                                      true);
+        var boot = StorageFactory.createAll(derived, NODE_ID, Option.some(dht), Option.some(ring), defaults())
+                                 .fold(cause -> fail(cause.message()), setups -> setups);
+        var contentDiskMarker = tempDir.resolve("content").resolve("blocks").resolve(EncryptingStorageTier.MARKER_FILE_NAME);
+
+        assertThat(Files.exists(contentDiskMarker)).as("precondition: the boot stamped content's disk").isTrue();
+        assertThat(markerPresent()).as("precondition: the boot stamped the bucket").isTrue();
+
+        StorageFactory.admitDhtMarkers(dht, boot, () -> false)
+                      .await()
+                      .onSuccess(_ -> fail("the DHT check must refuse an unencrypted boot over an encrypted namespace"))
+                      .onFailure(cause -> assertThat(chainHas(cause, EncryptionError.EncryptedTierRequiresKeyring.class)).as(cause.message())
+                                                                                                                     .isTrue());
+        assertThat(Files.exists(contentDiskMarker)).as("the refused boot's disk marker is rolled back").isFalse();
+        assertThat(markerPresent()).as("the shared bucket's marker stays").isTrue();
+    }
+
+    private StorageConfig plainAt(Path disk, boolean encrypted) {
+        return StorageConfig.storageConfig(8L * 1024 * 1024,
+                                           64L * 1024 * 1024,
+                                           disk.toString(),
+                                           tempDir.resolve("plain-snapshots").toString(),
+                                           1000,
+                                           "60s",
+                                           5,
+                                           "",
+                                           encrypted);
+    }
+
+    /// In-memory `DHTClient`, duplicated from `StorageFactoryEncryptionTest` for the reason recorded there: package-
+    /// private test doubles are not reusable across files.
+    private static final class InMemoryDHTClient implements DHTClient {
+        private final ConcurrentHashMap<String, byte[]> store = new ConcurrentHashMap<>();
+
+        @Override
+        public Promise<Option<byte[]>> get(byte[] key) {
+            return Promise.success(Option.option(store.get(new String(key, StandardCharsets.UTF_8))));
+        }
+
+        @Override
+        public Promise<Unit> put(byte[] key, byte[] value) {
+            store.put(new String(key, StandardCharsets.UTF_8), value.clone());
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Boolean> remove(byte[] key) {
+            return Promise.success(store.remove(new String(key, StandardCharsets.UTF_8)) != null);
+        }
+
+        @Override
+        public Promise<Boolean> exists(byte[] key) {
+            return Promise.success(store.containsKey(new String(key, StandardCharsets.UTF_8)));
+        }
+
+        /// Never invoked on the storage-tier path, as in the stub this one mirrors.
+        @Override
+        public Partition partitionFor(byte[] key) {
+            return null;
+        }
     }
 
     @Test

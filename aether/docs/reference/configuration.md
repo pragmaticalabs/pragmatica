@@ -491,6 +491,11 @@ guards follow the local disk, during storage construction (an object store needs
   that read "no marker" can then list the first ciphertext block another node has just written and refuse with
   `EnablingOverExistingPlaintext`. Nothing is lost and nothing is stamped by the refused node; restarting it
   boots cleanly, because the marker is then present. To avoid the refusal, enable encryption on one node first.
+- **A boot refused after formation keeps the bucket's marker.** When the post-formation DHT marker check refuses a
+  boot (#2268), the node rolls back the disk markers that boot stamped, but never `<prefix>.encryption-enabled`:
+  the bucket is shared by the cluster, and other nodes may already rely on it. Backing the keyring out after such a
+  refusal therefore still meets the marker on the bucket (`EncryptedTierRequiresKeyring`); use a fresh prefix for
+  an unencrypted boot.
 
 **Garbage collection.** Node-local GC never deletes from the S3 tier, as from the DHT: one node's refcount
 cannot say another node no longer references a block. Explicit deletes (content deletion, stream retention)

@@ -1436,6 +1436,7 @@ public final class StorageFactory {
                                 stopped).onFailure(_ -> rollbackDiskMarkers(setups.values()));
     }
 
+    // #249/#2268: disk markers only; an S3 bucket's marker stays, because the bucket is shared by the cluster.
     private static Result<Unit> rollbackDiskMarkers(Collection<StorageSetup> setups) {
         return Result.allOf(setups.stream().map(StorageSetup::rollbackDiskMarker).toList())
                      .mapToUnit()
