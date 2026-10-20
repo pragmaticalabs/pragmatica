@@ -146,6 +146,50 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
+        void flags_prefixIncrement() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private int failures;
+                        void run(Promise<Integer> p) {
+                            p.onFailure(_ -> ++failures);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_thisQualifiedAssignment_evenWhenAParameterHasTheSameName() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private String last;
+                        void run(Promise<String> p) {
+                            p.onSuccess(last -> this.last = last);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_assignmentAfterReturnInsideBlock() {
+            assertTrue(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        void run(Promise<String> p) {
+                            p.onResult(_ -> {
+                                if (done) {
+                                    return;
+                                }
+                                done = true;
+                            });
+                        }
+                    }
+                    """));
+        }
+
+        @Test
         void flags_blockLambdaWrite() {
             assertTrue(flags("""
                     package org.example;
@@ -190,6 +234,8 @@ class CstPromiseCallbackWriteRuleTest {
             assertEquals(1, found.size());
             assertEquals(7, found.getFirst()
                                  .line());
+            assertEquals(12, found.getFirst()
+                                 .column());
             assertEquals(DiagnosticSeverity.WARNING,
                          found.getFirst()
                               .severity());
@@ -247,6 +293,16 @@ class CstPromiseCallbackWriteRuleTest {
                         }
                     }
                     """));
+        }
+
+        @Test
+        void flags_writeThreeMethodsDeep() {
+            assertTrue(flags(chainOfMethods(3)));
+        }
+
+        @Test
+        void clean_writeFourMethodsDeep() {
+            assertFalse(flags(chainOfMethods(4)));
         }
 
         @Test
@@ -620,6 +676,33 @@ class CstPromiseCallbackWriteRuleTest {
         }
 
         @Test
+        void clean_unknownReceiverInPromiseMethodWithoutReturn() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<String> run() {
+                            repository.find().onSuccess(_ -> done = true);
+                            return other();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_unknownReceiverWhenTheChainContinuesAfterTheCallback() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        private boolean done;
+                        Promise<String> run() {
+                            return repository.find().onSuccess(_ -> done = true).map(String::trim);
+                        }
+                    }
+                    """));
+        }
+
+        @Test
         void clean_returnedChainInResultMethod() {
             assertFalse(flags("""
                     package org.example;
@@ -735,6 +818,51 @@ class CstPromiseCallbackWriteRuleTest {
                         }
                     }
                     """));
+        }
+
+        @Test
+        void clean_prefixIncrementOfALocal() {
+            assertFalse(flags("""
+                    package org.example;
+                    class Foo {
+                        void run(Promise<String> p) {
+                            p.onSuccess(v -> {
+                                int n = 0;
+                                ++n;
+                                log.info("{}", n);
+                            });
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_everyKindOfLocalDeclaredInTheCallback() {
+            for (var local : List.of("var out = new ArrayList<String>(); out.add(v);",
+                                     "List<String> out = new ArrayList<>(); out.add(v);",
+                                     "Outer.Inner out = new Outer.Inner(); out.put(v, v);",
+                                     "final StringBuilder out = new StringBuilder(); out.append(v);",
+                                     "int[] out = new int[1]; out[0] = 1;",
+                                     "for (var item : items) { item.add(v); }",
+                                     "items.forEach(item -> item.add(v));",
+                                     "items.forEach((a, b) -> a.add(b));",
+                                     "try { run(); } catch (RuntimeException failure) { failure.addSuppressed(null); }",
+                                     "if (v instanceof Holder holder) { holder.set(v); }")) {
+                assertFalse(flags("""
+                        package org.example;
+                        class Foo {
+                            void run(Promise<String> p, List<List<String>> items) {
+                                p.onSuccess(v -> { %s });
+                            }
+                        }
+                        """.formatted(local)), local);
+            }
+        }
+
+        @Test
+        void clean_mutationsThatTouchNothingShared() {
+            assertFalse(flags(chainIn("Promise.success(1).onSuccess(v -> MDC.put(\"id\", \"x\"));")));
+            assertFalse(flags(chainIn("Promise.success(1).onSuccess(v -> log.info(String.format(\"%s\", v).replace(\"a\", \"b\")));")));
         }
 
         @Test
@@ -898,6 +1026,27 @@ class CstPromiseCallbackWriteRuleTest {
                     }
                     """));
         }
+    }
+
+    /// A callback that calls m1, which calls m2, ... and only the last of `depth` methods writes a field.
+    private static String chainOfMethods(int depth) {
+        var methods = new StringBuilder();
+
+        for (var i = 1; i < depth; i++) {
+            methods.append("private void m%d() { m%d(); }%n".formatted(i, i + 1));
+        }
+
+        methods.append("private void m%d() { done = true; }%n".formatted(depth));
+        return """
+                package org.example;
+                class Foo {
+                    private boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> m1());
+                    }
+                    %s
+                }
+                """.formatted(methods);
     }
 
     private static String chainIn(String statement) {

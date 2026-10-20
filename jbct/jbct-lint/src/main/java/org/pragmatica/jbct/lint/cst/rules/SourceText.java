@@ -71,7 +71,7 @@ sealed interface SourceText permits SourceText.unused {
     }
 
     private static boolean isNotInTypeArguments(char c) {
-        return c == ';' || c == '{' || c == '}' || c == '(' || c == ')' || c == '=';
+        return c == ';' || c == '{' || c == '}' || c == '(' || c == ')' || c == '=' || c == '&' || c == '|';
     }
 
     /// Offset of the `<` opening the type-argument list that ends at `close`; `close` itself when there is none.

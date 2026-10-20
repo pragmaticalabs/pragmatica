@@ -72,10 +72,9 @@ sealed interface SharedWrites permits SharedWrites.unused {
     Pattern CATCH_PARAM = Pattern.compile("\\bcatch\\s*\\([^)]*?(" + IDENT + ")\\s*\\)");
     Pattern PATTERN_BINDING = Pattern.compile("\\b(?:instanceof|case)\\s+(?:final\\s+)?[A-Z][\\w$.<>]*\\s+(" + IDENT + ")\\b");
 
-    Set<String> NOT_SHARED_ROOTS = Set.of("log", "LOG", "logger", "LOGGER", "Promise", "Result", "Option", "Objects", "Math",
-                                          "String", "System", "Unit");
+    /// Roots whose mutating-looking calls touch nothing shared: `MDC.put` is thread-local, `String.format(..).replace(..)` is a value.
+    Set<String> NOT_SHARED_ROOTS = Set.of("MDC", "String");
     Set<String> LITERALS = Set.of("new", "true", "false", "null");
-    Set<String> NOT_ASSIGNMENT_ROOTS = Set.of("return", "case", "default", "else", "new", "throw", "yield");
 
     /// First shared write reachable from a callback argument (`x -> ...`, `() -> ...`, `this::name`, `Type::name`), or none.
     static Option<Write> inCallback(String argument, Declarations.FileFacts facts, String masked) {
@@ -86,13 +85,13 @@ sealed interface SharedWrites permits SharedWrites.unused {
                          ? lambda.group(1)
                          : lambda.group(2);
 
-            return inBody(Set.copyOf(SourceText.declaredNames(params)), lambda.group(3), facts, masked, MAX_DEPTH, Set.of());
+            return inBody(Set.copyOf(SourceText.declaredNames(params)), lambda.group(3), facts, masked, MAX_DEPTH);
         }
 
         var reference = METHOD_REF.matcher(argument);
 
         return reference.matches()
-               ? viaMethod(reference.group(1), facts, masked, MAX_DEPTH, Set.of(), List.of())
+               ? viaMethod(reference.group(1), facts, masked, MAX_DEPTH, List.of())
                : none();
     }
 
@@ -100,13 +99,12 @@ sealed interface SharedWrites permits SharedWrites.unused {
                                         String body,
                                         Declarations.FileFacts facts,
                                         String masked,
-                                        int depth,
-                                        Set<String> seen) {
+                                        int depth) {
         var locals = new HashSet<String>(params);
 
         locals.addAll(declaredLocals(body));
 
-        return direct(locals, body).orElse(() -> delegated(locals, body, facts, masked, depth, seen));
+        return direct(locals, body).orElse(() -> delegated(locals, body, facts, masked, depth));
     }
 
     private static Option<Write> direct(Set<String> locals, String body) {
@@ -120,10 +118,6 @@ sealed interface SharedWrites permits SharedWrites.unused {
 
         while (matcher.find()) {
             var root = root(matcher.group(2));
-
-            if (NOT_ASSIGNMENT_ROOTS.contains(root)) {
-                continue;
-            }
 
             if (matcher.group(1) != null || !locals.contains(root)) {
                 return some(Write.write("assigns " + target(matcher.group(1), matcher.group(2)), List.of()));
@@ -177,8 +171,7 @@ sealed interface SharedWrites permits SharedWrites.unused {
                                            String body,
                                            Declarations.FileFacts facts,
                                            String masked,
-                                           int depth,
-                                           Set<String> seen) {
+                                           int depth) {
         if (depth <= 0) {
             return none();
         }
@@ -188,11 +181,11 @@ sealed interface SharedWrites permits SharedWrites.unused {
         while (matcher.find()) {
             var name = matcher.group(1);
 
-            if (Declarations.CONTROL.contains(name) || seen.contains(name)) {
+            if (Declarations.CONTROL.contains(name)) {
                 continue;
             }
 
-            var found = viaMethod(name, facts, masked, depth, seen, sharedArguments(locals, body, matcher.end() - 1));
+            var found = viaMethod(name, facts, masked, depth, sharedArguments(locals, body, matcher.end() - 1));
 
             if (found.isPresent()) {
                 return found;
@@ -231,20 +224,15 @@ sealed interface SharedWrites permits SharedWrites.unused {
                                            Declarations.FileFacts facts,
                                            String masked,
                                            int depth,
-                                           Set<String> seen,
                                            List<Boolean> sharedArguments) {
         var overloads = facts.methods().getOrDefault(name, List.of());
-        var nowSeen = new HashSet<String>(seen);
-
-        nowSeen.add(name);
 
         for (var method : overloads) {
             var found = inBody(localParams(method, sharedArguments),
                                masked.substring(method.bodyStart(), method.bodyEnd()),
                                facts,
                                masked,
-                               depth - 1,
-                               nowSeen);
+                               depth - 1);
 
             if (found.isPresent()) {
                 return found.map(write -> prepend(name, write));
