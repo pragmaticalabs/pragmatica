@@ -56,7 +56,7 @@ public record MultipartRequest(Map<String, List<String>> fieldValues, List<FileU
 
     /// Get a form field value by name: the first one, when the name repeats.
     public Option<String> field(String name) {
-        return option(fieldValues.get(name)).map(List::getFirst);
+        return option(fieldValues.get(name)).flatMap(values -> Option.from(values.stream().findFirst()));
     }
 
     /// Every value of a form field, in body order; empty when the field is absent.
