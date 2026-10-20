@@ -3980,6 +3980,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                 "implicit-worker-retirement"))),
                                                                                                                                      TimeSpan.timeSpan(45).seconds());
 
+        placementReconciler.operatorWarnings(operatorWarningSink);
         clusterTopologyManager.installCommunityPlacement(placementReconciler);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda

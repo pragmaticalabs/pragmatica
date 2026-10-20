@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Comparator;
+import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -14,6 +15,10 @@ import org.pragmatica.lang.Result;
 
 /// Stable coordination identity with independently selected capacity locations.
 public record CommunityPlacement(String id, int targetSize, List<Location> locations) {
+    /// The ids the cluster mints itself for sources without declared communities (`<source>-w-<number>`); a declared
+    /// community may not take one, or the growth policy would adopt it as its own.
+    private static final Pattern DERIVED_ID = Pattern.compile("^.+-w-[0-9]+$");
+
     public record Location(String source, Option<String> zone, int minimum, int weight) {}
 
     public CommunityPlacement {
@@ -48,6 +53,16 @@ public record CommunityPlacement(String id, int targetSize, List<Location> locat
     public static Result<CommunityPlacement> communityPlacement(String id, int targetSize, List<Location> locations) {
         if (id.isBlank() || targetSize < 0 || locations.isEmpty()) {
             return new ClusterConfigError.ParseFailed("Community requires an identity, non-negative target_size and placement locations").result();
+        }
+
+        if (DERIVED_ID.matcher(id).matches()) {
+            return new ClusterConfigError.ParseFailed("Community id " + id
+                                                     + " is reserved for derived communities (<source>-w-<number>)").result();
+        }
+
+        if (targetSize > CommunityPolicy.CEILING) {
+            return new ClusterConfigError.ParseFailed("Community target_size exceeds the " + CommunityPolicy.CEILING
+                                                     + " ceiling: " + id).result();
         }
 
         if (locations.stream()

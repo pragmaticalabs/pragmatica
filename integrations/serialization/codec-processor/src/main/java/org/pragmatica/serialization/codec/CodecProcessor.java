@@ -17,12 +17,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
+import org.pragmatica.serialization.json.codegen.JsonNames;
 
-@SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor"})
+
+@SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor", CodecProcessor.JSON})
 @SupportedOptions({"codec.registry.suffix"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class CodecProcessor extends AbstractProcessor {
+    /// JSON is a separate opt-in (`@Json`), processed in the same pass but never as a binary codec, so adopting
+    /// JSON cannot change a type's binary wire contract.
+    static final String JSON = "org.pragmatica.serialization.json.Json";
+
     private CodecClassGenerator generator;
+    private JsonServices jsonServices;
     private String registrySuffix = "";
 
     @Override
@@ -36,6 +44,11 @@ public class CodecProcessor extends AbstractProcessor {
         this.registrySuffix = suffix == null
                               ? ""
                               : suffix;
+        this.jsonServices = new JsonServices(processingEnv.getFiler(), processingEnv.getElementUtils());
+        // FER: outside javac there is no task to listen to; the processor works on without the local @Json check (a
+        // local @Json type is then ignored, as annotation processing itself ignores it; see LocalJsonTypes), and the
+        // note says so. The failure is the expected answer of a non-javac environment, so its detail is not printed.
+        LocalJsonTypes.install(processingEnv).onFailure(_ -> note("@Json on local types is not checked: the compiler is not javac"));
     }
 
     @Override
@@ -45,7 +58,14 @@ public class CodecProcessor extends AbstractProcessor {
 
         processCodecForAnnotations(roundEnv, packageToCodecNames, packageToRequiredTypes);
         for (var annotation : annotations) {
-            if ("org.pragmatica.serialization.CodecFor".equals(annotation.getQualifiedName().toString())) {
+            var annotationName = annotation.getQualifiedName().toString();
+
+            if ("org.pragmatica.serialization.CodecFor".equals(annotationName)) {
+                continue;
+            }
+
+            if (JSON.equals(annotationName)) {
+                roundEnv.getElementsAnnotatedWith(annotation).forEach(this::processJson);
                 continue;
             }
 
@@ -55,8 +75,20 @@ public class CodecProcessor extends AbstractProcessor {
         }
 
         generateRegistries(packageToCodecNames, packageToRequiredTypes);
+        if (roundEnv.processingOver()) {
+            writeJsonServices();
+        }
 
         return true;
+    }
+
+    // The services file is a resource listing every entry point, written once, in the last round; see JsonServices.
+    private void writeJsonServices() {
+        jsonServices.write()
+                    .onFailure(cause -> processingEnv.getMessager()
+                                                     .printMessage(Diagnostic.Kind.ERROR,
+                                                                   "Cannot write " + JsonServices.SERVICE_FILE
+                                                                  + ": " + cause.message()));
     }
 
     private void processCodecForAnnotations(RoundEnvironment roundEnv,
@@ -138,6 +170,48 @@ public class CodecProcessor extends AbstractProcessor {
         }
 
         return result;
+    }
+
+    // One self-contained entry point per @Json type, <Flat>Json next to the type (JsonNames: injective), which is the
+    // type's ServiceLoader provider and is listed in the services file.
+    private void processJson(Element element) {
+        if (element.getKind() != ElementKind.RECORD && element.getKind() != ElementKind.ENUM) {
+            error(element, "@Json can only be applied to records and enums");
+
+            return;
+        }
+
+        var type = (TypeElement) element;
+        var packageName = processingEnv.getElementUtils().getPackageOf(type).getQualifiedName().toString();
+
+        if (packageName.isEmpty()) {
+            error(element,
+                  "@Json type '" + type.getQualifiedName()
+                 + "' is in the unnamed package, which JSON codec generation does not support."
+                 + " Declare it in a named package.");
+
+            return;
+        }
+
+        var json = new JsonCodecGenerator(processingEnv, packageName);
+        var unsupported = json.addRoot(type.asType());
+
+        if (unsupported.isPresent()) {
+            unsupported.onPresent(reason -> error(element,
+                                                  "@Json type '" + type.getQualifiedName()
+                                                 + "' cannot get a generated codec: " + reason));
+
+            return;
+        }
+
+        var entryPoint = JsonNames.entryPointName(type);
+
+        json.writeEntryPoint(entryPoint, type, "CodecProcessor")
+            .onSuccess(_ -> note(element, "Generated JSON codec: " + entryPoint))
+            .onSuccess(_ -> jsonServices.add(JsonCodecGenerator.qualifiedName(packageName, entryPoint),
+                                             type))
+            .onFailure(cause -> error(element,
+                                      "Cannot write " + entryPoint + ": " + cause.message()));
     }
 
     private void processAnnotatedElement(Element element, Map<String, List<String>> packageToCodecNames) {
@@ -430,5 +504,9 @@ public class CodecProcessor extends AbstractProcessor {
 
     private void note(Element element, String message) {
         processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, message, element);
+    }
+
+    private void note(String message) {
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, message);
     }
 }
