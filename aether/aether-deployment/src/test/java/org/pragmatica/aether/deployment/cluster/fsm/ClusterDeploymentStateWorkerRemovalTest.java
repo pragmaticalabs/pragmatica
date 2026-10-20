@@ -98,6 +98,8 @@ class ClusterDeploymentStateWorkerRemovalTest {
     private static final String COMMUNITY_ID = SOURCE + "-w-0";
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice-worker-removal:1.0.0").unwrap();
 
+    /// The core members the leader counts; mutable so a test can keep a node counted while its removal decision arrives.
+    private final Set<NodeId> countedCores = ConcurrentHashMap.newKeySet();
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
@@ -105,6 +107,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
     @BeforeEach
     void setUp() {
         var router = MessageRouter.mutable();
+        countedCores.add(SELF);
         kvStore = new InMemoryKvStore(router);
         cluster = new RecordingClusterNode(SELF, kvStore);
         kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
@@ -122,7 +125,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    () -> Set.of(SELF),
+                                                    () -> Set.copyOf(countedCores),
                                                     () -> Set.of(SELF),
                                                     Set::of,
                                                     Set.of(SELF),
@@ -524,6 +527,37 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .doesNotContainKey(sliceKey);
             assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
             assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
+        }
+    }
+
+    /// #1337 (v-2332 probe): a core node whose removal decision arrives while it is STILL in the counted set is not stale to the
+    /// reconcile sweep, so only `handleNodeRemoval` can clear its topic rows. Kills "removal does not clear topic rows" and "rows removed
+    /// for the wrong node", which the sweep otherwise masks.
+    @Nested
+    class CoreRemovalWhileStillCounted {
+        @Test
+        void coreRemoved_whileStillInTheCountedSet_itsTopicRowsGoViaHandleNodeRemoval_andAnotherNodesStay() {
+            countedCores.add(CORE_2);
+            var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var departedPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, CORE_2);
+            var departedSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, CORE_2);
+            var survivingPub = TopicPublisherKey.topicPublisherKey(address, ARTIFACT, SELF);
+            var survivingSub = TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, method, SELF);
+
+            kvStore.put(departedPub, TopicPublisherValue.topicPublisherValue(CORE_2, TopicTier.EPHEMERAL));
+            kvStore.put(departedSub, TopicSubscriptionValue.topicSubscriptionValue(CORE_2, TopicTier.DURABLE));
+            kvStore.put(survivingPub, TopicPublisherValue.topicPublisherValue(SELF, TopicTier.EPHEMERAL));
+            kvStore.put(survivingSub, TopicSubscriptionValue.topicSubscriptionValue(SELF, TopicTier.DURABLE));
+            activeState().cleanupStaleTopicRows();
+            assertThat(kvStore.get(departedPub).isPresent()).as("control: the sweep leaves a still-counted node's rows alone").isTrue();
+
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeRemoved(CORE_2, List.of(SELF))));
+
+            assertThat(kvStore.get(departedPub)).as("handleNodeRemoval removes the departed publisher row").isEqualTo(Option.empty());
+            assertThat(kvStore.get(departedSub)).as("handleNodeRemoval removes the departed subscription row").isEqualTo(Option.empty());
+            assertThat(kvStore.get(survivingPub).isPresent()).as("another node's publisher row stays").isTrue();
+            assertThat(kvStore.get(survivingSub).isPresent()).as("another node's subscription row stays").isTrue();
         }
     }
 
