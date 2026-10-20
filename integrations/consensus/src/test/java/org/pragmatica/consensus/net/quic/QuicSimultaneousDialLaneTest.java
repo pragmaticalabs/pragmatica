@@ -50,6 +50,8 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.observeAttaches;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.ownDialDecided;
 
 /// #1578 — the shape the ticket asked for: two real [QuicClusterNetwork]s dial EACH OTHER at the same
 /// moment (the lower id as designated initiator, the higher one forced), with traffic on every lane in
@@ -81,11 +83,8 @@ class QuicSimultaneousDialLaneTest {
         var toHigh = new CopyOnWriteArrayList<LaneProbe>();
         var lowNet = liveNetwork(low, toLow);
         var highNet = liveNetwork(high, toHigh);
-        var lowAttaches = new CopyOnWriteArrayList<QuicClusterNetwork.AttachObservation>();
-        var highAttaches = new CopyOnWriteArrayList<QuicClusterNetwork.AttachObservation>();
-
-        lowNet.attachObserverForTests(lowAttaches::add);
-        highNet.attachObserverForTests(highAttaches::add);
+        var lowAttaches = observeAttaches(lowNet);
+        var highAttaches = observeAttaches(highNet);
         var spraying = new AtomicBoolean(true);
         var spray = CompletableFuture.runAsync(() -> sprayUntilStopped(lowNet, low, highNet, high, spraying));
 
@@ -181,14 +180,6 @@ class QuicSimultaneousDialLaneTest {
                      .filter(Predicate.not(lane -> received.stream()
                                                            .anyMatch(probe -> probe.marker().equals(prefix + lane))))
                      .toList();
-    }
-
-    /// This end's own dial is decided: it attached (superseded the inbound link, or lost to it as a duplicate), was
-    /// abandoned because the inbound link made the peer CONNECTED first, or failed.
-    private static boolean ownDialDecided(QuicClusterNetwork network, List<QuicClusterNetwork.AttachObservation> attaches) {
-        return attaches.stream().anyMatch(attach -> attach.origin().startsWith("dial attempt"))
-               || network.quicMetrics().dialAbandonedCount() > 0
-               || network.quicMetrics().snapshot().get("quic_dial_failures_total").longValue() > 0;
     }
 
     private static boolean connected(QuicClusterNetwork network, NodeId peer) {

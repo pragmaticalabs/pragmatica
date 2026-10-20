@@ -92,6 +92,24 @@ final class TransportTripwireFixtures {
         return true;
     }
 
+    /// Starts recording every attach decision `network` reports (see `QuicClusterNetwork#attachObserverForTests`).
+    static List<QuicClusterNetwork.AttachObservation> observeAttaches(QuicClusterNetwork network) {
+        var seen = new CopyOnWriteArrayList<QuicClusterNetwork.AttachObservation>();
+
+        network.attachObserverForTests(seen::add);
+
+        return seen;
+    }
+
+    /// This end's own dial of a simultaneous pair is decided: it attached (superseded the inbound link, or lost to it as
+    /// a duplicate), was abandoned because the inbound link made the peer CONNECTED first, or failed. Not visible in the
+    /// peer's phase: the inbound link has already made it CONNECTED.
+    static boolean ownDialDecided(QuicClusterNetwork network, List<QuicClusterNetwork.AttachObservation> attaches) {
+        return attaches.stream().anyMatch(attach -> attach.origin().startsWith("dial attempt"))
+               || network.quicMetrics().dialAbandonedCount() > 0
+               || network.quicMetrics().snapshot().get("quic_dial_failures_total").longValue() > 0;
+    }
+
     static boolean connected(QuicClusterNetwork network, NodeId peer) {
         return network.peerPhaseForTests(peer)
                       .filter(phase -> phase == PeerState.Phase.CONNECTED)

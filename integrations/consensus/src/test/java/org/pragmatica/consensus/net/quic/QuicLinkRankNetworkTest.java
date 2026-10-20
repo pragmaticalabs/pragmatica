@@ -35,6 +35,8 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitT
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.connected;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.holdsFor;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.infoOf;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.observeAttaches;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.ownDialDecided;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
 /// #2138 — two real [QuicClusterNetwork]s dial each other at the same instant. Whatever order the Hello exchanges
@@ -61,16 +63,40 @@ class QuicLinkRankNetworkTest {
         var high = new NodeId("lr-b-" + round);
         var lowNet = startedNetwork(new TripwireTopology(low, false, PING_INTERVAL), MessageRouter.mutable(), networks);
         var highNet = startedNetwork(new TripwireTopology(high, false, PING_INTERVAL), MessageRouter.mutable(), networks);
+        var lowAttaches = observeAttaches(lowNet);
+        var highAttaches = observeAttaches(highNet);
 
         CompletableFuture.allOf(CompletableFuture.runAsync(() -> lowNet.dialForTests(infoOf(high, highNet), false)),
                                 CompletableFuture.runAsync(() -> highNet.dialForTests(infoOf(low, lowNet), true)))
                          .orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS)
                          .join();
         awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), AWAIT, "both ends CONNECTED");
+        awaitTrue(() -> ownDialDecided(lowNet, lowAttaches) && ownDialDecided(highNet, highAttaches),
+                  AWAIT,
+                  "both ends' own dials decided");
         awaitTrue(() -> agreeOnARankedLink(lowNet, high, highNet, low), AWAIT, "both ends bound to one ranked link");
 
         assertThat(holdsFor(() -> agreeOnARankedLink(lowNet, high, highNet, low), HOLD)).as("the agreement holds once reached")
                                                                                          .isTrue();
+        assertThat(inboundAttaches(lowAttaches)).as("each end first attaches the inbound link").isNotEmpty();
+        assertThat(inboundAttaches(highAttaches)).isNotEmpty();
+        assertTheLowerDialerWins(lowNet, high, highNet, low);
+    }
+
+    /// Both dials carry generation 1 here (a pair's first link), so the tie goes to the link the lower id dialed. Only
+    /// checkable when both dials completed: a dial abandoned for the inbound link leaves that link the only one.
+    private static void assertTheLowerDialerWins(QuicClusterNetwork lowNet,
+                                                 NodeId high,
+                                                 QuicClusterNetwork highNet,
+                                                 NodeId low) {
+        if (lowNet.quicMetrics().dialAbandonedCount() + highNet.quicMetrics().dialAbandonedCount() == 0) {
+            assertThat(rankOf(lowNet, high)).isEqualTo(new LinkRank(1L, low));
+            assertThat(rankOf(highNet, low)).isEqualTo(new LinkRank(1L, low));
+        }
+    }
+
+    private static List<QuicClusterNetwork.AttachObservation> inboundAttaches(List<QuicClusterNetwork.AttachObservation> seen) {
+        return seen.stream().filter(attach -> attach.origin().equals("inbound Hello")).toList();
     }
 
     private static boolean agreeOnARankedLink(QuicClusterNetwork lowNet,
