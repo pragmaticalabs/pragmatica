@@ -11,9 +11,13 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
+import org.pragmatica.aether.slice.kvstore.AetherKey_TopicPublisherKeyCodec;
+import org.pragmatica.aether.slice.kvstore.AetherValue_TopicPublisherValueCodec;
 import org.pragmatica.aether.slice.kvstore.AetherValue_TopicSubscriptionValueCodec;
 import org.pragmatica.aether.slice.kvstore.AetherValue_TopicTierCodec;
 import org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue;
@@ -56,6 +60,27 @@ class TopicSubscriptionValueWireCompatibilityTest {
         assertThat(LegacyTopicSubscriptionValue.TAG).isEqualTo(1655);
         assertThat(AetherValue_TopicSubscriptionValueCodec.TAG).isEqualTo(2169);
         assertThat(AetherValue_TopicTierCodec.TAG).isEqualTo(2170);
+        assertThat(AetherKey_TopicPublisherKeyCodec.TAG).as("2171..2173 belong to another branch's gossip/prefetch types").isEqualTo(2174);
+        assertThat(AetherValue_TopicPublisherValueCodec.TAG).isEqualTo(2175);
+    }
+
+    /// The publisher row is new in this change, so there are no old bytes for it; it must still round-trip with every tier.
+    @Test
+    void aPublisherRow_roundTripsItsKeyAndEveryTier() {
+        var key = TopicPublisherKey.topicPublisherKey(ADDRESS, ARTIFACT, NODE);
+
+        assertThat((Object) CODEC.decode(CODEC.encode(key))).isEqualTo(key);
+        for (var tier : TopicTier.values()) {
+            var row = TopicPublisherValue.topicPublisherValue(NODE, tier);
+
+            assertThat((Object) CODEC.decode(CODEC.encode(row))).as("tier %s", tier).isEqualTo(row);
+        }
+    }
+
+    /// The tier enum gained EPHEMERAL (publisher rows) before UNKNOWN: pin the ordinals the wire carries.
+    @Test
+    void theTierOrdinals_areThePinnedOnes() {
+        assertThat(TopicTier.values()).containsExactly(TopicTier.UNDECLARED, TopicTier.ANY, TopicTier.DURABLE, TopicTier.EPHEMERAL, TopicTier.UNKNOWN);
     }
 
     @Test
