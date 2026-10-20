@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.stream.Collectors;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StreamOperatorWarningsWiringTest {
     @Test
     void theNodeBindsItsOperatorWarningSinkIntoTheStreamPartitionManager() {
-        assertThat(assemblyCode()).contains("streamPartitionManager.operatorWarnings(operatorWarningSink);");
+        assertThat(assemblyCode()).containsOnlyOnce("streamPartitionManager.operatorWarnings(operatorWarningSink);");
     }
 
     /// [weak pin] source text, like the test above: the catch-up transport reports a source that never answers as a replica
@@ -29,40 +23,10 @@ class StreamOperatorWarningsWiringTest {
     /// `ForwardCatchupTransportTest`; only this wiring is a grep.
     @Test
     void theNodeBindsItsOperatorWarningSinkIntoTheCatchupTransport() {
-        assertThat(assemblyCode()).contains("forwardCatchupTransport(streamForwardClient,STREAM_CATCHUP_BATCH_SIZE,operatorWarningSink,System::currentTimeMillis)");
+        assertThat(assemblyCode()).containsOnlyOnce("forwardCatchupTransport(streamForwardClient,STREAM_CATCHUP_BATCH_SIZE,operatorWarningSink,System::currentTimeMillis)");
     }
 
     private static String assemblyCode() {
-        var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
-
-        assertThat(file).exists();
-
-        return readFile(file).lines()
-                             .map(line -> line.replaceFirst("//.*$", ""))
-                             .collect(Collectors.joining())
-                             .replaceAll("\\s+", "");
-    }
-
-    private static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + path, e);
-        }
-    }
-
-    private static Path sourceRoot() {
-        try {
-            var testClasses = Path.of(StreamOperatorWarningsWiringTest.class.getProtectionDomain()
-                                                                             .getCodeSource()
-                                                                             .getLocation()
-                                                                             .toURI());
-
-            return testClasses.getParent()
-                              .getParent()
-                              .resolve("src/main/java");
-        } catch (URISyntaxException e) {
-            throw new AssertionError("Cannot locate module source root", e);
-        }
+        return AssemblySource.stripped();
     }
 }

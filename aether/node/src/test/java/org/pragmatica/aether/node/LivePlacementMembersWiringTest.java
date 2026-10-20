@@ -4,13 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-
 
 import org.junit.jupiter.api.Test;
 
@@ -35,22 +29,22 @@ class LivePlacementMembersWiringTest {
         assertThat(reads).as("exactly one voter-set read in AetherNode; a second one is a placement consumer bypassing "
                              + "livePlacementMembers (#1550)")
                          .isEqualTo(1);
-        assertThat(code).contains("varplacementMembers=livePlacementMembers(clusterTopologyManager.observer()::coreNodes,membershipFsm);");
+        assertThat(code).containsOnlyOnce("varplacementMembers=livePlacementMembers(clusterTopologyManager.observer()::coreNodes,membershipFsm);");
     }
 
     @Test
     void replicaSetController_placesOverTheSingleSource() {
-        assertThat(assemblyCode()).contains("ReplicaSetController.replicaSetController(streamReplicaRegistry,config.self(),placementMembers,");
+        assertThat(assemblyCode()).containsOnlyOnce("ReplicaSetController.replicaSetController(streamReplicaRegistry,config.self(),placementMembers,");
     }
 
     @Test
     void backfillOrchestrator_fallsBackToTheSingleSource() {
-        assertThat(assemblyCode()).contains("()->streamPlacementMembers(clusterEventsControllerRef,placementMembers),");
+        assertThat(assemblyCode()).containsOnlyOnce("()->streamPlacementMembers(clusterEventsControllerRef,placementMembers),");
     }
 
     @Test
     void entityOwnershipReconciler_readsTheControllerSnapshot() {
-        assertThat(assemblyCode()).contains("EntityOwnershipReconciler.entityOwnershipReconciler(kvStore,config.self(),streamReplicaSetController::reconciledMembers,");
+        assertThat(assemblyCode()).containsOnlyOnce("EntityOwnershipReconciler.entityOwnershipReconciler(kvStore,config.self(),streamReplicaSetController::reconciledMembers,");
     }
 
     /// Rebalance handoff (run 8, 02w): the receiving service must be told what the COMMITTED state says
@@ -58,7 +52,7 @@ class LivePlacementMembersWiringTest {
     /// unit test cannot see, because the test constructs its own predicate.
     @Test
     void entityForwardService_isGivenTheCommittedStakeTest() {
-        assertThat(assemblyCode()).contains("EntityForwardService.entityForwardService(config.self(),clusterNode.network()::sendOutcome,ENTITY_FORWARD_TIMEOUT,CommittedEntityStake.committedEntityStake(kvStore,config.self()));");
+        assertThat(assemblyCode()).containsOnlyOnce("EntityForwardService.entityForwardService(config.self(),clusterNode.network()::sendOutcome,ENTITY_FORWARD_TIMEOUT,CommittedEntityStake.committedEntityStake(kvStore,config.self()));");
     }
 
     /// The reconciler's event triggers: a real executor (not a no-op) for the retract-driven pass, and the
@@ -67,16 +61,16 @@ class LivePlacementMembersWiringTest {
     void entityReconcile_isTriggeredByRetractAndByACommittedRegistrationRemoval() {
         var code = assemblyCode();
 
-        assertThat(code).contains("clusterCommandApplier,ENTITY_RECONCILE_KICK,EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,ENTITY_OWNERSHIP_RECONCILE_INTERVAL,System::nanoTime,operatorWarningSink);");
-        assertThat(code).contains("MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,entityOwnershipReconciler::onRegistrationRemoved)");
+        assertThat(code).containsOnlyOnce("clusterCommandApplier,ENTITY_RECONCILE_KICK,EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,ENTITY_OWNERSHIP_RECONCILE_INTERVAL,System::nanoTime,operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,entityOwnershipReconciler::onRegistrationRemoved)");
     }
 
     @Test
     void consumerGroupOwnership_readsTheController() {
         var code = assemblyCode();
 
-        assertThat(code).contains("varstreamConsumerOwnership=streamConsumerOwnership(streamPartitionManager,streamReplicaSetController);");
-        assertThat(code).contains("publicList<NodeId>liveMembers(){returncontroller.reconciledMembers();}");
+        assertThat(code).containsOnlyOnce("varstreamConsumerOwnership=streamConsumerOwnership(streamPartitionManager,streamReplicaSetController);");
+        assertThat(code).containsOnlyOnce("publicList<NodeId>liveMembers(){returncontroller.reconciledMembers();}");
     }
 
     /// #1555 sticky ownership: the leader's writer decides by `desiredOwner` (keep the committed owner while it is in
@@ -85,7 +79,7 @@ class LivePlacementMembersWiringTest {
     void ownershipWriterHrwOwner_readsTheControllersDesiredOwner() {
         // #1730: the writer is the ISR-aware one -- the same desired-owner read, plus the live/initial-ISR inputs from the
         // controller and the committed leader its guarded transactions carry.
-        assertThat(assemblyCode()).contains("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)),streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class));");
+        assertThat(assemblyCode()).containsOnlyOnce("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)),streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class));");
     }
 
     /// #1555 sticky ownership: every node routes by the committed record, and backfill resolves the same owner.
@@ -93,8 +87,8 @@ class LivePlacementMembersWiringTest {
     void stickyOwnership_routesByCommittedRecord_andBackfillFollowsIt() {
         var code = assemblyCode();
 
-        assertThat(code).contains("streamReplicaSetController.committedOwnerSource((stream,partition)->kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,partition),StreamPartitionOwnershipValue.class).map(StreamPartitionOwnershipValue::owner));");
-        assertThat(code).contains("streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);");
+        assertThat(code).containsOnlyOnce("streamReplicaSetController.committedOwnerSource((stream,partition)->kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,partition),StreamPartitionOwnershipValue.class).map(StreamPartitionOwnershipValue::owner));");
+        assertThat(code).containsOnlyOnce("streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);");
     }
 
     /// #1555 items 7/8: the gate's block reaches the partition status read, the alarm is the operator warning, the
@@ -104,15 +98,15 @@ class LivePlacementMembersWiringTest {
         var code = assemblyCode();
 
         // #1730: a partition with no live in-sync replica has no owner to report, so the controller's block joins it.
-        assertThat(code).contains("streamPartitionManager.ownerBlockSource((stream,partition)->ownerActivation.blockOf(stream,partition).orElse(()->streamReplicaSetController.noInSyncReplica(stream,partition)));");
+        assertThat(code).containsOnlyOnce("streamPartitionManager.ownerBlockSource((stream,partition)->ownerActivation.blockOf(stream,partition).orElse(()->streamReplicaSetController.noInSyncReplica(stream,partition)));");
         // #1431: the alarm also reaches the node's operator-warning sink (an oversized peer event is its own warning); the
         // window is still the argument after it — `OwnerActivation`'s `unreachableAlarmAfter`. #1873: the gate's constructor then
         // takes the ring incarnation and the lineage commit (see EpochFetchWiringTest).
-        assertThat(code).contains("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
-        assertThat(code).contains("returnStreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);");
-        assertThat(code).as("#2080: the owner gate is told its escape bound").contains("ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());");
+        assertThat(code).containsOnlyOnce("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
+        assertThat(code).containsOnlyOnce("returnStreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);");
+        assertThat(code).as("#2080: the owner gate is told its escape bound").containsOnlyOnce("ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
-                        .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),ownerPromotionAlarm(operatorWarningSink)");
+                        .containsOnlyOnce("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),ownerPromotionAlarm(operatorWarningSink)");
     }
 
     /// #1730 phase 2 (B5-B7): the gate's relaxation reads the candidate's sealed floor and forgets a left-out peer's registry row; a
@@ -121,28 +115,28 @@ class LivePlacementMembersWiringTest {
     void epochVerification_isWiredIntoTheGateAndTheReceiveHandler() {
         var code = assemblyCode();
 
-        assertThat(code).contains("ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);");
-        assertThat(code).contains("ownerActivation.peerRows((stream,partition,peer)->streamReplicaRegistry.updateWatermark(stream,partition,peer,-1L,ReplicationState.SYNCING));");
-        assertThat(code).contains("streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);");
-        assertThat(code).contains("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
-        assertThat(code).contains("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
-        assertThat(code).contains("ownerActivation.peerRingTail((node,stream,partition)->");
-        assertThat(code).contains(":streamForwardClient.ringTailRemote(node,stream,partition).recover(_->Option.<Long>none()));");
+        assertThat(code).containsOnlyOnce("ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);");
+        assertThat(code).containsOnlyOnce("ownerActivation.peerRows((stream,partition,peer)->streamReplicaRegistry.updateWatermark(stream,partition,peer,-1L,ReplicationState.SYNCING));");
+        assertThat(code).containsOnlyOnce("streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);");
+        assertThat(code).containsOnlyOnce("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
+        assertThat(code).containsOnlyOnce("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
+        assertThat(code).containsOnlyOnce("ownerActivation.peerRingTail((node,stream,partition)->");
+        assertThat(code).containsOnlyOnce(":streamForwardClient.ringTailRemote(node,stream,partition).recover(_->Option.<Long>none()));");
     }
 
     @Test
     void clusterEventsGateAndPlacementRole_readTheController() {
         var code = assemblyCode();
 
-        assertThat(code).contains("clusterEventsControllerRef.set(streamReplicaSetController);");
-        assertThat(code).contains("streamPartitionManager.placementRoleSupplier(streamReplicaSetController::roleFor);");
+        assertThat(code).containsOnlyOnce("clusterEventsControllerRef.set(streamReplicaSetController);");
+        assertThat(code).containsOnlyOnce("streamPartitionManager.placementRoleSupplier(streamReplicaSetController::roleFor);");
     }
 
     /// #1638 N1/B2: the backfill single-flight is bounded in production by the idle bound derived from StreamingConfig;
     /// the unbounded factory is for tests only.
     @Test
     void backfillSingleFlight_isBoundedByTheConfiguredIdleBound() {
-        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()))");
+        assertThat(assemblyCode()).containsOnlyOnce("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()))");
     }
 
     /// #2077: the promotion decision's ISR evidence is the RAW committed record read from the store, never the liveness-filtered
@@ -150,7 +144,7 @@ class LivePlacementMembersWiringTest {
     /// membership view vouch for itself.
     @Test
     void backfillIsrEvidence_isTheRawCommittedRecord_notTheRoutingView() {
-        assertThat(assemblyCode()).contains(".withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));");
+        assertThat(assemblyCode()).containsOnlyOnce(".withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));");
     }
 
     /// #1339 / #1732: `AetherNodeReplicaSetTriggersTest` drives the trigger helpers through wiring it builds itself, so
@@ -160,45 +154,13 @@ class LivePlacementMembersWiringTest {
     void replicaSetInputTriggers_areWiredIntoTheAssembly() {
         var code = assemblyCode();
 
-        assertThat(code).contains("wireReplicaSetInputTriggers(allEntries,streamReplicaSetController::reconcile,clusterNode::onVoterConfiguration);");
-        assertThat(code).contains("reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef,record);");
+        assertThat(code).containsOnlyOnce("wireReplicaSetInputTriggers(allEntries,streamReplicaSetController::reconcile,clusterNode::onVoterConfiguration);");
+        assertThat(code).containsOnlyOnce("reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef,record);");
     }
 
-    /// `AetherNode.java` with line comments removed and all whitespace stripped, so a pin matches the
-    /// wiring expression regardless of formatter line breaks. The path is derived from this class's own
-    /// location (`<module>/target/test-classes` → `<module>/src/main/java`); an unreadable file fails loudly,
-    /// because a pin that scans nothing always passes.
+    /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
+    /// stripped; each pin must match exactly once across that set. See [AssemblySource].
     private static String assemblyCode() {
-        var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
-
-        assertThat(file).exists();
-
-        return readFile(file).lines()
-                             .map(line -> line.replaceFirst("//.*$", ""))
-                             .collect(Collectors.joining())
-                             .replaceAll("\\s+", "");
-    }
-
-    private static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + path, e);
-        }
-    }
-
-    private static Path sourceRoot() {
-        try {
-            var testClasses = Path.of(LivePlacementMembersWiringTest.class.getProtectionDomain()
-                                                                          .getCodeSource()
-                                                                          .getLocation()
-                                                                          .toURI());
-
-            return testClasses.getParent()
-                              .getParent()
-                              .resolve("src/main/java");
-        } catch (URISyntaxException e) {
-            throw new AssertionError("Cannot locate module source root", e);
-        }
+        return AssemblySource.stripped();
     }
 }
