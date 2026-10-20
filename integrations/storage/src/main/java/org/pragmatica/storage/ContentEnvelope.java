@@ -30,7 +30,9 @@ sealed interface ContentEnvelope {
     /// (see `DefaultSnapshotManager.parseRefLine`), so a name containing `|` never survives a restart from it. An
     /// upgrade is a restart, so after it every ref whose name contains `|` was written by this code. The exception: a
     /// `format=2` snapshot written by a build that has that encoding but not this namespace round-trips any name, so a
-    /// bare name beginning with `|` stored by such a build is restored as if it were a trusted ref. A raw
+    /// bare name beginning with `|` stored by such a build is restored as if it were a trusted ref. That window is
+    /// accepted pre-GA: only unreleased 1.0.0-rc5 development builds from 2026-10-19 on (snapshot encoding in, this
+    /// namespace not yet) can have written such a name, and it closes once this change is in rc5. A raw
     /// [StorageInstance] user can write any ref; the guarantee is about values that arrived through the content store.
     static String trustedRef(String name) {
         return TRUSTED_REF_PREFIX + name;
