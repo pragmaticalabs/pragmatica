@@ -111,7 +111,9 @@ class EmberCommunityGrowthTest {
         var assigned = workers.stream().collect(java.util.stream.Collectors.groupingBy(worker -> communityOf(worker).or(""), java.util.stream.Collectors.counting()));
 
         // The joins reach the leader together and in any order, so which worker lands where is not pinned, only the shape of the result.
-        assertThat(assigned).as("two workers fill the first community, two open and fill the second: %s", assigned).isEqualTo(Map.of(FIRST, 2L, SECOND, 2L));
+        var byWorker = workers.stream().collect(java.util.stream.Collectors.toMap(NodeId::id, worker -> communityOf(worker).or("")));
+
+        assertThat(assigned).as("two workers fill the first community, two open and fill the second: %s", byWorker).isEqualTo(Map.of(FIRST, 2L, SECOND, 2L));
         assertThat(community(FIRST).map(CommunityValue::targetSize).or(-1)).as("the committed max_size is stamped").isEqualTo(2);
         assertThat(community(SECOND).map(CommunityValue::sourceName).or("")).isEqualTo(SOURCE);
         assertThat(community("default-w-0").isPresent()).as("the source label round-trips: no worker fell back to the default source").isFalse();
