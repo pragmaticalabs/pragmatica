@@ -2356,6 +2356,22 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
+    /// #1337: the tier-mismatch refusal is paired like the other conditions: its recovery is published after it, once, and a
+    /// recovery for a subject that was never refused publishes nothing.
+    @Test
+    void onOperatorWarning_topicTierMismatch_isFollowedByItsRecoveryOnce_andAStrayRecoveryIsDropped() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var subject = "default:orders:1.0.0/org.example:sub:1.0.0:onOrder";
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, "never-refused", "stray"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH, subject, "refused"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, subject, "reached again"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, subject, "reached again"));
+
+        assertThat(codes(h)).containsExactly("topic-tier-mismatch", "topic-tier-mismatch-resolved");
+    }
+
     /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
     @Test
     void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
@@ -2404,7 +2420,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
                              OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                              OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
-                             OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED);
+                             OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                             OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                              OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
@@ -2429,7 +2446,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_CONFIG_MISSING,
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                              OperatorWarningCode.SLICE_START_AWAITING_TARGET,
-                             OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING);
+                             OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                             OperatorWarningCode.TOPIC_TIER_MISMATCH);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);

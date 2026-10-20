@@ -59,6 +59,45 @@ class ProjectionAwareCursorStoreLateCommitTest {
         assertThat(handle.reports.get()).isZero();
     }
 
+    /// The hook only observes the commit: a registry that throws (user code, a null group) is counted and never
+    /// fails the commit it hangs off.
+    @Test
+    void commit_succeedsAndCountsTheFailure_whenTheRegistryThrows() {
+        var registry = new ProjectionRegistry() {
+            @Override
+            public Result<Unit> register(Registration registration) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public void unregister(ArtifactBase slice, String topicStream) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public Option<ProjectionHandle> lookup(String topicStream, String groupId) {
+                throw new IllegalStateException("custom registry failed");
+            }
+
+            @Override
+            public Result<String> groupIdOf(ArtifactBase slice, String topicStream, Option<String> method) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public List<Registration> registrations(String topicStream) {
+                return List.of();
+            }
+        };
+        var store = ProjectionAwareCursorStore.projectionAwareCursorStore(lateDelegate(new CommitOutcome.Persisted()), registry);
+
+        var outcome = store.commit(GROUP, STREAM, 0, 7L, Epoch.ZERO, RewindEpoch.NONE, Epoch.ZERO)
+                           .await();
+
+        assertThat(outcome.isSuccess()).as("a failing report must not fail the commit").isTrue();
+        assertThat(store.reportFailureCount()).isEqualTo(1L);
+    }
+
     private static ConsumerCursorStore lateDelegate(CommitOutcome outcome) {
         return new ConsumerCursorStore() {
             @Override
