@@ -8,6 +8,11 @@ on:
     branches: [main, release-*, 'overhaul/**', 'rewrite/**']
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+# A newer run on the same PR supersedes the in-progress one.
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   fragment:
     runs-on: ubuntu-latest
