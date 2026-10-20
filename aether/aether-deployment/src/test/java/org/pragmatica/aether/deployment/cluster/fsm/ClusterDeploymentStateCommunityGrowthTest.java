@@ -227,8 +227,8 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
-    void join_growthOn_aChosenCommunityThatIsAlreadyDissolved_isDecidedAgainThenReportedUnplaced() {
-        var fixture = fixture(config(true, 2, 5));
+    void join_growthOff_theSourcesOnlyCommunityIsDissolved_isDecidedAgainThenReportedUnplaced() {
+        var fixture = fixture(config(false, 2, 5));
         var codes = fixture.captureWarnings();
 
         fixture.seedCommunityInState(FIRST, CommunityState.DISSOLVED);
@@ -240,8 +240,8 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
-    void join_growthOn_aChosenCommunityThatIsDissolving_isDecidedAgainThenReportedUnplaced() {
-        var fixture = fixture(config(true, 2, 5));
+    void join_growthOff_theSourcesOnlyCommunityIsDissolving_isDecidedAgainThenReportedUnplaced() {
+        var fixture = fixture(config(false, 2, 5));
         var codes = fixture.captureWarnings();
 
         fixture.seedCommunityInState(FIRST, CommunityState.DISSOLVING);
@@ -249,6 +249,17 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
         assertThat(fixture.hasDirective(1)).isFalse();
+    }
+
+    @Test
+    void join_growthOn_aDissolvingCommunityIsNotChosen_theWorkerIsPlacedInAnother() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.seedCommunityInState(FIRST, CommunityState.DISSOLVING);
+        fixture.joinAll(1);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+        assertThat(fixture.communityOf(1)).isNotEqualTo(FIRST);
     }
 
     @Test
