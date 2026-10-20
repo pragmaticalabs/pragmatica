@@ -86,11 +86,11 @@ Workers do NOT use stream 0 (consensus) — they don't participate in Rabia.
 
 ### 2.4 Connection Initiation — NodeId Ordering
 
-To prevent simultaneous-open race conditions:
-- **Lower NodeId always initiates** (QUIC client role)
-- **Higher NodeId always accepts** (QUIC server role)
+The default dial direction:
+- **Lower NodeId normally initiates** (QUIC client role)
+- **Higher NodeId normally accepts** (QUIC server role)
 
-This eliminates duplicate connection detection entirely. Each pair has exactly one connection with a deterministic initiator.
+This is not exclusive: after a link loss both ends can dial at once, so a pair can briefly hold two connections. They are arbitrated by a link rank: every dial carries a generation (greater than any generation that dialing node has itself dialed or attached for the peer), the connection with the greater generation wins and equal generations go to the one dialed by the lower NodeId. Both ends decide from the same two attributes of each connection and no clock, so they keep the same one, except for a connection closed by liveness during the decision (the pair re-dials with a higher generation). A pair in which one end sends no generation keeps the previous age-based rule and its window of disagreement.
 
 ---
 

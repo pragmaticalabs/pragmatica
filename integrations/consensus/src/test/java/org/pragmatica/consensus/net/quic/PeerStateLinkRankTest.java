@@ -89,6 +89,25 @@ class PeerStateLinkRankTest {
         assertThat(new LinkRank(5, HIGH).survivesOver(new LinkRank(5, LOW))).isFalse();
     }
 
+    /// Two links of one dialer with one generation cannot occur (a dialer never reuses a generation); if a peer sends
+    /// them anyway, neither outranks the other and the incumbent is kept.
+    @Test
+    void survivesOver_sameDialerSameGeneration_neitherSurvivesOverTheOther() {
+        assertThat(new LinkRank(5, LOW).survivesOver(new LinkRank(5, LOW))).isFalse();
+        assertThat(new LinkRank(5, HIGH).survivesOver(new LinkRank(5, HIGH))).isFalse();
+    }
+
+    @Test
+    void attach_sameDialerSameGeneration_keepsTheIncumbent() {
+        var s = state();
+        var incumbent = link(LOW, 5);
+
+        s.attach(incumbent, T0 + 2);
+
+        assertThat(s.attach(link(LOW, 5), T0 + 2 + LONG_AGO).result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(bound(s)).isSameAs(incumbent);
+    }
+
     @Test
     void survivesOver_greaterGeneration_beatsTheLowerDialer() {
         assertThat(new LinkRank(6, HIGH).survivesOver(new LinkRank(5, LOW))).isTrue();
