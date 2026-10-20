@@ -356,6 +356,20 @@ class TopicPublisherTest {
                                                       org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
         }
 
+        /// The open state is per SUBSCRIBER (artifact and method), so two handlers of one slice are two refusals and two events.
+        @Test
+        void publish_twoRefusedHandlersOfOneSlice_areTwoEvents() {
+            var publisher = publisherUnderTest();
+
+            registerSubscription("orders", artifact, MethodName.methodName("onOther").unwrap(), nodeA);
+            outcome.set(Option.some(org.pragmatica.aether.slice.TopicTierMismatch.FACTORY.apply("onMessage")));
+            publisher.publish("order-1").await();
+
+            assertThat(codesAfter(2)).containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                                                      org.pragmatica.utility.warning.OperatorWarningCode.TOPIC_TIER_MISMATCH);
+            assertThat(events.stream().map(org.pragmatica.utility.warning.OperatorWarning::subject).distinct().count()).isEqualTo(2);
+        }
+
         /// A subscriber that was never refused publishes no recovery.
         @Test
         void publish_withoutAMismatch_raisesNothing() {
