@@ -738,6 +738,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Runs as a dependent step of the start, so a hook that throws must not fail the start it reports on: each hook is
     /// isolated and a throw is logged (the hooks after it still run, as the detached handler never guaranteed).
+    ///
+    /// FER (degrade forward): the start has already succeeded, so a hook's throw is absorbed with a WARN rather than reported
+    /// as a failed start. Guarantee earned: the start's outcome is the transport's, not a hook's. Mechanism: a single run per
+    /// hook; the WARN is the only record of a lost hook.
     @Contract
     private void fireReadyHooks() {
         transportReady.set(true);

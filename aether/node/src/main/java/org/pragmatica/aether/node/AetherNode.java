@@ -2839,6 +2839,8 @@ public interface AetherNode extends ManageableNode {
             }
 
             // A dependent step must not fail the start it follows: a throw from the effects is logged, not propagated.
+            // FER (degrade forward): formation has succeeded, so a failed metrics registration or election kick is absorbed with a
+            // WARN. Guarantee earned: the start reports formation, not its by-products. Mechanism: a single run, the WARN is the record.
             @Contract
             private void runFormationEffects() {
                 Result.lift(this::onClusterFormed).onFailure(cause -> log.warn("Cluster formation effects failed: {}",
@@ -8737,6 +8739,10 @@ public interface AetherNode extends ManageableNode {
     ///
     /// A dependent step of the start: a trigger that throws must not fail the start it follows (that would run `failNode`),
     /// so a throw is logged instead.
+    ///
+    /// FER (degrade forward): SWIM is up, so a failed announcement is absorbed with a WARN rather than halting a node whose
+    /// failure detector runs. Guarantee earned: a lost announcement does not stop the node. Mechanism: a single attempt, no retry
+    /// here; the WARN is the only record of it.
     @Contract
     private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
         if (!swimHealthDetector.isClosed()) {
