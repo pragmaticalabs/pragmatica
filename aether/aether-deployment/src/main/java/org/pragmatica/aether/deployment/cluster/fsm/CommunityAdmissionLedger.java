@@ -44,6 +44,13 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending, S
         pending.put(node, Pending.pending(communityId, nowMs));
     }
 
+    /// Ends the in-flight assignment of `node`: its commit was refused or lost, so it holds no slot, and a retry of the same node must not
+    /// count its own earlier attempt against the community it is retrying into.
+    @Contract
+    public void forget(NodeId node) {
+        pending.remove(node);
+    }
+
     /// The in-flight assignments per community whose directive is not yet visible (`committed` answers for a node) and younger than
     /// the TTL. Entries that are visible or expired are dropped on the way.
     public Map<String, Integer> pendingByCommunity(long nowMs, Predicate<NodeId> committed) {
