@@ -200,16 +200,20 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
-    void join_growthOn_aRefusalBecauseTheWorkerWasPlacedByAnotherAttempt_isNotRetried() {
+    void join_growthOn_aRefusalBecauseAnotherAttemptPlacedTheWorker_closesTheUnplacedReport() {
         var fixture = fixture(config(true, 2, 5));
         var codes = fixture.captureWarnings();
 
-        fixture.racedBy(() -> fixture.seedMembers(FIRST, 1));
+        fixture.seedCommunity(FIRST);
+        fixture.alwaysRace(() -> fixture.toggleCommunityState(FIRST));
         fixture.joinAll(1);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-unplaced"));
+        fixture.alwaysRace(() -> {});
+        fixture.racedBy(() -> fixture.seedMembers(FIRST, 1));
+        fixture.rejoin(1);
 
         assertThat(fixture.hasDirective(1)).isTrue();
-        assertThat(fixture.cluster().applies.get()).as("a duplicate's refusal after the first attempt committed decides nothing afresh").isEqualTo(1);
-        assertThat(codes).doesNotContain("community-assignment-unplaced");
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> codes.contains("community-assignment-placed"));
     }
 
     @Test
