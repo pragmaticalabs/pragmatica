@@ -26,6 +26,7 @@ import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 
@@ -80,6 +81,8 @@ class QuicLinkRankNetworkTest {
                                                                                          .isTrue();
         assertThat(inboundAttaches(lowAttaches)).as("each end first attaches the inbound link").isNotEmpty();
         assertThat(inboundAttaches(highAttaches)).isNotEmpty();
+        assertThat(decided(lowAttaches)).as("every reported attach carries its decision").allMatch(Option::isPresent);
+        assertThat(decided(highAttaches)).allMatch(Option::isPresent);
         assertTheLowerDialerWins(lowNet, high, highNet, low);
     }
 
@@ -93,6 +96,13 @@ class QuicLinkRankNetworkTest {
             assertThat(rankOf(lowNet, high)).isEqualTo(new LinkRank(1L, low));
             assertThat(rankOf(highNet, low)).isEqualTo(new LinkRank(1L, low));
         }
+    }
+
+    private static List<Option<PeerState.AttachResult>> decided(List<QuicClusterNetwork.AttachObservation> seen) {
+        return seen.stream()
+                   .filter(attach -> !attach.origin().equals("dial skipped"))
+                   .map(QuicClusterNetwork.AttachObservation::result)
+                   .toList();
     }
 
     private static List<QuicClusterNetwork.AttachObservation> inboundAttaches(List<QuicClusterNetwork.AttachObservation> seen) {
