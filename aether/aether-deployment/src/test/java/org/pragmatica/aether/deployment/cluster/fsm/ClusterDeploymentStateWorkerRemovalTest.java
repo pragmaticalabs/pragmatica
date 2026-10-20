@@ -614,6 +614,31 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .as("the orphan sweep acted on the node the pass's snapshot names").isTrue();
         }
 
+        /// The orphan sweep is part of the reconcile pass and of the KV rebuild (the deferred recheck reaches it through its closing
+        /// reconcile): a live worker's ACTIVE placement with no committed target is UNLOADed by each.
+        @Test
+        void orphanSweep_runsInTheReconcilePass_andInTheKvRebuild() {
+            joinWorker(WORKER_1);
+            var key = NodeArtifactKey.nodeArtifactKey(WORKER_1, ARTIFACT);
+
+            kvStore.put(key, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            cluster.commands.clear();
+            activeState().reconcile();
+            assertThat(unloads(key)).as("reconcile() runs the orphan sweep").isTrue();
+
+            cluster.commands.clear();
+            activeState().rebuildStateFromKVStore();
+            assertThat(unloads(key)).as("the KV rebuild runs the orphan sweep").isTrue();
+        }
+
+        private boolean unloads(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                        && put.key().equals(key)
+                                                        && put.value() instanceof NodeArtifactValue value
+                                                        && value.state() == SliceState.UNLOAD);
+        }
+
         /// Control for the instrument: with the supplier steady at `{SELF}` the same sweeps DO remove the ghost's rows.
         @Test
         void control_aSteadySetWithoutTheGhost_sweepsItsRows() {
