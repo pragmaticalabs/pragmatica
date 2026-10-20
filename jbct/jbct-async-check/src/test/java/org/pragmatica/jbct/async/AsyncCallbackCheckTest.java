@@ -33,6 +33,20 @@ class AsyncCallbackCheckTest {
     @Nested
     class Receiver {
         @Test
+        void clean_chainOrderCombinatorsAndMaps() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        p.withSuccess(_ -> done = true);
+                        p.withFailure(_ -> done = true);
+                        p.withResult(_ -> done = true);
+                        p.map(v -> { done = true; return v; });
+                        p.flatMap(v -> { done = true; return Promise.success(v); });
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
         void flags_promiseParameter() {
             assertThat(lines(body("""
                     boolean done;
@@ -118,6 +132,121 @@ class AsyncCallbackCheckTest {
 
     @Nested
     class Effects {
+        @Test
+        void clean_executorAndSchedulingByNameAreAllowed() {
+            assertThat(lines(body("""
+                    Executor executor;
+                    Scheduler scheduler = new Scheduler();
+                    static class Scheduler { void scheduleNext(String key) { } }
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> executor.execute(() -> {}));
+                        p.onFailure(_ -> scheduler.scheduleNext("k"));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void clean_effectsInsideAScheduledTaskAndInsideLoggingArguments() {
+            assertThat(lines(body("""
+                    ScheduledExecutorService scheduler;
+                    boolean done;
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> scheduler.schedule(() -> done = true, 1, TimeUnit.SECONDS));
+                        p.onFailure(c -> System.out.println(done = false));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void flags_resolvingMethodsOfOtherTypes() {
+            assertThat(lines(body("""
+                    Latch latch = new Latch();
+                    static class Latch { void succeed(String v) { } }
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> latch.succeed(v));
+                    }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void flags_discardedValueCalls() {
+            var gate = "static class Gate { String compute() { return \"x\"; } Unit act(String v) { return Unit.unit(); } }\n"
+                       + "Gate gate = new Gate();\n";
+
+            assertThat(lines(body(gate + "void run(Promise<String> p) { p.onSuccess(_ -> gate.compute()); }\n"))).hasSize(1);
+            assertThat(lines(body(gate + "void run(Promise<String> p) { p.onSuccess(_ -> { gate.compute(); }); }\n"))).hasSize(1);
+            assertThat(lines(body(gate + "void run(Promise<String> p, Option<String> o) { p.onSuccess(_ -> o.onPresent(v -> gate.act(v))); }\n")))
+                .hasSize(1);
+        }
+
+        @Test
+        void clean_valueUsedAndCombinatorWithCleanBody() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p, Option<String> o) {
+                        p.onSuccess(_ -> o.onPresent(v -> System.out.println(v)));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void flags_valueReturningMutationOfSharedState() {
+            assertThat(lines(body("""
+                    Map<String, String> map = new HashMap<>();
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> { var previous = map.put(v, v); System.out.println(previous); });
+                    }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void flags_voidCallOnTheCallbacksOwnValue() {
+            var found = compile(Map.of("org.example.Gate", HEADER + "public class Gate { public void release(String k) { } }\n",
+                                       "org.example.Foo", HEADER + """
+                    class Foo {
+                        void run(Promise<Gate> p) {
+                            p.onSuccess(g -> g.release("k"));
+                        }
+                    }
+                    """), "warning");
+
+            assertThat(found.lines()).hasSize(1);
+        }
+
+        @Test
+        void clean_fieldWriteOnALocalObject() {
+            assertThat(lines(body("""
+                    static class Holder { int value; }
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> { var h = new Holder(); h.value = 3; System.out.println(h.value); });
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void flags_sharedRootsThroughThisStaticAndCalls() {
+            for (var call : List.of("this.map.put(v, v)", "Foo.MAP.put(v, v)", "map().put(v, v)", "((Map<String, String>) map).put(v, v)")) {
+                assertThat(lines(body("""
+                        Map<String, String> map = new HashMap<>();
+                        static final Map<String, String> MAP = new HashMap<>();
+                        Map<String, String> map() { return map; }
+                        void run(Promise<String> p) {
+                            p.onSuccess(v -> %s);
+                        }
+                        """.formatted(call)))).as(call).hasSize(1);
+            }
+        }
+
+        @Test
+        void flags_referenceHandedToOptionalOrCombinator() {
+            assertThat(lines(body("""
+                    Gate gate = new Gate();
+                    static class Gate { void release(String key) { } }
+                    void run(Promise<String> p, Optional<String> slot) {
+                        p.onSuccess(_ -> slot.ifPresent(gate::release));
+                    }
+                    """))).hasSize(1);
+        }
+
         @Test
         void flags_fieldAssignments() {
             for (var write : List.of("done = true", "total += 1", "total++", "++total", "this.last = \"x\"", "Foo.counter++",
@@ -264,6 +393,44 @@ class AsyncCallbackCheckTest {
     @Nested
     class Delegation {
         @Test
+        void flags_selfRecursionWithoutOverflow() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> loop());
+                    }
+                    void loop() { loop(); }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void flags_chainLongerThanTheFollowLimitAsUnknownEffect() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> m1());
+                    }
+                    void m1() { m2(); }
+                    void m2() { m3(); }
+                    void m3() { m4(); }
+                    void m4() { System.out.println("x"); }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void message_namesTheDelegate() {
+            var found = compile(Map.of("org.example.Foo", HEADER + """
+                    class Foo {
+                        boolean done;
+                        void run(Promise<String> p) {
+                            p.onSuccess(_ -> mark());
+                        }
+                        void mark() { done = true; }
+                    }
+                    """), "warning");
+
+            assertThat(found.messages().getFirst()).contains("(via mark)");
+        }
+
+        @Test
         void flags_methodReferenceToAWriter() {
             assertThat(lines(body("""
                     boolean done;
@@ -394,6 +561,39 @@ class AsyncCallbackCheckTest {
 
     @Nested
     class Suppression {
+        @Test
+        void flags_detachedCommentWithEmptyReason() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        // detached:
+                        p.onSuccess(_ -> done = true);
+                    }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void clean_suppressWarningsAll() {
+            assertThat(lines(body("""
+                    boolean done;
+                    @SuppressWarnings("all")
+                    void run(Promise<String> p) {
+                        p.onSuccess(_ -> done = true);
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void clean_suppressWarningsOnALocalVariable() {
+            assertThat(lines(body("""
+                    boolean done;
+                    void run(Promise<String> p) {
+                        @SuppressWarnings("JBCT-ASYNC-01")
+                        var chained = p.onSuccess(_ -> done = true);
+                    }
+                    """))).isEmpty();
+        }
+
         @Test
         void clean_detachedCommentWithReasonAboveTheStatement() {
             assertThat(lines(body("""

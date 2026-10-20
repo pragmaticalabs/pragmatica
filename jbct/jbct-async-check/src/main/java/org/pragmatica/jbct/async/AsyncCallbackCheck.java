@@ -130,7 +130,7 @@ public final class AsyncCallbackCheck implements TaskListener {
     private final class CallbackScanner extends TreePathScanner<Void, Void> {
         @Override
         public Void visitMethodInvocation(MethodInvocationTree node, Void unused) {
-            if (isPromiseCallback(getCurrentPath()) && node.getArguments().size() == 1) {
+            if (isPromiseCallback(getCurrentPath())) {
                 check(getCurrentPath(), node);
             }
 
