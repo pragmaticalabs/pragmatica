@@ -648,7 +648,9 @@ class SliceInvokerImpl implements SliceInvoker {
                      state.suppressed().getAndSet(0));
         } else {
             state.suppressed().incrementAndGet();
-            log.debug("SLICE-INVOKE-FAIL slice={} method={}: tier-mismatch refusal, WARN suppressed within the period", slice.asString(), method.name());
+            log.debug("SLICE-INVOKE-FAIL slice={} method={}: tier-mismatch refusal, WARN suppressed within the period",
+                      slice.asString(),
+                      method.name());
         }
 
         return Unit.unit();
