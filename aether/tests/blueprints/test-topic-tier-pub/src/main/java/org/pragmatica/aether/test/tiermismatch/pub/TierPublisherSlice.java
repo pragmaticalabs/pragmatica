@@ -42,8 +42,7 @@ public interface TierPublisherSlice {
         return new tierPublisherSlice(contextPublisher, barePublisher);
     }
 
-    record tierPublisherSlice(Publisher<TierOrder> contextPublisher,
-                              Publisher<TierOrder> barePublisher) implements TierPublisherSlice {
+    record tierPublisherSlice(Publisher<TierOrder> contextPublisher, Publisher<TierOrder> barePublisher) implements TierPublisherSlice {
         @Override
         public Promise<PublishResponse> publishOrder(PublishOrder request) {
             return Promise.all(contextPublisher.publish(request.event()),
