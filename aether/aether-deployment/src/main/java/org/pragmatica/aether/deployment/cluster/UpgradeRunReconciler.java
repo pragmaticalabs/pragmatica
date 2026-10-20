@@ -65,7 +65,7 @@ public interface UpgradeRunReconciler {
 
                                                         return cause.<Unit> promise();
                                                     },
-                                                    promise -> promise.onResultRun(() -> running.set(false)));
+                                                    promise -> promise.withResult(_ -> running.set(false)));
             }
 
             private Promise<Unit> tick() {

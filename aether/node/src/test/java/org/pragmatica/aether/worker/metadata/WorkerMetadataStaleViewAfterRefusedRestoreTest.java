@@ -89,7 +89,7 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
     }
 
     @Test
-    void refusedObserver_pausedThenDecision_servesTheRestoredProjection() throws Exception {
+    void refusedObserver_pausedThenResumed_servesTheRestoredProjection() throws Exception {
         var router = MessageRouter.mutable();
         var core = new KVStore<AetherKey, AetherValue>(router, codec, codec);
         var worker = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), codec, codec);
@@ -140,13 +140,16 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
             assertThat(engine.isObserving()).as("refused: not serving").isFalse();
             assertThat(servingGate(engine)).as("the production gate keeps the worker out while refused").isFalse();
 
-            // phase C: quorum loss, a Decision is applied while paused
+            // phase C: quorum loss, Decisions are applied while paused (applying does not resume the engine), then the quorum
+            // ACTIVE resumes the paused observer to Observing, the legitimate way back
             engine.clusterState(ClusterStateNotification.passive());
             assertThat(await(engine::isPaused)).isTrue();
             for (long p = 9; p <= 13; p++) {
                 engine.processDecision(new Decision<KVCommand<AetherKey>>(NODE_2, Phase.phase(p), StateValue.V0, Batch.<KVCommand<AetherKey>>emptyBatch()));
             }
-            assertThat(await(engine::isObserving)).as("PRECONDITION: the Decision moved the observer to Observing").isTrue();
+            assertThat(engine.isPaused()).as("PRECONDITION: applying Decisions does not resume the paused engine").isTrue();
+            engine.clusterState(ClusterStateNotification.active());
+            assertThat(await(engine::isObserving)).as("PRECONDITION: the quorum ACTIVE resumed the observer to Observing").isTrue();
             assertThat(servingGate(engine)).as("PRECONDITION: the production gate is open for a non-voter observer").isTrue();
 
             // phase D: the worker polls the serving observer. On a correct engine the second restore has been announced by

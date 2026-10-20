@@ -41,10 +41,17 @@ class V1796ProbeTest {
         engine.processDecision(removalDecision());
         settle();
 
-        System.out.println("V1796 PROBE partitionedFirst: observing=" + engine.isObserving() + " routed=" + routed);
-        assertThat(engine.isObserving()).as("control: the late removal WAS applied (Paused -> Observing)").isTrue();
+        assertThat(engine.voterConfiguration().map(configuration -> configuration.contains(A)).or(true))
+            .as("control: the late removal WAS applied (the installed roster no longer lists this node)").isFalse();
+        assertThat(engine.isPaused()).as("applying the removal does not resume a paused engine: only a quorum ACTIVE does").isTrue();
         assertThat(routed).as("no demotion may follow a genuine quorum loss").noneMatch(ClusterStateNotification::demoted);
         assertThat(routed.getLast()).matches(V1796ProbeTest::isQuorumLoss);
+
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+
+        assertThat(engine.isObserving()).as("the quorum ACTIVE resumes the removed node as an observer").isTrue();
+        assertThat(routed).as("still no demotion: it never left the electorate of a live quorum").noneMatch(ClusterStateNotification::demoted);
     }
 
     /// Demoted, then partitioned, then the partition heals: what does the app layer end on?

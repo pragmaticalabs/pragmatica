@@ -1,0 +1,15 @@
+# Subscriber-side resources for test-topic-tier-sub (#1337). See test-topic-tier-pub for the publisher half.
+#
+# `tier-orders` is declared DURABLE here, which the subscriber's `(event, MessageContext)` handler requires and the
+# slice processor checks against THIS section. The publisher module declares the same topic ephemeral.
+
+[tier-orders]
+topic_name = "tier-orders"
+durability = "durable"
+partitions = 1
+replication_factor = 3
+confirmation_factor = 3
+retention = "7d"
+
+[tier-bare]
+topic_name = "tier-bare"

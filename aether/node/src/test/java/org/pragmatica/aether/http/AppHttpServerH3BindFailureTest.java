@@ -55,7 +55,7 @@ class AppHttpServerH3BindFailureTest {
             try {
                 var outcome = server.start().await(timeSpan(30).seconds());
 
-                assertThat(outcome.isSuccess()).as("BOTH keeps starting when only the H3 listener cannot bind").isTrue();
+                TlsProbe.requireStarted(outcome, "BOTH app listener (H3 bind blocked)");
                 assertThat(TlsProbe.httpsStatus(port)).as("and the H1 listener serves a real request").isPositive();
             } finally {
                 server.stop().await(timeSpan(30).seconds());

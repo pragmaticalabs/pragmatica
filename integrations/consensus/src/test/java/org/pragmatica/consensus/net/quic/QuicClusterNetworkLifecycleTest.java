@@ -140,6 +140,73 @@ class QuicClusterNetworkLifecycleTest {
         assertThat(network.periodicTasksScheduledForTests()).isTrue();
     }
 
+    /// A caller that awaited the start finds the transport-ready hooks already fired. The hook here is slow, so a hook fired by a
+    /// handler that runs beside the start's dependents (not as one of them) is still running when the await returns.
+    @Test
+    void startedNetwork_awaitedStart_hasAlreadyFiredASlowReadyHook() {
+        var network = network();
+        var hookDone = new java.util.concurrent.atomic.AtomicBoolean();
+
+        network.whenReady(() -> {
+            java.util.concurrent.locks.LockSupport.parkNanos(150_000_000L);
+            hookDone.set(true);
+        });
+        network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));
+
+        assertThat(hookDone.get()).as("the ready hook finished before the awaited start resolved").isTrue();
+    }
+
+    /// The start promise resolves on a Netty I/O thread, and the only production hook binds SWIM's UDP port and awaits it, so a hook
+    /// must never run there. Fired as a plain dependent step it ran on the event loop (`FastThreadLocalThread`).
+    @Test
+    void readyHook_doesNotRunOnANettyIoThread() throws Exception {
+        var network = network();
+        var hookThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+
+        network.whenReady(() -> hookThread.set(Thread.currentThread()));
+        network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));
+
+        var thread = hookThread.get();
+
+        assertThat(thread).as("the hook ran before the awaited start resolved").isNotNull();
+        assertThat(thread instanceof io.netty.util.concurrent.FastThreadLocalThread || thread.getName().contains("EventLoop"))
+            .as("hook ran on thread '%s' (virtual=%s, class=%s)", thread.getName(), thread.isVirtual(), thread.getClass().getName())
+            .isFalse();
+    }
+
+    /// A failed start has released `isRunning` by the time its promise resolves, so a retry right after the failure binds. Reset by a
+    /// handler beside the dependents, the retry was turned away as already running and bound nothing. Each trial fails a start for a
+    /// held UDP port, then retries on a free one.
+    @Test
+    void failedStart_retryRightAfterTheFailure_isNotTurnedAwayAsAlreadyRunning() throws Exception {
+        var turnedAway = 0;
+        var trials = 20;
+        var serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("lifecycle-server")).fold(_ -> fail("server ssl"), ssl -> ssl);
+        var clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("lifecycle-client")).fold(_ -> fail("client ssl"), ssl -> ssl);
+
+        for (var trial = 0; trial < trials; trial++) {
+            var network = network(serverSsl, clientSsl);
+            var held = freeUdpPort();
+
+            try (var holder = new java.net.DatagramSocket(held)) {
+                assertThat(network.startOnPort(held).await(AWAIT).isFailure()).as("a start on a held port fails").isTrue();
+            }
+
+            network.startOnPort(0).await(AWAIT);
+            if (network.boundPort().isEmpty()) {
+                turnedAway++;
+            }
+        }
+
+        assertThat(turnedAway).as("retries (of %d) turned away as already running right after a failed start", trials).isZero();
+    }
+
+    private static int freeUdpPort() throws Exception {
+        try (var socket = new java.net.DatagramSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
     private QuicClusterNetwork started() {
         var network = network();
 
@@ -149,12 +216,17 @@ class QuicClusterNetworkLifecycleTest {
     }
 
     private QuicClusterNetwork network() {
-        var codec = LaneProbe.codec();
-        var self = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 19995).fold(_ -> fail("bad address"), a -> a));
         var serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("lifecycle-server"))
                                        .fold(_ -> fail("server ssl"), ssl -> ssl);
         var clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("lifecycle-client"))
                                        .fold(_ -> fail("client ssl"), ssl -> ssl);
+
+        return network(serverSsl, clientSsl);
+    }
+
+    private QuicClusterNetwork network(io.netty.handler.codec.quic.QuicSslContext serverSsl, io.netty.handler.codec.quic.QuicSslContext clientSsl) {
+        var codec = LaneProbe.codec();
+        var self = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 19995).fold(_ -> fail("bad address"), a -> a));
         var network = new QuicClusterNetwork(stubTopology(self), codec, codec, MessageRouter.mutable(), serverSsl, clientSsl);
 
         networks.add(network);

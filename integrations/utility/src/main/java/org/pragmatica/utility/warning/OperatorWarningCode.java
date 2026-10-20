@@ -189,6 +189,29 @@ public enum OperatorWarningCode {
                              "replacement",
                              WarningLevel.INFO,
                              NODE_REPLACEMENT_FAILED_KEPT_BOTH),
+    /// A core replacement has been refused by capacity admission (source busy, fleet limit reached, inventory unavailable) and is deferred
+    /// to the next reconcile pass (#1404). Raised on the first refusal of a run, not on every tick; the subject is `core-provisioning`. Closed
+    /// by [#PROVISION_ADMISSION_RESUMED]. A permanent refusal never closes, which is what makes it visible.
+    PROVISION_ADMISSION_DEFERRED("provision-admission-deferred", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#PROVISION_ADMISSION_DEFERRED], same subject: a replacement passed admission and was dispatched.
+    PROVISION_ADMISSION_RESUMED("provision-admission-resumed",
+                                "deployment",
+                                WarningLevel.INFO,
+                                PROVISION_ADMISSION_DEFERRED),
+    /// An allocation dispatched under an earlier leader term, whose instance no provider listing or lookup showed in several
+    /// consecutive passes, was released (#1404). The subject is the node. A one-off resolution that tells the operator a leader decided an
+    /// uncertain create did not happen: nothing stays open, so it is INFO (a condition that stays open would be a WARNING with a recovery); the
+    /// release itself is logged at WARN where it happens.
+    CAPACITY_DISPATCH_RELEASED("capacity-dispatch-released", "deployment", WarningLevel.INFO),
+    /// A core deficit has been held open for longer than the join grace by committed allocations that never joined (#1404): an uncertain
+    /// create (DISPATCHED) counts as capacity for ever, so no replacement is created until the allocation resolves. The subject is `core`.
+    /// Closed by [#CORE_CAPACITY_DURABLE_RESOLVED].
+    CORE_CAPACITY_AWAITING_DURABLE("core-capacity-awaiting-durable", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#CORE_CAPACITY_AWAITING_DURABLE], same subject: durable allocations no longer cover the deficit.
+    CORE_CAPACITY_DURABLE_RESOLVED("core-capacity-durable-resolved",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   CORE_CAPACITY_AWAITING_DURABLE),
     /// A rolling upgrade run (#1543 part F) was started: every node is being replaced, serially, by a node running the target
     /// version, so the cluster runs mixed versions until it ends. The subject is always `upgrade` (there is one run). Closed by
     /// [#UPGRADE_COMPLETED] or [#UPGRADE_ABORTED].
@@ -357,7 +380,36 @@ public enum OperatorWarningCode {
     /// decisions, or it left the lagging state another way (promoted to a voter, removed from the cluster, shutting down; the message
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
-    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING);
+    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// Background promotion of a storage instance has copied nothing for several consecutive cycles while copies kept
+    /// failing: a copy attempt fails when its faster tier rejects the write or its source tier cannot be read. It detects
+    /// FAILING COPIES only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing.
+    /// The subject is the storage instance; the message names it and what to do (check the tiers' health and free space,
+    /// `memory_max_bytes` / `disk_max_bytes`, or set `promotion = false` for the instance). Closed by
+    /// [#STORAGE_PROMOTION_RESUMED].
+    STORAGE_PROMOTION_STALLED("storage-promotion-stalled", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_PROMOTION_STALLED], same subject: a promotion cycle copied a block successfully. A cycle
+    /// with nothing to copy does not close it, because a tier that is still broken looks the same as an idle one. INFO,
+    /// published only after a published stalled event for the instance (#752 mechanism).
+    STORAGE_PROMOTION_RESUMED("storage-promotion-resumed", "storage", WarningLevel.INFO, STORAGE_PROMOTION_STALLED),
+    /// A worker still has no committed activation directive after the community-absence window (#1840): its SWIM ANNOUNCE is held until the
+    /// directive commits, so the cluster's SWIM scope does not include it. Typically the leader has not admitted it (no capacity reservation
+    /// or admission authorisation), or the directive was refused. The subject is the node. Closed by [#WORKER_ASSIGNED].
+    WORKER_ASSIGNMENT_OVERDUE("worker-assignment-overdue", "membership", WarningLevel.WARNING),
+    /// The recovery of [#WORKER_ASSIGNMENT_OVERDUE], same subject (#1840): the worker's activation directive committed and its held SWIM ANNOUNCE was
+    /// released. Raised only when the warning was.
+    WORKER_ASSIGNED("worker-assigned", "membership", WarningLevel.INFO, WORKER_ASSIGNMENT_OVERDUE),
+    /// An ephemeral-tier publisher fanned an event out to a subscriber whose handler takes the delivery context (#1337): that
+    /// handler belongs to a durable topic, and an ephemeral delivery carries no envelope to build the context from. The delivery
+    /// was refused and the event NOT delivered to that subscriber. The message names the topic, the publishing slice and the
+    /// subscribing method. Subject is `<topic address>/<subscriber slice without its version>:<method>`, so redeploying the subscriber
+    /// at a new version stays the same subject.
+    TOPIC_TIER_MISMATCH("topic-tier-mismatch", "topic", WarningLevel.WARNING),
+    /// The end of a `topic-tier-mismatch` (#1337): a later delivery from the same publisher reached the same subscriber slice (any
+    /// version), the subscriber is no longer registered, or the publisher was released. INFO,
+    /// published only after a published mismatch event for the same subject (#752 mechanism); a subscriber that was never refused
+    /// publishes nothing.
+    TOPIC_TIER_MISMATCH_RESOLVED("topic-tier-mismatch-resolved", "topic", WarningLevel.INFO, TOPIC_TIER_MISMATCH);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

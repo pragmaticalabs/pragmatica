@@ -95,6 +95,14 @@
             <artifactId>test-logging</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- JBCT-ASYNC-01 (type-attributed Promise callback check): javac discovers it from the classpath in every module of this
+             tree that has no annotationProcessorPaths; modules that do list jbct-async-check there. Warning level; switch a
+             module off with -Ajbct.async.severity=off. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>

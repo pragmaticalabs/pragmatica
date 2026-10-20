@@ -23,7 +23,7 @@ annotation-processor path out of the generated `pom.xml` files.
 
 | Command | Maven artifacts the generated project needs |
 |---|---|
-| `jbct init` (slice) | `core`, `slice-processor`, `http-routing-adapter`, `resource-api`, `slice-annotations`, `slice-api` (all provided), plugin `jbct-maven-plugin`, processor path `slice-processor` |
+| `jbct init` (slice) | `core`, `slice-processor`, `http-routing-adapter`, `resource-api`, `slice-annotations`, `slice-api` (all provided), `jbct-async-check` (provided), plugin `jbct-maven-plugin`, processor paths `slice-processor` and `jbct-async-check` |
 | `jbct init --no-slice` | `core`, plugin `jbct-maven-plugin` |
 | `jbct init --with-persistence`, `jbct add-persistence` | the slice set plus `pg-codegen` as a processor path |
 | `jbct add-slice`, `jbct add-event` | nothing new (source files and resources only) |
@@ -44,7 +44,7 @@ sink on `127.0.0.1`, so the plugin built and sent its own bundle; the bundle was
 | `checksums=required` | 408 | 15.8 MB / 14.5 MB | 2 (816 files; bytes allow 4) |
 
 612 = 102 files built (33 poms, 23 jars, 23 sources jars, 23 javadoc jars) + 102 `.asc` + 408 checksums (the plugin writes md5, sha1,
-sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. The five modules added for rc5 by #2227 (four jars, one parent pom) add 102 entries, and the three JSON codec jars of #2226 (`serialization-json`, `serialization-json-codegen`, `serialization-codec-processor`) 72 more, so a release is about 786 (derived at 24 entries per jar, not measured). Javadoc is built with
+sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. The six modules added for rc5 (five jars, one parent pom) add 126 entries, and the three JSON codec jars of #2226 (`serialization-json`, `serialization-json-codegen`, `serialization-codec-processor`) 72 more, so a release is about 810 (derived at 24 entries per jar, not measured). Javadoc is built with
 `--no-fonts`: a javadoc jar was about 4.1 MB for the web fonts alone and is now about 0.1 MB for a small module, 10.4 MB for all 23.
 The limits are cumulative per month, so a second release in the same month needs `checksums=required` or a smaller set.
 `[unverified: whether Central counts the checksums it asks the plugin for; only Sonatype support can say]`.
@@ -193,6 +193,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/xml/jackson-xml` | `org.pragmatica-lite:jackson-xml` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `jbct` | `org.pragmatica-lite:jbct-parent` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of jbct-maven-plugin) |
 | `jbct/jbct-cli` | `org.pragmatica-lite:jbct-cli` | jar | skip | the `jbct` CLI and its libraries reach users through the install script and GitHub releases, not as a dependency; `jbct init` and `jbct add-*` reference none of them |
+| `jbct/jbct-async-check` | `org.pragmatica-lite:jbct-async-check` | jar | publish | template dependency (provided) and the compiler `annotationProcessorPaths` entry beside `slice-processor` (JBCT-ASYNC-01, type-attributed `Promise` callback check); no dependencies of its own |
 | `jbct/jbct-core` | `org.pragmatica-lite:jbct-core` | jar | publish | compile/runtime dependency of jbct-maven-plugin |
 | `jbct/jbct-derive` | `org.pragmatica-lite:jbct-derive` | jar | skip | the `jbct` CLI and its libraries reach users through the install script and GitHub releases, not as a dependency; `jbct init` and `jbct add-*` reference none of them |
 | `jbct/jbct-format` | `org.pragmatica-lite:jbct-format` | jar | publish | compile/runtime dependency of jbct-maven-plugin |
@@ -234,4 +235,4 @@ The limits are cumulative per month, so a second release in the same month needs
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-41 modules publish, 138 skip (179 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+42 modules publish, 138 skip (180 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).

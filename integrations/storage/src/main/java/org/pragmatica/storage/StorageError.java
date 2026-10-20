@@ -16,6 +16,20 @@ public sealed interface StorageError extends Cause {
         }
     }
 
+    /// [StorageInstance#createRef] on a block this node only cached (read or prefetched here, never written): a
+    /// name would make it a held block with no durable copy behind it. Write the block, or read it from where it
+    /// is held.
+    record CacheOnlyBlock(BlockId blockId) implements StorageError {
+        static CacheOnlyBlock cacheOnlyBlock(BlockId blockId) {
+            return new CacheOnlyBlock(blockId);
+        }
+
+        @Override
+        public String message() {
+            return "Block " + blockId + " is only cached on this node; it cannot be referenced until it is written here";
+        }
+    }
+
     record IntegrityError(BlockId expected, BlockId actual) implements StorageError {
         static IntegrityError integrityError(BlockId expected, BlockId actual) {
             return new IntegrityError(expected, actual);

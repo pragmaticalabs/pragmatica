@@ -188,7 +188,7 @@ defaults are `AutoHealConfig`'s own constants, so an absent key and the runtime 
 
 | TOML Key | Default | Description |
 |----------|---------|-------------|
-| `interval` | `5m` | Cadence of the periodic storage maintenance tick (`StorageMaintenanceDriver`) that runs tier demotion and garbage collection; on startup `AetherNode` logs `Storage maintenance enabled: demotion+GC cadence=<interval>, storage setups=<names>` |
+| `interval` | `5m` | Cadence of the periodic storage maintenance tick (`StorageMaintenanceDriver`) that runs tier demotion, tier promotion and garbage collection, in that order; on startup `AetherNode` logs `Storage maintenance enabled: demotion+promotion+GC cadence=<interval>, storage setups=<names>`. The promotion cycle runs on its own thread, so a slow shared-tier read never delays the tick, and a tick that finds the previous cycle still running skips promotion |
 
 ### Other Timeout-Related Configuration
 

@@ -41,6 +41,9 @@ class OwnerActivationLineageTest {
     private final java.util.concurrent.atomic.AtomicBoolean silentRefusal = new java.util.concurrent.atomic.AtomicBoolean();
     private final List<OwnerActivation.ActivationBlock> raised = new ArrayList<>();
     private final List<OwnerActivation.ActivationBlock> resolved = new ArrayList<>();
+    /// The epoch-start commit answers LATER, on another thread, when set (a commit that answers inline hides every ordering
+    /// defect between the promise and its handlers).
+    private final java.util.concurrent.atomic.AtomicBoolean lateCommit = new java.util.concurrent.atomic.AtomicBoolean();
     private final OwnerActivation activation = activation();
 
     private OwnerActivation activation() {
@@ -81,7 +84,11 @@ class OwnerActivationLineageTest {
             return Promise.success(Unit.unit());
         }
 
-        return refusal.get().fold(() -> applied(current, start, restarted), cause -> cause.promise());
+        return refusal.get().fold(() -> applied(current, start, restarted), this::refused);
+    }
+
+    private Promise<Unit> refused(org.pragmatica.lang.Cause cause) {
+        return lateCommit.get() ? LateResolution.laterFailing(cause) : cause.promise();
     }
 
     private Promise<Unit> applied(StreamPartitionOwnershipValue current, long start, boolean restarted) {
@@ -89,7 +96,7 @@ class OwnerActivationLineageTest {
                                ? current.restarted(start, HlcTimestamp.ZERO)
                                : current.withEpochStart(start)));
 
-        return Promise.success(Unit.unit());
+        return lateCommit.get() ? LateResolution.later(Unit.unit()) : Promise.success(Unit.unit());
     }
 
     /// A failover (the leader bumped the epoch, nobody recorded its start): the new owner records the start at its next
@@ -326,6 +333,78 @@ class OwnerActivationLineageTest {
 
     private boolean activate() {
         return activation.activate(STREAM, PARTITION).await().isSuccess();
+    }
+
+    private static final int TRIALS = 40;
+
+    /// The in-flight entry is released as a dependent step of the promise the caller awaits: an activation requested right after an
+    /// awaited one must not be told `IN_PROGRESS`. Released by an `onResultRun` handler it was, most of the time.
+    @Test
+    void activateRightAfterAwait_isNotTurnedAwayAsInProgress() {
+        var inProgress = 0;
+
+        for (var trial = 0; trial < TRIALS; trial++) {
+            var gate = activation();
+
+            lateCommit.set(true);
+            record.set(Option.some(committed(List.of())));
+            incarnation.incrementAndGet();
+            gate.activate(STREAM, PARTITION).await();
+            incarnation.incrementAndGet();
+            if (gate.activate(STREAM, PARTITION).await().fold(cause -> cause == OwnerActivation.ActivationError.IN_PROGRESS, _ -> false)) {
+                inProgress++;
+            }
+        }
+
+        assertThat(inProgress).as("activations (of %d) answered IN_PROGRESS right after an awaited one finished", TRIALS).isZero();
+    }
+
+    /// A landed lineage commit is on record (`activatedIncarnation`) by the time the activation resolves: the next activation of the
+    /// same ring commits nothing, and is not turned away. This pins the end-to-end contract. It does not isolate the `landed`
+    /// step: while carriers are free the rest of the activation chain outlasts a detached handler's start. The starved-carrier
+    /// case is [OwnerActivationLandedStarvedTest], which turns red when only `landed` is reverted to a handler.
+    @Test
+    void activateRightAfterAwait_ofTheSameRing_commitsNothingAgain() {
+        var extraCommits = 0;
+
+        for (var trial = 0; trial < TRIALS; trial++) {
+            var gate = activation();
+
+            lateCommit.set(true);
+            commits.clear();
+            record.set(Option.some(committed(List.of(new EpochStart(Epoch.epoch(1L, 2L, 2L), 0L)))));
+            var second = gate.activate(STREAM, PARTITION).flatMap(_ -> gate.activate(STREAM, PARTITION)).await();
+
+            if (second.isFailure() || commits.size() != 1) {
+                extraCommits++;
+            }
+        }
+
+        assertThat(extraCommits).as("activations (of %d) that re-committed the lineage or were refused right after a landed one", TRIALS).isZero();
+    }
+
+    /// The Nth consecutive refusal is on the operator's view by the time its activation resolves, not some time after.
+    @Test
+    void persistentRefusalsRightAfterAwait_haveRaisedTheBlockAtTheThreshold() {
+        var missing = 0;
+
+        for (var trial = 0; trial < TRIALS; trial++) {
+            var gate = activation();
+
+            lateCommit.set(true);
+            raised.clear();
+            record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+            refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+            for (var attempt = 0; attempt < OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER; attempt++) {
+                gate.activate(STREAM, PARTITION).await();
+            }
+
+            if (raised.size() != 1) {
+                missing++;
+            }
+        }
+
+        assertThat(missing).as("runs (of %d) whose block was not raised when the Nth refused activation resolved", TRIALS).isZero();
     }
 
     private static StreamPartitionOwnershipValue committed(List<EpochStart> starts) {
