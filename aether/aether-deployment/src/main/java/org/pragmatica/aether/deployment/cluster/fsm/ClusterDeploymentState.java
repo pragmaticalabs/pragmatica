@@ -1324,6 +1324,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                               if (community.filter(value -> value.state() == CommunityState.DISSOLVING || value.state() == CommunityState.DISSOLVED)
                                            .isPresent()) {
                                   retryOrReport(node);
+
                                   return;
                               }
 
@@ -1394,7 +1395,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         cause.message()));
         }
 
-        private void submitActivationCommands(NodeId targetNode, String transactionId, List<KVCommand<AetherKey>> commands) {
+        private void submitActivationCommands(NodeId targetNode,
+                                              String transactionId,
+                                              List<KVCommand<AetherKey>> commands) {
             ctx.cluster()
                .<Object> apply(commands)
                .onSuccess(results -> results.stream()
