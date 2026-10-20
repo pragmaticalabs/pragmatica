@@ -45,15 +45,15 @@ public sealed interface TopicTierPreflight {
     String DURABLE = "durable";
 
     static Result<Unit> validate(List<SliceJar> sliceJars, Option<ConfigurationProvider> nodeComposite) {
-        var conflicts = ephemeralPublishers(sliceJars, nodeComposite).flatMap(publisher -> conflictsWith(publisher, sliceJars))
-                                                                     .toList();
+        var conflicts = ephemeralPublishers(sliceJars, nodeComposite).flatMap(publisher -> conflictsWith(publisher,
+                                                                                                         sliceJars))
+                                           .toList();
 
         return conflicts.isEmpty()
                ? Result.unitResult()
                : TopicTierMismatchRefused.FACTORY.apply(conflicts.stream()
                                                                  .map(Conflict::describe)
-                                                                 .collect(Collectors.joining("; ")))
-                                                 .result();
+                                                                 .collect(Collectors.joining("; "))).result();
     }
 
     /// Every topic a slice jar publishes that is positively known to be ephemeral.
@@ -71,8 +71,10 @@ public sealed interface TopicTierPreflight {
     private static Stream<EphemeralPublisher> ephemeralPublishers(SliceTopology topology, ConfigurationProvider view) {
         return topology.publishes()
                        .stream()
-                       .filter(publisher -> !isDurable(view, publisher.config()))
-                       .map(publisher -> new EphemeralPublisher(topology.sliceName(), publisher.config()));
+                       .filter(publisher -> !isDurable(view,
+                                                       publisher.config()))
+                       .map(publisher -> new EphemeralPublisher(topology.sliceName(),
+                                                                publisher.config()));
     }
 
     private static boolean isDurable(ConfigurationProvider view, String section) {
@@ -100,11 +102,11 @@ public sealed interface TopicTierPreflight {
     record Conflict(EphemeralPublisher publisher, String subscriberSlice, String method) {
         String describe() {
             return "topic '" + publisher.config()
-                   + "' is published on the EPHEMERAL tier by " + publisher.slice()
-                   + " (section [" + publisher.config()
-                   + "] declares no durability = \"durable\") but subscribed by " + subscriberSlice
-                   + "." + method
-                   + ", whose handler takes a MessageContext and needs a durable topic";
+                 + "' is published on the EPHEMERAL tier by " + publisher.slice()
+                 + " (section [" + publisher.config()
+                 + "] declares no durability = \"durable\") but subscribed by " + subscriberSlice
+                 + "." + method
+                 + ", whose handler takes a MessageContext and needs a durable topic";
         }
     }
 

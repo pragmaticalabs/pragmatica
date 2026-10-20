@@ -226,7 +226,11 @@ public final class TopologyParser {
                 var messageType = props.getProperty(prefix + "messageType", "");
                 var contextual = "message".equals(props.getProperty(prefix + "context", ""));
 
-                subs.add(new SliceTopology.TopicSub(config, resolveTopicAddress(config, artifact), method, messageType, contextual));
+                subs.add(new SliceTopology.TopicSub(config,
+                                                    resolveTopicAddress(config, artifact),
+                                                    method,
+                                                    messageType,
+                                                    contextual));
             }
         }
 

@@ -229,9 +229,7 @@ public record TopicPublisher<T>(String topicName,
 
     private Promise<Unit> refuseWithoutDelivery(TopicSubscriber subscriber) {
         return Promise.resolved(settle(subscriber,
-                                       TopicTierMismatch.FACTORY.apply(subscriber.methodName()
-                                                                                 .name())
-                                                                .<Unit> result()));
+                                       TopicTierMismatch.FACTORY.apply(subscriber.methodName().name()).<Unit> result()));
     }
 
     /// FER (degrade forward): a failed delivery is absorbed here into a counter and, for a tier mismatch, an operator

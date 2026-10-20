@@ -52,7 +52,11 @@ public interface TopicSubscriptionRegistry {
     /// with a test when something needs it; the record carries all four components.
     ///
     /// `tier` is the delivery tier the subscriber's handler requires, as its row recorded it (#1337).
-    record TopicSubscription(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId, TopicTier tier) {
+    record TopicSubscription(ResourceAddress address,
+                             Artifact artifact,
+                             MethodName methodName,
+                             NodeId nodeId,
+                             TopicTier tier) {
         /// Bare topic name — addressing metadata only, NOT the runtime routing identity. Routing
         /// matches on the full [#routingKey] (`namespace:name:version`); this accessor is kept for
         /// display/diagnostics and for any caller that still needs the un-namespaced name.
@@ -85,7 +89,11 @@ public interface TopicSubscriptionRegistry {
             public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
-                var subscription = new TopicSubscription(key.address(), key.artifact(), key.methodName(), value.nodeId(), value.tier());
+                var subscription = new TopicSubscription(key.address(),
+                                                         key.artifact(),
+                                                         key.methodName(),
+                                                         value.nodeId(),
+                                                         value.tier());
 
                 subscriptions.put(key, subscription);
                 log.debug("Registered topic subscription: {}", subscription);
@@ -123,7 +131,10 @@ public interface TopicSubscriptionRegistry {
                     var index = (counter.getAndIncrement() & 0x7FFFFFFF) % group.size();
                     var selected = group.get(index);
 
-                    result.add(new TopicSubscriber(selected.artifact(), selected.methodName(), selected.nodeId(), selected.tier()));
+                    result.add(new TopicSubscriber(selected.artifact(),
+                                                   selected.methodName(),
+                                                   selected.nodeId(),
+                                                   selected.tier()));
                 }
 
                 return result;
