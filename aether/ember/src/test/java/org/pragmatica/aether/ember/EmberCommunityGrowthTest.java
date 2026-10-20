@@ -37,7 +37,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// fakes; this proves the wiring: a `[community_policy]` committed in the cluster config reaches the leader's deployment state, a worker that
 /// finds its source's community full opens the next one, and the placement pass dissolves a derived community that has stayed empty.
 ///
-/// Five cores and four workers of one source, `max_size = 2`: the first two workers fill `eu-w-0` and the next two open and fill `eu-w-1`, with
+/// Five cores and four workers of one source, `max_size = 2`: two workers fill `eu-w-0` and the other two open and fill `eu-w-1`, with
 /// no `default-w-0` (the source label round-trips) and no worker promoted to core. Then the two members of `eu-w-1` lose their directives, as
 /// they do when their termination is confirmed, and after the grace the leader's pass writes DISSOLVING and then DISSOLVED. The viability
 /// floor is 1, so a community of one member is viable: ACTIVE is not asserted (two ACTIVE communities at the replication factor need more
@@ -108,14 +108,16 @@ class EmberCommunityGrowthTest {
         }
 
         await("all four workers hold a community directive", () -> workers.stream().allMatch(worker -> communityOf(worker).isPresent()));
-        assertThat(workers.subList(0, 2)).as("the first two fill the first community").allMatch(worker -> communityOf(worker).or("").equals(FIRST));
-        assertThat(workers.subList(2, 4)).as("the next two open and fill the second").allMatch(worker -> communityOf(worker).or("").equals(SECOND));
+        var assigned = workers.stream().collect(java.util.stream.Collectors.groupingBy(worker -> communityOf(worker).or(""), java.util.stream.Collectors.counting()));
+
+        // The joins reach the leader together and in any order, so which worker lands where is not pinned, only the shape of the result.
+        assertThat(assigned).as("two workers fill the first community, two open and fill the second: %s", assigned).isEqualTo(Map.of(FIRST, 2L, SECOND, 2L));
         assertThat(community(FIRST).map(CommunityValue::targetSize).or(-1)).as("the committed max_size is stamped").isEqualTo(2);
         assertThat(community(SECOND).map(CommunityValue::sourceName).or("")).isEqualTo(SOURCE);
         assertThat(community("default-w-0").isPresent()).as("the source label round-trips: no worker fell back to the default source").isFalse();
         assertThat(leader().membershipFsm().coreCountedMembers()).as("no worker was promoted to core").hasSize(CORES);
 
-        workers.subList(2, 4).forEach(this::dropDirective);
+        workers.stream().filter(worker -> communityOf(worker).or("").equals(SECOND)).forEach(this::dropDirective);
 
         await("the empty second community is dissolved after the grace",
               () -> community(SECOND).filter(value -> value.state() == CommunityState.DISSOLVED).isPresent());
