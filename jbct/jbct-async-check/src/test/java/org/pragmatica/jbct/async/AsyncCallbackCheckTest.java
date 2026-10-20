@@ -590,6 +590,31 @@ class AsyncCallbackCheckTest {
         }
 
         @Test
+        void clean_factoryMethodReferences() {
+            assertThat(lines(body("""
+                    void run(Promise<String> p, Result<String> r) {
+                        p.onFailure(Cause::promise);
+                        p.onFailure(Cause::result);
+                        p.onSuccess(Promise::success);
+                        p.onSuccessRun(Promise::unitPromise);
+                        p.onSuccess(_ -> r.fold(Cause::promise, Promise::success));
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
+        void flags_aMethodReferenceThatIsNotAFactory() {
+            assertThat(lines(body("""
+                    Gate gate = new Gate();
+                    static class Gate { void release(String key) { } String conv(Object o) { return "x"; } }
+                    void run(Promise<String> p, Result<String> r) {
+                        p.onSuccess(gate::release);
+                        p.onSuccess(_ -> r.fold(gate::conv, gate::conv));
+                    }
+                    """))).hasSize(2);
+        }
+
+        @Test
         void flags_theArgumentsOfAFactoryAreStillScanned() {
             assertThat(lines(body("""
                     java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger();

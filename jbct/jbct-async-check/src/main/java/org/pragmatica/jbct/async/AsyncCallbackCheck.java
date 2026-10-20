@@ -258,7 +258,7 @@ public final class AsyncCallbackCheck implements TaskListener {
                                         Set<Element> scope,
                                         int depth,
                                         boolean resultDiscarded) {
-        if (isAllowlisted(method)) {
+        if (isAllowlisted(method) || isPureFactory(method)) {
             return Optional.empty();
         }
 
@@ -426,7 +426,7 @@ public final class AsyncCallbackCheck implements TaskListener {
                 return super.visitMethodInvocation(node, unused);
             }
 
-            if (isCombinator(method) || isPureFactory(method)) {
+            if (isCombinator(method)) {
                 return super.visitMethodInvocation(node, unused);
             }
 
