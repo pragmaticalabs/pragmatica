@@ -1397,12 +1397,51 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                .onSuccess(results -> results.stream()
                                             .filter(KVCommand.TransactionResult.class::isInstance)
                                             .map(KVCommand.TransactionResult.class::cast)
-                                            .filter(result -> !result.accepted())
-                                            .forEach(_ -> log.debug("Assignment changed before commit for {}; fresh admission will retry",
-                                                                    targetNode)))
+                                            .forEach(result -> settleAssignment(targetNode,
+                                                                                result.accepted())))
                .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
                                              targetNode,
                                              cause.message()));
+        }
+
+        /// A refused commit means the community changed between the decision and the commit. The worker would stay without a community
+        /// until it happened to be admitted again, so the leader decides afresh, up to [CommunityAdmissionLedger#MAX_ATTEMPTS] times in a row,
+        /// and then reports the worker unplaced. An accepted commit ends the count and, if the worker had been reported, closes the report.
+        private void settleAssignment(NodeId node, boolean accepted) {
+            if (accepted || ctx.kvStore().get(ActivationDirectiveKey.activationDirectiveKey(node)).isPresent()) {
+                confirmPlaced(node);
+            } else {
+                retryOrReport(node);
+            }
+        }
+
+        private void confirmPlaced(NodeId node) {
+            if (ctx.communityAdmission().placed(node)) {
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
+                                       node.id(),
+                                       "Worker {} was assigned a community",
+                                       node);
+            }
+        }
+
+        private void retryOrReport(NodeId node) {
+            if (ctx.communityAdmission().refused(node) < CommunityAdmissionLedger.MAX_ATTEMPTS) {
+                log.debug("Assignment changed before commit for {}; deciding its community afresh", node);
+                ctx.dispatch(new WorkerJoinReceived(new WorkerJoinDecision(node,
+                                                                           "worker",
+                                                                           org.pragmatica.hlc.HlcTimestamp.ZERO)));
+            } else {
+                ctx.communityAdmission().giveUp(node);
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
+                                       node.id(),
+                                       "Worker {} has no community: its assignment changed before commit {} times in a row. It takes one when it is admitted again",
+                                       node,
+                                       CommunityAdmissionLedger.MAX_ATTEMPTS);
+            }
         }
 
         /// The CORE membership the CDM allocates/counts over (cluster-topology-overhaul spec,
