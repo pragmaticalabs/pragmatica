@@ -202,11 +202,6 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // common, and the corpus that motivated the rule documents every one of its eight sites.
     Map.entry("JBCT-REC-01", DiagnosticSeverity.WARNING),
 
-    // Promise on*/on*Run/on*Async callback that writes shared state: runs on its own thread, concurrently with the promise's
-    // dependents. WARNING while the existing sites are converted to withSuccess/withFailure/withResult (the rc5 census counted
-    // 162); promote to ERROR once they are gone.
-    Map.entry("JBCT-ASYNC-01", DiagnosticSeverity.WARNING),
-
     // Nested ternaries
     Map.entry("JBCT-STY-09", DiagnosticSeverity.WARNING),
 

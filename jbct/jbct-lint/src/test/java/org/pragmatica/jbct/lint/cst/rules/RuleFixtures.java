@@ -121,28 +121,6 @@ final class RuleFixtures {
                 }
                 """),
 
-        // JBCT-ASYNC-01: a Promise on* callback that writes shared state races with the promise's dependents.
-        // The negative keeps the write in a withSuccess step, which runs in chain order.
-        fixture("JBCT-ASYNC-01", 5,
-                """
-                package org.example;
-                class Foo {
-                    private boolean done;
-                    void run(Promise<String> pending) {
-                        pending.onSuccess(_ -> done = true);
-                    }
-                }
-                """,
-                """
-                package org.example;
-                class Foo {
-                    private boolean done;
-                    void run(Promise<String> pending) {
-                        pending.withSuccess(_ -> done = true);
-                    }
-                }
-                """),
-
         // JBCT-RET-05: no always-succeeding Result (only Result.success, never a failure).
         fixture("JBCT-RET-05", 3,
                 """

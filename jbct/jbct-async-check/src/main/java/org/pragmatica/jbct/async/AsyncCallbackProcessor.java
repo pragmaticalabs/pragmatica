@@ -51,10 +51,7 @@ public final class AsyncCallbackProcessor extends AbstractProcessor {
                            : Diagnostic.Kind.WARNING;
 
             JavacTask.instance(env)
-                     .addTaskListener(AsyncCallbackCheck.asyncCallbackCheck(Trees.instance(env),
-                                                                           env.getTypeUtils(),
-                                                                           env.getElementUtils(),
-                                                                           severity));
+                     .addTaskListener(AsyncCallbackCheck.asyncCallbackCheck(Trees.instance(env), severity));
         } catch (RuntimeException | LinkageError e) {
             env.getMessager().printMessage(Diagnostic.Kind.NOTE, "JBCT-ASYNC-01 is not checked: the compiler is not javac");
         }

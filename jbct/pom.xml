@@ -46,6 +46,7 @@
         <module>jbct-core</module>
         <module>jbct-format</module>
         <module>jbct-lint</module>
+        <module>jbct-async-check</module>
         <module>jbct-init</module>
         <module>jbct-derive</module>
         <module>jbct-cli</module>

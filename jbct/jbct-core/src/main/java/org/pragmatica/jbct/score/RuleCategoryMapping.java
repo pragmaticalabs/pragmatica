@@ -57,7 +57,6 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-PAT-01", ScoreCategory.PATTERN_PURITY),    // no raw loops
     Map.entry("JBCT-PAT-02", ScoreCategory.PATTERN_PURITY),    // no pattern mixing
     Map.entry("JBCT-PAT-03", ScoreCategory.PATTERN_PURITY),    // no blocking await
-    Map.entry("JBCT-ASYNC-01", ScoreCategory.PATTERN_PURITY),  // Promise on* callback must not write shared state
     Map.entry("JBCT-SEQ-01", ScoreCategory.PATTERN_PURITY),    // sequencer chain length
     Map.entry("JBCT-NEST-01", ScoreCategory.PATTERN_PURITY),   // no nested monadic operations
     Map.entry("JBCT-MIX-01", ScoreCategory.PATTERN_PURITY),    // no I/O mixed into domain

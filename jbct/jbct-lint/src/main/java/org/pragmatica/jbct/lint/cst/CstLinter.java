@@ -343,9 +343,6 @@ public class CstLinter {
         new CstShapeUnclassifiedRule(),
 
         // Method's shape disagrees with its name-verb's zone (JBCT-SHAPE-03, mis-leveled)
-        new CstShapeZoneRule(),
-
-        // Promise on* callback that writes shared state (JBCT-ASYNC-01, WARNING)
-        new CstPromiseCallbackWriteRule());
+        new CstShapeZoneRule());
     }
 }

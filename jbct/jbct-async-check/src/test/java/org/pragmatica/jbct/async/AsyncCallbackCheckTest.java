@@ -117,7 +117,7 @@ class AsyncCallbackCheckTest {
     }
 
     @Nested
-    class Writes {
+    class Effects {
         @Test
         void flags_fieldAssignments() {
             for (var write : List.of("done = true", "total += 1", "total++", "++total", "this.last = \"x\"", "Foo.counter++",
@@ -206,6 +206,51 @@ class AsyncCallbackCheckTest {
         }
 
         @Test
+        void flags_voidCallOnACollaboratorField() {
+            var found = compile(Map.of("org.example.Gate", HEADER + """
+                    class Gate {
+                        void release(String key) { }
+                    }
+                    """,
+                                       "org.example.Foo", HEADER + """
+                    class Foo {
+                        Gate gate = new Gate();
+                        void run(Promise<String> p) {
+                            p.onResultRun(() -> gate.release("k"));
+                        }
+                    }
+                    """), "warning");
+
+            assertThat(found.lines()).hasSize(1);
+        }
+
+        @Test
+        void flags_referenceHandedToACombinatorInsideTheCallback() {
+            assertThat(lines(body("""
+                    Queue<String> slots = new ArrayDeque<>();
+                    Gate gate = new Gate();
+                    static class Gate { void release(String key) { } }
+                    void run(Promise<String> p, Option<String> slot) {
+                        p.onSuccess(_ -> slot.onPresent(gate::release));
+                    }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void clean_valueReadsAndLocalDeclarations() {
+            assertThat(lines(body("""
+                    Map<String, String> map = new HashMap<>();
+                    void run(Promise<String> p) {
+                        p.onSuccess(v -> {
+                            var size = map.size();
+                            var upper = v.toUpperCase();
+                            System.out.println(size + upper + Math.max(1, 2));
+                        });
+                    }
+                    """))).isEmpty();
+        }
+
+        @Test
         void clean_readsOnly() {
             assertThat(lines(body("""
                     Map<String, String> map = new HashMap<>();
@@ -267,23 +312,36 @@ class AsyncCallbackCheckTest {
         }
 
         @Test
-        void clean_secondLevelIsNotFollowed() {
+        void flags_writeThreeMethodsDeep() {
             assertThat(lines(body("""
                     boolean done;
                     void run(Promise<String> p) {
-                        p.onSuccess(_ -> outer());
+                        p.onSuccess(_ -> m1());
                     }
-                    void outer() { inner(); }
-                    void inner() { done = true; }
+                    void m1() { m2(); }
+                    void m2() { m3(); }
+                    void m3() { done = true; }
+                    """))).hasSize(1);
+        }
+
+        @Test
+        void clean_delegateThatOnlyLogsAndSchedules() {
+            assertThat(lines(body("""
+                    ScheduledExecutorService scheduler;
+                    void run(Promise<String> p) {
+                        p.onSuccess(this::note);
+                        p.onFailure(_ -> retry());
+                    }
+                    void note(String v) { System.out.println(v); }
+                    void retry() { note("x"); scheduler.schedule(() -> {}, 1, TimeUnit.SECONDS); }
                     """))).isEmpty();
         }
 
         @Test
-        void clean_methodOfAnotherClassIsNotFollowed() {
+        void flags_voidMethodOfAnotherClass() {
             var found = compile(Map.of("org.example.Other", HEADER + """
                     class Other {
-                        boolean done;
-                        void land(String v) { done = true; }
+                        void land(String v) { }
                     }
                     """,
                                        "org.example.Foo", HEADER + """
@@ -295,7 +353,31 @@ class AsyncCallbackCheckTest {
                     }
                     """), "warning");
 
-            assertThat(found.lines()).isEmpty();
+            assertThat(found.lines()).hasSize(2);
+        }
+
+        @Test
+        void flags_callbackThatIsNotALambdaOrReference() {
+            var found = compile(Map.of("org.example.Foo", HEADER + """
+                    class Foo {
+                        java.util.function.Consumer<String> handler;
+                        void run(Promise<String> p) {
+                            p.onSuccess(handler);
+                        }
+                    }
+                    """), "warning");
+
+            assertThat(found.lines()).hasSize(1);
+            assertThat(found.messages().getFirst()).contains("effect is unknown");
+        }
+
+        @Test
+        void clean_callbackForwardedFromAParameter() {
+            assertThat(lines(body("""
+                    Promise<String> watch(Promise<String> p, java.util.function.Consumer<String> handler) {
+                        return p.onSuccess(handler).onResultRun(() -> System.out.println("done"));
+                    }
+                    """))).isEmpty();
         }
 
         @Test
@@ -421,7 +503,7 @@ class AsyncCallbackCheckTest {
             var message = compile(Map.of("org.example.Foo", SOURCE), "warning").messages().getFirst();
 
             assertThat(message).contains("JBCT-ASYNC-01").contains("assigns done")
-                               .contains("withSuccess/withFailure/withResult").contains("// detached: <reason>");
+                               .contains("withSuccess/withFailure/withResult").contains("// detached: <why it may run late>");
         }
     }
 

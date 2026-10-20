@@ -16,16 +16,13 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeKind;
-import javax.lang.model.type.TypeMirror;
-import javax.lang.model.util.Elements;
-import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 
 import com.sun.source.tree.ArrayAccessTree;
 import com.sun.source.tree.AssignmentTree;
 import com.sun.source.tree.ClassTree;
-import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.CompoundAssignmentTree;
+import com.sun.source.tree.ExpressionStatementTree;
 import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.IdentifierTree;
 import com.sun.source.tree.LambdaExpressionTree;
@@ -45,36 +42,36 @@ import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
 
-/// JBCT-ASYNC-01, type-attributed: a `Promise` callback (`onSuccess`/`onFailure`/`onResult` and their `*Run`/`*Async`
-/// forms) that writes shared state.
+/// JBCT-ASYNC-01, type-attributed: every `Promise` callback must be justified.
 ///
-/// `Promise.on*` callbacks are events: each runs on its own virtual thread, concurrently with the promise's dependents
-/// (the awaiting caller, the next `map`/`flatMap`) and in no order relative to them, so a flag, map or counter written
-/// there can still be unwritten when the code that follows reads it. `withSuccess`/`withFailure`/`withResult` and a plain
-/// chain step run in chain order, before any dependent sees the value. `Result.on*` runs inline and is never looked at:
-/// the receiver is identified by the resolved method symbol (owner `org.pragmatica.lang.Promise`), not by its spelling.
+/// `Promise.onSuccess/onFailure/onResult` and their `*Run`/`*Async` forms are events: each runs on its own virtual thread,
+/// concurrently with the promise's dependents (the awaiting caller, the next `map`/`flatMap`) and in no order relative to them.
+/// Any effect a callback has, other than the three that nothing downstream can order against, may therefore land after the code
+/// that follows the promise has already looked. `withSuccess`/`withFailure`/`withResult` and a plain chain step run in chain
+/// order, before any dependent sees the value. `Result.on*` runs inline and is never looked at: the receiver is identified by
+/// the resolved method symbol (owner `org.pragmatica.lang.Promise`), not by its spelling, after attribution, so it is exact and
+/// cross-file.
 ///
-/// The check runs after attribution, once per analysed top-level class, so receiver types, field/local distinction and
-/// method symbols are exact, across files and across modules.
+/// **The rule is about intent, not about visible writes.** Most racy callbacks write through a collaborator in another file, so
+/// no rule that looks for writes can guard the class. Instead a callback is accepted when its effects are only:
+/// - logging (SLF4J, `System.Logger`, `java.util.logging`, `System.out/err`, `MDC`);
+/// - scheduling (`schedule*` methods, executors);
+/// - resolving another promise (`succeed`, `fail`, `resolve`, `cancel` on a `Promise`) or completing a future;
+/// and everything else is reported: an assignment or `++` to a field or captured variable, a call to a mutating verb on a
+/// shared receiver, a `void` call (or a call whose result is discarded) that is not one of the above, a callback that is not a
+/// lambda or method reference. A call to a method of an enclosing class is followed (three levels): the call is as clean as its
+/// body. Reads (value-returning calls whose result is used, comparisons, the arguments of a logging call) are not effects.
 ///
-/// **A write** is, inside the callback lambda: an assignment, compound assignment or `++`/`--` to a field (or to an element
-/// of a field array), or a call to a mutating verb (`put`, `add`, `remove`, `clear`, `set`, `incrementAndGet`,
-/// `compareAndSet`, ...) on a receiver rooted in a field, a captured local, a static or `this`. **One level of delegation**
-/// is followed: a method reference, or a call inside the lambda, to a method of an enclosing class whose source is in this
-/// compilation; the same writes inside it count, and a parameter of it is shared when the call passes it a field or a captured
-/// local. Logging, scheduling and resolving another promise are not writes.
+/// **Justification:** a comment `// detached: <why it may run late>` on the statement or directly above it (a bare `detached`
+/// does not count), or `@SuppressWarnings("JBCT-ASYNC-01")` on an enclosing declaration. `@Contract` does not suppress.
 ///
-/// **Suppression with a reason:** a comment `// detached: <reason>` on the statement or directly above it (a bare
-/// `detached` does not suppress), or `@SuppressWarnings("JBCT-ASYNC-01")` on an enclosing declaration. `@Contract` does not suppress: it marks a
-/// signature dictated by an external contract, and says nothing about when a callback's effect becomes visible.
-///
-/// **Limits.** A write made by a method that has no source here (a jar), by a second level of calls, or through a lambda held
-/// in a variable is not seen. Verbs are matched by name on the receiver's resolved type, so a non-mutating method that shares
-/// a catalog name on a shared receiver is a false positive.
+/// **Limits.** A `void` method without source here (a jar, another module) is an effect by assumption. A value-returning call
+/// whose result is used is assumed to be a read, so an effect hidden behind one is not seen.
 public final class AsyncCallbackCheck implements TaskListener {
     static final String RULE_ID = "JBCT-ASYNC-01";
 
     private static final String PROMISE = "org.pragmatica.lang.Promise";
+    private static final int MAX_DEPTH = 3;
     private static final Set<String> CALLBACKS = Set.of("onSuccess", "onFailure", "onResult", "onSuccessRun", "onFailureRun",
                                                         "onResultRun", "onSuccessAsync", "onFailureAsync", "onResultAsync",
                                                         "onSuccessRunAsync", "onFailureRunAsync", "onResultRunAsync");
@@ -89,42 +86,29 @@ public final class AsyncCallbackCheck implements TaskListener {
                                                     "offerLast", "push", "pop", "poll", "pollFirst", "pollLast", "append",
                                                     "increment", "decrement", "reset", "setRelease", "setPlain", "setVolatile",
                                                     "setOpaque", "accumulate");
-    /// Receiver types whose mutating-looking methods are not writes to shared state of the callback.
-    private static final Set<String> NOT_STATE = Set.of(PROMISE,
-                                                        "org.pragmatica.lang.Result",
-                                                        "org.pragmatica.lang.Option",
-                                                        "java.util.Optional",
-                                                        "java.lang.String",
-                                                        "java.util.stream.Stream",
-                                                        "org.slf4j.MDC");
+    /// `Result`/`Option` combinators run their function argument inline; the argument is scanned in its own right.
+    private static final Set<String> COMBINATOR_OWNERS = Set.of("org.pragmatica.lang.Result", "org.pragmatica.lang.Option");
+    private static final Set<String> RESOLVERS = Set.of("succeed", "fail", "resolve", "cancel");
+    private static final Set<String> LOGGER_OWNERS = Set.of("org.slf4j.Logger", "org.slf4j.spi.LoggingEventBuilder",
+                                                            "java.lang.System$Logger", "java.util.logging.Logger",
+                                                            "java.io.PrintStream", "org.slf4j.MDC");
+    private static final Set<String> EXECUTOR_OWNERS = Set.of("java.util.concurrent.ScheduledExecutorService",
+                                                              "java.util.concurrent.Executor",
+                                                              "java.util.concurrent.ExecutorService",
+                                                              "java.util.concurrent.CompletableFuture");
     private static final Pattern DETACHED = Pattern.compile("(//|/\\*|\\*).*\\bdetached\\s*[:\\-–—]\\s*\\S.{2,}",
                                                             Pattern.CASE_INSENSITIVE);
 
-    private static final boolean DEBUG = Boolean.getBoolean("jbct.async.debug");
-    private static final int DEPTH = Integer.getInteger("jbct.async.depth", 1);
-    private static final boolean VOID_CALLS = Boolean.getBoolean("jbct.async.voidcalls");
-    private static final Set<String> BENIGN_OWNERS = Set.of("org.slf4j.Logger", "java.lang.System$Logger", "java.io.PrintStream",
-                                                            "java.util.concurrent.ScheduledExecutorService",
-                                                            "java.util.concurrent.Executor", "java.util.concurrent.ExecutorService",
-                                                            "java.util.concurrent.CompletableFuture", "org.pragmatica.lang.Promise",
-                                                            "org.pragmatica.lang.Result", "org.pragmatica.lang.Option",
-                                                            "java.lang.Object", "org.slf4j.MDC");
-    private static final boolean ANY_CLASS = Boolean.getBoolean("jbct.async.anyclass");
-
     private final Trees trees;
-    private final Types types;
-    private final Elements elements;
     private final Diagnostic.Kind severity;
 
-    private AsyncCallbackCheck(Trees trees, Types types, Elements elements, Diagnostic.Kind severity) {
+    private AsyncCallbackCheck(Trees trees, Diagnostic.Kind severity) {
         this.trees = trees;
-        this.types = types;
-        this.elements = elements;
         this.severity = severity;
     }
 
-    static AsyncCallbackCheck asyncCallbackCheck(Trees trees, Types types, Elements elements, Diagnostic.Kind severity) {
-        return new AsyncCallbackCheck(trees, types, elements, severity);
+    static AsyncCallbackCheck asyncCallbackCheck(Trees trees, Diagnostic.Kind severity) {
+        return new AsyncCallbackCheck(trees, severity);
     }
 
     @Override
@@ -140,8 +124,8 @@ public final class AsyncCallbackCheck implements TaskListener {
         }
     }
 
-    /// What a callback was found to write: a description, and the delegate method it was found in, if any.
-    private record Write(String description, String via) {}
+    /// An effect found in a callback: a description, and the delegate method it was found in, if any.
+    private record Effect(String description, String via) {}
 
     private final class CallbackScanner extends TreePathScanner<Void, Void> {
         @Override
@@ -155,69 +139,42 @@ public final class AsyncCallbackCheck implements TaskListener {
     }
 
     private boolean isPromiseCallback(TreePath path) {
-        var element = trees.getElement(path);
-
-        return element instanceof ExecutableElement method
+        return trees.getElement(path) instanceof ExecutableElement method
                && CALLBACKS.contains(method.getSimpleName().toString())
                && method.getEnclosingElement() instanceof TypeElement owner
                && owner.getQualifiedName().contentEquals(PROMISE);
     }
 
     private void check(TreePath path, MethodInvocationTree call) {
-        var argument = call.getArguments().getFirst();
-        var argumentPath = new TreePath(path, argument);
+        var argumentPath = new TreePath(path, call.getArguments().getFirst());
 
-        var write = callbackWrite(argumentPath, argument, enclosingTypes(path));
-
-        if (DEBUG) {
-            trees.printMessage(Diagnostic.Kind.NOTE,
-                               "JBCT-ASYNC-DEBUG arg=" + argument.getKind() + " write=" + write.isPresent() + " calls=" + (write.isPresent() ? "" : calls(argumentPath, argument, enclosingTypes(path))),
-                               call.getMethodSelect(),
-                               path.getCompilationUnit());
-        }
-
-        write.filter(_ -> !isSuppressed(path)).ifPresent(found -> report(path, call, found));
+        effectOf(argumentPath, enclosingTypes(path)).filter(_ -> !isSuppressed(path)).ifPresent(effect -> report(path, call, effect));
     }
 
-    /// Debug aid: the methods a write-free callback invokes, as `owner.method` (`*` marks a same-class method).
-    private String calls(TreePath argumentPath, Tree argument, Set<Element> scope) {
-        var names = new java.util.TreeSet<String>();
+    private Optional<Effect> effectOf(TreePath argumentPath, Set<Element> scope) {
+        var argument = argumentPath.getLeaf();
 
-        if (argument instanceof MemberReferenceTree && trees.getElement(argumentPath) instanceof ExecutableElement target) {
-            names.add(describeMethod(target, scope));
-        }
-
-        new TreePathScanner<Void, Void>() {
-            @Override
-            public Void visitMethodInvocation(MethodInvocationTree node, Void unused) {
-                if (trees.getElement(getCurrentPath()) instanceof ExecutableElement method) {
-                    names.add(describeMethod(method, scope));
-                }
-
-                return super.visitMethodInvocation(node, unused);
-            }
-        }.scan(argumentPath, null);
-        return String.join(",", names);
-    }
-
-    private static String describeMethod(ExecutableElement method, Set<Element> scope) {
-        return (scope.contains(method.getEnclosingElement()) ? "*" : "") + method.getEnclosingElement().getSimpleName() + "."
-               + method.getSimpleName();
-    }
-
-    private Optional<Write> callbackWrite(TreePath argumentPath, Tree argument, Set<Element> scope) {
         if (argument instanceof LambdaExpressionTree lambda) {
-            var finder = new WriteFinder(scope, declaredIn(argumentPath, lambda), DEPTH);
+            var finder = new EffectFinder(scope, declaredIn(argumentPath, lambda), MAX_DEPTH, lambda.getBody());
 
             finder.scan(new TreePath(argumentPath, lambda.getBody()), null);
             return Optional.ofNullable(finder.found);
         }
 
         if (argument instanceof MemberReferenceTree && trees.getElement(argumentPath) instanceof ExecutableElement target) {
-            return delegated(target, List.of(), scope, DEPTH);
+            return callEffect(target, List.of(), scope, MAX_DEPTH, true);
         }
 
-        return Optional.empty();
+        return isForwardedParameter(argumentPath)
+               ? Optional.empty()
+               : Optional.of(new Effect("is not a lambda or method reference, so its effect is unknown", null));
+    }
+
+    /// A callback handed on unchanged from a parameter of the enclosing method: the caller of that method supplies it, and is
+    /// checked where it builds it.
+    private boolean isForwardedParameter(TreePath argumentPath) {
+        return argumentPath.getLeaf() instanceof IdentifierTree && trees.getElement(argumentPath) instanceof Element element
+               && element.getKind() == ElementKind.PARAMETER;
     }
 
     private Set<Element> declaredIn(TreePath lambdaPath, LambdaExpressionTree lambda) {
@@ -247,18 +204,50 @@ public final class AsyncCallbackCheck implements TaskListener {
         return enclosing;
     }
 
-    private Optional<Write> delegated(ExecutableElement method, List<Boolean> sharedArguments, Set<Element> scope, int depth) {
-        if (method.getKind() != ElementKind.METHOD || depth <= 0
-            || !(ANY_CLASS ? isProjectOwner(method) : scope.contains(method.getEnclosingElement()))) {
+    /// The effect of calling `method` where the callback cannot see its body to be clean: none for an allowlisted call or a
+    /// delegate whose body is clean, the call itself for a method without source that returns nothing (or whose result is
+    /// discarded).
+    private Optional<Effect> callEffect(ExecutableElement method,
+                                        List<Boolean> sharedArguments,
+                                        Set<Element> scope,
+                                        int depth,
+                                        boolean resultDiscarded) {
+        if (isAllowlisted(method)) {
+            return Optional.empty();
+        }
+
+        var delegate = delegateBody(method, scope, depth);
+
+        if (delegate.isPresent()) {
+            return delegateEffect(method, delegate.get(), sharedArguments, scope, depth);
+        }
+
+        var voidLike = resultDiscarded || method.getReturnType().getKind() == TypeKind.VOID
+                       || method.getReturnType().toString().equals("org.pragmatica.lang.Unit");
+
+        return voidLike
+               ? Optional.of(new Effect("calls " + ownerName(method) + "." + method.getSimpleName() + "(...)", null))
+               : Optional.empty();
+    }
+
+    private Optional<TreePath> delegateBody(ExecutableElement method, Set<Element> scope, int depth) {
+        if (method.getKind() != ElementKind.METHOD || depth <= 0 || !scope.contains(method.getEnclosingElement())) {
             return Optional.empty();
         }
 
         var path = trees.getPath(method);
 
-        if (path == null || !(path.getLeaf() instanceof MethodTree tree) || tree.getBody() == null) {
-            return Optional.empty();
-        }
+        return path != null && path.getLeaf() instanceof MethodTree tree && tree.getBody() != null
+               ? Optional.of(path)
+               : Optional.empty();
+    }
 
+    private Optional<Effect> delegateEffect(ExecutableElement method,
+                                            TreePath methodPath,
+                                            List<Boolean> sharedArguments,
+                                            Set<Element> scope,
+                                            int depth) {
+        var tree = (MethodTree) methodPath.getLeaf();
         var declared = new HashSet<Element>();
         var parameters = tree.getParameters();
 
@@ -266,27 +255,48 @@ public final class AsyncCallbackCheck implements TaskListener {
             var shared = sharedArguments.size() == parameters.size() && sharedArguments.get(i);
 
             if (!shared) {
-                declared.add(trees.getElement(new TreePath(path, parameters.get(i))));
+                declared.add(trees.getElement(new TreePath(methodPath, parameters.get(i))));
             }
         }
 
-        var finder = new WriteFinder(scope, declared, depth - 1);
+        var finder = new EffectFinder(scope, declared, depth - 1, null);
 
-        finder.scan(new TreePath(path, tree.getBody()), null);
-        return Optional.ofNullable(finder.found).map(write -> new Write(write.description(), method.getSimpleName().toString()));
+        finder.scan(new TreePath(methodPath, tree.getBody()), null);
+        return Optional.ofNullable(finder.found).map(effect -> new Effect(effect.description(), method.getSimpleName().toString()));
     }
 
-    /// Scans a callback or delegate body for the first write to shared state.
-    private final class WriteFinder extends TreePathScanner<Void, Void> {
+    private static String ownerName(ExecutableElement method) {
+        return method.getEnclosingElement().getSimpleName().toString();
+    }
+
+    /// Logging, scheduling and resolving another promise: the effects the rule accepts without a justification.
+    private static boolean isAllowlisted(ExecutableElement method) {
+        var name = method.getSimpleName().toString();
+        var owner = method.getEnclosingElement() instanceof TypeElement type ? type.getQualifiedName().toString() : "";
+
+        return LOGGER_OWNERS.contains(owner)
+               || EXECUTOR_OWNERS.contains(owner)
+               || name.startsWith("schedule")
+               || owner.equals(PROMISE) && RESOLVERS.contains(name);
+    }
+
+    private static boolean isCombinator(ExecutableElement method) {
+        return method.getEnclosingElement() instanceof TypeElement owner && COMBINATOR_OWNERS.contains(owner.getQualifiedName().toString());
+    }
+
+    /// Scans a callback or delegate body for the first effect that is neither allowlisted nor a read.
+    private final class EffectFinder extends TreePathScanner<Void, Void> {
         private final Set<Element> scope;
         private final Set<Element> declared;
         private final int depth;
-        Write found;
+        private final Tree rootExpression;
+        Effect found;
 
-        WriteFinder(Set<Element> scope, Set<Element> declared, int depth) {
+        EffectFinder(Set<Element> scope, Set<Element> declared, int depth, Tree rootExpression) {
             this.scope = scope;
             this.declared = declared;
             this.depth = depth;
+            this.rootExpression = rootExpression;
         }
 
         @Override
@@ -329,21 +339,85 @@ public final class AsyncCallbackCheck implements TaskListener {
         }
 
         @Override
-        public Void visitMethodInvocation(MethodInvocationTree node, Void unused) {
-            if (trees.getElement(getCurrentPath()) instanceof ExecutableElement method) {
-                mutatingCall(getCurrentPath(), node, method);
-
-                if (found == null && depth > 0) {
-                    followDelegate(getCurrentPath(), node, method);
-                }
+        public Void visitMemberReference(MemberReferenceTree node, Void unused) {
+            if (found == null && isConsumerOfCombinator(getCurrentPath())
+                && trees.getElement(getCurrentPath()) instanceof ExecutableElement target) {
+                callEffect(target, List.of(), scope, depth, true).ifPresent(effect -> found = effect);
             }
 
-            return super.visitMethodInvocation(node, unused);
+            return super.visitMemberReference(node, unused);
+        }
+
+        /// `opt.onPresent(this::land)`: a reference handed to a combinator that runs it inline is a call made by the callback.
+        private boolean isConsumerOfCombinator(TreePath reference) {
+            return reference.getParentPath().getLeaf() instanceof MethodInvocationTree
+                   && trees.getElement(reference.getParentPath()) instanceof ExecutableElement combinator
+                   && combinator.getEnclosingElement() instanceof TypeElement owner
+                   && (COMBINATOR_OWNERS.contains(owner.getQualifiedName().toString())
+                       || owner.getQualifiedName().contentEquals("java.util.Optional"));
+        }
+
+        @Override
+        public Void visitMethodInvocation(MethodInvocationTree node, Void unused) {
+            var path = getCurrentPath();
+
+            if (!(trees.getElement(path) instanceof ExecutableElement method)) {
+                return super.visitMethodInvocation(node, unused);
+            }
+
+            if (isCombinator(method)) {
+                return super.visitMethodInvocation(node, unused);
+            }
+
+            if (isAllowlisted(method)) {
+                return null;
+            }
+
+            classify(path, node, method);
+            return found == null ? super.visitMethodInvocation(node, unused) : null;
+        }
+
+        private void classify(TreePath path, MethodInvocationTree node, ExecutableElement method) {
+            if (isSharedMutation(path, node, method)) {
+                found = new Effect("calls " + describe(((MemberSelectTree) node.getMethodSelect()).getExpression()) + "."
+                                   + method.getSimpleName() + "(...)", null);
+                return;
+            }
+
+            var shared = new ArrayList<Boolean>();
+
+            node.getArguments().forEach(argument -> shared.add(isSharedRoot(new TreePath(path, argument))));
+            if (isLocalJdkCall(path, node, method)) {
+                return;
+            }
+
+            callEffect(method, shared, scope, depth, isDiscarded(path)).ifPresent(effect -> found = effect);
+        }
+
+        /// A JDK method on a receiver the callback owns (a builder, a local list) is not an effect.
+        private boolean isLocalJdkCall(TreePath path, MethodInvocationTree node, ExecutableElement method) {
+            return method.getEnclosingElement() instanceof TypeElement owner
+                   && owner.getQualifiedName().toString().startsWith("java.")
+                   && node.getMethodSelect() instanceof MemberSelectTree select
+                   && !isSharedRoot(new TreePath(new TreePath(path, select), select.getExpression()));
+        }
+
+        private boolean isDiscarded(TreePath path) {
+            var parent = path.getParentPath().getLeaf();
+
+            return parent instanceof ExpressionStatementTree || path.getLeaf() == rootExpression;
+        }
+
+        private boolean isSharedMutation(TreePath path, MethodInvocationTree node, ExecutableElement method) {
+            return VERBS.contains(method.getSimpleName().toString())
+                   && node.getMethodSelect() instanceof MemberSelectTree select
+                   && !(method.getEnclosingElement() instanceof TypeElement owner && owner.getQualifiedName().toString().startsWith("org.pragmatica.lang."))
+                   && isSharedRoot(new TreePath(new TreePath(path, select), select.getExpression()));
         }
 
         private void checkTarget(TreePath target, String verb) {
             if (found == null && isSharedTarget(target)) {
-                found = new Write(verb + " " + describe(target.getLeaf()), null);
+                found = new Effect(verb + " " + describe(target.getLeaf()), null);
             }
         }
 
@@ -358,40 +432,6 @@ public final class AsyncCallbackCheck implements TaskListener {
                 case ArrayAccessTree access -> isSharedRoot(new TreePath(path, access.getExpression()));
                 default -> false;
             };
-        }
-
-        private void mutatingCall(TreePath callPath, MethodInvocationTree node, ExecutableElement method) {
-            if (VOID_CALLS && found == null && method.getReturnType().getKind() == TypeKind.VOID
-                && node.getMethodSelect() instanceof MemberSelectTree voidSelect
-                && method.getEnclosingElement() instanceof TypeElement voidOwner
-                && !BENIGN_OWNERS.contains(voidOwner.getQualifiedName().toString())
-                && !voidOwner.getQualifiedName().toString().startsWith("java.")
-                && isSharedRoot(new TreePath(new TreePath(callPath, voidSelect), voidSelect.getExpression()))) {
-                found = new Write("calls " + describe(voidSelect.getExpression()) + "." + method.getSimpleName() + "(...)", null);
-                return;
-            }
-
-            if (found != null || !VERBS.contains(method.getSimpleName().toString())
-                || !(node.getMethodSelect() instanceof MemberSelectTree select)) {
-                return;
-            }
-
-            var selectPath = new TreePath(callPath, select);
-            var receiver = new TreePath(selectPath, select.getExpression());
-            var owner = method.getEnclosingElement() instanceof TypeElement type
-                        ? type.getQualifiedName().toString()
-                        : "";
-
-            if (!NOT_STATE.contains(owner) && !isNotState(trees.getTypeMirror(receiver)) && isSharedRoot(receiver)) {
-                found = new Write("calls " + describe(select.getExpression()) + "." + method.getSimpleName() + "(...)", null);
-            }
-        }
-
-        private void followDelegate(TreePath callPath, MethodInvocationTree node, ExecutableElement method) {
-            var shared = new ArrayList<Boolean>();
-
-            node.getArguments().forEach(argument -> shared.add(isSharedRoot(new TreePath(callPath, argument))));
-            delegated(method, shared, scope, depth).ifPresent(write -> found = write);
         }
 
         /// Whether the expression is rooted in something the callback does not own: a field, `this`, a static, or a local
@@ -444,10 +484,6 @@ public final class AsyncCallbackCheck implements TaskListener {
         }
     }
 
-    private static boolean isProjectOwner(ExecutableElement method) {
-        return method.getEnclosingElement() instanceof TypeElement owner && !NOT_STATE.contains(owner.getQualifiedName().toString());
-    }
-
     private static boolean isStatic(Element element) {
         return element.getModifiers().contains(Modifier.STATIC);
     }
@@ -464,10 +500,6 @@ public final class AsyncCallbackCheck implements TaskListener {
                 return current;
             }
         }
-    }
-
-    private boolean isNotState(TypeMirror type) {
-        return type != null && type.getKind() == TypeKind.DECLARED && NOT_STATE.contains(types.erasure(type).toString());
     }
 
     private static String describe(Tree tree) {
@@ -493,9 +525,7 @@ public final class AsyncCallbackCheck implements TaskListener {
 
     private static boolean suppresses(Element element) {
         for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
-            var name = mirror.getAnnotationType().asElement().getSimpleName().toString();
-
-            if (name.equals("SuppressWarnings") && mentionsRule(mirror)) {
+            if (mirror.getAnnotationType().asElement().getSimpleName().contentEquals("SuppressWarnings") && mentionsRule(mirror)) {
                 return true;
             }
         }
@@ -542,12 +572,7 @@ public final class AsyncCallbackCheck implements TaskListener {
 
     private static boolean hasDetachedTag(String text, int start, int end) {
         var lineStart = text.lastIndexOf('\n', start - 1) + 1;
-        var lines = new ArrayList<String>();
-
-        for (var line : text.substring(lineStart, Math.min(text.length(), end)).split("\n", -1)) {
-            lines.add(line);
-        }
-
+        var lines = new ArrayList<String>(List.of(text.substring(lineStart, Math.min(text.length(), end)).split("\n", -1)));
         var above = lineStart;
 
         while (above > 0) {
@@ -565,15 +590,15 @@ public final class AsyncCallbackCheck implements TaskListener {
         return lines.stream().anyMatch(line -> DETACHED.matcher(line).find());
     }
 
-    private void report(TreePath path, MethodInvocationTree call, Write write) {
+    private void report(TreePath path, MethodInvocationTree call, Effect effect) {
         var name = call.getMethodSelect() instanceof MemberSelectTree select ? select.getIdentifier().toString() : "on*";
-        var via = write.via() == null ? "" : " (via " + write.via() + ")";
+        var via = effect.via() == null ? "" : " (via " + effect.via() + ")";
 
         trees.printMessage(severity,
-                           RULE_ID + ": Promise." + name + " callback " + write.description() + via
+                           RULE_ID + ": Promise." + name + " callback " + effect.description() + via
                            + " but runs on its own thread, concurrently with the promise's dependents: use"
-                           + " withSuccess/withFailure/withResult (or a chain step), or record a deliberately detached effect"
-                           + " with '// detached: <reason>'",
+                           + " withSuccess/withFailure/withResult (or a chain step), or justify a deliberately detached effect"
+                           + " with '// detached: <why it may run late>'",
                            call.getMethodSelect(),
                            path.getCompilationUnit());
     }
