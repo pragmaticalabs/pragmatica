@@ -16,6 +16,7 @@
 
 package org.pragmatica.dht;
 
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -156,10 +157,15 @@ class DistributedDHTClientLateReplyTest {
 
         for (var trial = 0; trial < TRIALS; trial++) {
             var key = keyOf(trial);
-            var op = client.put(key, new byte[]{9});
 
-            replyLater(() -> replyToEveryPut(client));
-            assertThat(op.await().isSuccess()).isTrue();
+            sent.clear();
+            var op = client.put(key, new byte[]{9});
+            var requests = List.copyOf(sent);
+
+            replyLater(() -> replyToEveryPut(client, requests));
+            var result = op.await();
+
+            assertThat(result.isSuccess()).as("put outcome: %s", result).isTrue();
             stillPending += node.localWritePending(key) ? 1 : 0;
         }
 
@@ -175,10 +181,15 @@ class DistributedDHTClientLateReplyTest {
 
         for (var trial = 0; trial < TRIALS; trial++) {
             var key = keyOf(trial);
-            var op = client.remove(key);
 
-            replyLater(() -> replyToEveryRemove(client));
-            assertThat(op.await().isSuccess()).isTrue();
+            sent.clear();
+            var op = client.remove(key);
+            var requests = List.copyOf(sent);
+
+            replyLater(() -> replyToEveryRemove(client, requests));
+            var result = op.await();
+
+            assertThat(result.isSuccess()).as("remove outcome: %s", result).isTrue();
             stillPending += node.localWritePending(key) ? 1 : 0;
         }
 
@@ -186,8 +197,8 @@ class DistributedDHTClientLateReplyTest {
                                 .isZero();
     }
 
-    private void replyToEveryPut(DistributedDHTClient client) {
-        sent.stream()
+    private static void replyToEveryPut(DistributedDHTClient client, List<ProtocolMessage> requests) {
+        requests.stream()
             .filter(DHTMessage.PutRequest.class::isInstance)
             .map(DHTMessage.PutRequest.class::cast)
             .forEach(request -> client.onPutResponse(new DHTMessage.PutResponse(request.requestId(),
@@ -197,15 +208,13 @@ class DistributedDHTClientLateReplyTest {
                                                                                 false,
                                                                                 false,
                                                                                 false)));
-        sent.clear();
     }
 
-    private void replyToEveryRemove(DistributedDHTClient client) {
-        sent.stream()
+    private static void replyToEveryRemove(DistributedDHTClient client, List<ProtocolMessage> requests) {
+        requests.stream()
             .filter(DHTMessage.RemoveRequest.class::isInstance)
             .map(DHTMessage.RemoveRequest.class::cast)
             .forEach(request -> client.onRemoveResponse(new DHTMessage.RemoveResponse(request.requestId(), REPLICA, true)));
-        sent.clear();
     }
 
     private <R extends DHTMessage> R lastRequest(Class<R> type) {

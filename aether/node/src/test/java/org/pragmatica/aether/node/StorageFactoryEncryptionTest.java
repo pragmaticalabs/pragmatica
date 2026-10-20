@@ -1123,7 +1123,9 @@ class StorageFactoryEncryptionTest {
             var base = new InMemoryDHTClient();
             var boot = bootRefusedByDht(base, tempDir.resolve("plain-gates-" + trial), tempDir.resolve("vault-gates-" + trial));
 
-            refusedAfterLateAnswers(base, boot);
+            StorageFactory.verifyDhtMarkers(new LateDHTClient(base), checksOf(boot), () -> false)
+                          .await()
+                          .onSuccess(_ -> fail("the DHT check must refuse a boot without a keyring over an encrypted namespace"));
             pendingGates += StorageFactory.pendingDhtAdmissions(boot).isEmpty() ? 0 : 1;
         }
 
