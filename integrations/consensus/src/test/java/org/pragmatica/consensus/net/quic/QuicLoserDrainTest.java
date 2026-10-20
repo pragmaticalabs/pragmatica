@@ -33,14 +33,19 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.DefaultChannelPromise;
+import io.netty.channel.DefaultEventLoop;
 import io.netty.handler.codec.quic.QuicChannel;
+import io.netty.handler.codec.quic.QuicStreamChannel;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
@@ -160,6 +165,33 @@ class QuicLoserDrainTest {
 
         verify(loser).closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
         verify(loser, never()).close();
+    }
+
+    /// The drain is bounded: a peer that never finishes its half cannot keep the loser open past the bound, and the
+    /// loser is not closed before it.
+    @Test
+    void closeAfterDrain_peerNeverFinishes_closesAtTheBound_notBefore() {
+        var loop = new DefaultEventLoop();
+        var channel = mock(QuicChannel.class);
+        var stream = mock(QuicStreamChannel.class);
+
+        try {
+            when(channel.isActive()).thenReturn(true);
+            when(channel.eventLoop()).thenReturn(loop);
+            when(stream.isActive()).thenReturn(true);
+            when(stream.closeFuture()).thenReturn(new DefaultChannelPromise(stream, loop));
+
+            var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
+            var _ = connection.registerStream(StreamType.KV, stream);
+
+            connection.closeAfterDrain(400);
+
+            verify(channel, never()).close();
+            verify(stream).writeAndFlush(any());
+            verify(channel, timeout(5_000)).close();
+        } finally {
+            loop.shutdownGracefully();
+        }
     }
 
     private static QuicPeerConnection connectionFrom(NodeId dialer) {
