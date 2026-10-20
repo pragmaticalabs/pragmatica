@@ -145,7 +145,7 @@ class StorageRoutesTest {
 
         @Test
         void instanceDetail_ofAnInstanceThatDoesNotPrefetch_hasNoGossip_andNeverAsksTheNode() {
-            var detail = storageRoutes(() -> nodeReporting(setups, null)).instanceDetail("streams").unwrap();
+            var detail = storageRoutes(() -> nodeReporting(setups, null)).instanceDetail("artifacts").unwrap();
 
             assertThat(detail.prefetch().isEmpty()).isTrue();
             assertThat(detail.gossip().isEmpty()).isTrue();
