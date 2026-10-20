@@ -193,7 +193,8 @@ final class DefaultContentStore implements ContentStore {
     /// legacy text manifest is recognised, everything else is returned VERBATIM. A legacy value is never read as an
     /// envelope, whatever its bytes begin with.
     private Promise<Option<byte[]>> getLegacy(String name) {
-        return storage.resolveRef(name)
+        return Namespace.LEGACY.refName(name)
+                      .flatMap(storage::resolveRef)
                       .async(CONTENT_NOT_FOUND)
                       .flatMap(this::readBlock)
                       .flatMap(this::resolveLegacy);
@@ -293,7 +294,7 @@ final class DefaultContentStore implements ContentStore {
     @Override
     public Promise<Boolean> exists(String name) {
         return storage.resolveRef(ContentEnvelope.trustedRef(name))
-                      .orElse(() -> storage.resolveRef(name))
+                      .orElse(() -> Namespace.LEGACY.refName(name).flatMap(storage::resolveRef))
                       .fold(() -> Promise.success(false),
                             storage::exists);
     }
@@ -317,20 +318,36 @@ final class DefaultContentStore implements ContentStore {
     }
 
     private Promise<Unit> dropThenRelease(Namespace namespace, String name, Option<PreviousContent> previous) {
-        return storage.dropRef(namespace.refName(name))
+        return namespace.refName(name)
+                        .fold(() -> Promise.success(unit()),
+                              ref -> dropRefThenRelease(namespace, ref, previous));
+    }
+
+    private Promise<Unit> dropRefThenRelease(Namespace namespace, String ref, Option<PreviousContent> previous) {
+        return storage.dropRef(ref)
                       .flatMap(displaced -> releaseDisplaced(namespace, displaced, previous));
     }
 
     /// Where a name's value lives and how its manifest is recognised. TRUSTED: the `|`-prefixed ref only this store
     /// writes, manifest by envelope kind. LEGACY: the bare name, written before the trusted namespace existed,
     /// manifest by the legacy text format only (an envelope-shaped legacy value is content, never a manifest).
+    ///
+    /// A name that itself begins with `|` has NO legacy ref: its bare name is another name's trusted ref (`|victim` is
+    /// the trusted ref of `victim`), so reading, overwriting or dropping it as legacy would reach that name's internal
+    /// value. Every legacy access goes through [#refName], so no user-supplied name reaches the trusted namespace on any
+    /// operation.
     private enum Namespace {
         TRUSTED,
         LEGACY;
-        String refName(String name) {
+        Option<String> refName(String name) {
             return this == TRUSTED
-                   ? ContentEnvelope.trustedRef(name)
-                   : name;
+                   ? some(ContentEnvelope.trustedRef(name))
+                   : legacyRef(name);
+        }
+        private static Option<String> legacyRef(String name) {
+            return name.startsWith(ContentEnvelope.TRUSTED_REF_PREFIX)
+                   ? none()
+                   : some(name);
         }
         Option<ContentManifest> manifestOf(byte[] value) {
             return this == TRUSTED
@@ -343,8 +360,9 @@ final class DefaultContentStore implements ContentStore {
     /// absent name; empty chunks for a block no tier holds any more or for direct (unchunked) content.
     /// A block that cannot be READ fails the operation here, before anything is written or dropped.
     private Promise<Option<PreviousContent>> previousContent(Namespace namespace, String name) {
-        return storage.resolveRef(namespace.refName(name))
-                      .fold(() -> Promise.success(none()),
+        return namespace.refName(name)
+                        .flatMap(storage::resolveRef)
+                        .fold(() -> Promise.success(none()),
                             blockId -> previousContentOf(namespace, blockId));
     }
 

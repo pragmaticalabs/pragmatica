@@ -238,6 +238,68 @@ class ContentStoreManifestFramingTest {
         assertThat(store.exists("never-written").await().unwrap()).as("control: an absent name does not exist").isFalse();
     }
 
+    /// A user name beginning with `|` is a different name, never another name's internal ref: `|victim` is the trusted
+    /// ref of `victim`, so a legacy read of it would return `victim`'s manifest. Absent, it reads "not found".
+    @Test
+    void getOfAPipeName_neverReadsAnotherNamesTrustedRef() {
+        put("victim", content(3 * CHUNK_SIZE, 11));
+
+        assertThat(store.get("|victim").await().map(Option::isPresent).or(false)).as("|victim was never written").isFalse();
+    }
+
+    /// `exists` answers for the name asked, not for the name whose trusted ref it spells.
+    @Test
+    void existsOfAPipeName_neverSeesAnotherNamesTrustedRef() {
+        put("victim", content(100, 12));
+
+        assertThat(store.exists("|victim").await().unwrap()).isFalse();
+    }
+
+    /// Writing `|victim` stores its own value and leaves `victim` untouched (the legacy retire step used to drop
+    /// `victim`'s trusted ref, as the bare legacy ref of `|victim`).
+    @Test
+    void putOfAPipeName_leavesTheOtherNameReadable() {
+        var victim = content(3 * CHUNK_SIZE, 13);
+        var other = "other".getBytes(StandardCharsets.UTF_8);
+
+        put("victim", victim);
+        put("|victim", other);
+
+        assertThat(get("victim")).isEqualTo(victim);
+        assertThat(get("|victim")).isEqualTo(other);
+    }
+
+    /// Deleting `|victim` leaves `victim` readable and its chunks credited.
+    @Test
+    void deleteOfAPipeName_leavesTheOtherNameReadable() {
+        var victim = content(3 * CHUNK_SIZE, 14);
+
+        put("victim", victim);
+        var before = refCounts(victimChunkIds("victim"));
+
+        store.delete("|victim").await().onFailure(c -> fail("delete: " + c.message()));
+
+        assertThat(get("victim")).isEqualTo(victim);
+        assertThat(refCounts(victimChunkIds("victim"))).isEqualTo(before);
+    }
+
+    /// The guard is scoped to names beginning with `|`: a legacy name that merely CONTAINS `|` elsewhere, and a plain
+    /// legacy name, are still read, found and retired the legacy way.
+    @Test
+    void legacyNamesNotBeginningWithAPipe_stillWorkTheLegacyWay() {
+        var plain = "plain legacy".getBytes(StandardCharsets.UTF_8);
+        var piped = "piped legacy".getBytes(StandardCharsets.UTF_8);
+
+        storage.swapRef("plain", plain).await().unwrap();
+        storage.swapRef("a|b", piped).await().unwrap();
+
+        assertThat(get("plain")).isEqualTo(plain);
+        assertThat(get("a|b")).isEqualTo(piped);
+        assertThat(store.exists("plain").await().unwrap()).isTrue();
+        store.delete("plain").await().onFailure(c -> fail("delete: " + c.message()));
+        assertThat(storage.resolveRef("plain").isEmpty()).as("the legacy ref is retired").isTrue();
+    }
+
     /// The proof the trusted namespace rests on, for snapshots in the layout written before the `format=2` encoding:
     /// the restore path splits a ref line at its FIRST `|`, so a name containing `|` (a trusted ref, or a forged one)
     /// is never restored from such a file.
