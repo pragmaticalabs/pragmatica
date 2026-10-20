@@ -44,9 +44,7 @@ public interface TierSubscriberSlice {
                                        new ConcurrentLinkedQueue<>());
     }
 
-    record tierSubscriberSlice(String instanceId,
-                               Queue<String> contextOrders,
-                               Queue<String> bareOrders) implements TierSubscriberSlice {
+    record tierSubscriberSlice(String instanceId, Queue<String> contextOrders, Queue<String> bareOrders) implements TierSubscriberSlice {
         @Override
         public Promise<TierStatus> status(StatusRequest request) {
             return Promise.success(TierStatus.tierStatus(instanceId, List.copyOf(contextOrders), List.copyOf(bareOrders)));
