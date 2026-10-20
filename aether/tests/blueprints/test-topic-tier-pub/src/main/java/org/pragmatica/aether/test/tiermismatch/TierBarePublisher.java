@@ -8,12 +8,12 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-import org.pragmatica.aether.slice.Subscriber;
+import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
 
-/// Subscriber side of `tier-orders`: declared `durable`, which the `(event, MessageContext)` handler shape requires.
-@ResourceQualifier(type = Subscriber.class, config = "tier-context-subscriber")
+/// Publisher side of `tier-bare`: ephemeral.
+@ResourceQualifier(type = Publisher.class, config = "tier-bare")
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface TierContextSubscriber {}
+@Target(ElementType.PARAMETER)
+public @interface TierBarePublisher {}

@@ -13,7 +13,7 @@ import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
 
 /// Subscriber side of `tier-bare`: ephemeral, bare handler (the control).
-@ResourceQualifier(type = Subscriber.class, config = "tier-bare-subscriber")
+@ResourceQualifier(type = Subscriber.class, config = "tier-bare")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
 public @interface TierBareSubscriber {}

@@ -6,11 +6,11 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>org.pragmatica.aether.test</groupId>
-    <artifactId>test-topic-tier</artifactId>
+    <artifactId>test-topic-tier-sub</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
 
-    <name>Test Blueprint - Topic Tier Mismatch</name>
+    <name>Test Blueprint - Topic Tier Mismatch (subscriber)</name>
     <description>#1337 fixture: two slices on one topic - an ephemeral publisher and a durable-declared (context) subscriber - plus a bare-subscriber control</description>
 
     <properties>
@@ -70,7 +70,7 @@
                     <proc>full</proc>
                     <compilerArgs>
                         <arg>-Aslice.groupId=org.pragmatica.aether.test</arg>
-                        <arg>-Aslice.artifactId=test-topic-tier</arg>
+                        <arg>-Aslice.artifactId=test-topic-tier-sub</arg>
                     </compilerArgs>
                     <annotationProcessorPaths>
                         <path>

@@ -13,7 +13,7 @@ import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
 
 /// Publisher side of `tier-orders`: no `durability` declared, so the EPHEMERAL RPC fan-out.
-@ResourceQualifier(type = Publisher.class, config = "tier-context-publisher")
+@ResourceQualifier(type = Publisher.class, config = "tier-orders")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.PARAMETER)
 public @interface TierContextPublisher {}

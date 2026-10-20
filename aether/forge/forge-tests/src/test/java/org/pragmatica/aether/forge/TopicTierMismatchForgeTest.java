@@ -32,9 +32,10 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
-/// #1337 reachability, end to end on a real cluster: TWO slices of one blueprint share the topic address `tier-orders`; the
-/// publisher slice declares it EPHEMERAL (no `durability`), the subscriber slice declares it `durable` and handles it with
-/// the `(TierOrder, MessageContext)` shape. Both jars compile and load, and nothing at deploy time sees the disagreement.
+/// #1337 reachability, end to end on a real cluster: TWO slices from two jars share the topic `tier-orders`; the publisher
+/// jar's `resources.toml` declares it EPHEMERAL (no `durability`), the subscriber jar's declares it `durable` and the slice
+/// handles it with the `(TierOrder, MessageContext)` shape. Both jars compile and load, and nothing at deploy time sees the
+/// disagreement.
 ///
 /// A second topic, `tier-bare`, is the control: ephemeral on both sides with a bare handler. It is published in the same call,
 /// so a delivery on the control and none on the mismatch cannot be a harness artefact.
@@ -51,8 +52,8 @@ class TopicTierMismatchForgeTest {
     private static final int BASE_MGMT_PORT = 19600;
     private static final int BASE_APP_HTTP_PORT = 19700;
 
-    private static final String PUBLISHER_SLICE = "org.pragmatica.aether.test:test-topic-tier-tier-publisher-slice:1.0.0";
-    private static final String SUBSCRIBER_SLICE = "org.pragmatica.aether.test:test-topic-tier-tier-subscriber-slice:1.0.0";
+    private static final String PUBLISHER_SLICE = "org.pragmatica.aether.test:test-topic-tier-pub-tier-publisher-slice:1.0.0";
+    private static final String SUBSCRIBER_SLICE = "org.pragmatica.aether.test:test-topic-tier-sub-tier-subscriber-slice:1.0.0";
     private static final String BLUEPRINT_ID = "forge.test:topic-tier:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
