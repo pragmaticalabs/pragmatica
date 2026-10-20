@@ -4535,7 +4535,7 @@ public interface AetherNode extends ManageableNode {
                                         .toList();
         Runnable announceJoinTrigger = selfNodeInfo == null
                                        ? () -> {}
-                                       : joinAnnouncement(configuredWorker(config),
+                                       : joinAnnouncement(config,
                                                           swimHealthDetector,
                                                           selfNodeInfo,
                                                           swimConfig.clusterName(),
@@ -8717,14 +8717,14 @@ public interface AetherNode extends ManageableNode {
     /// activation directive is committed ([#handleActivationDirective] releases it): before that it has no
     /// community, and the cores' membership scope admits no worker that is not a governor, so every round
     /// was traffic they dropped (#1840). A core announces at once, as it must to be dialed by survivors.
-    static Runnable joinAnnouncement(boolean worker,
+    static Runnable joinAnnouncement(AetherNodeConfig config,
                                      CoreSwimHealthDetector swimHealthDetector,
                                      NodeInfo self,
                                      String clusterName,
                                      long incarnation,
                                      long bootToken,
                                      List<InetSocketAddress> seeds) {
-        return worker
+        return configuredWorker(config)
                ? () -> swimHealthDetector.announceJoinWhenAssigned(self, clusterName, incarnation, bootToken, seeds)
                : () -> swimHealthDetector.announceJoin(self, clusterName, incarnation, bootToken, seeds);
     }

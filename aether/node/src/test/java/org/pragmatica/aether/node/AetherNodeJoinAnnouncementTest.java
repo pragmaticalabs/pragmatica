@@ -6,17 +6,23 @@ package org.pragmatica.aether.node;
 
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1840: which announcement a node runs at transport-ready. A worker holds its ANNOUNCE to the seeds until
 /// its activation directive is committed; a core announces at once. The trigger does nothing until run.
@@ -26,9 +32,23 @@ class AetherNodeJoinAnnouncementTest {
 
     private final CoreSwimHealthDetector detector = Mockito.mock(CoreSwimHealthDetector.class);
 
+    private static AetherNodeConfig config(Option<WorkerConfig> workerConfig) {
+        return config(workerConfig, SELF);
+    }
+
+    private static AetherNodeConfig config(Option<WorkerConfig> workerConfig, NodeInfo self) {
+        var config = Mockito.mock(AetherNodeConfig.class);
+
+        when(config.self()).thenReturn(SELF.id());
+        when(config.workerConfig()).thenReturn(workerConfig);
+        when(config.topology()).thenReturn(new TopologyConfig(SELF.id(), 5, timeSpan(1).seconds(), timeSpan(10).seconds(), List.of(self)));
+
+        return config;
+    }
+
     @Test
-    void joinAnnouncement_worker_holdsTheAnnounceUntilAssigned() {
-        var trigger = AetherNode.joinAnnouncement(true, detector, SELF, "c", 5L, 7L, SEEDS);
+    void joinAnnouncement_configuredWorker_holdsTheAnnounceUntilAssigned() {
+        var trigger = AetherNode.joinAnnouncement(config(Option.some(Mockito.mock(WorkerConfig.class))), detector, SELF, "c", 5L, 7L, SEEDS);
 
         verifyNoInteractions(detector);
         trigger.run();
@@ -38,8 +58,19 @@ class AetherNodeJoinAnnouncementTest {
     }
 
     @Test
+    void joinAnnouncement_workerLabelledInTheTopology_holdsTheAnnounceUntilAssigned() {
+        var labelled = NodeInfo.nodeInfo(SELF.id(), SELF.address(), Map.of(NodeInfo.LABEL_ROLE, "worker"));
+        var trigger = AetherNode.joinAnnouncement(config(Option.none(), labelled), detector, SELF, "c", 5L, 7L, SEEDS);
+
+        trigger.run();
+
+        verify(detector).announceJoinWhenAssigned(SELF, "c", 5L, 7L, SEEDS);
+        verify(detector, never()).announceJoin(SELF, "c", 5L, 7L, SEEDS);
+    }
+
+    @Test
     void joinAnnouncement_core_announcesAtOnce() {
-        var trigger = AetherNode.joinAnnouncement(false, detector, SELF, "c", 5L, 7L, SEEDS);
+        var trigger = AetherNode.joinAnnouncement(config(Option.none()), detector, SELF, "c", 5L, 7L, SEEDS);
 
         verifyNoInteractions(detector);
         trigger.run();
