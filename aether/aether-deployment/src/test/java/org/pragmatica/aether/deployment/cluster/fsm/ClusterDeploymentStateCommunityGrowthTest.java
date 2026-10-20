@@ -130,10 +130,21 @@ class ClusterDeploymentStateCommunityGrowthTest {
         var fixture = fixture(config(true, 2, 5));
 
         fixture.joinAll(2);
+        fixture.passTheJoinGrace();
         fixture.markAbsent(1);
         fixture.joinAll(1);
 
         assertThat(fixture.communityOf(3)).as("worker 1 is observed absent, so w-0 has room for one more").isEqualTo(FIRST);
+    }
+
+    @Test
+    void join_growthOn_aFreshWorkerTheLivenessViewHasNotSeenYet_stillHoldsItsSlot() {
+        var fixture = fixture(config(true, 1, 5));
+
+        fixture.markEveryoneAbsent();
+        fixture.joinAll(2);
+
+        assertThat(fixture.communityOf(2)).as("the first worker's silence is not yet absence: w-0 is full for the second").isEqualTo(SECOND);
     }
 
     @Test
@@ -194,6 +205,19 @@ class ClusterDeploymentStateCommunityGrowthTest {
         fixture.joinAll(1);
 
         assertThat(fixture.communityOf(2)).as("nothing was committed for the first joiner, so the second takes the first community").isEqualTo(FIRST);
+    }
+
+    @Test
+    void join_growthOn_aDuplicateRefusedAfterTheFirstAttemptCommitted_leavesTheWorkerCountedAsPlaced() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.racedBy(() -> fixture.seedMembers(FIRST, 1));
+        fixture.joinAll(1);
+
+        assertThat(fixture.hasDirective(1)).as("the first attempt's directive is there; this attempt was the refused duplicate").isTrue();
+        assertThat(fixture.context().communityAdmission().isRecent(worker(1), fixture.context().nowMs()))
+            .as("the worker stays counted through its join grace")
+            .isTrue();
     }
 
     @Test
@@ -260,6 +284,7 @@ class ClusterDeploymentStateCommunityGrowthTest {
         var kvStore = new InMemoryKvStore(router);
         var cluster = new RecordingClusterNode(SELF, kvStore);
         var context = new java.util.concurrent.atomic.AtomicReference<ClusterDeploymentContext>();
+        var clock = new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
 
         kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
             new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
@@ -282,14 +307,14 @@ class ClusterDeploymentStateCommunityGrowthTest {
                                                              DeploymentAtomicity.ALL_OR_NOTHING,
                                                              1,
                                                              timeSpan(300).seconds(),
-                                                             System::currentTimeMillis,
+                                                             clock::get,
                                                              memberSourceSupplier,
                                                              CommunitySizing.DEFAULT)).dormant();
         var harness = FsmTestHarness.harness("community-growth-" + SELF.id(), factory);
 
         harness.dispatch(new Activate());
 
-        return new Fixture(cluster, kvStore, harness, context.get());
+        return new Fixture(cluster, kvStore, harness, context.get(), clock);
     }
 
     private static ClusterDeploymentContext remember(java.util.concurrent.atomic.AtomicReference<ClusterDeploymentContext> holder,
@@ -306,7 +331,8 @@ class ClusterDeploymentStateCommunityGrowthTest {
     private record Fixture(RecordingClusterNode cluster,
                            InMemoryKvStore kvStore,
                            FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness,
-                           ClusterDeploymentContext context) {
+                           ClusterDeploymentContext context,
+                           java.util.concurrent.atomic.AtomicLong clock) {
         /// Joins the next `count` workers: `worker-1`, `worker-2`, ... in order across calls on this fixture.
         void joinAll(int count) {
             for (int i = 0; i < count; i++) {
@@ -335,6 +361,15 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         Option<CommunityValue> community(String id) {
             return kvStore.getTyped(CommunityKey.communityKey(id), CommunityValue.class);
+        }
+
+        void markEveryoneAbsent() {
+            context.setCommunityLiveness(_ -> true);
+        }
+
+        /// Time passes for the leader: past the join grace a silent worker is no longer given the benefit of the doubt.
+        void passTheJoinGrace() {
+            clock.addAndGet(CommunityAdmissionLedger.JOIN_GRACE_MS + 1);
         }
 
         void markAbsent(int number) {

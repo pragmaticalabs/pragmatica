@@ -1408,9 +1408,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                           });
         }
 
-        /// A refused assignment holds no slot: the growth policy counts it only while it is in flight (#241), and the node's retry decides afresh.
+        /// A refused assignment that left no directive holds no slot: the growth policy counts it only while it is in flight (#241), and the node's retry decides afresh. A duplicate's refusal after the first attempt committed leaves that attempt's entry alone.
         private void releaseRefusedAssignment(NodeId targetNode) {
-            ctx.communityAdmission().forget(targetNode);
+            if (ctx.kvStore().get(ActivationDirectiveKey.activationDirectiveKey(targetNode)).isEmpty()) {
+                ctx.communityAdmission().forget(targetNode);
+            }
+
             log.debug("Assignment changed before commit for {}; fresh admission will retry", targetNode);
         }
 
