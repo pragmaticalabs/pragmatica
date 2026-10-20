@@ -84,29 +84,29 @@ class KnownUnwiredSurfacesTest {
                   + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
     }
 
-    /// The cache-only-marker groundwork: `StorageInstance.warm` and the read-hit listener overload of
-    /// `StorageInstance.storageInstance` have no production caller until the prefetch wiring lands (the follow-up that
-    /// gossips hints over SWIM and builds a prefetch manager per instance). Registered so they cannot ship dead
-    /// silently: retire these assertions in THAT change, by turning them into reachability controls.
+    /// Reachability control for the cache-only-marker groundwork. `StorageInstance.warm` and the read-hit listener
+    /// overload of `StorageInstance.storageInstance` were registered here as unwired until the prefetch wiring landed;
+    /// that wiring is now in production (`DefaultPrefetchManager` calls `warm`, `StorageFactory` builds the instance
+    /// with the listener), so the scanner must reach both. Kept as a control: if it flips, the scanner or the wiring
+    /// changed, and a surface has gone dead again.
     @Test
-    void storageWarmAndReadHitListener_areNotCalledFromProductionYet() throws Exception {
+    void storageWarmAndReadHitListener_areCalledFromProduction() throws Exception {
         assertCorpusComplete();
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
-        var warm = MethodRef.of(StorageInstance.class.getDeclaredMethod("warm",
-                                                                                              BlockId.class));
+        var warm = MethodRef.of(StorageInstance.class.getDeclaredMethod("warm", BlockId.class));
         var listenerOverload = MethodRef.of(StorageInstance.class.getDeclaredMethod("storageInstance",
-                                                                                                          String.class,
-                                                                                                          List.class,
-                                                                                                          MetadataStore.class,
-                                                                                                          WritePolicy.class,
-                                                                                                          Option.class,
-                                                                                                          AppendLog.TornTailSink.class,
-                                                                                                          Consumer.class));
+                                                                                    String.class,
+                                                                                    List.class,
+                                                                                    MetadataStore.class,
+                                                                                    WritePolicy.class,
+                                                                                    Option.class,
+                                                                                    AppendLog.TornTailSink.class,
+                                                                                    Consumer.class));
 
-        assertFalse(reachability.isReachable(warm),
-                    "StorageInstance.warm has been wired into production: retire this entry (and keep the reachability as a control).");
-        assertFalse(reachability.isReachable(listenerOverload),
-                    "The read-hit listener overload has been wired into production: retire this entry (and keep the reachability as a control).");
+        assertTrue(reachability.isReachable(warm),
+                   "StorageInstance.warm is no longer reached from production: the prefetch manager stopped calling it.");
+        assertTrue(reachability.isReachable(listenerOverload),
+                   "The read-hit listener overload is no longer reached from production: StorageFactory stopped using it.");
     }
 
     /// Every `apply` overload declared on [ApplyOrchestrator], by bytecode identity. The assertions

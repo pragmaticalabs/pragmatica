@@ -32,7 +32,6 @@ class PrefetchWarmTest {
     private static final class PendingWarmStorage {
         final List<Promise<Boolean>> pending = new CopyOnWriteArrayList<>();
         final List<BlockId> warmed = new CopyOnWriteArrayList<>();
-        final AtomicInteger running = new AtomicInteger();
         final AtomicInteger peak = new AtomicInteger();
         final StorageInstance instance = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                                                   new Class<?>[]{StorageInstance.class},
@@ -46,13 +45,18 @@ class PrefetchWarmTest {
             };
         }
 
+        private int unresolved() {
+            return (int) pending.stream().filter(promise -> !promise.isResolved()).count();
+        }
+
         private Promise<Boolean> startWarm(BlockId id) {
             var promise = Promise.<Boolean> promise();
 
             warmed.add(id);
             pending.add(promise);
-            peak.accumulateAndGet(running.incrementAndGet(), Math::max);
-            promise.onResultRun(running::decrementAndGet);
+            // Counted from the promises' own state, which flips synchronously on resolve; a completion callback runs
+            // later and would make the count lag the manager's slot release.
+            peak.accumulateAndGet(unresolved(), Math::max);
 
             return promise;
         }
@@ -105,6 +109,14 @@ class PrefetchWarmTest {
             assertThat(PrefetchConfig.DEFAULT_MAX_IN_FLIGHT).isEqualTo(4);
             assertThat(defaulted.stats().started()).isEqualTo(4);
             assertThat(defaulted.stats().droppedInFlight()).isEqualTo(2);
+        }
+
+        @Test
+        void prefetchConfig_everyFactoryWithoutACap_takesTheDefault() {
+            assertThat(prefetchConfig().maxInFlight()).isEqualTo(4);
+            assertThat(prefetchConfig(3, 5, 60_000).maxInFlight()).isEqualTo(4);
+            assertThat(prefetchConfig(3, 5, 60_000, 300_000, 10_000).maxInFlight()).isEqualTo(4);
+            assertThat(prefetchConfig(3, 5, 60_000, 300_000, 10_000, 6).maxInFlight()).isEqualTo(6);
         }
 
         @Test

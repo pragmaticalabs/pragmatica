@@ -168,27 +168,71 @@ class StorageFactoryPrefetchWiringTest {
     @Test
     void processHints_aBurstOnTheRealInstance_neverHasMoreFetchesRunningThanTheConfiguredCap() {
         var dht = new HoldableDHTClient();
-        var cap = 2;
         var nodeA = createNode(nodeADir, "node-a", dht, true);
-        var nodeB = createNode(nodeBDir, "node-b", dht, true, cap);
+        var nodeB = createNode(nodeBDir, "node-b", dht, true, 2);
+
+        assertBurstIsCapped(nodeA, nodeB, ARTIFACTS, dht, 2);
+    }
+
+    @Test
+    void createAll_synthesizedInstances_takeTheCapFromTheSuppliedDefaults() {
+        var dht = new HoldableDHTClient();
+        var nodeA = createNodeFromDefaults(nodeADir, "node-a", dht, 4);
+        var nodeB = createNodeFromDefaults(nodeBDir, "node-b", dht, 2);
+
+        assertBurstIsCapped(nodeA, nodeB, ARTIFACTS, dht, 2);
+        assertBurstIsCapped(nodeA, nodeB, CONTENT, dht, 2);
+    }
+
+    /// Hands seven hints at once to `name`'s manager on node B while every fetch to the shared tier is held, so the
+    /// fetches genuinely overlap: only `cap` may start, the rest are dropped and counted, and no more than `cap` ever
+    /// reach the shared tier together.
+    private static void assertBurstIsCapped(Map<String, StorageFactory.StorageSetup> nodeA,
+                                            Map<String, StorageFactory.StorageSetup> nodeB,
+                                            String name,
+                                            HoldableDHTClient dht,
+                                            int cap) {
         var ids = IntStream.range(0, 7)
-                           .mapToObj(i -> nodeA.get(ARTIFACTS).instance().put(("burst-block-" + i).getBytes(StandardCharsets.UTF_8)).await().unwrap())
+                           .mapToObj(i -> nodeA.get(name).instance().put((name + "-burst-block-" + i).getBytes(StandardCharsets.UTF_8)).await().unwrap())
                            .toList();
-        var b = nodeB.get(ARTIFACTS);
+        var manager = nodeB.get(name).prefetchManager();
 
-        b.prefetchManager().activate();
+        manager.activate();
         dht.holdGets();
-        b.prefetchManager().processHints(ids.stream().map(id -> PrefetchHint.prefetchHint(id.hexString(), 50)).toList());
+        manager.processHints(ids.stream().map(id -> PrefetchHint.prefetchHint(id.hexString(), 50)).toList());
 
-        var stats = b.prefetchManager().stats();
+        var stats = manager.stats();
 
-        assertThat(stats.started()).as("[storage.artifacts] prefetch_max_in_flight = 2").isEqualTo(cap);
-        assertThat(stats.droppedInFlight()).as("the excess is dropped and counted, not queued").isEqualTo(ids.size() - cap);
+        assertThat(stats.started()).as("%s: prefetch_max_in_flight = %d", name, cap).isEqualTo(cap);
+        assertThat(stats.droppedInFlight()).as("%s: the excess is dropped and counted, not queued", name).isEqualTo(ids.size() - cap);
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(dht.heldGets()).isEqualTo(cap));
-        assertThat(dht.peakHeldGets()).as("fetches that reached the shared tier at once").isLessThanOrEqualTo(cap);
+        assertThat(dht.peakHeldGets()).as("%s: fetches that reached the shared tier at once", name).isLessThanOrEqualTo(cap);
 
         dht.releaseGets();
-        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(b.prefetchManager().stats().warmed()).isEqualTo(cap));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(manager.stats().warmed()).isEqualTo(cap));
+    }
+
+    /// No `[storage.*]` section at all: both instances are synthesized from the `defaults` the caller supplies.
+    private Map<String, StorageFactory.StorageSetup> createNodeFromDefaults(Path dir, String nodeId, DHTClient dht, int cap) {
+        var base = StorageConfig.storageConfig();
+        var defaults = StorageConfig.storageConfig(base.memoryMaxBytes(),
+                                                   base.diskMaxBytes(),
+                                                   dir.resolve("artifacts").toString(),
+                                                   dir.resolve("artifacts-snapshots").toString(),
+                                                   base.snapshotMutationThreshold(),
+                                                   base.snapshotMaxInterval(),
+                                                   base.snapshotRetentionCount(),
+                                                   base.walPath(),
+                                                   false,
+                                                   true,
+                                                   cap);
+        var setups = StorageFactory.createAll(Map.of(), nodeId, Option.some(dht), Option.none(), defaults)
+                                   .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                   .unwrap();
+
+        setups.values().forEach(setup -> admitDht(dht, setup));
+
+        return setups;
     }
 
     @Test
