@@ -94,7 +94,6 @@ public sealed interface CommunityGrowthPolicy {
 
     private static Option<Decision> packed(List<Candidate> open, CommunityPolicy policy) {
         return Option.from(open.stream()
-                               .filter(candidate -> !candidate.isUndersized())
                                .filter(candidate -> candidate.load() < policy.maxSize())
                                .min(Comparator.comparingInt(Candidate::load).reversed().thenComparing(Candidate::id))).<Decision> map(candidate -> Decision.Join.join(candidate.id()));
     }

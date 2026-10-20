@@ -71,9 +71,13 @@ class CommunityPlacementDerivedTest {
     };
 
     private CommunityPlacementReconciler reconciler() {
+        return reconciler(commands -> Promise.success(store.process(store.createBatch(commands))));
+    }
+
+    private CommunityPlacementReconciler reconciler(java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply) {
         return CommunityPlacementReconciler.communityPlacementReconciler(CORE,
                                                                          store,
-                                                                         commands -> Promise.success(store.process(store.createBatch(commands))),
+                                                                         apply,
                                                                          () -> true,
                                                                          _ -> true,
                                                                          () -> Set.of(CORE),
@@ -195,6 +199,21 @@ class CommunityPlacementDerivedTest {
         pass(reconciler());
 
         assertThat(value("eu-w-1").state()).as("a fresh leader has not seen it empty for the grace yet").isEqualTo(CommunityState.ACTIVE);
+    }
+
+    @Test
+    void reconcile_aFailedWrite_doesNotStopTheNextCommunity() {
+        start(HEAD + POLICY);
+        community("eu-w-0", CommunityState.ACTIVE, 100, 4);
+        community("eu-w-1", CommunityState.ACTIVE, 100, 4);
+        var failures = new java.util.concurrent.atomic.AtomicInteger(1);
+
+        pass(reconciler(commands -> failures.getAndDecrement() > 0
+                                    ? org.pragmatica.lang.utils.Causes.cause("consensus unavailable").<List<Object>> promise()
+                                    : Promise.success(store.process(store.createBatch(commands)))));
+
+        assertThat(value("eu-w-0").targetSize()).as("the first write failed and was dropped").isEqualTo(100);
+        assertThat(value("eu-w-1").targetSize()).as("the next community was still restamped").isEqualTo(10);
     }
 
     @Test

@@ -60,9 +60,7 @@ sealed interface DerivedCommunities {
                                        List<Candidate> found,
                                        CommunityKey key,
                                        CommunityValue value) {
-        if (value.sourceName().equals(source) && CommunityGrowthPolicy.derivedIndex(source,
-                                                                                    key.communityId())
-                                                                      .isPresent()) {
+        if (CommunityGrowthPolicy.derivedIndex(source, key.communityId()).isPresent()) {
             found.add(Candidate.candidate(key.communityId(),
                                           value.state(),
                                           loads.getOrDefault(key.communityId(), 0) + pending.getOrDefault(key.communityId(),
@@ -102,7 +100,7 @@ sealed interface DerivedCommunities {
                                     Map<String, Integer> loads,
                                     ActivationDirectiveKey key,
                                     ActivationDirectiveValue directive) {
-        if (!directive.communityId().isBlank() && !ctx.communityLiveness().isAbsent(key.nodeId())) {
+        if (!ctx.communityLiveness().isAbsent(key.nodeId())) {
             loads.merge(directive.communityId(), 1, Integer::sum);
         }
     }

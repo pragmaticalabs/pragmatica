@@ -148,6 +148,19 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aPendingJoinerInAVisibleCommunity_isCountedOnce() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.seedMembers(FIRST, 1);
+        fixture.holdCommits();
+        fixture.joinAll(2);
+        fixture.releaseCommits();
+
+        assertThat(fixture.communityOf(2)).as("the first joiner took the last slot of w-0, once").isEqualTo(FIRST);
+        assertThat(fixture.communityOf(3)).as("w-0 is full, so the second joiner opens w-1").isEqualTo(SECOND);
+    }
+
+    @Test
     void join_growthOn_boundReachedAndCeilingReached_refusesAndWarns() {
         var fixture = fixture(config(true, 2, 1));
         var codes = fixture.captureWarnings();

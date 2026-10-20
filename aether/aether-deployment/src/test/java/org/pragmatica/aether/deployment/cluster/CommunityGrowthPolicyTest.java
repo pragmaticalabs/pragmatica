@@ -140,6 +140,26 @@ class CommunityGrowthPolicyTest {
     }
 
     @Test
+    void pick_tiesAmongUndersized_breakById_whateverTheInputOrder() {
+        var communities = new ArrayList<>(List.of(community(0, FORMING, 1), community(1, DEGRADED, 1), community(2, FORMING, 1)));
+
+        for (int seed = 0; seed < 20; seed++) {
+            Collections.shuffle(communities, new Random(seed));
+            assertThat(CommunityGrowthPolicy.pick(SOURCE, communities, POLICY)).isEqualTo(Decision.Join.join("eu-w-0"));
+        }
+    }
+
+    @Test
+    void pick_tiesAtTheBound_breakById_whateverTheInputOrder() {
+        var communities = new ArrayList<>(List.of(community(0, ACTIVE, 12), community(1, ACTIVE, 12), community(2, ACTIVE, 12)));
+
+        for (int seed = 0; seed < 20; seed++) {
+            Collections.shuffle(communities, new Random(seed));
+            assertThat(CommunityGrowthPolicy.pick(SOURCE, communities, POLICY)).isEqualTo(Decision.Join.join("eu-w-0"));
+        }
+    }
+
+    @Test
     void derivedIndex_readsOnlyTheSourcesOwnIds() {
         assertThat(CommunityGrowthPolicy.derivedIndex("eu", "eu-w-12").unwrap()).isEqualTo(12);
         assertThat(CommunityGrowthPolicy.derivedIndex("eu", "us-w-12").isEmpty()).isTrue();
