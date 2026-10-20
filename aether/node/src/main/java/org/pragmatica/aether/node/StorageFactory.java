@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StreamingConfig;
@@ -43,6 +44,8 @@ import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataSnapshot;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.PromotionConfig;
+import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.SnapshotConfig;
 import org.pragmatica.storage.SnapshotError;
 import org.pragmatica.storage.SnapshotManager;
@@ -128,7 +131,32 @@ public final class StorageFactory {
                                DemotionManager demotionManager,
                                StorageGarbageCollector garbageCollector,
                                Option<DhtMarkerCheck> dhtMarkerCheck,
-                               Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker) {
+                               Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker,
+                               PromotionManager promotionManager) {
+        /// Pre-promotion shape: an instance that does not promote carries [PromotionManager#NOOP]. `streams` is
+        /// one by design (append-only, with its own segment prefetch); an instance with `promotion = false` is
+        /// the other.
+        public StorageSetup(String name,
+                            StorageInstance instance,
+                            SnapshotManager snapshotManager,
+                            StorageReadinessGate readinessGate,
+                            MetadataStore metadataStore,
+                            DemotionManager demotionManager,
+                            StorageGarbageCollector garbageCollector,
+                            Option<DhtMarkerCheck> dhtMarkerCheck,
+                            Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker) {
+            this(name,
+                 instance,
+                 snapshotManager,
+                 readinessGate,
+                 metadataStore,
+                 demotionManager,
+                 garbageCollector,
+                 dhtMarkerCheck,
+                 committedDiskMarker,
+                 PromotionManager.NOOP);
+        }
+
         /// #1170: the disk marker [#createAll] committed for this instance, kept so a boot refused
         /// AFTER formation (the DHT marker check, [#admitDhtMarkers]) can take back what it stamped.
         /// Empty until [#createAll] commits, and for an instance with no encrypted disk tier.
@@ -205,6 +233,29 @@ public final class StorageFactory {
                                     dhtMarkerCheck);
         }
 
+        /// An instance that promotes: `assembleSetup` hands in the real manager, or [PromotionManager#NOOP] when
+        /// `[storage.<name>] promotion = false`.
+        public static StorageSetup storageSetup(String name,
+                                                StorageInstance instance,
+                                                SnapshotManager snapshotManager,
+                                                StorageReadinessGate readinessGate,
+                                                MetadataStore metadataStore,
+                                                DemotionManager demotionManager,
+                                                StorageGarbageCollector garbageCollector,
+                                                Option<DhtMarkerCheck> dhtMarkerCheck,
+                                                PromotionManager promotionManager) {
+            return new StorageSetup(name,
+                                    instance,
+                                    snapshotManager,
+                                    readinessGate,
+                                    metadataStore,
+                                    demotionManager,
+                                    garbageCollector,
+                                    dhtMarkerCheck,
+                                    Option.empty(),
+                                    promotionManager);
+        }
+
         /// #1052: whether this instance's DHT tier is still waiting on its post-formation
         /// encryption-marker check, which retries while the DHT cannot answer. `false` for an instance
         /// with no DHT tier, and for a check that has finished either way. A refused check fails
@@ -229,7 +280,8 @@ public final class StorageFactory {
                                     demotionManager,
                                     garbageCollector,
                                     dhtMarkerCheck,
-                                    armedDisk);
+                                    armedDisk,
+                                    promotionManager);
         }
     }
 
@@ -265,13 +317,25 @@ public final class StorageFactory {
         private record DhtBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {}
     }
 
-    /// #250: fan out demotion across every storage setup so leader-pinned activation
-    /// (`DelegatedStorageAdapter`) and the periodic maintenance tick (`StorageMaintenanceDriver`)
-    /// each see ONE `DemotionManager` regardless of how many storage instances the node runs.
-    /// Each child is independently self-limiting on its own tier watermarks, so summing `demote()`
-    /// results and fanning out `activate()`/`deactivate()` is safe and requires no coordination.
+    /// #250: fan out demotion across every storage setup so the periodic maintenance tick
+    /// (`StorageMaintenanceDriver`) sees ONE `DemotionManager` regardless of how many storage instances the node
+    /// runs. Each child is independently self-limiting on its own tier watermarks, so summing `demote()` results
+    /// is safe and requires no coordination.
+    ///
+    /// Every setup's manager is TICKED here, but only `streams` is leader-pinned (`DelegatedStorageAdapter`
+    /// activates the composite on leader election). `artifacts` and `content` demote PER NODE, activated by
+    /// [#activateNodeMaintenance] when the node reports ready: their memory and disk tiers are private to the node,
+    /// and promotion fills them on every node, so a follower whose memory tier is never demoted fills it and then
+    /// refuses every further promotion write. Demotion out of a durable tier is already refused when it would lose
+    /// the last durable copy (#1602), so running it on every node loses nothing. `streams` is left as it was.
     public static DemotionManager compositeDemotionManager(Map<String, StorageSetup> setups) {
         var managers = setups.values().stream().map(StorageSetup::demotionManager).toList();
+        var leaderPinned = setups.entrySet()
+                                 .stream()
+                                 .filter(entry -> STREAMS_NAME.equals(entry.getKey()))
+                                 .map(entry -> entry.getValue()
+                                                    .demotionManager())
+                                 .toList();
 
         return new DemotionManager() {
             @Override
@@ -291,20 +355,106 @@ public final class StorageFactory {
 
             @Override
             public Result<Unit> activate() {
-                return Result.allOf(managers.stream().map(DemotionManager::activate).toList()).map(_ -> unit());
+                return Result.allOf(leaderPinned.stream().map(DemotionManager::activate).toList()).map(_ -> unit());
             }
 
             @Override
             public Result<Unit> deactivate() {
-                return Result.allOf(managers.stream().map(DemotionManager::deactivate).toList()).map(_ -> unit());
+                return Result.allOf(leaderPinned.stream().map(DemotionManager::deactivate).toList()).map(_ -> unit());
+            }
+
+            @Override
+            public boolean isActive() {
+                return leaderPinned.stream()
+                                   .allMatch(DemotionManager::isActive);
+            }
+        };
+    }
+
+    /// Fan out promotion across every storage setup so the periodic maintenance tick sees ONE `PromotionManager`.
+    /// `streams` carries the inert manager, so it contributes nothing. Activation reaches every child, but the node
+    /// activates promotion through [#activateNodeMaintenance] (per node, when ready), not through this composite.
+    /// `isActive()` is true when at least one child promotes: an instance with `promotion = false` is inert for good.
+    public static PromotionManager compositePromotionManager(Map<String, StorageSetup> setups) {
+        var managers = setups.values().stream().map(StorageSetup::promotionManager).toList();
+
+        return new PromotionManager() {
+            @Override
+            public int promote() {
+                return managers.stream()
+                               .mapToInt(PromotionManager::promote)
+                               .sum();
+            }
+
+            @Override
+            public PromotionStats stats() {
+                return managers.stream()
+                               .map(PromotionManager::stats)
+                               .reduce(StorageFactory::mergePromotionStats)
+                               .orElseGet(PromotionStats::promotionStats);
+            }
+
+            @Override
+            public Result<Unit> activate() {
+                return Result.allOf(managers.stream().map(PromotionManager::activate).toList()).map(_ -> unit());
+            }
+
+            @Override
+            public Result<Unit> deactivate() {
+                return Result.allOf(managers.stream().map(PromotionManager::deactivate).toList()).map(_ -> unit());
             }
 
             @Override
             public boolean isActive() {
                 return managers.stream()
-                               .allMatch(DemotionManager::isActive);
+                               .anyMatch(PromotionManager::isActive);
             }
         };
+    }
+
+    private static PromotionManager.PromotionStats mergePromotionStats(PromotionManager.PromotionStats a,
+                                                                      PromotionManager.PromotionStats b) {
+        return new PromotionManager.PromotionStats(a.blocksPromoted() + b.blocksPromoted(),
+                                                   a.bytesMoved() + b.bytesMoved(),
+                                                   a.failed() + b.failed(),
+                                                   a.cycles() + b.cycles(),
+                                                   Math.max(a.lastRunMs(), b.lastRunMs()));
+    }
+
+    /// Per-node maintenance: demotion and promotion of every instance whose tiers are private to this node
+    /// (`artifacts`, `content`), started when the node reports ready. Not leader-pinned (see
+    /// [#compositeDemotionManager]). `streams` is excluded: its demotion stays leader-pinned and it never promotes.
+    ///
+    /// Ready, not construction: promotion reads the shared DHT tier, whose reads wait on the instance's marker
+    /// check (#874), and the node reports ready only after every DHT-backed instance is admitted (#1052).
+    /// Idempotent, so a node that reports ready again re-activates nothing new.
+    public static Result<Unit> activateNodeMaintenance(Map<String, StorageSetup> setups) {
+        return Result.allOf(nodeMaintenanceSetups(setups).stream()
+                                                         .flatMap(setup -> Stream.of(setup.demotionManager()
+                                                                                         .activate(),
+                                                                                     setup.promotionManager()
+                                                                                          .activate()))
+                                                         .toList())
+                     .map(_ -> unit());
+    }
+
+    /// Mirror of [#activateNodeMaintenance], run when the node stops.
+    public static Result<Unit> deactivateNodeMaintenance(Map<String, StorageSetup> setups) {
+        return Result.allOf(nodeMaintenanceSetups(setups).stream()
+                                                         .flatMap(setup -> Stream.of(setup.demotionManager()
+                                                                                         .deactivate(),
+                                                                                     setup.promotionManager()
+                                                                                          .deactivate()))
+                                                         .toList())
+                     .map(_ -> unit());
+    }
+
+    private static List<StorageSetup> nodeMaintenanceSetups(Map<String, StorageSetup> setups) {
+        return setups.entrySet()
+                     .stream()
+                     .filter(entry -> !STREAMS_NAME.equals(entry.getKey()))
+                     .map(Map.Entry::getValue)
+                     .toList();
     }
 
     private static DemotionManager.DemotionStats mergeDemotionStats(DemotionManager.DemotionStats a,
@@ -661,7 +811,8 @@ public final class StorageFactory {
                                  defaults.snapshotMaxInterval(),
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
-                                 encrypted);
+                                 encrypted,
+                                 defaults.promotion());
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
@@ -707,7 +858,8 @@ public final class StorageFactory {
                                  defaults.snapshotMaxInterval(),
                                  defaults.snapshotRetentionCount(),
                                  defaults.walPath(),
-                                 encrypted);
+                                 encrypted,
+                                 defaults.promotion());
     }
 
     /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream
@@ -1028,6 +1180,9 @@ public final class StorageFactory {
                                             tiers.size(),
                                             snapshotDir.getParent());
 
+                                   // No promotion manager (the 8-argument shape carries the inert one): streaming is
+                                   // append-only, its memory tier is a small hot-hop mirror, and TieredStreamReader
+                                   // prefetches its own next segment.
                                    return StorageSetup.storageSetup(STREAMS_NAME,
                                                                     instance,
                                                                     snapshotManager,
@@ -1445,6 +1600,7 @@ public final class StorageFactory {
         var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
+        var promotionManager = promotionManagerFor(config, tiers, metadataStore);
 
         return guardVolume(tiers,
                            Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
@@ -1464,8 +1620,19 @@ public final class StorageFactory {
                                                                     metadataStore,
                                                                     demotionManager,
                                                                     garbageCollector,
-                                                                    dhtMarkerCheck);
+                                                                    dhtMarkerCheck,
+                                                                    promotionManager);
                                });
+    }
+
+    /// `[storage.<name>] promotion` (default on) picks the real manager or the inert one. Built dormant either way:
+    /// [#activateNodeMaintenance] starts it once the node reports ready.
+    private static PromotionManager promotionManagerFor(StorageConfig config,
+                                                        List<StorageTier> tiers,
+                                                        MetadataStore metadataStore) {
+        return config.promotion()
+               ? PromotionManager.promotionManager(tiers, metadataStore, PromotionConfig.promotionConfig())
+               : PromotionManager.NOOP;
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED

@@ -2264,11 +2264,19 @@ exists on the node.
   ],
   "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
   "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+  "maintenance": {
+    "demotion": {"active": true, "blocksDemoted": 11, "bytesMoved": 4096, "lastRunMs": 1716280000011},
+    "promotion": {"enabled": true, "active": true, "blocksPromoted": 7, "bytesMoved": 7168, "failed": 2, "cycles": 5, "lastRunMs": 1716280000005},
+    "garbageCollection": {"active": true, "blocksCollected": 13, "lastRunMs": 1716280000013}
+  },
   "wal": null
 }
 ```
 
 - `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
+- `maintenance`: what the instance's background maintenance has done **on this node** since boot (counters are not persisted and not cluster totals). `active` is whether the manager is running now. Demotion and promotion run on every node once it reports ready; GC follows the leader; `streams` demotion follows the leader. `promotion.enabled` is `false` for `streams` and for an instance with `[storage.<name>] promotion = false`. `promotion.failed` counts copies that failed on the source read or the target write; it rising while `blocksPromoted` stands still raises the `storage-promotion-stalled` cluster event (below). `lastRunMs` is `0` until a pass has run.
+- The same counters are on the Prometheus endpoint as `aether_storage_promotion_blocks`, `_bytes`, `_failed` and `_cycles`, tagged `instance` (instances that promote only).
+- **Operator event `storage-promotion-stalled`** (`OPERATOR_WARNING`, subject = the instance): three consecutive promotion cycles copied nothing while copies failed, almost always a full or broken memory or disk tier. Recovery: free or resize the tier (`memory_max_bytes` / `disk_max_bytes` in `[storage.<name>]`), or set `[storage.<name>] promotion = false`. `storage-promotion-resumed` (INFO) closes it when a cycle copies a block or stops failing.
 - `wal`: same semantics as on `GET /api/v1/storage` — non-`null` only when `{name}` is `streams`.
 
 ### POST /api/v1/storage/snapshot/{name}

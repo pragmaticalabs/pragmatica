@@ -2793,6 +2793,8 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
+                StorageFactory.deactivateNodeMaintenance(storageSetups)
+                              .onFailure(cause -> log.warn("Storage maintenance could not be deactivated: {}", cause.message()));
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
 
                 return Unit.unit();
@@ -4160,14 +4162,23 @@ public interface AetherNode extends ManageableNode {
         // `active` flag, so the periodic driver below can call demote()/collectGarbage()
         // unconditionally on every node (leader or not) and it safely no-ops until this node's
         // adapter is activated.
+        //
+        // Promotion, and demotion of `artifacts` and `content`, are NOT leader-pinned: their fast tiers are
+        // private to each node, so a leader-only manager would warm only the leader's caches. Both are
+        // activated on every node when it reports ready (signalReadyActivatingStorage, below) and deactivated
+        // on stop. `streams` stays as it was: leader-pinned demotion, no promotion.
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
+        var compositePromotionManager = StorageFactory.compositePromotionManager(storageSetups);
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
                                                                                       compositeGarbageCollector);
         var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
+                                                                                         compositePromotionManager,
+                                                                                         PromotionStallWatch.promotionStallWatch(storageSetups,
+                                                                                                                                 operatorWarningSink),
                                                                                          compositeGarbageCollector);
 
-        LOG.info("Storage maintenance enabled: demotion+GC cadence={}, storage setups={}",
+        LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",
                  config.timeouts().storageMaintenance().interval(),
                  storageSetups.keySet());
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
@@ -6811,7 +6822,8 @@ public interface AetherNode extends ManageableNode {
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          nodeLifecycle::signalReady,
+                                                                                          () -> signalReadyActivatingStorage(nodeLifecycle::signalReady,
+                                                                                                                             storageSetups),
                                                                                           nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
@@ -7368,6 +7380,17 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReady(Runnable signalReady, NodeReportedStateHolder holder) {
         signalReady.run();
         holder.onSubsystemsReady();
+    }
+
+    /// Per-node storage maintenance starts with the node's readiness: promotion and demotion of `artifacts` and
+    /// `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
+    /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. A manager that
+    /// cannot start is logged and the node still becomes ready: promotion is an optimization, not a dependency.
+    @Contract
+    private static void signalReadyActivatingStorage(Runnable signalReady, Map<String, StorageFactory.StorageSetup> storageSetups) {
+        StorageFactory.activateNodeMaintenance(storageSetups)
+                      .onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}", cause.message()));
+        signalReady.run();
     }
 
     /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed

@@ -1,0 +1,8 @@
+### Added
+- **Background tier promotion now runs in production storage, on every node.** Hot blocks of `artifacts` and `content` (more than 50 reads in 5 minutes) are copied from a slower tier into the node's faster tier on the `[timeouts.storage_maintenance]` tick, after demotion. Each node has its own memory and disk tiers, so promotion is per node, not leader-pinned. Only blocks the node holds a lifecycle record for are candidates (blocks it wrote or restored from its snapshot); a block another node wrote and this node only reads is not promoted yet. `streams` never promotes. `[storage.<name>] promotion = false` turns it off for an instance.
+- Operator surface: `GET /api/v1/storage/{name}` gains a `maintenance` block (demotion, promotion and GC activity on this node), Prometheus gauges `aether_storage_promotion_blocks|bytes|failed|cycles{instance}`, and the `storage-promotion-stalled` / `storage-promotion-resumed` cluster events when promotion keeps failing.
+
+### Changed
+- **Demotion of `artifacts` and `content` now runs on every node, not only the leader** (a node's memory tier is private, and promotion fills it). It starts when the node reports ready. Demotion still refuses to move the last durable copy off a durable tier. `streams` demotion is unchanged (leader-pinned).
+- Promotion never fills a target tier past 70% of its budget (the demotion low watermark), tests the target tier rather than memory when choosing candidates, deletes a truncated copy a failed write leaves behind, stops within one block when deactivated, and counts failed copies and cycles.
+- The promotion cycle runs on its own thread, one at a time; a tick that finds the previous cycle running skips promotion.

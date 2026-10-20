@@ -380,7 +380,16 @@ public enum OperatorWarningCode {
     /// decisions, or it left the lagging state another way (promoted to a voter, removed from the cluster, shutting down; the message
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
-    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING);
+    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// Background promotion of a storage instance has copied nothing for several consecutive cycles while every attempt
+    /// failed: it cannot write into its faster tier or cannot read its source. The cause is almost always a full or broken
+    /// memory or disk tier. The subject is the storage instance; the message names it and what to do (free or resize the
+    /// tier through `memory_max_bytes` / `disk_max_bytes`, or set `promotion = false` for the instance). Closed by
+    /// [#STORAGE_PROMOTION_RESUMED].
+    STORAGE_PROMOTION_STALLED("storage-promotion-stalled", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_PROMOTION_STALLED], same subject: a promotion cycle copied a block or no longer failed.
+    /// INFO, published only after a published stalled event for the instance (#752 mechanism).
+    STORAGE_PROMOTION_RESUMED("storage-promotion-resumed", "storage", WarningLevel.INFO, STORAGE_PROMOTION_STALLED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
