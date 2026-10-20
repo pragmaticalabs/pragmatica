@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>JBCT Async Callback Check</name>
-    <description>javac check (type-attributed): Promise on* callbacks that write shared state</description>
+    <description>javac check (type-attributed): every Promise on* callback must be justified (JBCT-ASYNC-01)</description>
 
     <dependencies>
         <!-- Testing: the check is exercised against the real Promise/Result -->
