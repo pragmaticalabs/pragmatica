@@ -82,6 +82,24 @@ class SliceProjectInitializerTest {
     }
 
     @Test
+    void initialize_validParams_putsAsyncCheckBesideSliceProcessorInProcessorPaths() throws Exception {
+        var projectDir = tempDir.resolve("async-check-slice");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "com.test", "async-check-slice")
+                                            .flatMap(SliceProjectInitializer::initialize);
+        assertThat(result.isSuccess())
+                  .isTrue();
+        var pomContent = Files.readString(projectDir.resolve("pom.xml"));
+        var paths = pomContent.substring(pomContent.indexOf("<annotationProcessorPaths>"),
+                                         pomContent.indexOf("</annotationProcessorPaths>"));
+        assertThat(paths)
+                  .contains("<artifactId>slice-processor</artifactId>")
+                  .contains("<artifactId>jbct-async-check</artifactId>");
+        assertThat(pomContent.split("<artifactId>jbct-async-check</artifactId>", -1))
+                  .as("one provided dependency (reactor order) and one processor path")
+                  .hasSize(3);
+    }
+
+    @Test
     void initialize_validParams_generatesSliceInterface() throws Exception {
         var projectDir = tempDir.resolve("inventory-service");
         var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "inventory-service")

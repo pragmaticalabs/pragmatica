@@ -39,6 +39,7 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                          AtomicLong reportFailures,
                                          Set<String> reported) implements ConsumerCursorStore {
     private static final Logger log = LoggerFactory.getLogger(ProjectionAwareCursorStore.class);
+    private static final String HOOK = "(report hook)";
 
     public static ProjectionAwareCursorStore projectionAwareCursorStore(ConsumerCursorStore delegate,
                                                                         ProjectionRegistry registry) {
@@ -81,12 +82,12 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                          RewindEpoch rewindEpoch,
                                          Epoch ownerEpoch) {
         return delegate.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch, ownerEpoch)
-                       .withSuccess(outcome -> reportUnlessFenced(outcome,
-                                                                  consumerGroup,
-                                                                  streamName,
-                                                                  partition,
-                                                                  offset,
-                                                                  rewindEpoch));
+                       .withSuccess(outcome -> reportGuarded(outcome,
+                                                             consumerGroup,
+                                                             streamName,
+                                                             partition,
+                                                             offset,
+                                                             rewindEpoch));
     }
 
     @Override
@@ -105,6 +106,21 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                                int partition,
                                                Epoch assignmentEpoch) {
         return delegate.fetchCursor(consumerGroup, streamName, partition, assignmentEpoch);
+    }
+
+    /// The hook is total: whatever the report raises (a registry supplied by user code, a null group) is counted and
+    /// logged, never propagated, because a throwing `withSuccess` lambda would fail the commit it only observes.
+    @Contract
+    private void reportGuarded(CommitOutcome outcome,
+                               String consumerGroup,
+                               String streamName,
+                               int partition,
+                               long offset,
+                               RewindEpoch epoch) {
+        Result.lift(() -> reportUnlessFenced(outcome, consumerGroup, streamName, partition, offset, epoch)).onFailure(cause -> countFailure(HOOK,
+                                                                                                                                            consumerGroup,
+                                                                                                                                            partition,
+                                                                                                                                            cause));
     }
 
     private void reportUnlessFenced(CommitOutcome outcome,
@@ -132,10 +148,14 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
     /// The failure is counted every time and logged once per `(group, partition)`: a projection that
     /// fails every report would otherwise log on every 500ms checkpoint.
     private void reportFailed(ProjectionHandle handle, String consumerGroup, int partition, Cause cause) {
+        countFailure(handle.projectionName(), consumerGroup, partition, cause);
+    }
+
+    private void countFailure(String projection, String consumerGroup, int partition, Cause cause) {
         reportFailures.incrementAndGet();
         if (reported.add(consumerGroup + "[" + partition + "]")) {
             log.warn("Projection {} refused the committed-cursor report for group {} partition {} (logged once; failures counted): {}",
-                     handle.projectionName(),
+                     projection,
                      consumerGroup,
                      partition,
                      cause.message());

@@ -42,6 +42,16 @@ PG_LABEL="${PG_LABEL:-aether-cluster=test-pg}"
 
 API="https://api.hetzner.cloud/v1"
 
+# Every Hetzner answer is parsed with jq. Without it `resolve_firewall_id` yields nothing, and `destroy` would
+# report "no firewall ... to destroy" and leave a real, billable firewall behind. A missing tool is an
+# environment error, so it is refused up front and named, never folded into "nothing to do".
+require_tools() {
+    local dep
+    for dep in curl jq; do
+        command -v "$dep" >/dev/null 2>&1 || { log_err "missing dependency: ${dep} (required tool; install it and retry)"; exit 1; }
+    done
+}
+
 hcloud_get() {
     local path="$1"
     curl -sS --max-time 30 -H "Authorization: Bearer ${HCLOUD_TOKEN}" "${API}${path}"
@@ -230,11 +240,7 @@ cmd_destroy() {
 
 main() {
     case "${1:-}" in
-        init)    cmd_init ;;
-        open)    cmd_open ;;
-        close)   cmd_close ;;
-        status)  cmd_status ;;
-        destroy) cmd_destroy ;;
+        init|open|close|status|destroy) require_tools; "cmd_$1" ;;
         ""|-h|--help)
             sed -n '2,/^set -euo/p' "$0" | sed 's/^# //;s/^#$//;/^set -euo/d'
             ;;
