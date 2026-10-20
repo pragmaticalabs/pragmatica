@@ -169,6 +169,26 @@ class TopicTierMismatchTest {
         assertThat(events).as("one event per subscriber while the mismatch stands").hasSize(1);
     }
 
+    /// A hot ephemeral publisher fails every publish identically: the counter is exact (one per publish), the event is raised once, and
+    /// the invoker's own `SLICE-INVOKE-FAIL` WARN is written once per (subscriber slice, method) per period, not once per publish.
+    @Test
+    void burstOfRefusals_countsEveryOne_butLogsTheInvokeFailureOnce() {
+        var harness = Harness.wired(new TypeToken<ContextualEvent>() {});
+        var warnings = new java.util.ArrayList<String>();
+        var detach = LogCapture.warningsOf(SliceInvokerImpl.class, warnings);
+
+        try {
+            for (var i = 0; i < 25; i++) {
+                harness.publisher().publish("order-" + i).await();
+            }
+        } finally {
+            detach.run();
+        }
+
+        assertThat(harness.refusals()).isEqualTo(25.0);
+        assertThat(warnings.stream().filter(line -> line.contains("SLICE-INVOKE-FAIL")).count()).as("WARN lines: %s", warnings).isEqualTo(1);
+    }
+
     /// Control, same harness: a bare-typed handler is delivered, counts nothing and raises nothing, so the red above comes
     /// from the ContextualEvent parameter and not from the harness.
     @Test
