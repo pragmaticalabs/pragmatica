@@ -356,6 +356,7 @@ class StorageInstanceCacheMarkerTest {
 
             assertThat(instance.warm(id).await().unwrap()).isFalse();
             assertThat(readerDisk.exists(id).await().unwrap()).isFalse();
+            assertThat(shared.gets()).as("nowhere to put the copy, so nothing is fetched").isZero();
         }
     }
 
@@ -386,6 +387,31 @@ class StorageInstanceCacheMarkerTest {
 
             assertThat(readerStore.listAllLifecycles()).extracting(BlockLifecycle::blockId)
                                                        .containsExactlyInAnyOrder(ids.get(3), ids.get(4), ids.get(5));
+        }
+
+        @Test
+        void get_whileTheTableIsFull_sweepsAtMostOncePerInterval() {
+            var clock = new AtomicLong(System.currentTimeMillis());
+            var bounded = readerInstance(DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(2, 1_000L, 10_000L), clock, _ -> {});
+            var ids = new ArrayList<BlockId>();
+
+            for (var i = 0; i < 4; i++) {
+                ids.add(writeElsewhere("interval-" + i));
+            }
+
+            ids.subList(0, 3).forEach(id -> bounded.get(id).await().unwrap());
+
+            // The two markers are idle by now (1,000 ms window) but the last sweep, made while the third block
+            // was refused, was 2,000 ms ago: not yet due.
+            clock.addAndGet(2_000L);
+            bounded.get(ids.get(3)).await().unwrap();
+
+            assertThat(readerStore.getLifecycle(ids.get(3)).isPresent()).as("no sweep inside the interval").isFalse();
+
+            clock.addAndGet(10_000L);
+            bounded.get(ids.get(3)).await().unwrap();
+
+            assertThat(readerStore.getLifecycle(ids.get(3)).isPresent()).as("control: the next interval sweeps and makes room").isTrue();
         }
 
         @Test
@@ -521,6 +547,32 @@ class StorageInstanceCacheMarkerTest {
             assertThat(readerStore.getLifecycle(id).unwrap().cacheOnly()).as("control: it is a marker with enough accesses").isTrue();
             assertThat(promotion.promote()).isZero();
             assertThat(readerDisk.exists(id).await().unwrap()).isFalse();
+        }
+
+        @Test
+        void promote_ofABlockThisNodeOwns_stillMovesOneTierUp() {
+            var content = bytes("owned-and-hot");
+            var id = BlockId.blockId(content).unwrap();
+
+            shared.put(id, content).await().unwrap();
+            readerStore.createLifecycle(new BlockLifecycle(id,
+                                                           EnumSet.of(TierLevel.REMOTE),
+                                                           1,
+                                                           System.currentTimeMillis(),
+                                                           System.currentTimeMillis(),
+                                                           50,
+                                                           0L));
+
+            var promotion = PromotionManager.promotionManager(List.of(readerMemory, readerDisk, shared),
+                                                              readerStore,
+                                                              PromotionConfig.promotionConfig(5, 60_000L, 10));
+
+            promotion.activate();
+
+            assertThat(promotion.promote()).isPositive();
+            assertThat(readerDisk.exists(id).await().unwrap())
+                .as("an owned block takes the step the tiers define: one up from the shared tier is the disk")
+                .isTrue();
         }
 
         @Test
