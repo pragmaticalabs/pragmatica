@@ -330,6 +330,95 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aDuplicateJoinOfAWorkerWhoseAssignmentIsInFlight_decidesNothing() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.holdCommits();
+        fixture.joinAll(1);
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("one commit for the one assignment; the duplicate neither counts nor re-registers it").isEqualTo(1);
+    }
+
+    @Test
+    void join_growthOn_aDecisionWaitsForTheDecisionAlreadyRunning() throws InterruptedException {
+        var fixture = fixture(config(true, 2, 5));
+        var joiner = new Thread(() -> fixture.joinAll(1));
+
+        fixture.context().communityAdmission().serialized(() -> {
+            joiner.start();
+            org.awaitility.Awaitility.await().pollDelay(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(2)).until(() -> true);
+            assertThat(fixture.cluster().applies.get()).as("a second decision does not run while one is running").isZero();
+        });
+        joiner.join(5_000);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+    }
+
+    @Test
+    void join_growthOn_aJoinAfterTheCommitWasAccepted_decidesAfresh_notBlockedByTheOldFlight() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.joinAll(1);
+        fixture.removeDirective(1);
+        var afterTheFirst = fixture.cluster().applies.get();
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("the accepted commit ended the flight: the rejoin within 30 s is a decision of its own").isEqualTo(afterTheFirst + 1);
+        assertThat(fixture.hasDirective(1)).isTrue();
+    }
+
+    @Test
+    void join_growthOn_aDuplicateJoinIsSkippedFor30Seconds_thenTheWorkerDecidesAfresh() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.holdCommits();
+        fixture.joinAll(1);
+        fixture.passMillis(30_000L);
+        fixture.rejoin(1);
+        assertThat(fixture.cluster().applies.get()).as("30 s after the decision the assignment is still in flight").isEqualTo(1);
+        fixture.passMillis(1L);
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("a lost commit costs the flight 30 s, never for good").isEqualTo(2);
+    }
+
+    @Test
+    void join_growthOn_aDirectiveThatLandsAfterTheSnapshot_stillCountsAsInFlight() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.joinAll(2);
+        fixture.hideFromTheScan(2);
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(3)).as("worker 2's directive is in the store but not in the snapshot the decision counted: it is still in flight, so w-0 is full").isEqualTo(SECOND);
+    }
+
+    @Test
+    void join_growthOn_aCommitThatNeverReachedConsensus_endsTheFlight_soTheWorkersNextJoinDecides() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.failNext();
+        fixture.joinAll(1);
+        fixture.rejoin(1);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+    }
+
+    @Test
+    void join_growthOn_aWorkerThatLeftWhileItsAssignmentWasInFlight_decidesAfresh_whenItJoinsAgain() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.holdCommits();
+        fixture.joinAll(1);
+        fixture.leave(1);
+        var afterTheLeave = fixture.cluster().applies.get();
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("the departure ended the flight, so the new join is a decision of its own").isEqualTo(afterTheLeave + 1);
+    }
+
+    @Test
     void join_growthOn_aRetryOfAJoinerStillInFlight_isNotCountedAgainstItself() {
         var fixture = fixture(config(true, 1, 5));
 
@@ -516,6 +605,24 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
             kvStore.put(CommunityKey.communityKey(id),
                         current.withState(current.state() == CommunityState.FORMING ? CommunityState.DEGRADED : CommunityState.FORMING));
+        }
+
+        /// The directive stays in the store (a `get` finds it) but the scan of directives no longer lists it, as when it is applied just after the snapshot.
+        void hideFromTheScan(int number) {
+            kvStore.hidden.add(ActivationDirectiveKey.activationDirectiveKey(worker(number)));
+        }
+
+        void removeDirective(int number) {
+            var key = ActivationDirectiveKey.activationDirectiveKey(worker(number));
+            var authority = kvStore.getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, java.util.UUID.randomUUID().toString(), authority, List.of(),
+                List.of(new KVCommand.Mutation<>(key, kvStore.get(key), Option.none()))))));
+        }
+
+        void leave(int number) {
+            harness.dispatch(new ClusterDeploymentEvents.WorkerLeaveReceived(
+                new org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision(worker(number), org.pragmatica.hlc.HlcTimestamp.ZERO)));
         }
 
         void rejoin(int number) {
@@ -716,6 +823,18 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         InMemoryKvStore(MessageRouter router) {
             super(router, stubSerializer(), stubDeserializer());
+        }
+
+        final java.util.Set<AetherKey> hidden = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, java.util.function.BiConsumer<KK, VV> consumer) {
+            super.forEach(keyClass, valueClass, (key, value) -> {
+                if (!hidden.contains((AetherKey) key)) {
+                    consumer.accept(key, value);
+                }
+            });
         }
 
         void put(AetherKey key, AetherValue value) {
