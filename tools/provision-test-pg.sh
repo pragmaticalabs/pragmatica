@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # provision-test-pg.sh — Provision a single Hetzner VM running PostgreSQL for cloud
-# integration tests, and emit `export PG_URL=...` to stdout + /tmp/aether-test-pg.env.
+# integration tests, and write `export PG_URL=...` to /tmp/aether-test-pg.env (mode 0600).
 #
 # IDEMPOTENT: re-running with no flags reuses an existing PG VM (label
 # `aether-cluster=test-pg`). Use --fresh to force re-provisioning, --destroy to
@@ -60,11 +60,14 @@ ENVIRONMENT
                      (default: /tmp/aether-test-pg.env).
 
 OUTPUT
-    On success, prints to stdout and to /tmp/aether-test-pg.env (mode 0600):
+    On success, writes /tmp/aether-test-pg.env (mode 0600):
         # PG VM <id>  IP=<ip>  provisioned=<timestamp>
         export PG_URL=postgres://aether:<password>@<ip>:5432/aether_forge
+        export PG_PASSWORD=<password>   (plus PG_USER, PG_HOST, PG_DB)
 
-    Tests can pick this up via `source /tmp/aether-test-pg.env`.
+    stdout carries only the non-secret lines (PG_USER, PG_HOST, PG_DB and the VM
+    comment); PG_URL and PG_PASSWORD are never printed. Tests pick them up via
+    `source /tmp/aether-test-pg.env`.
 
 EXAMPLES
     provision-test-pg.sh                    # idempotent provision/reuse
@@ -407,7 +410,7 @@ export PG_DB=aether_forge
 EOF
     chmod 0600 "$ENV_FILE"
     log_info "wrote ${ENV_FILE} (mode 0600)"
-    # Echo the same block to stdout so callers can capture/source as needed.
+    # Callers source the file; stdout gets the non-secret lines only.
     print_env_summary
 }
 
