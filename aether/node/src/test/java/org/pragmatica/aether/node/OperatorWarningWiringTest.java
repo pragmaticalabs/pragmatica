@@ -38,10 +38,12 @@ class OperatorWarningWiringTest {
     }
 
     /// The ready signal can fire again after a drain began; the node tells it whether it is draining from the drain procedure's own
-    /// state. `StoragePromotionWiringTest` tests the guard with a supplied predicate, so binding a constant here left it green.
+    /// state, for storage maintenance and for prefetching alike. `StoragePromotionWiringTest` and `AetherNodeReadySignalPrefetchTest`
+    /// test the guards with a supplied predicate, so binding a constant here left them green.
     @Test
     void assembly_tellsTheStorageReadySignalWhetherTheDrainProcedureHasStarted() {
-        assertThat(assemblyCode()).containsOnlyOnce("signalReadyActivatingStorage(nodeLifecycle::signalReady,storageSetups,()->drainProcedure.state()!=DrainProcedure.DrainState.INACTIVE)");
+        assertThat(assemblyCode()).containsOnlyOnce("BooleanSuppliernodeDraining=()->drainProcedure.state()!=DrainProcedure.DrainState.INACTIVE;");
+        assertThat(assemblyCode()).containsOnlyOnce("signalReadyActivatingStorage(()->signalReadyAndWakePrefetch(nodeLifecycle::signalReady,storageSetups,nodeDraining),storageSetups,nodeDraining)");
     }
 
     @Test

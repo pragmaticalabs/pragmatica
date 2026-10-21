@@ -309,10 +309,48 @@ public sealed interface DHTMessage extends ProtocolMessage {
     record DigestRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}
 
     /// Response containing partition digest and the sender's [Readiness] for that partition (#1777), so a
-    /// catching-up requester can tell an authoritative source from another catching-up replica.
+    /// catching-up requester can tell an authoritative source from another catching-up replica. It answers both a
+    /// [DigestRequest] (the legacy value digest) and a [StampDigestRequest] (the stamp digest); the requester
+    /// knows which it asked by the correlation id.
     record DigestResponse(String requestId, NodeId sender, byte[] digest, Readiness readiness) implements DHTMessage {
         public DigestResponse {
             digest = digest.clone();
+        }
+    }
+
+    /// Request for a partition's STAMP digest (A6): computed over each entry's key, stamp, tombstone flag and value
+    /// CRC kept beside the value ([DHTNode#stampDigestOf]), so answering it reads no value. Answered with a
+    /// [DigestResponse]. A new message type rather than a changed [DigestRequest]: an older node drops a type it
+    /// does not know, and keeps answering the legacy request (see [RepairPlane] for the mixed-version rules).
+    record StampDigestRequest(String requestId, NodeId sender, int partition) implements DHTMessage {}
+
+    /// Request for one page of a partition's entries (A6): the entries whose keys follow `after` in unsigned
+    /// lexicographic order (all of them when `after` is empty), up to `pageBytes` of transfer size. The holder
+    /// keeps no state between pages, so any page can be asked again at its cursor.
+    record MigrationPageRequest(String requestId, NodeId sender, int partition, Option<byte[]> after, long pageBytes) implements DHTMessage {}
+
+    /// One page of a partition's entries (A6). `next` is the cursor of the following page — the last key in this
+    /// one — and is empty on the final page. `refused` marks a pull the holder declined, exactly as for a
+    /// [MigrationDataResponse]: the requester is not a replica in the holder's ring, or the holder could not read
+    /// its store. `readiness` is the holder's [Readiness] for the partition when it read the page ([Readiness#UNKNOWN]
+    /// on a refusal): a pull counts as a sync of the requester only if every page of it came from an authoritative
+    /// holder, exactly as a digest match counts only with an authoritative peer ([RepairPlane]).
+    record MigrationPageResponse(String requestId,
+                                 NodeId sender,
+                                 List<KeyValue> entries,
+                                 boolean refused,
+                                 Option<byte[]> next,
+                                 Readiness readiness) implements DHTMessage {}
+
+    /// A verified single-replica read of a CONTENT-ADDRESSED key (A6): `sha256` is the digest the value hashes to. The
+    /// replica answers only while it is fresh for the key's partition and authoritative for it ([RepairPlane]); otherwise
+    /// it answers as a replica catching up, which the reader takes as a miss. A get (`existsOnly` false) is answered
+    /// with a [GetResponse], which the reader hash-checks; an exists (`existsOnly` true) with an [ExistsResponse] that
+    /// is positive only if the replica's own copy hashes to `sha256`.
+    record VerifiedReadRequest(String requestId, NodeId sender, byte[] key, byte[] sha256, boolean existsOnly) implements DHTMessage {
+        public VerifiedReadRequest {
+            key = key.clone();
+            sha256 = sha256.clone();
         }
     }
 }

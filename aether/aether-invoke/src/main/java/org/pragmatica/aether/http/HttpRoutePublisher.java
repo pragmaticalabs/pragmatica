@@ -336,7 +336,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                         .promise();
         }
 
-        var baseRouter = typedFactory.create(sliceInstance, JsonMapper.defaultJsonMapper(), mountMode);
+        var baseRouter = typedFactory.create(sliceInstance, JsonMapper.valueObjectJsonMapper(), mountMode);
         // #198 §11.1: bind the slice identity + lazy metrics sink so the router emits the versioned /
         // deprecated / missing-header counters at dispatch. The sink forwards to the live backend the
         // management server installs post-boot (forwardingSink), so deploy-time router creation needn't

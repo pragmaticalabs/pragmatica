@@ -8,12 +8,13 @@ import java.io.UncheckedIOException;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/// #519's corpus discovery: every module declared in `aether/pom.xml`'s default `<modules>` list, read
-/// by its compiled production output (`<module>/target/classes`) — NOT by reading this JVM's own
+/// #519's corpus discovery: every module declared in `aether/pom.xml`'s default `<modules>` list —
+/// followed through aggregator poms down to their children — read by its compiled production output (`<module>/target/classes`) — NOT by reading this JVM's own
 /// classpath.
 ///
 /// A classpath read only ever sees `aether/node`'s own dependency closure. That is wrong for this
@@ -30,10 +31,12 @@ import java.util.regex.Pattern;
 /// the commissioning test's positive controls depend on: it carries test classes and third-party jars,
 /// and "called only from a test" has to read as DEAD.)
 ///
-/// Deliberately scoped to that one `<modules>` block (the first in the file, before any `<profile>`) —
-/// not a filesystem walk under `aether/`, and not the whole monorepo. Two things outside that list are
-/// NOT modules of the default reactor and must not be treated as ones: profile-gated modules further
-/// down the same file (`e2e-tests`, `cloud-tests`, activated only via `-Pwith-e2e`), and stray `pom.xml`
+/// Deliberately scoped to the `<modules>` blocks reachable from `aether/pom.xml` outside any `<profile>`
+/// — not a filesystem walk under `aether/`, and not the whole monorepo. An aggregator pom has no classes
+/// of its own, so stopping at it would silently drop its children (27 modules once: `environment/*`,
+/// `resource/*`, `forge/*`, `pg-tools/*`), and a config accessor read only there would false-DEAD.
+/// Two things outside that walk are NOT modules of the default reactor and must not be treated as ones:
+/// profile-gated modules (`e2e-tests`, `cloud-tests`, `forge-tests`, activated only via profiles), and stray `pom.xml`
 /// files elsewhere under `aether/` that aren't reactor modules at all (`aether/tests/blueprints/*` are
 /// built by a separate script step, not this reactor, and don't depend on `aether-config` — confirmed
 /// by grep). Sweeping the whole monorepo root was tried and rejected for the same reason: `aether-config`
@@ -46,6 +49,8 @@ import java.util.regex.Pattern;
 /// so the gate fails with a build instruction instead of silently scanning an incomplete corpus.
 final class ReactorRoots {
     private static final Pattern MODULE_TAG = Pattern.compile("<module>([^<]+)</module>");
+    private static final Pattern XML_COMMENT = Pattern.compile("<!--.*?-->", Pattern.DOTALL);
+    private static final Pattern PROFILES_BLOCK = Pattern.compile("<profiles>.*?</profiles>", Pattern.DOTALL);
 
     private ReactorRoots() {}
 
@@ -77,46 +82,99 @@ final class ReactorRoots {
         }
     }
 
-    /// The module paths (relative to `aether/`) declared in `aether/pom.xml`'s default `<modules>`
-    /// block — the first `<modules>...</modules>` occurrence in the file, which is the top-level
-    /// project's own list; the two profile-gated `<modules>` blocks further down (`e2e-tests`,
-    /// `cloud-tests`) sit inside `<profile>` elements and are deliberately not read here.
+    /// The corpus modules: every non-aggregator module reachable from `aether/pom.xml`'s default
+    /// `<modules>` block, following nested `<modules>` blocks transitively (`environment/*`,
+    /// `resource/*`, `resource/services/*`, `forge/*`, `pg-tools/*`). An aggregator (`packaging=pom`
+    /// with children) has no classes of its own, so it is not itself returned — its children are.
+    ///
+    /// Only the top-level `<modules>` of each pom is read: `<profiles>` are stripped first, so a
+    /// profile-gated module (`e2e-tests`, `cloud-tests` in `aether/pom.xml`; `forge-tests` under
+    /// `forge/pom.xml`) is never part of the corpus — it is not built by the default reactor, so its
+    /// `target/classes` would not exist at gate time.
     static List<Path> declaredModules() {
-        var pomXml = aetherRoot().resolve("pom.xml");
-        String content;
+        return declaredModules(aetherRoot());
+    }
 
-        try {
-            content = Files.readString(pomXml);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+    /// [#declaredModules()] against an explicit `aether/`-shaped root, so the corpus walk can be
+    /// exercised on a fixture tree.
+    static List<Path> declaredModules(Path aetherRoot) {
+        var leaves = new ArrayList<Path>();
+        var topLevel = moduleDirectories(aetherRoot);
+
+        if (topLevel.isEmpty()) {
+            throw new IllegalStateException("No <modules> block found in " + aetherRoot.resolve("pom.xml") +
+                                             " — has the reactor declaration moved or changed shape? " +
+                                             "Update this parser.");
         }
 
+        collectLeaves(topLevel, leaves);
+        return leaves;
+    }
+
+    private static void collectLeaves(List<Path> modules, List<Path> leaves) {
+        for (var module : modules) {
+            var children = moduleDirectories(module);
+
+            if (children.isEmpty()) {
+                leaves.add(module);
+            } else {
+                collectLeaves(children, leaves);
+            }
+        }
+    }
+
+    /// The directories named by `<module>` tags in `directory/pom.xml`'s own `<modules>` block (empty
+    /// when the pom declares none). A declared module without a `pom.xml` fails loudly: silently
+    /// skipping it would shrink the corpus, which is the false-DEAD failure mode.
+    private static List<Path> moduleDirectories(Path directory) {
+        var pomXml = directory.resolve("pom.xml");
+
+        if (!Files.isRegularFile(pomXml)) {
+            throw new IllegalStateException("Declared module " + directory + " has no pom.xml — the corpus " +
+                                             "walk cannot read it.");
+        }
+
+        var content = withoutProfiles(readString(pomXml));
         var modulesStart = content.indexOf("<modules>");
         var modulesEnd = content.indexOf("</modules>", modulesStart);
 
         if (modulesStart < 0 || modulesEnd < 0) {
-            throw new IllegalStateException("No <modules> block found in " + pomXml + " — has the reactor " +
-                                             "declaration moved or changed shape? Update this parser.");
+            return List.of();
         }
 
-        var block = content.substring(modulesStart, modulesEnd);
-        var modules = new java.util.ArrayList<Path>();
-        Matcher matcher = MODULE_TAG.matcher(block);
+        var modules = new ArrayList<Path>();
+        Matcher matcher = MODULE_TAG.matcher(content.substring(modulesStart, modulesEnd));
 
         while (matcher.find()) {
-            modules.add(aetherRoot().resolve(matcher.group(1)));
+            modules.add(directory.resolve(matcher.group(1).trim()));
         }
 
         return modules;
     }
 
+    private static String withoutProfiles(String pom) {
+        return PROFILES_BLOCK.matcher(XML_COMMENT.matcher(pom).replaceAll("")).replaceAll("");
+    }
+
+    private static String readString(Path file) {
+        try {
+            return Files.readString(file);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     /// Every declared module's `target/classes` directory that actually exists — one per module
     /// compiled at least once since its last `clean`.
     static List<Path> productionRoots() {
-        return declaredModules().stream()
-                                 .map(module -> module.resolve("target/classes"))
-                                 .filter(Files::isDirectory)
-                                 .toList();
+        return productionRoots(aetherRoot());
+    }
+
+    static List<Path> productionRoots(Path aetherRoot) {
+        return declaredModules(aetherRoot).stream()
+                                          .map(module -> module.resolve("target/classes"))
+                                          .filter(Files::isDirectory)
+                                          .toList();
     }
 
     /// Declared modules with production Java sources (`src/main/java`) whose `target/classes` is
@@ -125,9 +183,13 @@ final class ReactorRoots {
     /// was never compiled is indistinguishable, from inside the sweep, from a module with zero live
     /// callers).
     static List<Path> missingProductionOutput() {
-        return declaredModules().stream()
-                                 .filter(module -> Files.isDirectory(module.resolve("src/main/java")))
-                                 .filter(module -> !Files.isDirectory(module.resolve("target/classes")))
-                                 .toList();
+        return missingProductionOutput(aetherRoot());
+    }
+
+    static List<Path> missingProductionOutput(Path aetherRoot) {
+        return declaredModules(aetherRoot).stream()
+                                          .filter(module -> Files.isDirectory(module.resolve("src/main/java")))
+                                          .filter(module -> !Files.isDirectory(module.resolve("target/classes")))
+                                          .toList();
     }
 }

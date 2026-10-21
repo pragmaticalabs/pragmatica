@@ -1286,7 +1286,9 @@ public interface Route<T> extends RouteSource, RouteShape {
 
         @Override
         public BodyBuilder<R, MultipartRequest> withMultipartBody() {
+            // I7: a multipart failure answers its declared 400/415 with fixed text, like a jsonBody failure (#772)
             return fn -> to(ctx -> ctx.multipartRequest()
+                                      .mapError(MultipartError::asHttpError)
                                       .async()
                                       .flatMap(fn));
         }

@@ -1,0 +1,9 @@
+prefix = "/api/shared"
+
+[routes]
+count = "POST /count"
+total = "POST /total"
+echo = "POST /echo"
+
+[errors]
+default = 500

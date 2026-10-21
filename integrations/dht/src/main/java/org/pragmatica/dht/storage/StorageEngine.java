@@ -256,4 +256,18 @@ public interface StorageEngine {
 
     /// Get entries belonging to a specific partition, tombstones included (#1777 track 3).
     Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition partition);
+
+    /// The [KeyStamp]s of a partition's entries, tombstones included (A6): what repair digests and pages by. An
+    /// engine that keeps its stamps beside its values answers without reading a value. This default derives them
+    /// from [#entriesForPartition], which reads every value — correct, but not disk-scale; an engine that can do
+    /// better overrides it.
+    default Promise<List<KeyStamp>> stampsForPartition(ConsistentHashRing<?> ring, Partition partition) {
+        return entriesForPartition(ring, partition).map(KeyStamp::keyStamps);
+    }
+
+    /// The [KeyStamp]s of every entry, tombstones included (A6): what the departure push plans its pages by. The
+    /// default derives them from [#entries], which reads every value, as [#stampsForPartition] does.
+    default Promise<List<KeyStamp>> stamps() {
+        return entries().map(KeyStamp::keyStamps);
+    }
 }

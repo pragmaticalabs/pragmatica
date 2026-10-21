@@ -248,6 +248,90 @@ class ConfigLoaderSecurityTest {
             });
     }
 
+    /// A17: a plain TOML integer is a byte count. It was silently ignored (the 10 MiB default applied), because the
+    /// int-sized data-size reader looked only for a string.
+    @Test
+    void loadFromString_parsesIntegerMaxRequestSizeAsBytes() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = 52428800
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().maxRequestSize()).isEqualTo(52_428_800));
+    }
+
+    @Test
+    void loadFromString_clampsOversizedIntegerMaxRequestSize() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = 8589934592
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().maxRequestSize()).isEqualTo(Integer.MAX_VALUE));
+    }
+
+    @Test
+    void loadFromString_parsesMinBodyRate() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            min_body_rate = "2KB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().minBodyRate()).isEqualTo(2048));
+    }
+
+    @Test
+    void loadFromString_usesDefaultMinBodyRate_whenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().minBodyRate()).isEqualTo(AppHttpConfig.DEFAULT_MIN_BODY_RATE));
+    }
+
+    @Test
+    void loadFromString_parsesReadTimeout() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            read_timeout = "15s"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().readTimeout().millis()).isEqualTo(15_000L));
+    }
+
+    @Test
+    void loadFromString_usesDefaultReadTimeout_whenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> assertThat(config.appHttp().readTimeout()).isEqualTo(AppHttpConfig.DEFAULT_READ_TIMEOUT));
+    }
+
     @Test
     void loadFromString_usesDefaultMaxRequestSize_whenNotSpecified() {
         var toml = MINIMAL_CLUSTER + """

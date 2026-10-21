@@ -9,14 +9,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.config.SharedTierConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
@@ -33,6 +36,7 @@ import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
@@ -44,6 +48,8 @@ import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataSnapshot;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.PrefetchConfig;
+import org.pragmatica.storage.PrefetchManager;
 import org.pragmatica.storage.PromotionConfig;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.SnapshotConfig;
@@ -59,6 +65,7 @@ import org.pragmatica.storage.WritePolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -132,7 +139,32 @@ public final class StorageFactory {
                                StorageGarbageCollector garbageCollector,
                                Option<DhtMarkerCheck> dhtMarkerCheck,
                                Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker,
-                               PromotionManager promotionManager) {
+                               PromotionManager promotionManager,
+                               PrefetchManager prefetchManager) {
+        /// The setup as it was before cross-node prefetching: no prefetch manager (`PrefetchManager.NOOP`).
+        public StorageSetup(String name,
+                            StorageInstance instance,
+                            SnapshotManager snapshotManager,
+                            StorageReadinessGate readinessGate,
+                            MetadataStore metadataStore,
+                            DemotionManager demotionManager,
+                            StorageGarbageCollector garbageCollector,
+                            Option<DhtMarkerCheck> dhtMarkerCheck,
+                            Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker,
+                            PromotionManager promotionManager) {
+            this(name,
+                 instance,
+                 snapshotManager,
+                 readinessGate,
+                 metadataStore,
+                 demotionManager,
+                 garbageCollector,
+                 dhtMarkerCheck,
+                 committedDiskMarker,
+                 promotionManager,
+                 PrefetchManager.NOOP);
+        }
+
         /// Pre-promotion shape: an instance that does not promote carries [PromotionManager#NOOP]. `streams` is
         /// one by design (append-only, with its own segment prefetch); an instance with `promotion = false` is
         /// the other.
@@ -154,7 +186,8 @@ public final class StorageFactory {
                  garbageCollector,
                  dhtMarkerCheck,
                  committedDiskMarker,
-                 PromotionManager.NOOP);
+                 PromotionManager.NOOP,
+                 PrefetchManager.NOOP);
         }
 
         /// #1170: the disk marker [#createAll] committed for this instance, kept so a boot refused
@@ -281,7 +314,8 @@ public final class StorageFactory {
                                     garbageCollector,
                                     dhtMarkerCheck,
                                     armedDisk,
-                                    promotionManager);
+                                    promotionManager,
+                                    prefetchManager);
         }
     }
 
@@ -302,19 +336,34 @@ public final class StorageFactory {
     ///
     /// #852: `armedDisk` is the encrypted local-disk tier whose `.encryption-enabled` marker is NOT
     /// yet written — [#createAll] commits every instance's marker only after every instance's guard
-    /// has passed, so a boot refused by one instance stamps no sibling's directory.
+    /// has passed, so a boot refused by one instance stamps no sibling's directory. #249: `sharedMarker`
+    /// is the same for an encrypted S3 shared tier's `{prefix}.encryption-enabled` object.
     private record TierBuild(List<StorageTier> tiers,
                              Option<DhtMarkerCheck> dhtMarkerCheck,
-                             Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+                             Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk,
+                             Option<S3SharedTier.PendingMarker> sharedMarker) {
         private TierBuild(List<StorageTier> tiers, Option<DhtMarkerCheck> dhtMarkerCheck) {
-            this(tiers, dhtMarkerCheck, Option.empty());
+            this(tiers, dhtMarkerCheck, Option.empty(), Option.empty());
         }
 
-        /// #858: [#maybeEncryptDht]'s own return shape -- the single (possibly absent) DHT tier plus
-        /// its marker check, before either is folded into a [TierBuild]'s full tier list by
-        /// [#withDht]. Kept separate from the enclosing record because `maybeEncryptDht` builds at
-        /// most one tier, never a list.
-        private record DhtBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {}
+        private TierBuild(List<StorageTier> tiers,
+                          Option<DhtMarkerCheck> dhtMarkerCheck,
+                          Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+            this(tiers, dhtMarkerCheck, armedDisk, Option.empty());
+        }
+
+        /// #858: the single (possibly absent) shared tier plus its DHT marker check, before either is folded
+        /// into a [TierBuild]'s full tier list by [#withSharedTier]. Kept separate from the enclosing record
+        /// because a shared tier is at most one tier, never a list. #249: the tier is the DHT
+        /// ([#maybeEncryptDht], marker check present) or an S3 bucket ([S3SharedTier], admitted at
+        /// construction, so no post-formation marker check).
+        private record SharedBuild(Option<StorageTier> tier,
+                                   Option<DhtMarkerCheck> markerCheck,
+                                   Option<S3SharedTier.PendingMarker> pendingMarker) {
+            private SharedBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {
+                this(tier, markerCheck, Option.empty());
+            }
+        }
     }
 
     /// #250: fan out demotion across every storage setup so the periodic maintenance tick
@@ -587,6 +636,15 @@ public final class StorageFactory {
                                                             StorageConfig defaults,
                                                             List<StoragePathsOverlap.Claim> reserved) {
         var results = new ArrayList<Result<PendingSetup>>();
+        var underived = UnderivedStoragePaths.find(configs);
+        // #249: `configs` is the derived map ([#derivedStorage]); a shared-only instance still in it was never
+        // derived, and building it would place it on its blank paths.
+        if (underived.isPresent()) {
+            results.add(underived.unwrap().result());
+
+            return results;
+        }
+
         var effective = effectiveConfigs(configs, defaults, keyring.isPresent());
         var overlap = StoragePathsOverlap.find(effective, reserved);
         // #856: refused BEFORE any instance is built, so a refused boot opens no tier and stamps nothing.
@@ -633,6 +691,79 @@ public final class StorageFactory {
         }
 
         return results;
+    }
+
+    /// #249: the node's storage map with every shared-only instance's paths derived, over the production defaults
+    /// ([StorageConfig#storageConfig()]). The ONE derivation site: `Main` applies it once and hands the node the
+    /// result, which [#createAll] builds from and the node's stream directories read. `encrypted` is keyring presence.
+    public static Map<String, StorageConfig> derivedStorage(Map<String, StorageConfig> configs, boolean encrypted) {
+        return withDerivedPaths(configs, StorageConfig.storageConfig(), encrypted);
+    }
+
+    /// #249: an instance that gives no paths of its own ([StorageConfig#derivesPaths]) is placed by derivation. A
+    /// shared-only `artifacts` or `content` is placed as if `[storage.<name>]` were absent, exactly as its synthesized
+    /// default (paths and keyring-tracking `encrypted`); any other name gets its own directories ([#ownDirectories]),
+    /// whether it is shared-only or a section without `disk_path`/`snapshot_path` (N3). Each keeps its shared tier. `defaults` is a parameter so tests root
+    /// it in their own directory, as [#createAll]'s does (#1276).
+    static Map<String, StorageConfig> withDerivedPaths(Map<String, StorageConfig> configs,
+                                                       StorageConfig defaults,
+                                                       boolean encrypted) {
+        var placed = new LinkedHashMap<String, StorageConfig>();
+
+        configs.forEach((name, config) -> placed.put(name, derivedPaths(name, config, configs, defaults, encrypted)));
+
+        return placed;
+    }
+
+    private static StorageConfig derivedPaths(String name,
+                                              StorageConfig config,
+                                              Map<String, StorageConfig> configs,
+                                              StorageConfig defaults,
+                                              boolean encrypted) {
+        if (!config.derivesPaths()) {
+            return config;
+        }
+
+        return switch (name) {
+            case ARTIFACTS_NAME -> defaultArtifactsConfig(defaults, encrypted).withShared(config.shared());
+            case CONTENT_NAME -> defaultContentConfig(resolvedArtifacts(configs, defaults, encrypted),
+                                                      defaults,
+                                                      encrypted).withShared(config.shared());
+            default -> ownDirectories(name, config, resolvedArtifacts(configs, defaults, encrypted), defaults);
+        };
+    }
+
+    /// #249 N3: an instance of another name that gives no paths gets its own directories, placed exactly as the
+    /// synthesized `content` is ([#siblingDataDir]): `<name>/blocks` and `<name>/snapshots` beside wherever `artifacts`
+    /// resolves, so it follows a moved `artifacts`. Not under `artifacts`' directory, whose disk tier walks its whole
+    /// base ([StoragePathsOverlap]). Every other setting of the configuration is kept.
+    private static StorageConfig ownDirectories(String name,
+                                                StorageConfig config,
+                                                Map<String, StorageConfig> artifacts,
+                                                StorageConfig defaults) {
+        var dataDir = siblingDataDir(artifacts, defaults, name);
+
+        return config.withPaths(dataDir.resolve("blocks").toString(),
+                                dataDir.resolve("snapshots").toString());
+    }
+
+    /// The data directory of a derived instance `name`: a sibling of the `artifacts` disk path -- the configured one
+    /// in `configs` when present, else the default -- shared by the synthesized `content` and by every path-less
+    /// instance of another name (#783, #249 N3).
+    private static Path siblingDataDir(Map<String, StorageConfig> configs, StorageConfig defaults, String name) {
+        return Path.of(option(configs.get(ARTIFACTS_NAME)).or(defaults).diskPath()).resolveSibling(name);
+    }
+
+    private static Map<String, StorageConfig> resolvedArtifacts(Map<String, StorageConfig> configs,
+                                                                StorageConfig defaults,
+                                                                boolean encrypted) {
+        return option(configs.get(ARTIFACTS_NAME)).map(artifacts -> Map.of(ARTIFACTS_NAME,
+                                                                           derivedPaths(ARTIFACTS_NAME,
+                                                                                        artifacts,
+                                                                                        configs,
+                                                                                        defaults,
+                                                                                        encrypted)))
+                     .or(Map.of());
     }
 
     /// Every instance `pendingSetups` will build, with the configuration it will build it from: the explicit
@@ -748,8 +879,33 @@ public final class StorageFactory {
                  + "' (" + secondPath
                  + ") share a directory -- refusing to boot: each would count the other's bytes against its own "
                  + "disk_max_bytes and they would share metadata snapshots. Give every [storage.<name>] section its "
-                 + "own disk_path and snapshot_path (an instance that omits them resolves the shared "
-                 + "/data/aether/... default)";
+                 + "own disk_path and snapshot_path (a path a section leaves out resolves to the shared "
+                 + "/data/aether/... default, unless the section sets neither and names an instance other than "
+                 + "artifacts or content)";
+        }
+    }
+
+    /// #249: a shared-only configuration ([StorageConfig#derivesPaths]) reached [#createAll] without passing through
+    /// [#derivedStorage]. Building it would place the instance on its blank paths, under the process's working
+    /// directory, so the boot is refused, naming the instance.
+    public record UnderivedStoragePaths(String instance) implements Cause {
+        static Option<UnderivedStoragePaths> find(Map<String, StorageConfig> configs) {
+            return Option.from(configs.entrySet()
+                                      .stream()
+                                      .filter(entry -> entry.getValue()
+                                                            .derivesPaths())
+                                      .map(Map.Entry::getKey)
+                                      .sorted()
+                                      .map(UnderivedStoragePaths::new)
+                                      .findFirst());
+        }
+
+        @Override
+        public String message() {
+            return "storage instance '" + instance
+                 + "' is configured only through its shared section but its paths were never derived -- refusing to "
+                 + "boot rather than place it on blank paths. Derive the storage map with StorageFactory.derivedStorage "
+                 + "before building the node";
         }
     }
 
@@ -759,7 +915,7 @@ public final class StorageFactory {
     /// reverse guard would otherwise refuse on after a back-out.
     private static Result<Map<String, StorageSetup>> admit(List<Result<PendingSetup>> results) {
         return Result.firstFailureOf(results)
-                     .flatMap(StorageFactory::commitDiskMarkers)
+                     .flatMap(StorageFactory::commitMarkers)
                      .map(setups -> setups.stream()
                                           .collect(Collectors.toMap(StorageSetup::name,
                                                                     Function.identity())));
@@ -771,25 +927,34 @@ public final class StorageFactory {
     /// a crash part-way through the pass. Re-running the same config completes the set: the stamped
     /// instances' guards short-circuit on marker-present and the unstamped ones re-arm over their still
     /// empty directories.
-    private static Result<List<StorageSetup>> commitDiskMarkers(List<PendingSetup> pending) {
-        return Result.allOf(pending.stream().map(PendingSetup::commitDiskMarker).toList()).map(_ -> pending.stream()
-                                                                                                           .map(PendingSetup::committed)
-                                                                                                           .toList());
+    private static Result<List<StorageSetup>> commitMarkers(List<PendingSetup> pending) {
+        return Result.allOf(pending.stream().map(PendingSetup::commitMarkers).toList()).map(_ -> pending.stream()
+                                                                                                        .map(PendingSetup::committed)
+                                                                                                        .toList());
     }
 
-    /// #852: a fully assembled [StorageSetup] plus the disk-marker write [#createAll] has not yet
-    /// performed for it.
-    private record PendingSetup(StorageSetup setup, Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+    /// #852: a fully assembled [StorageSetup] plus the marker writes [#createAll] has not yet performed for it:
+    /// the local disk's, and (#249) the S3 shared tier's. #2268: [#committed] hands the setup the disk marker it
+    /// committed, so a boot the post-formation DHT check refuses can roll that marker back.
+    private record PendingSetup(StorageSetup setup,
+                                Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk,
+                                Option<S3SharedTier.PendingMarker> sharedMarker) {
+        private PendingSetup(StorageSetup setup, Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+            this(setup, armedDisk, Option.empty());
+        }
+
         private StorageSetup committed() {
             return setup.withCommittedDiskMarker(armedDisk);
         }
 
-        private Result<Unit> commitDiskMarker() {
-            return armedDisk.map(disk -> disk.commitMarker()
-                                             .mapError(cause -> Causes.cause("Failed to create storage '" + setup.name()
-                                                                            + "': " + cause.message(),
-                                                                             Option.some(cause))))
-                            .or(Result.success(unit()));
+        private Result<Unit> commitMarkers() {
+            return armedDisk.map(EncryptingStorageTier.ArmedLocalDisk::commitMarker)
+                            .or(Result.success(unit()))
+                            .flatMap(_ -> sharedMarker.map(S3SharedTier.PendingMarker::commit)
+                                                      .or(Result.success(unit())))
+                            .mapError(cause -> Causes.cause("Failed to create storage '" + setup.name()
+                                                           + "': " + cause.message(),
+                                                            Option.some(cause)));
         }
     }
 
@@ -797,16 +962,18 @@ public final class StorageFactory {
     /// `encrypted` overridden to track node-wide keyring presence, for the synthesized default
     /// `artifacts` instance in [#createAll] -- see the ruling note there.
     private static StorageConfig defaultArtifactsConfig(StorageConfig defaults, boolean encrypted) {
-        return new StorageConfig(defaults.memoryMaxBytes(),
-                                 defaults.diskMaxBytes(),
-                                 defaults.diskPath(),
-                                 defaults.snapshotPath(),
-                                 defaults.snapshotMutationThreshold(),
-                                 defaults.snapshotMaxInterval(),
-                                 defaults.snapshotRetentionCount(),
-                                 defaults.walPath(),
-                                 encrypted,
-                                 defaults.promotion());
+        return StorageConfig.storageConfig(defaults.memoryMaxBytes(),
+                                           defaults.diskMaxBytes(),
+                                           defaults.diskPath(),
+                                           defaults.snapshotPath(),
+                                           defaults.snapshotMutationThreshold(),
+                                           defaults.snapshotMaxInterval(),
+                                           defaults.snapshotRetentionCount(),
+                                           defaults.walPath(),
+                                           encrypted,
+                                           defaults.promotion(),
+                                           defaults.prefetch(),
+                                           defaults.prefetchMaxInFlight());
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
@@ -841,19 +1008,20 @@ public final class StorageFactory {
     private static StorageConfig defaultContentConfig(Map<String, StorageConfig> configs,
                                                       StorageConfig defaults,
                                                       boolean encrypted) {
-        var artifactsConfig = option(configs.get(ARTIFACTS_NAME)).or(defaults);
-        var contentDataDir = Path.of(artifactsConfig.diskPath()).resolveSibling(CONTENT_NAME);
+        var contentDataDir = siblingDataDir(configs, defaults, CONTENT_NAME);
 
-        return new StorageConfig(defaults.memoryMaxBytes(),
-                                 defaults.diskMaxBytes(),
-                                 contentDataDir.resolve("blocks").toString(),
-                                 contentDataDir.resolve("snapshots").toString(),
-                                 defaults.snapshotMutationThreshold(),
-                                 defaults.snapshotMaxInterval(),
-                                 defaults.snapshotRetentionCount(),
-                                 defaults.walPath(),
-                                 encrypted,
-                                 defaults.promotion());
+        return StorageConfig.storageConfig(defaults.memoryMaxBytes(),
+                                           defaults.diskMaxBytes(),
+                                           contentDataDir.resolve("blocks").toString(),
+                                           contentDataDir.resolve("snapshots").toString(),
+                                           defaults.snapshotMutationThreshold(),
+                                           defaults.snapshotMaxInterval(),
+                                           defaults.snapshotRetentionCount(),
+                                           defaults.walPath(),
+                                           encrypted,
+                                           defaults.promotion(),
+                                           defaults.prefetch(),
+                                           defaults.prefetchMaxInFlight());
     }
 
     /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream
@@ -914,7 +1082,7 @@ public final class StorageFactory {
                                                      Path streamDataDir,
                                                      String nodeId,
                                                      Option<EncryptionKeyring> keyring) {
-        return armStreamStorage(new StreamSetupRequest(dhtClient, streamDataDir, nodeId, keyring)).flatMap(pending -> pending.commitDiskMarker()
+        return armStreamStorage(new StreamSetupRequest(dhtClient, streamDataDir, nodeId, keyring)).flatMap(pending -> pending.commitMarkers()
                                                                                                                              .map(_ -> pending.setup()));
     }
 
@@ -1078,13 +1246,13 @@ public final class StorageFactory {
                             .fold(cause -> {
                                       warnNoDurableStreamTier(segmentsDir, cause);
 
-                                      return Result.success(withDht(dhtBuild,
-                                                                    List.of(memoryTier)));
+                                      return Result.success(withSharedTier(dhtBuild,
+                                                                           List.of(memoryTier)));
                                   },
-                                  disk -> EncryptingStorageTier.armLocalDisk(disk, segmentsDir, keyring).map(armed -> withDht(dhtBuild,
-                                                                                                                              List.of(memoryTier,
-                                                                                                                                      armed.tier()),
-                                                                                                                              Option.some(armed))));
+                                  disk -> EncryptingStorageTier.armLocalDisk(disk, segmentsDir, keyring).map(armed -> withSharedTier(dhtBuild,
+                                                                                                                                     List.of(memoryTier,
+                                                                                                                                             armed.tier()),
+                                                                                                                                     Option.some(armed))));
     }
 
     /// The disk tier is constructed read-only and then OPENED (#1569 A3): this node owns its stream data
@@ -1098,11 +1266,11 @@ public final class StorageFactory {
                             .fold(cause -> {
                                       warnNoDurableStreamTier(segmentsDir, cause);
 
-                                      return withDht(dhtBuild,
-                                                     List.of(memoryTier));
+                                      return withSharedTier(dhtBuild,
+                                                            List.of(memoryTier));
                                   },
-                                  disk -> withDht(dhtBuild,
-                                                  List.of(memoryTier, disk)));
+                                  disk -> withSharedTier(dhtBuild,
+                                                         List.of(memoryTier, disk)));
     }
 
     /// #1567 F12: the fallback is loud because it stops sealing -- every seal on a tier list without a durable
@@ -1201,41 +1369,60 @@ public final class StorageFactory {
         // #253 BLOCKING #1: name the failing instance in the cause itself (not just in a log line)
         // so `createAll`'s aggregate failure -- and whatever aborts boot on it -- can report which
         // instance failed and why without re-deriving it from call-site context.
-        return buildTiers(name, config, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
-                                                                                                   + "': " + cause.message(),
-                                                                                                    Option.some(cause)))
+        return buildTiers(name, config, nodeId, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
+                                                                                                           + "': " + cause.message(),
+                                                                                                            Option.some(cause)))
                          .flatMap(build -> assembleSetup(name,
                                                          build.tiers(),
                                                          config,
                                                          nodeId,
                                                          build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
-                                                                                                               build.armedDisk())));
+                                                                                                               build.armedDisk(),
+                                                                                                               build.sharedMarker())));
     }
 
+    /// #249: the shared tier is built first -- for S3 that includes its boot probe -- so a tier that refuses
+    /// fails the instance before its disk tier is armed.
     private static Result<TierBuild> buildTiers(String name,
                                                 StorageConfig config,
+                                                String nodeId,
                                                 Option<DHTClient> dhtClient,
                                                 Option<EncryptionKeyring> keyring) {
+        return sharedTier(name, config.shared(), nodeId, dhtClient, keyring).flatMap(shared -> buildLocalTiers(name,
+                                                                                                               config,
+                                                                                                               shared,
+                                                                                                               keyring));
+    }
+
+    /// #249 (`withDht` became `withSharedTier`): the last tier of the instance's stack, per
+    /// `[storage.<name>.shared] kind`. `dht` (the default) is the in-memory DHT under `<name>-blocks`, wrapped
+    /// under `keyring` with its marker checked post-formation; `s3` is the bucket built and admitted by
+    /// [S3SharedTier], wrapped under `keyring` the same way. Nothing above the tier list sees which one it is.
+    private static Result<TierBuild.SharedBuild> sharedTier(String name,
+                                                            SharedTierConfig shared,
+                                                            String nodeId,
+                                                            Option<DHTClient> dhtClient,
+                                                            Option<EncryptionKeyring> keyring) {
+        return switch (shared) {
+            case SharedTierConfig.Dht _ -> Result.success(maybeEncryptDht(name, dhtClient, name + "-blocks", keyring));
+            case SharedTierConfig.S3 s3 -> S3SharedTier.s3SharedTier(name, s3, nodeId, keyring).map(admitted -> new TierBuild.SharedBuild(Option.some(admitted.tier()),
+                                                                                                                                          Option.empty(),
+                                                                                                                                          admitted.pendingMarker()));
+        };
+    }
+
+    private static Result<TierBuild> buildLocalTiers(String name,
+                                                     StorageConfig config,
+                                                     TierBuild.SharedBuild shared,
+                                                     Option<EncryptionKeyring> keyring) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
-        var dhtKeyPrefix = name + "-blocks";
         var diskPath = Path.of(config.diskPath());
         // #1569 A3: the tier is constructed read-only; this node owns the volume, so it opens it.
         return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
                             .flatMap(LocalDiskTier::open)
-                            .fold(cause -> handleDiskTierUnavailable(name,
-                                                                     cause,
-                                                                     memoryTier,
-                                                                     dhtClient,
-                                                                     dhtKeyPrefix,
-                                                                     keyring),
-                                  disk -> buildTierList(name,
-                                                        memoryTier,
-                                                        disk,
-                                                        diskPath,
-                                                        dhtClient,
-                                                        dhtKeyPrefix,
-                                                        keyring));
+                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, shared),
+                                  disk -> buildTierList(name, memoryTier, disk, diskPath, shared, keyring));
     }
 
     /// Builds the DHT tier (from `dhtClient`/`dhtKeyPrefix`) and wraps it under `keyring` when
@@ -1247,20 +1434,32 @@ public final class StorageFactory {
     /// cluster formation resolves there. The returned tier is gated on a fresh, unresolved
     /// `readGate`: [DhtStorageTier#get] blocks until [#verifyDhtMarker] resolves it, so no read can
     /// observe a namespace whose marker hasn't been checked yet.
-    private static TierBuild.DhtBuild maybeEncryptDht(String name,
-                                                      Option<DHTClient> dhtClient,
-                                                      String dhtKeyPrefix,
-                                                      Option<EncryptionKeyring> keyring) {
-        return dhtClient.fold(() -> new TierBuild.DhtBuild(Option.empty(), Option.empty()),
+    private static TierBuild.SharedBuild maybeEncryptDht(String name,
+                                                         Option<DHTClient> dhtClient,
+                                                         String dhtKeyPrefix,
+                                                         Option<EncryptionKeyring> keyring) {
+        return dhtClient.fold(() -> new TierBuild.SharedBuild(Option.empty(), Option.empty()),
                               client -> {
                                   var readGate = Promise.<Unit> promise();
-                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix, name, readGate);
+                                  var dht = DhtStorageTier.dhtStorageTier(client,
+                                                                          dhtKeyPrefix,
+                                                                          name,
+                                                                          readGate,
+                                                                          addressingFor(keyring));
                                   var tier = keyring.<StorageTier> fold(() -> dht,
                                                                         ring -> EncryptingStorageTier.wrap(dht, ring));
                                   var check = new DhtMarkerCheck(name, dhtKeyPrefix, keyring, readGate);
 
-                                  return new TierBuild.DhtBuild(Option.some(tier), Option.some(check));
+                                  return new TierBuild.SharedBuild(Option.some(tier), Option.some(check));
                               });
+    }
+
+    /// A6: plaintext DHT values ARE the block content, so their reads take the verified single-replica path;
+    /// ciphertext under a keyring hashes to nothing the block id names, and its wrapper authenticates it instead.
+    private static DhtStorageTier.Addressing addressingFor(Option<EncryptionKeyring> keyring) {
+        return keyring.isEmpty()
+               ? DhtStorageTier.Addressing.CONTENT
+               : DhtStorageTier.Addressing.OPAQUE;
     }
 
     /// #858: runs post-formation (`AetherNode.start()`, via [#verifyDhtMarkers]) -- replaces the
@@ -1443,6 +1642,7 @@ public final class StorageFactory {
                                 stopped).withFailure(_ -> rollbackDiskMarkers(setups.values()));
     }
 
+    // #249/#2268: disk markers only; an S3 bucket's marker stays, because the bucket is shared by the cluster.
     private static Result<Unit> rollbackDiskMarkers(Collection<StorageSetup> setups) {
         return Result.allOf(setups.stream().map(StorageSetup::rollbackDiskMarker).toList())
                      .mapToUnit()
@@ -1531,12 +1731,10 @@ public final class StorageFactory {
     private static Result<TierBuild> handleDiskTierUnavailable(String name,
                                                                Cause cause,
                                                                MemoryTier memoryTier,
-                                                               Option<DHTClient> dhtClient,
-                                                               String dhtKeyPrefix,
-                                                               Option<EncryptionKeyring> keyring) {
-        log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
+                                                               TierBuild.SharedBuild shared) {
+        log.warn("Disk tier for '{}' unavailable: {}, using memory + shared-tier fallback", name, cause.message());
 
-        return Result.success(withDht(maybeEncryptDht(name, dhtClient, dhtKeyPrefix, keyring), List.of(memoryTier)));
+        return Result.success(withSharedTier(shared, List.of(memoryTier)));
     }
 
     /// #858 BLOCKING #3 (unchanged from #253): the no-keyring branch checks
@@ -1550,42 +1748,35 @@ public final class StorageFactory {
                                                    MemoryTier memoryTier,
                                                    LocalDiskTier diskTier,
                                                    Path diskPath,
-                                                   Option<DHTClient> dhtClient,
-                                                   String dhtKeyPrefix,
+                                                   TierBuild.SharedBuild shared,
                                                    Option<EncryptionKeyring> keyring) {
-        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name).map(_ -> withDht(maybeEncryptDht(name,
-                                                                                                                                         dhtClient,
-                                                                                                                                         dhtKeyPrefix,
-                                                                                                                                         keyring),
-                                                                                                                         List.of(memoryTier,
-                                                                                                                                 diskTier))),
-                            ring -> EncryptingStorageTier.armLocalDisk(diskTier, diskPath, ring).map(armed -> withDht(maybeEncryptDht(name,
-                                                                                                                                      dhtClient,
-                                                                                                                                      dhtKeyPrefix,
-                                                                                                                                      keyring),
-                                                                                                                      List.of(memoryTier,
-                                                                                                                              armed.tier()),
-                                                                                                                      Option.some(armed))));
+        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name).map(_ -> withSharedTier(shared,
+                                                                                                                                List.of(memoryTier,
+                                                                                                                                        diskTier))),
+                            ring -> EncryptingStorageTier.armLocalDisk(diskTier, diskPath, ring).map(armed -> withSharedTier(shared,
+                                                                                                                             List.of(memoryTier,
+                                                                                                                                     armed.tier()),
+                                                                                                                             Option.some(armed))));
     }
 
-    private static TierBuild withDht(TierBuild.DhtBuild dhtBuild, List<StorageTier> baseTiers) {
-        return withDht(dhtBuild, baseTiers, Option.empty());
+    private static TierBuild withSharedTier(TierBuild.SharedBuild sharedBuild, List<StorageTier> baseTiers) {
+        return withSharedTier(sharedBuild, baseTiers, Option.empty());
     }
 
-    private static TierBuild withDht(TierBuild.DhtBuild dhtBuild,
-                                     List<StorageTier> baseTiers,
-                                     Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
-        var tiers = dhtBuild.tier()
-                            .map(dht -> {
-                                     var withDht = new ArrayList<>(baseTiers);
+    private static TierBuild withSharedTier(TierBuild.SharedBuild sharedBuild,
+                                            List<StorageTier> baseTiers,
+                                            Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+        var tiers = sharedBuild.tier().map(shared -> appended(baseTiers, shared)).or(baseTiers);
 
-                                     withDht.add(dht);
+        return new TierBuild(tiers, sharedBuild.markerCheck(), armedDisk, sharedBuild.pendingMarker());
+    }
 
-                                     return List.<StorageTier> copyOf(withDht);
-                                 })
-                            .or(baseTiers);
+    private static List<StorageTier> appended(List<StorageTier> baseTiers, StorageTier last) {
+        var all = new ArrayList<>(baseTiers);
 
-        return new TierBuild(tiers, dhtBuild.markerCheck(), armedDisk);
+        all.add(last);
+
+        return List.copyOf(all);
     }
 
     private static Result<StorageSetup> assembleSetup(String name,
@@ -1594,7 +1785,20 @@ public final class StorageFactory {
                                                       String nodeId,
                                                       Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
-        var instance = StorageInstance.storageInstance(name, tiers, metadataStore);
+        // The prefetch manager needs the instance, and the instance must tell the manager of every read hit: the
+        // listener reaches the manager through a holder bound once both exist.
+        var prefetchHolder = new AtomicReference<>(PrefetchManager.NOOP);
+        var instance = StorageInstance.storageInstance(name,
+                                                       tiers,
+                                                       metadataStore,
+                                                       WritePolicy.WRITE_THROUGH,
+                                                       none(),
+                                                       AppendLog.TornTailSink.logOnly(),
+                                                       id -> prefetchHolder.get()
+                                                                           .recordAccess(id));
+        var prefetchManager = prefetchManagerFor(config, instance);
+
+        prefetchHolder.set(prefetchManager);
         var snapshotConfig = buildSnapshotConfig(config, nodeId).withVolumeSentinel(volumeSentinel(tiers,
                                                                                                    Path.of(config.snapshotPath())));
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
@@ -1616,15 +1820,17 @@ public final class StorageFactory {
                                             tiers.size(),
                                             config.snapshotPath());
 
-                                   return StorageSetup.storageSetup(name,
-                                                                    instance,
-                                                                    snapshotManager,
-                                                                    readinessGate,
-                                                                    metadataStore,
-                                                                    demotionManager,
-                                                                    garbageCollector,
-                                                                    dhtMarkerCheck,
-                                                                    promotionManager);
+                                   return new StorageSetup(name,
+                                                           instance,
+                                                           snapshotManager,
+                                                           readinessGate,
+                                                           metadataStore,
+                                                           demotionManager,
+                                                           garbageCollector,
+                                                           dhtMarkerCheck,
+                                                           Option.empty(),
+                                                           promotionManager,
+                                                           prefetchManager);
                                });
     }
 
@@ -1636,6 +1842,54 @@ public final class StorageFactory {
         return config.promotion()
                ? PromotionManager.promotionManager(tiers, metadataStore, PromotionConfig.promotionConfig())
                : PromotionManager.NOOP;
+    }
+
+    /// The real prefetch manager unless the instance switched prefetching off (`[storage.<name>] prefetch = false`).
+    /// It starts dormant: the node activates it when it reports ready ([#activatePrefetch]).
+    private static PrefetchManager prefetchManagerFor(StorageConfig config, StorageInstance instance) {
+        return config.prefetch()
+               ? PrefetchManager.prefetchManager(instance,
+                                                 PrefetchConfig.prefetchConfig(config.prefetchMaxInFlight()))
+               : PrefetchManager.NOOP;
+    }
+
+    /// The prefetch managers that are real, by storage instance name -- what the SWIM prefetch channel routes hints
+    /// to. An instance with prefetching off (and `streams`, which has none) is absent.
+    public static Map<String, PrefetchManager> prefetchManagers(Map<String, StorageSetup> setups) {
+        return setups.entrySet()
+                     .stream()
+                     .filter(StorageFactory::hasRealPrefetch)
+                     .collect(Collectors.toMap(Map.Entry::getKey, StorageFactory::prefetchManagerOf));
+    }
+
+    private static boolean hasRealPrefetch(Map.Entry<String, StorageSetup> setup) {
+        return prefetchManagerOf(setup) != PrefetchManager.NOOP;
+    }
+
+    private static PrefetchManager prefetchManagerOf(Map.Entry<String, StorageSetup> setup) {
+        return setup.getValue()
+                    .prefetchManager();
+    }
+
+    /// Wakes every instance's prefetch manager: a node that reports ready starts to gossip hints and act on them.
+    public static Unit activatePrefetch(Map<String, StorageSetup> setups) {
+        prefetchManagers(setups).forEach((name, manager) -> activateOne(name, manager));
+
+        return unit();
+    }
+
+    /// Puts them back to sleep when the node stops serving, so a stopping node neither gossips nor starts fetches.
+    public static Unit deactivatePrefetch(Map<String, StorageSetup> setups) {
+        prefetchManagers(setups).values().forEach(PrefetchManager::deactivate);
+
+        return unit();
+    }
+
+    private static void activateOne(String name, PrefetchManager manager) {
+        manager.activate()
+               .onFailure(cause -> log.warn("Prefetch manager for '{}' could not be activated: {}",
+                                            name,
+                                            cause.message()));
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED

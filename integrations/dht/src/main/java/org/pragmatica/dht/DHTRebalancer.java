@@ -26,6 +26,7 @@ import java.util.stream.Stream;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.dht.storage.KeyStamp;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -49,6 +50,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     that newly become responsible, ack-gated, before it halts. This closes the scale-down loss
 ///     mode where a key's only acked holder is pruned and no survivor holds a copy to re-replicate
 ///     from (survivor-side rebalance pushes from its OWN storage — empty for a key it never held).
+///
+/// Both surfaces send in PAGES (A6): each push carries at most one [PageBudget] of entries, planned on the
+/// engine's [KeyStamp]s, so a partition or a store of any size leaves in messages below the cluster frame, and only
+/// one page's values are read at a time. The pages travel as ordinary [DHTMessage.MigrationDataResponse] pushes,
+/// which every version already accepts one by one, so paging needs no change on the receiver.
 public final class DHTRebalancer {
     private static final Logger log = LoggerFactory.getLogger(DHTRebalancer.class);
     /// Bounded best-effort budget for the graceful-departure push (issue #427, D4). Sits inside the
@@ -71,7 +77,11 @@ public final class DHTRebalancer {
     /// whatever remains when the budget expires is the at-risk set reported to the observer.
     private final ConcurrentHashMap<String, PendingPush> pendingPushes = new ConcurrentHashMap<>();
 
-    private record PendingPush(List<DHTMessage.KeyValue> entries, Promise<Unit> ackPromise) {}
+    /// A departure page awaiting its ack: the keys it carries (reported at risk while pending) and the ack.
+    private record PendingPush(List<byte[]> keys, Promise<Unit> ackPromise) {}
+
+    /// A departure page planned and registered under its correlation id, sent when its turn comes.
+    private record PlannedPush(String correlationId, List<KeyStamp> page, Promise<Unit> ackPromise) {}
 
     private DHTRebalancer(DHTNode node, DHTNetwork network, Supplier<DHTConfig> config) {
         this.node = node;
@@ -110,7 +120,7 @@ public final class DHTRebalancer {
         }
     }
 
-    /// Graceful-departure push (issue #427, D1/D3/D4). Invoked by the departing node's drain
+    /// Graceful-departure push (issue #427, D1/D3/D4), paged (A6). Invoked by the departing node's drain
     /// procedure while it is still reachable: enumerates every locally-held chunk directly from the
     /// storage engine (independent of whether self is still in the ring), and for each pushes only to
     /// the node(s) that NEWLY become responsible post-departure — the delta `newSet \ oldSet`, never
@@ -119,6 +129,10 @@ public final class DHTRebalancer {
     /// budget expires, at which point the still-unacknowledged keys are reported via `observer` as a
     /// bounded at-risk sample. FULL replication mode is a no-op (every node already holds everything).
     /// The promise ALWAYS succeeds — a departure push is best-effort and must never gate the halt.
+    ///
+    /// Each target's chunks go in pages of at most one [PageBudget], sent one after another: the next page leaves
+    /// once the previous one is acked or nacked. Every page is registered as pending before the first is sent, so a
+    /// budget that expires mid-push reports the unsent pages at risk together with the unacknowledged ones.
     public Promise<Unit> pushOnDeparture(DeparturePushObserver observer) {
         return pushOnDeparture(DEFAULT_DEPARTURE_PUSH_BUDGET, observer);
     }
@@ -146,8 +160,8 @@ public final class DHTRebalancer {
         var leaving = leavingSet(coDeparting);
 
         return node.storage()
-                   .entries()
-                   .flatMap(entries -> dispatchDeparturePush(entries, leaving, budget, observer));
+                   .stamps()
+                   .flatMap(stamps -> dispatchDeparturePush(stamps, leaving, budget, observer));
     }
 
     private Set<NodeId> leavingSet(Set<NodeId> coDeparting) {
@@ -172,37 +186,36 @@ public final class DHTRebalancer {
                                                            .succeed(Unit.unit()));
     }
 
-    private Promise<Unit> dispatchDeparturePush(List<DHTMessage.KeyValue> entries,
+    private Promise<Unit> dispatchDeparturePush(List<KeyStamp> stamps,
                                                 Set<NodeId> leaving,
                                                 TimeSpan budget,
                                                 DeparturePushObserver observer) {
-        var batches = groupByTarget(entries, leaving);
+        var batches = groupByTarget(stamps, leaving);
 
         return batches.isEmpty()
                ? Promise.success(Unit.unit())
                : awaitAcks(sendPushes(batches, leaving), budget, observer);
     }
 
-    /// Group every locally-held entry under each node that newly becomes responsible for it, so a
-    /// target receives one push carrying all of its owed chunks.
-    private Map<NodeId, List<DHTMessage.KeyValue>> groupByTarget(List<DHTMessage.KeyValue> entries,
-                                                                 Set<NodeId> leaving) {
+    /// Group every locally-held entry's stamp under each node that newly becomes responsible for it, so a
+    /// target receives the pages carrying all of its owed chunks.
+    private Map<NodeId, List<KeyStamp>> groupByTarget(List<KeyStamp> stamps, Set<NodeId> leaving) {
         var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
 
-        return entries.stream()
-                      .flatMap(entry -> targetPairs(entry, replicationFactor, leaving))
-                      .collect(Collectors.groupingBy(TargetEntry::target,
-                                                     Collectors.mapping(TargetEntry::entry,
-                                                                        Collectors.toList())));
+        return stamps.stream()
+                     .flatMap(stamp -> targetPairs(stamp, replicationFactor, leaving))
+                     .collect(Collectors.groupingBy(TargetEntry::target,
+                                                    Collectors.mapping(TargetEntry::stamp,
+                                                                       Collectors.toList())));
     }
 
-    private record TargetEntry(NodeId target, DHTMessage.KeyValue entry) {}
+    private record TargetEntry(NodeId target, KeyStamp stamp) {}
 
-    private Stream<TargetEntry> targetPairs(DHTMessage.KeyValue entry, int replicationFactor, Set<NodeId> leaving) {
-        return departureTargets(entry.key(),
+    private Stream<TargetEntry> targetPairs(KeyStamp stamp, int replicationFactor, Set<NodeId> leaving) {
+        return departureTargets(stamp.key(),
                                 replicationFactor,
                                 leaving).stream()
-                               .map(target -> new TargetEntry(target, entry));
+                               .map(target -> new TargetEntry(target, stamp));
     }
 
     /// Post-departure delta target set for one key (issue #427, D3). `newSet` is the responsible set
@@ -238,33 +251,95 @@ public final class DHTRebalancer {
                      .toList();
     }
 
-    private List<Promise<Unit>> sendPushes(Map<NodeId, List<DHTMessage.KeyValue>> batches, Set<NodeId> leaving) {
+    private List<Promise<Unit>> sendPushes(Map<NodeId, List<KeyStamp>> batches, Set<NodeId> leaving) {
         return batches.entrySet()
                       .stream()
-                      .map(batch -> sendAckedPush(batch, leaving))
+                      .map(batch -> pushPagesTo(batch.getKey(),
+                                                planPages(batch.getValue()),
+                                                leaving))
                       .toList();
+    }
+
+    /// Every page of a target is registered as pending before the first leaves (see [#pushOnDeparture]).
+    private List<PlannedPush> planPages(List<KeyStamp> stamps) {
+        return pageBudget().pages(stamps)
+                         .stream()
+                         .map(this::registerPage)
+                         .toList();
+    }
+
+    private PageBudget pageBudget() {
+        return node.repair()
+                   .pageBudget();
+    }
+
+    private PlannedPush registerPage(List<KeyStamp> page) {
+        var correlationId = IdGenerator.generate();
+        Promise<Unit> ackPromise = Promise.promise();
+
+        pendingPushes.put(correlationId,
+                          new PendingPush(page.stream().map(KeyStamp::key).toList(),
+                                          ackPromise));
+
+        return new PlannedPush(correlationId, page, ackPromise);
+    }
+
+    /// One target's pages, one after another: page `index` leaves once every earlier page is acked or nacked.
+    private Promise<Unit> pushPagesTo(NodeId target, List<PlannedPush> pages, Set<NodeId> leaving) {
+        return pushPageAt(target, pages, 0, leaving);
+    }
+
+    private Promise<Unit> pushPageAt(NodeId target, List<PlannedPush> pages, int index, Set<NodeId> leaving) {
+        return index >= pages.size()
+               ? Promise.success(Unit.unit())
+               : sendPlanned(target, pages.get(index), leaving).flatMap(_ -> pushPageAt(target,
+                                                                                        pages,
+                                                                                        index + 1,
+                                                                                        leaving));
+    }
+
+    /// Only this page's values are read, just before it leaves.
+    private Promise<Unit> sendPlanned(NodeId target, PlannedPush push, Set<NodeId> leaving) {
+        return node.readEntries(push.page())
+                   .flatMap(entries -> sendReadPage(target, push, entries, leaving));
+    }
+
+    private Promise<Unit> sendReadPage(NodeId target,
+                                       PlannedPush push,
+                                       List<DHTMessage.KeyValue> entries,
+                                       Set<NodeId> leaving) {
+        return entries.isEmpty()
+               ? Promise.success(settleEmptyPage(push))
+               : sendAckedPush(target, push, entries, leaving);
+    }
+
+    /// Every key of the page was removed meanwhile: nothing is owed, so nothing is at risk.
+    private Unit settleEmptyPage(PlannedPush push) {
+        pendingPushes.remove(push.correlationId());
+
+        return Unit.unit();
     }
 
     /// The push carries `leaving`, the set excluded when choosing its target (issue #1818 L1), so the receiver
     /// checks placement against the same view rather than its own, which may not yet know every co-drainer.
-    private Promise<Unit> sendAckedPush(Map.Entry<NodeId, List<DHTMessage.KeyValue>> batch, Set<NodeId> leaving) {
-        var correlationId = IdGenerator.generate();
-        Promise<Unit> ackPromise = Promise.promise();
-
-        pendingPushes.put(correlationId, new PendingPush(batch.getValue(), ackPromise));
-        log.debug("Departure-pushing {} chunk(s) to {} (ack {})",
-                  batch.getValue().size(),
-                  batch.getKey().id(),
-                  correlationId);
-        network.send(batch.getKey(),
-                     new DHTMessage.MigrationDataResponse(correlationId,
+    private Promise<Unit> sendAckedPush(NodeId target,
+                                        PlannedPush push,
+                                        List<DHTMessage.KeyValue> entries,
+                                        Set<NodeId> leaving) {
+        log.debug("Departure-pushing a page of {} chunk(s) to {} (ack {})",
+                  entries.size(),
+                  target.id(),
+                  push.correlationId());
+        node.repair().notePageSent(PageBudget.transferBytes(entries));
+        network.send(target,
+                     new DHTMessage.MigrationDataResponse(push.correlationId(),
                                                           node.nodeId(),
-                                                          batch.getValue(),
+                                                          entries,
                                                           true,
                                                           List.copyOf(leaving),
                                                           List.copyOf(node.ring().nodes())));
 
-        return ackPromise;
+        return push.ackPromise();
     }
 
     /// Settles when every batch is acked or nacked, or the budget expires; either way the batches still
@@ -289,9 +364,8 @@ public final class DHTRebalancer {
     private List<byte[]> collectAtRiskKeys() {
         return pendingPushes.values()
                             .stream()
-                            .flatMap(pending -> pending.entries()
+                            .flatMap(pending -> pending.keys()
                                                        .stream())
-                            .map(DHTMessage.KeyValue::key)
                             .toList();
     }
 
@@ -322,9 +396,9 @@ public final class DHTRebalancer {
         }
 
         node.storage()
-            .entriesForPartition(node.ring(),
-                                 partition)
-            .onSuccess(entries -> pushToReplicas(partitionIndex, replicaNodes, entries));
+            .stampsForPartition(node.ring(),
+                                partition)
+            .onSuccess(stamps -> pushToReplicas(partitionIndex, replicaNodes, stamps));
     }
 
     private boolean isPrimary(List<NodeId> replicaNodes) {
@@ -332,24 +406,47 @@ public final class DHTRebalancer {
                                                        .equals(node.nodeId());
     }
 
-    private void pushToReplicas(int partitionIndex, List<NodeId> replicaNodes, List<DHTMessage.KeyValue> entries) {
-        if (entries.isEmpty()) {
+    /// The partition leaves in pages (A6), read one page at a time, each pushed to every other replica before the
+    /// next page is read. A page that cannot be read ends this push; the next anti-entropy round finds the
+    /// divergence and pulls (FER: re-replication is delayed, not lost).
+    private void pushToReplicas(int partitionIndex, List<NodeId> replicaNodes, List<KeyStamp> stamps) {
+        if (stamps.isEmpty()) {
             return;
         }
 
-        for (var replica : replicaNodes) {
-            if (replica.equals(node.nodeId())) {
-                continue;
-            }
+        var targets = replicaNodes.stream().filter(replica -> !replica.equals(node.nodeId())).toList();
 
-            sendMigrationData(replica, partitionIndex, entries);
-        }
+        pushPartitionPages(partitionIndex, targets, pageBudget().pages(stamps), 0).onFailure(cause -> log.warn("Rebalance push of partition {} stopped: {}; anti-entropy "
+                                                                                                              + "repairs the rest",
+                                                                                                               partitionIndex,
+                                                                                                               cause.message()));
     }
 
+    private Promise<Unit> pushPartitionPages(int partitionIndex,
+                                             List<NodeId> targets,
+                                             List<List<KeyStamp>> pages,
+                                             int index) {
+        return index >= pages.size()
+               ? Promise.success(Unit.unit())
+               : node.readEntries(pages.get(index))
+                     .map(entries -> pushPage(partitionIndex, targets, entries))
+                     .flatMap(_ -> pushPartitionPages(partitionIndex, targets, pages, index + 1));
+    }
+
+    private Unit pushPage(int partitionIndex, List<NodeId> targets, List<DHTMessage.KeyValue> entries) {
+        if (!entries.isEmpty()) {
+            targets.forEach(target -> sendMigrationData(target, partitionIndex, entries));
+        }
+
+        return Unit.unit();
+    }
+
+    @Contract
     private void sendMigrationData(NodeId target, int partitionIndex, List<DHTMessage.KeyValue> entries) {
         var correlationId = IdGenerator.generate();
 
-        log.debug("Pushing {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
+        log.debug("Pushing a page of {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
+        node.repair().notePageSent(PageBudget.transferBytes(entries));
         network.send(target,
                      new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false, false));
     }

@@ -1674,8 +1674,25 @@ class ClusterEventAggregatorTest {
 
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED);
+            .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+            });
+    }
+
+    /// #241: a parked placement operation is kept by the next leader, so either of its recoveries may come from a node that never raised the
+    /// warning, and each is its own event.
+    @Test
+    void onOperatorWarning_theParkedPlacementRecoveries_arePublishedByANodeThatDidNotRaiseTheWarning() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED, "stable", "cleared by alice"));
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED, "other", "left DRAIN_UNCERTAIN"));
+
+        assertThat(codes(successor)).containsExactly("community-placement-cleared", "community-placement-resumed");
     }
 
     /// Amendment B: the rejoin resolution closes the previous leader's warning the same way, and is a different event from a confirmation.
@@ -2392,70 +2409,77 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
-                             OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
-                             OperatorWarningCode.NODE_REPLACEMENT_JOINED,
-                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
-                             OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
-                             OperatorWarningCode.UPGRADE_COMPLETED,
-                             OperatorWarningCode.UPGRADE_ABORTED,
-                             OperatorWarningCode.UPGRADE_RESUMED,
-                             OperatorWarningCode.UPGRADE_PAUSE_ENDED,
-                             OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
-                             OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
-                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
-                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
-                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
-                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
-                             OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
-                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
-                             OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
-                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
-                             OperatorWarningCode.BACKUP_CONFIG_RESTORED,
-                             OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
-                             OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
-                             OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
-                             OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
-                             OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
-                             OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
-                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
-                             OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
-                             OperatorWarningCode.WORKER_ASSIGNED,
-                             OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED);
+            .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
+                OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
+                OperatorWarningCode.NODE_REPLACEMENT_JOINED,
+                OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
+                OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
+                OperatorWarningCode.UPGRADE_COMPLETED,
+                OperatorWarningCode.UPGRADE_ABORTED,
+                OperatorWarningCode.UPGRADE_RESUMED,
+                OperatorWarningCode.UPGRADE_PAUSE_ENDED,
+                OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
+                OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
+                OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
+                OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
+                OperatorWarningCode.BACKUP_CONFIG_RESTORED,
+                OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
+                OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
+                OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
+                OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
+                OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+                OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
+                OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
+                OperatorWarningCode.WORKER_ASSIGNED,
+                OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
+            });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
-                             OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
-                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
-                             OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
-                             OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
-                             OperatorWarningCode.UPGRADE_STARTED,
-                             OperatorWarningCode.UPGRADE_PAUSED,
-                             OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
-                             OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
-                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
-                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
-                             OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
-                             OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
-                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
-                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
-                             OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
-                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
-                             OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
-                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
-                             OperatorWarningCode.BACKUP_CONFIG_MISSING,
-                             OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
-                             OperatorWarningCode.SLICE_START_AWAITING_TARGET,
-                             OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
-                             OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
-                             OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
-                             OperatorWarningCode.STORAGE_PROMOTION_STALLED,
-                             OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
-                             OperatorWarningCode.TOPIC_TIER_MISMATCH);
+            .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.NODE_REPLACEMENT_STARTED,
+                OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
+                OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
+                OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
+                OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
+                OperatorWarningCode.UPGRADE_STARTED,
+                OperatorWarningCode.UPGRADE_PAUSED,
+                OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
+                OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
+                OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
+                OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
+                OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
+                OperatorWarningCode.BACKUP_CONFIG_MISSING,
+                OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
+                OperatorWarningCode.SLICE_START_AWAITING_TARGET,
+                OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
+                OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
+                OperatorWarningCode.STORAGE_PROMOTION_STALLED,
+                OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
+                OperatorWarningCode.TOPIC_TIER_MISMATCH,
+            });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);

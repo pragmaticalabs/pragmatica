@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
@@ -218,7 +219,8 @@ public interface StorageInstance {
     ///   2. `refName` is pointed at the block, with [#putRef]'s counting;
     ///   3. [AppendLog#sealedThrough] advances to `toOffset`, which is what lets [AppendLog#truncate] pass it.
     /// A failure at any step leaves the log's seal bound where it was, so its records stay. "Durable" here
-    /// means the local-disk tier: an in-memory DHT tier never counts (#1544), and an instance with no
+    /// means a tier reporting [StorageTier#isDurable] -- the local disk, or an S3 tier built from config (#249): an
+    /// in-memory DHT tier never counts (#1544), and an instance with no
     /// durable tier refuses with [StorageError.NoDurableTier]. The ref itself reaches disk only with the
     /// next metadata snapshot (#1345) -- see [AppendLog]'s class doc.
     default Promise<BlockId> seal(AppendLog log, long fromOffset, long toOffset, String refName, byte[] block) {
@@ -361,6 +363,8 @@ final class DefaultStorageInstance implements StorageInstance {
     /// racing readers cannot all pass a room check and overshoot the cap, and a recount never wipes a reservation
     /// that is still in flight: it can over-count for a moment (a marker already in the store whose claim has not
     /// been confirmed yet), never under-count.
+    private final Set<WarmTicket> warmsInFlight = ConcurrentHashMap.newKeySet();
+    private final Set<BlockId> deletesInFlight = ConcurrentHashMap.newKeySet();
     private final Object markerLock = new Object();
     private int cacheMarkers;
     private int pendingMarkerClaims;
@@ -490,9 +494,36 @@ final class DefaultStorageInstance implements StorageInstance {
     private Promise<Boolean> fetchUnlessHeld(boolean held, BlockId id) {
         return held || cacheTiers.isEmpty() || !roomToTrack(id)
                ? Promise.success(false)
-               : readCache.deduplicate(id,
-                                       () -> waterfallRead(id))
-                          .flatMap(opt -> copyIfFound(id, opt));
+               : warmGuarded(new WarmTicket(id, new AtomicBoolean()));
+    }
+
+    /// A prefetch in flight, which a [#delete] of the same block cancels: the bytes it is fetching are the block a
+    /// delete is removing, and storing them afterwards would bring the deleted block back on this node.
+    private record WarmTicket(BlockId id, AtomicBoolean cancelled) {
+        void cancel() {
+            cancelled.set(true);
+        }
+
+        boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        boolean isFor(BlockId block) {
+            return id.equals(block);
+        }
+    }
+
+    /// The ticket is registered BEFORE the tombstone is read, and [#delete] sets the tombstone BEFORE it looks for
+    /// tickets, so a warm and a delete of one block cannot both miss each other: either the warm sees the delete in
+    /// flight and does not start, or the delete finds the ticket and cancels it.
+    private Promise<Boolean> warmGuarded(WarmTicket ticket) {
+        warmsInFlight.add(ticket);
+
+        return (deletesInFlight.contains(ticket.id())
+                ? Promise.success(false)
+                : readCache.deduplicate(ticket.id(),
+                                        () -> waterfallRead(ticket.id()))
+                           .flatMap(opt -> copyIfFound(ticket, opt))).withResult(_ -> warmsInFlight.remove(ticket));
     }
 
     /// A prefetch is refused, not half done, when the copy could not be tracked: a record already exists, or the
@@ -501,19 +532,20 @@ final class DefaultStorageInstance implements StorageInstance {
         return metadataStore.containsBlock(id) || hasRoomForMarker();
     }
 
-    private Promise<Boolean> copyIfFound(BlockId id, Option<byte[]> found) {
-        return found.fold(() -> Promise.success(false), content -> copyToCacheTiers(id, content));
+    private Promise<Boolean> copyIfFound(WarmTicket ticket, Option<byte[]> found) {
+        return found.fold(() -> Promise.success(false), content -> copyToCacheTiers(ticket, content));
     }
 
     /// The record comes first: a copy with no record is invisible to demotion (#886). The read that fetched
     /// the block normally created it; if it did not, a counted marker is claimed here and given back unless a
     /// cache tier accepted the copy, so a failed warm leaves no empty marker of its own. When there is neither a
     /// record nor a slot for one (another reader took the last slot since the room check), no copy is made.
-    private Promise<Boolean> copyToCacheTiers(BlockId id, byte[] content) {
+    private Promise<Boolean> copyToCacheTiers(WarmTicket ticket, byte[] content) {
+        var id = ticket.id();
         var created = claimWarmMarker(id);
 
         return created.isPresent() || metadataStore.containsBlock(id)
-               ? promoteToCacheTiers(id, content).map(_ -> settleWarm(id, created))
+               ? promoteToCacheTiers(id, content).flatMap(_ -> settleWarm(ticket, created))
                : Promise.success(false);
     }
 
@@ -537,7 +569,13 @@ final class DefaultStorageInstance implements StorageInstance {
         return Option.none();
     }
 
-    private boolean settleWarm(BlockId id, Option<BlockLifecycle> created) {
+    private Promise<Boolean> settleWarm(WarmTicket ticket, Option<BlockLifecycle> created) {
+        return ticket.isCancelled()
+               ? takeBackCancelledWarm(ticket.id())
+               : Promise.success(settleKeptWarm(ticket.id(), created));
+    }
+
+    private boolean settleKeptWarm(BlockId id, Option<BlockLifecycle> created) {
         var held = holdsPrivateCopy(id);
 
         if (!held) {
@@ -545,6 +583,28 @@ final class DefaultStorageInstance implements StorageInstance {
         }
 
         return held;
+    }
+
+    /// BER (compensate by inverse): a delete of this block landed while the warm was fetching it, so what the warm
+    /// just stored is the deleted block coming back. The cache copies and the cache marker (the warm's own, or the
+    /// one the read made) are taken out again. The delete's own pass may have run before they existed, so it cannot be
+    /// relied on to remove them. Guarantee: a cancelled warm leaves this node holding nothing of the block; the
+    /// mechanism is the ticket [#delete] cancels, checked after the store.
+    private Promise<Boolean> takeBackCancelledWarm(BlockId id) {
+        return deleteFromPrivateTiers(id, 0).map(_ -> forgetCancelledMarker(id));
+    }
+
+    /// Test observation: prefetches that have not finished yet.
+    int inFlightWarms() {
+        return warmsInFlight.size();
+    }
+
+    private boolean forgetCancelledMarker(BlockId id) {
+        metadataStore.getLifecycle(id)
+                     .filter(BlockLifecycle::cacheOnly)
+                     .onPresent(marker -> dropUnusedMarker(id, marker));
+
+        return false;
     }
 
     private void dropUnusedMarker(BlockId id, BlockLifecycle marker) {
@@ -617,7 +677,20 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return deleteFromAllTiers(id, 0).withSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"));
+        return Promise.success(id)
+                      .map(this::announceDelete)
+                      .flatMap(_ -> deleteFromAllTiers(id, 0))
+                      .withSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"))
+                      .withResult(_ -> deletesInFlight.remove(id));
+    }
+
+    /// The tombstone first, then the cancellation of every prefetch of this block already in flight (see
+    /// [#warmGuarded] for why that order).
+    private Unit announceDelete(BlockId id) {
+        deletesInFlight.add(id);
+        warmsInFlight.stream().filter(ticket -> ticket.isFor(id)).forEach(WarmTicket::cancel);
+
+        return unit();
     }
 
     /// #801: the scan's verdict is only good until something touches the record, so the record is
