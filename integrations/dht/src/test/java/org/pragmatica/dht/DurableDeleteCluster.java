@@ -146,9 +146,12 @@ final class DurableDeleteCluster {
             case DHTMessage.ExistsRequest r -> node.handleExistsRequest(r, resp -> deliver(r.sender(), resp));
             case DHTMessage.ExistsResponse r -> member.client().onExistsResponse(r);
             case DHTMessage.DigestRequest r -> node.handleDigestRequest(r, resp -> deliver(r.sender(), resp));
+            case DHTMessage.StampDigestRequest r -> node.handleStampDigestRequest(r, resp -> deliver(r.sender(), resp));
             case DHTMessage.DigestResponse r -> member.antiEntropy().onDigestResponse(r);
             case DHTMessage.MigrationDataRequest r -> node.handleMigrationDataRequest(r, resp -> deliver(r.sender(), resp));
+            case DHTMessage.MigrationPageRequest r -> node.handleMigrationPageRequest(r, resp -> deliver(r.sender(), resp));
             case DHTMessage.MigrationDataResponse r -> member.antiEntropy().onMigrationDataResponse(r);
+            case DHTMessage.MigrationPageResponse r -> member.antiEntropy().onMigrationPageResponse(r);
             default -> {}
         }
     }

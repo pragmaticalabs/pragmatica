@@ -516,7 +516,7 @@ class ContentStoreDeleteRefcountTest {
                       .containsOnly(1);
             assertThat(collected).as("locator: X's manifest, and Z's manifest with its chunks")
                       .isEqualTo(chunksX.size() + 2);
-            assertThat(storage.resolveRef(NAME)).as("locator: the name ends at Y").isEqualTo(some(manifestY));
+            assertThat(storage.resolveRef(ContentEnvelope.trustedRef(NAME))).as("locator: the name ends at Y").isEqualTo(some(manifestY));
         }
 
         /// Same for `dropRef`: the id must come from `MetadataStore.removeRef` itself. The competing delete

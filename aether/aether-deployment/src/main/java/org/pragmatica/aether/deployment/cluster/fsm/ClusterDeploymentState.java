@@ -21,7 +21,9 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.AuditLog;
+import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
+import org.pragmatica.aether.deployment.cluster.CommunityGrowthPolicy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
@@ -112,6 +114,8 @@ import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1111,11 +1115,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var source = resolveSource(node);
 
             if (policies.isEmpty()) {
-                commitWorkerCommunity(node,
-                                      source + WORKER_COMMUNITY_SUFFIX,
-                                      source,
-                                      ctx.communitySizing().targetSize(),
-                                      configuration.observed());
+                assignDerivedCommunity(node, source, configuration.observed());
 
                 return;
             }
@@ -1136,6 +1136,95 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                               "",
                                                                               policy.targetSize(),
                                                                               configuration.observed()));
+        }
+
+        /// #241: a worker of a source with no declared communities takes a DERIVED community. With growth off (the default) that is
+        /// the source's single `<source>-w-0`; with growth on it is whatever [CommunityGrowthPolicy] chooses over the source's
+        /// derived communities, a new `<source>-w-N` included. Either way it is a worker with no community yet: a committed
+        /// assignment is never revisited.
+        private void assignDerivedCommunity(NodeId node,
+                                            String source,
+                                            Option<AetherValue.ClusterConfigValue> configuration) {
+            var policy = ctx.communityPolicy().current();
+
+            if (!policy.growth()) {
+                commitWorkerCommunity(node, source + WORKER_COMMUNITY_SUFFIX, source, policy.maxSize(), configuration);
+
+                return;
+            }
+
+            ctx.communityAdmission().forget(node);
+            var candidates = DerivedCommunities.candidates(ctx, source, ctx.nowMs());
+            var decision = CommunityGrowthPolicy.pick(source, candidates, policy);
+
+            log.info("Growth policy for worker {} of source {}: {} (max_size {}, communities {})",
+                     node,
+                     source,
+                     decision,
+                     policy.maxSize(),
+                     candidates);
+            placeByDecision(node, source, configuration, decision);
+        }
+
+        private void placeByDecision(NodeId node,
+                                     String source,
+                                     Option<AetherValue.ClusterConfigValue> configuration,
+                                     CommunityGrowthPolicy.Decision decision) {
+            switch (decision) {
+                case CommunityGrowthPolicy.Decision.Join join -> admitToCommunity(node,
+                                                                                  source,
+                                                                                  join.communityId(),
+                                                                                  configuration);
+                case CommunityGrowthPolicy.Decision.Mint mint -> admitToCommunity(node,
+                                                                                  source,
+                                                                                  mint.communityId(),
+                                                                                  configuration);
+                case CommunityGrowthPolicy.Decision.Refusal _ -> refuseGrowth(node, source);
+            }
+        }
+
+        private void admitToCommunity(NodeId node,
+                                      String source,
+                                      String communityId,
+                                      Option<AetherValue.ClusterConfigValue> configuration) {
+            ctx.communityAdmission().register(node, communityId, ctx.nowMs());
+            commitWorkerCommunity(node,
+                                  communityId,
+                                  source,
+                                  ctx.communityPolicy().current().maxSize(),
+                                  configuration);
+            if (ctx.communityAdmission().clearBlocked(source)) {
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                                       source,
+                                       "Worker {} of source {} was admitted to community {} again",
+                                       node,
+                                       source,
+                                       communityId);
+            }
+        }
+
+        // FER (degrade forward): the refused worker joins the cluster without a community and the refusal is reported, so the
+        // failure is visible and never silent. Guarantee: the worker is not placed work as a community member and the operator is told
+        // why; nothing is retried by the leader. Mechanism: the warning below, closed by community-growth-resumed on the next
+        // admission for the source; the worker takes a community when it rejoins after the bound is raised.
+        private void refuseGrowth(NodeId node, String source) {
+            var policy = ctx.communityPolicy().current();
+
+            ctx.communityAdmission().markBlocked(source);
+            OperatorWarnings.raise(log,
+                                   ctx.operatorWarnings(),
+                                   OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                                   source,
+                                   "No community can take worker {} of source {}: its communities are at the {} ceiling and the source is at "
+                                  + "the bound of {} (max_size {}). Raise community_policy.max_communities or max_size, or add worker "
+                                  + "capacity under another source; the worker takes a community when it rejoins",
+                                   node,
+                                   source,
+                                   CommunityPolicy.CEILING,
+                                   policy.maxCommunities(),
+                                   policy.maxSize());
         }
 
         private Option<org.pragmatica.aether.config.cluster.CommunityPlacement> reservedWorkerCommunity(NodeId node,
@@ -1229,6 +1318,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
                               if (community.filter(value -> value.state() == CommunityState.DISSOLVING || value.state() == CommunityState.DISSOLVED)
                                            .isPresent()) {
+                                  retryOrReport(node);
+
                                   return;
                               }
 
@@ -1250,14 +1341,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                   configuration.map(value -> (Object) value)),
                                                                                       new KVCommand.ReadWitness<>(communityKey,
                                                                                                                   community.map(value -> (Object) value)));
+                              var transactionId = java.util.UUID.randomUUID()
+                                                                .toString();
                               var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(directiveKey,
-                                                                                                    java.util.UUID.randomUUID()
-                                                                                                                  .toString(),
+                                                                                                    transactionId,
                                                                                                     leader,
                                                                                                     guards,
                                                                                                     mutations);
 
                               submitActivationCommands(node,
+                                                       transactionId,
                                                        List.of(command));
                           });
         }
@@ -1297,18 +1390,61 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         cause.message()));
         }
 
-        private void submitActivationCommands(NodeId targetNode, List<KVCommand<AetherKey>> commands) {
+        private void submitActivationCommands(NodeId targetNode,
+                                              String transactionId,
+                                              List<KVCommand<AetherKey>> commands) {
             ctx.cluster()
                .<Object> apply(commands)
                .onSuccess(results -> results.stream()
                                             .filter(KVCommand.TransactionResult.class::isInstance)
                                             .map(KVCommand.TransactionResult.class::cast)
-                                            .filter(result -> !result.accepted())
-                                            .forEach(_ -> log.debug("Assignment changed before commit for {}; fresh admission will retry",
-                                                                    targetNode)))
+                                            .filter(result -> result.transactionId()
+                                                                    .equals(transactionId))
+                                            .forEach(result -> settleAssignment(targetNode,
+                                                                                result.accepted())))
                .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
                                              targetNode,
                                              cause.message()));
+        }
+
+        /// A refused commit means the community changed between the decision and the commit. The worker would stay without a community
+        /// until it happened to be admitted again, so the leader decides afresh, up to [CommunityAdmissionLedger#MAX_ATTEMPTS] times in a row,
+        /// and then reports the worker unplaced. An accepted commit ends the count and, if the worker had been reported, closes the report.
+        private void settleAssignment(NodeId node, boolean accepted) {
+            if (accepted || ctx.kvStore().get(ActivationDirectiveKey.activationDirectiveKey(node)).isPresent()) {
+                confirmPlaced(node);
+            } else {
+                retryOrReport(node);
+            }
+        }
+
+        private void confirmPlaced(NodeId node) {
+            if (ctx.communityAdmission().placed(node)) {
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
+                                       node.id(),
+                                       "Worker {} was assigned a community",
+                                       node);
+            }
+        }
+
+        private void retryOrReport(NodeId node) {
+            if (ctx.communityAdmission().refused(node) < CommunityAdmissionLedger.MAX_ATTEMPTS) {
+                log.debug("Assignment changed before commit for {}; deciding its community afresh", node);
+                ctx.dispatch(new WorkerJoinReceived(new WorkerJoinDecision(node,
+                                                                           "worker",
+                                                                           org.pragmatica.hlc.HlcTimestamp.ZERO)));
+            } else {
+                ctx.communityAdmission().giveUp(node);
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
+                                       node.id(),
+                                       "Worker {} has no community: its assignment changed before commit {} times in a row. It takes one when it is admitted again",
+                                       node,
+                                       CommunityAdmissionLedger.MAX_ATTEMPTS);
+            }
         }
 
         /// The CORE membership the CDM allocates/counts over (cluster-topology-overhaul spec,
@@ -2986,7 +3122,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void collectCommunityTransition(List<KVCommand<AetherKey>> batch,
                                                 CommunityKey key,
                                                 CommunityValue value) {
-            var floor = ctx.communitySizing().viabilityFloor();
+            var floor = ctx.communityPolicy().current().viabilityFloor();
             var liveMembers = communityLiveMembers(key.communityId());
             var next = nextCommunityState(value.state(), liveMembers, floor);
 

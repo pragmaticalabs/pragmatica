@@ -1,0 +1,2 @@
+### Changed (2026-10-20 — part of #249: a boot refused after formation keeps the S3 bucket's encryption marker)
+- **The #2268 rollback undoes node-local disk markers only; an S3 shared tier's `<prefix>.encryption-enabled` stays**, because the bucket is shared by the cluster and other nodes may rely on it. Backing the keyring out after such a refusal still meets the marker on the bucket; use a fresh prefix for an unencrypted boot. [verified: `aether/node` `StorageFactoryS3SharedTierTest#dhtRefusedBoot_rollsBackTheDiskMarker_andKeepsTheBucketMarker` (`@Tag("S3")`)]

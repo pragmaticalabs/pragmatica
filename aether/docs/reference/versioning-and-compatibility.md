@@ -136,6 +136,36 @@ in one rolling upgrade), treat that as unverified and validate it yourself; the 
 canary-wait step is the best available safety net today. See also
 [`known-limitations.md`](known-limitations.md#node-binary-version-skew--no-join-time-version-check-yet).
 
+### Upgrade note: no rollback past the content-store trusted-ref change (#2263)
+
+**Rolling a node back to a binary from before #2263 is unsupported.** Upgrading is safe: names written before it stay
+readable, and move to the new layout when they are next written. The way back is not:
+
+- After the upgrade, the content store writes every name under a trusted ref (`|` + name), and retires the bare ref of
+  any name it rewrites or deletes.
+- **Back to a build that has the `format=2` snapshot encoding (#2257) but not #2263:** the snapshot
+  restores, but that binary looks names up under their bare refs. Every name written since the upgrade is invisible
+  to it (reads answer "not found"), and a name rewritten since the upgrade has lost its bare ref. The trusted refs and
+  their blocks stay in the snapshot. If the node later rolls forward again, the trusted refs come back, and they shadow
+  anything the older binary wrote under the same names in between.
+- **Back to a build from before #2257:** #2257's own note applies. That binary cannot read a `format=2` snapshot, so it
+  falls back to an older retained snapshot that validates, and refuses to boot (`NothingRestorable`) when none does.
+
+**Which path triggers it.** The hazard needs an older binary to boot over a content snapshot directory that a newer
+binary has written:
+- **A node restarted in place on the older binary** (same storage paths) is affected.
+- **A replacement node** started by `aether cluster upgrade --version <older>` ([`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md))
+  is affected only if its storage resolves to the same directory. The content snapshot path is
+  `<artifacts path>/../content/snapshots` and carries no node-id segment, so nodes that share one host mount share it.
+  [mechanism: `StorageFactory`, the `content` path derivation]
+- A replacement node on fresh storage reads no such snapshot and is not affected by this note. Whether replacement
+  nodes reuse the retiring node's storage in a given deployment is a property of that deployment.
+  [unverified: not traced per deployment target]
+
+Pre-GA, this is a decision, not an oversight: a downgrade across this change is not supported.
+[mechanism: the pre-#2263 `DefaultContentStore.get` resolves the bare name only; `DefaultSnapshotManager.parseSnapshotContent`
+dispatches on `format`; `nothingRestored` and `StorageFactory.restoreAndSignalReady` refuse the boot]
+
 ## Reference material
 
 - [`../contributors/envelope-versioning.md`](../contributors/envelope-versioning.md) — envelope

@@ -214,6 +214,23 @@ public interface ClusterNetwork {
         return Promise.success(new WriteOutcome.Sent(nodeId));
     }
 
+    /// [#send(NodeId, ProtocolMessage, TimeSpan)] with the synchronous local-transport outcome of
+    /// [#sendOutcome(NodeId, ProtocolMessage)]: a request frame with a caller deadline whose caller must also
+    /// know whether the frame provably never left. Only a refusal ([WriteOutcome.BackpressureRefused],
+    /// [WriteOutcome.NoPeerState], [WriteOutcome.EncodeFailed]) proves that; `Sent` and `ConnectionDead` do not,
+    /// because a frame reported under either may still sit in the offline buffer and be delivered within
+    /// `offlineTtl`.
+    ///
+    /// Default falls back to the TTL-bounded `send` and reports [WriteOutcome.Sent] — the conservative answer
+    /// for a transport without per-write outcome tracking: it never claims a frame was not sent.
+    default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId,
+                                                                          M message,
+                                                                          TimeSpan offlineTtl) {
+        send(nodeId, message, offlineTtl);
+
+        return Promise.success(new WriteOutcome.Sent(nodeId));
+    }
+
     /// Start the network.
     Promise<Unit> start();
     /// Stop the network.

@@ -36,7 +36,7 @@ class EmberShardTest(unittest.TestCase):
         self.assertGreaterEqual(placed["total"], shard.default_weight(self.weights))
 
     def test_current_split_is_within_the_budget_and_balanced(self):
-        totals = [b["total"] for b in shard.assign(self.classes, self.weights, 2)]
+        totals = [b["total"] for b in shard.assign(self.classes, self.weights, 3)]
         self.assertLess(max(totals), shard.BUDGET_SECONDS)
         self.assertLess(max(totals) - min(totals), 0.1 * max(totals))
 

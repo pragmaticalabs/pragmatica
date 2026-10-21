@@ -998,6 +998,31 @@ public interface AetherNode extends ManageableNode {
                                                        GitBackupRepository.DEFAULT_TIMEOUT);
     }
 
+    /// A6: the repair plane's current protocol — stamp digests and paged pulls — and the freshness-gated verified read
+    /// of content-addressed keys, answered with a Get- or ExistsResponse. The legacy DHT routes stay beside these for
+    /// peers still on the previous version during a rolling upgrade. Without the verified-read route every remote
+    /// verified read waits out its phase deadline before falling back to the quorum read.
+    @Contract
+    static void routeDhtRepairPlane(List<MessageRouter.Entry<?>> allEntries,
+                                    DHTNode dhtNode,
+                                    DHTNetwork dhtNetwork,
+                                    DHTAntiEntropy dhtAntiEntropy) {
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.StampDigestRequest.class,
+                                                 request -> dhtNode.handleStampDigestRequest(request,
+                                                                                             response -> dhtNetwork.send(request.sender(),
+                                                                                                                         response))));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageRequest.class,
+                                                 request -> dhtNode.handleMigrationPageRequest(request,
+                                                                                               response -> dhtNetwork.send(request.sender(),
+                                                                                                                           response))));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageResponse.class,
+                                                 dhtAntiEntropy::onMigrationPageResponse));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.VerifiedReadRequest.class,
+                                                 request -> dhtNode.handleVerifiedReadRequest(request,
+                                                                                              response -> dhtNetwork.send(request.sender(),
+                                                                                                                          response))));
+    }
+
     @SuppressWarnings("unchecked")
     private static void routeKvBackup(List<MessageRouter.Entry<?>> allEntries, KvBackupService service) {
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
@@ -1274,11 +1299,18 @@ public interface AetherNode extends ManageableNode {
     /// link and content-addressed blocks — and (c) it is stable across a same-node restart because the
     /// node id is stable, so sealed segments are reclaimed on reboot.
     private static Path streamDataDir(AetherNodeConfig config) {
-        var artifactsConfig = Option.option(config.storageConfig().get("artifacts")).or(StorageConfig.storageConfig());
+        return streamDataDir(config.storageConfig(), config.self());
+    }
+
+    /// #249: [#streamDataDir(AetherNodeConfig)] over the node's storage map, which is the DERIVED one
+    /// ([StorageFactory#derivedStorage], applied once in `Main`): a shared-only `artifacts` reads its derived default
+    /// path here, never the blank path of its raw configuration.
+    static Path streamDataDir(Map<String, StorageConfig> storage, NodeId self) {
+        var artifactsConfig = Option.option(storage.get("artifacts")).or(StorageConfig.storageConfig());
 
         return Path.of(artifactsConfig.diskPath())
                    .resolveSibling("stream-segments")
-                   .resolve(config.self().id());
+                   .resolve(self.id());
     }
 
     /// The per-node stream WAL BASE directory (#634-3): the `streams` storage instance's explicit
@@ -1287,9 +1319,14 @@ public interface AetherNode extends ManageableNode {
     /// from ever sharing one WAL dir — the same invariant `streamDataDir` enforces, independent of
     /// operator input.
     private static Path streamWalBaseDir(AetherNodeConfig config) {
-        var streamsConfig = Option.option(config.storageConfig().get("streams")).or(StorageConfig.storageConfig());
+        return streamWalBaseDir(config.storageConfig(), config.self());
+    }
 
-        return effectiveWalBase(streamsConfig, config.self(), streamDataDir(config).resolve("wal"));
+    /// #249: [#streamWalBaseDir(AetherNodeConfig)] over the node's derived storage map, as [#streamDataDir(Map, NodeId)].
+    static Path streamWalBaseDir(Map<String, StorageConfig> storage, NodeId self) {
+        var streamsConfig = Option.option(storage.get("streams")).or(StorageConfig.storageConfig());
+
+        return effectiveWalBase(streamsConfig, self, streamDataDir(storage, self).resolve("wal"));
     }
 
     /// The pure wal-path decision, package-visible so the SUFFIX invariant is pinned (review m10
@@ -3963,6 +4000,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                 "implicit-worker-retirement"))),
                                                                                                                                      TimeSpan.timeSpan(45).seconds());
 
+        placementReconciler.operatorWarnings(operatorWarningSink);
         clusterTopologyManager.installCommunityPlacement(placementReconciler);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
@@ -4300,6 +4338,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
+        routeDhtRepairPlane(aetherEntries, dhtNode, dhtNetwork, dhtAntiEntropy);
         // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
         // drain can confirm the chunk reached a surviving replica before halting.
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
@@ -9990,14 +10029,7 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onDhtWriterStaleResolved));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
-        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
-                                              request -> demuxHttpForwardRequest(request,
-                                                                                 appHttpServer,
-                                                                                 managementServerRef.get())));
-        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardResponse.class,
-                                              response -> demuxHttpForwardResponse(response,
-                                                                                   appHttpServer,
-                                                                                   managementServerRef.get())));
+        entries.addAll(httpForwardRouteEntries(appHttpServer, managementServerRef));
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
@@ -10031,6 +10063,23 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// The HTTP forward messages, each demuxed by its pipeline (#964). Public only so a test can pin this wiring
+    /// without booting a node: a missing entry, or a demux that drops the app pipeline, fails no other test, it only
+    /// makes forwards wait out their hop timeout (#2244 F1).
+    static List<MessageRouter.Entry<?>> httpForwardRouteEntries(AppHttpServer appHttpServer,
+                                                                AtomicReference<Option<ManagementServer>> managementServerRef) {
+        return List.of(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
+                                                 request -> demuxHttpForwardRequest(request,
+                                                                                    appHttpServer,
+                                                                                    managementServerRef.get())),
+                       MessageRouter.Entry.route(HttpForwardMessage.HttpForwardResponse.class,
+                                                 response -> demuxHttpForwardResponse(response,
+                                                                                      appHttpServer,
+                                                                                      managementServerRef.get())),
+                       MessageRouter.Entry.route(HttpForwardMessage.HttpForwardNotApplied.class,
+                                                 notApplied -> demuxHttpForwardNotApplied(notApplied, appHttpServer)));
+    }
+
     @SuppressWarnings("JBCT-PAT-01")
     private static void demuxHttpForwardResponse(HttpForwardMessage.HttpForwardResponse response,
                                                  AppHttpServer appHttpServer,
@@ -10041,6 +10090,18 @@ public interface AetherNode extends ManageableNode {
             case APP -> appHttpServer.onHttpForwardResponse(response);
             case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP response for {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
                                                                            response.correlationId());
+        }
+    }
+
+    /// #2244 F1: only the app pipeline's receiver sends a not-applied answer; any other pipeline's is dropped, and
+    /// that pending forward waits out its hop timeout as "may have been applied" (the conservative side).
+    private static void demuxHttpForwardNotApplied(HttpForwardMessage.HttpForwardNotApplied notApplied,
+                                                   AppHttpServer appHttpServer) {
+        switch (notApplied.pipeline()) {
+            case APP -> appHttpServer.onHttpForwardNotApplied(notApplied);
+            case MANAGEMENT, UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forward not-applied answer for {} on pipeline {}: only the app pipeline sends it",
+                                                                                       notApplied.correlationId(),
+                                                                                       notApplied.pipeline());
         }
     }
 

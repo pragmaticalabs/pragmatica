@@ -287,11 +287,15 @@ in `EncryptingStorageTier`.
   explicit `[storage.artifacts] snapshot_path`. If `artifacts` sits on a mounted volume, content's
   tier may land outside it. Configure `[storage.content]` explicitly to control placement.
 
-**Storage paths are per instance (#856, #912).** A `[storage.<name>]` section that omits `disk_path` /
-`snapshot_path` resolves them under the default root, `/data/aether` (`<root>/storage`,
-`<root>/metadata-snapshots`); the JVM system property `aether.storage.defaultRoot` names another root.
-Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are
-refused at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
+**Storage paths are per instance (#856, #912, #249).** Paths resolve under the default root, `/data/aether`; the JVM
+system property `aether.storage.defaultRoot` names another root. `[storage.artifacts]` that omits `disk_path` /
+`snapshot_path` takes `<root>/storage` and `<root>/metadata-snapshots` (and `content` its sibling, below). A section of
+any other name that sets **neither** key gets its own directories beside `artifacts`, placed as `content` is:
+`<name>/blocks` and `<name>/snapshots` next to `artifacts`' disk path (`<root>/<name>/...` by default, and they move
+with it when `[storage.artifacts] disk_path` is set). Not `<root>/storage/<name>`: that would lie inside `artifacts`'
+directory, whose disk tier counts everything under it. A section that sets only one of the two keys resolves the other to the `artifacts`
+default. Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are refused
+at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
 
 **Not the same as `[streams.X].encryption_key_id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
@@ -385,6 +389,131 @@ resolvable for existing blocks. Re-encrypting already-written blocks under the n
 
 **Migration limitation.** There is no path from an existing plaintext tier to an encrypted one in
 rc4 — enabling `encrypted = true` (or `streams_encrypted = true`) is new-instance/fresh-data only.
+
+## Shared Storage Tier Configuration
+
+### `[storage.<instance>.shared]` — #249
+
+Chooses the cluster-shared **last tier** of a storage instance's stack: memory → local disk → shared tier.
+Nothing above the storage tier (content store, artifacts, uploads, slices) sees which kind is configured.
+
+```toml
+[storage.content.shared]
+kind = "s3"                                         # "dht" (default) | "s3"
+endpoint = "https://s3.eu-central-1.amazonaws.com"
+region = "eu-central-1"
+bucket = "aether-content"
+prefix = "cluster-a/"
+path_style = false                                  # true for MinIO and most S3-compatibles
+credentials = "env"                                 # "env" | "file:<path>" | "instance"
+max_inflight = 8
+request_timeout = "30s"
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `kind` | `"dht"` | `"dht"`: the in-memory DHT tier under `<instance>-blocks` — today's behaviour, and what a config without the section gets. `"s3"`: an S3-compatible bucket. Any other value (including `"dht-durable"`, reserved for the durable DHT tier) is refused at config load |
+| `endpoint` | required for `s3` | Base URL of the S3 API, scheme included |
+| `region` | required for `s3` | Signing region |
+| `bucket` | required for `s3` | The bucket must already exist; Aether never creates buckets |
+| `prefix` | `""` | Every key of the instance lives under it; a non-empty prefix gets a trailing `/` if it has none. Give each cluster and instance its own prefix |
+| `path_style` | `false` | `true`: `<endpoint>/<bucket>/<key>`. `false`: `<bucket>.<endpoint host>/<key>` (virtual-hosted) |
+| `credentials` | required for `s3` | Where the signing keys come from (below). **Inline secrets are rejected** |
+| `max_inflight` | `8` | Most concurrent requests this node sends to the bucket for the instance; others wait without holding a thread |
+| `request_timeout` | `"30s"` | Bound on each request; an expired request fails as unavailable (retriable) |
+
+A section is validated at load: missing required keys, an unknown key, a non-positive `max_inflight`,
+a malformed `request_timeout` or a non-boolean `path_style` refuse the config, naming the instance and
+the key. A sub-table or a dotted key under the section (`[storage.<instance>.shared.<x>]`,
+`aws.secret_access_key = ...`) is refused too. `[storage.streams.shared]` accepts only `kind = "dht"`: stream
+storage is being redesigned separately, and until then the streams instance keeps the DHT as its shared tier.
+`[storage.encryption.shared]` is refused: `encryption` names the keyring section, not an instance. Every other
+`[storage.<instance>.<sub>]` section, and every `[storage.encryption.<sub>]` other than `[storage.encryption.keys]`,
+is **refused at load**, naming each offending section, so a typo such as `[storage.content.shard]` or
+`[storage.encryption.kyes]` stops the boot instead of silently dropping the tier or the keys. A dotted key inside an
+instance section (`[storage.content]` with `foo.bar = 1`) is such a section too (`[storage.content.foo]`). An
+explicit blank `disk_path`/`snapshot_path` is refused (omit the key to use the default).
+
+**Without `[storage.<instance>]`.** A `[storage.content.shared]` section alone is enough: the instance is
+placed as if its own section were absent (for `artifacts` and `content`, the synthesized defaults described
+above, including keyring-tracking encryption). A section for any other name creates that instance in its own
+directories beside `artifacts` (`<root>/<name>/blocks` and `<root>/<name>/snapshots` by default), as an empty
+`[storage.<instance>]` section does.
+The paths are derived once, when the node starts,
+and everything that hangs off them reads the derived ones: with `[storage.artifacts.shared]` alone, the stream
+segments and the stream WAL stay under the default root, exactly as with no storage section at all.
+
+**Credentials.** Secrets never live in the TOML. A key that can only hold a secret (`secret_access_key`,
+`access_key_id`, `session_token`, `password`, ...) is refused with `InlineSecretRejected`, in any case and
+also as a dotted key or inside a sub-table, and a
+`credentials` value that is not one of the three forms is refused without echoing it.
+- `"env"` — `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, read once at boot.
+- `"file:<path>"` — the `[default]` profile of a file in the AWS shared-credentials format
+  (`aws_access_key_id`, `aws_secret_access_key`, optional `aws_session_token`), read once at boot.
+  Rotating the file requires a restart.
+- `"instance"` — the EC2 instance profile through the instance metadata service, IMDSv2 only. The
+  temporary credentials are fetched on first use and refreshed five minutes before they expire.
+
+Aether signs requests itself (SigV4); there is no AWS SDK in the node, so these three are the whole chain.
+Credentials are never logged and never appear in a refusal message.
+
+**Boot probe.** At storage construction, before the node joins anything, each S3 tier is probed: PUT,
+GET and DELETE of `<prefix>.aether-probe/<nodeId>`, with the GET required to return the bytes written.
+A probe that fails — endpoint unreachable, credentials refused, bucket missing, or the read-back
+differing — **fails the boot**, naming the instance, endpoint and bucket. A configured durable tier that
+is absent is a misconfiguration, never a silent fallback. The node's identity needs `s3:PutObject`,
+`s3:GetObject` and `s3:DeleteObject` on the prefix. Redirects are not followed: an endpoint answering
+for another region fails the probe.
+
+**What an acknowledged write is worth.** Blocks are written whole, one S3 object per content-addressed
+block (no multipart). A write is acknowledged only after the bucket answered the PUT with 200, and the
+S3 tier counts as durable (blocks may be demoted to it from the local disk; it could back a sealed
+stream range, but the streams instance cannot be configured with S3 in this release). **What that 200 is worth is the provider's durability, not Aether's**: AWS S3 documents
+redundant storage across availability zones for its standard class; an S3-compatible endpoint provides
+whatever its deployment provides, and a single-disk MinIO provides a single disk. A provider outage
+makes the data **unavailable** — reads and writes fail with a retriable `Unavailable` cause, which the
+upload layer is specified to answer as 503 — and is never reported as an absent block: only a 404 for
+the object itself reads as "not there". A request the provider refuses for what it is (403, a missing
+bucket, another 4xx) fails as `Rejected`, terminal.
+
+**Consistency the endpoint must provide.** Read-after-write for new keys: a block is immutable and
+content-addressed, so a GET after the PUT returned must see it. AWS S3 provides this since December 2020;
+for an S3-compatible product it must be checked per product and version. The boot probe exercises it
+once; it is not a proof. List-after-write: the encryption guard below lists the prefix to find existing
+blocks, so an endpoint that lists stale results can miss a block written just before; the cluster catalog's
+anchors (a later phase) will need it too.
+
+**Encryption.** With `encrypted = true` (or the keyring-tracking default of `artifacts`/`content`) the S3
+tier is wrapped in `EncryptingStorageTier` exactly like the DHT tier: the bucket holds ciphertext. The
+guards follow the local disk, during storage construction (an object store needs no cluster):
+- a boot with no keyring over a prefix carrying the marker `<prefix>.encryption-enabled` is refused with
+  `EncryptedTierRequiresKeyring`;
+- a boot with a keyring over an unmarked prefix that already holds objects is refused with
+  `EnablingOverExistingPlaintext`: those blocks would be stranded as legacy plaintext. There is no migration;
+  use a fresh prefix;
+- over an empty prefix, the marker (the active key id) is written only after every storage instance of the
+  boot has passed its guards (#852): a boot refused by any instance stamps no bucket, so backing the keyring
+  out afterwards boots. Other nodes' boot-probe objects (`<prefix>.aether-probe/...`) do not count as existing
+  objects.
+- **Several nodes enabling encryption over one empty prefix at the same moment can refuse one of them.** A node
+  that read "no marker" can then list the first ciphertext block another node has just written and refuse with
+  `EnablingOverExistingPlaintext`. Nothing is lost and nothing is stamped by the refused node; restarting it
+  boots cleanly, because the marker is then present. To avoid the refusal, enable encryption on one node first.
+- **A boot refused after formation keeps the bucket's marker.** When the post-formation DHT marker check refuses a
+  boot (#2268), the node rolls back the disk markers that boot stamped, but never `<prefix>.encryption-enabled`:
+  the bucket is shared by the cluster, and other nodes may already rely on it. Backing the keyring out after such a
+  refusal therefore still meets the marker on the bucket (`EncryptedTierRequiresKeyring`); use a fresh prefix for
+  an unencrypted boot.
+
+**Garbage collection.** Node-local GC never deletes from the S3 tier, as from the DHT: one node's refcount
+cannot say another node no longer references a block. Explicit deletes (content deletion, stream retention)
+do reach the bucket, one object per block. Collection of unreferenced blocks in the bucket is cluster-wide
+GC, a later phase: until then the bucket only grows by what explicit deletes leave behind.
+
+**Block size.** The block size is the `ContentStore` resource's `chunkSizeBytes` (`ContentStoreConfig`,
+default 4 MiB), unchanged by this section. Each block is one PUT and one GET, so per-request cost and
+latency dominate on S3 (a 5 GiB object at 4 MiB is 1280 PUTs); S3-backed content stores may want larger
+blocks. No default changes here.
 
 ## Environment Variables
 
