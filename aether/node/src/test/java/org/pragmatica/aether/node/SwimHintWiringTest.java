@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.cluster.metrics.MetricObservation;
 
 import java.util.List;
@@ -76,7 +77,7 @@ class SwimHintWiringTest {
 
     @Test
     void pingTimeoutReporter_sendsPeerUnresponsivePingTimeoutHint() {
-        AetherNode.pingTimeoutReporter(hints::add).accept(PEER);
+        SwimAssembly.pingTimeoutReporter(hints::add).accept(PEER);
 
         assertThat(hints).hasSize(1);
         var hint = (TransportObservation.PeerUnreachable) hints.getFirst();
@@ -89,7 +90,7 @@ class SwimHintWiringTest {
 
     @Test
     void pongResponsiveReporter_sendsPeerResponsiveForPongSender() {
-        AetherNode.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(PEER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+        SwimAssembly.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(PEER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
                                    0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         assertThat(hints)
@@ -101,7 +102,7 @@ class SwimHintWiringTest {
     /// excludes self; pongs go to the leader only), so this pins the guard, not a producer.
     @Test
     void pongResponsiveReporter_selfPong_sendsNothing() {
-        AetherNode.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(SELF, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+        SwimAssembly.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(SELF, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
                                    0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         assertThat(hints).as("There is no hint about self to retract").isEmpty();

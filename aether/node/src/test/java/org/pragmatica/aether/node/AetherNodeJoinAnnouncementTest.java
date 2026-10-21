@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.WorkerConfig;
+import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -53,7 +54,7 @@ class AetherNodeJoinAnnouncementTest {
 
     @Test
     void joinAnnouncement_configuredWorker_holdsTheAnnounceUntilAssigned() {
-        var trigger = AetherNode.joinAnnouncement(config(Option.some(Mockito.mock(WorkerConfig.class))), detector, SELF, "c", 5L, 7L, SEEDS);
+        var trigger = SwimAssembly.joinAnnouncement(config(Option.some(Mockito.mock(WorkerConfig.class))), detector, SELF, "c", 5L, 7L, SEEDS);
 
         verifyNoInteractions(detector);
         trigger.run();
@@ -65,7 +66,7 @@ class AetherNodeJoinAnnouncementTest {
     @Test
     void joinAnnouncement_workerLabelledInTheTopology_holdsTheAnnounceUntilAssigned() {
         var labelled = NodeInfo.nodeInfo(SELF.id(), SELF.address(), Map.of(NodeInfo.LABEL_ROLE, "worker"));
-        var trigger = AetherNode.joinAnnouncement(config(Option.none(), labelled), detector, SELF, "c", 5L, 7L, SEEDS);
+        var trigger = SwimAssembly.joinAnnouncement(config(Option.none(), labelled), detector, SELF, "c", 5L, 7L, SEEDS);
 
         trigger.run();
 
@@ -75,7 +76,7 @@ class AetherNodeJoinAnnouncementTest {
 
     @Test
     void joinAnnouncement_core_announcesAtOnce() {
-        var trigger = AetherNode.joinAnnouncement(config(Option.none()), detector, SELF, "c", 5L, 7L, SEEDS);
+        var trigger = SwimAssembly.joinAnnouncement(config(Option.none()), detector, SELF, "c", 5L, 7L, SEEDS);
 
         verifyNoInteractions(detector);
         trigger.run();
