@@ -18,6 +18,15 @@ import org.pragmatica.lang.Verify;
 ///
 /// `promotion` is a kill switch for background tier promotion on this instance (default on): promotion copies hot
 /// blocks into the node's faster tiers, per node. It has no effect on `streams`, which never promotes.
+///
+/// `shared` (#249) is the instance's cluster-shared last tier, from `[storage.<instance>.shared]`: the in-memory
+/// DHT by default, or an S3-compatible bucket ([SharedTierConfig]).
+///
+/// `derivesPaths` (#249) is true when the configuration gives no paths of its own, so the node derives them: a
+/// [#sharedOnly] configuration (no `[storage.<instance>]` section was written; the synthesized instances also derive
+/// their `encrypted` default), or, through [#derivingPaths], a section of another name that sets neither `disk_path`
+/// nor `snapshot_path` (N3). Every other shape carries false and is placed exactly as written -- a blank `diskPath`
+/// included, which never reads as "derive".
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -27,7 +36,15 @@ public record StorageConfig(long memoryMaxBytes,
                             int snapshotRetentionCount,
                             String walPath,
                             boolean encrypted,
-                            boolean promotion) {
+                            boolean promotion,
+                            SharedTierConfig shared,
+                            boolean derivesPaths) {
+    /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
+    /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
+    /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
+    public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
+    private static final String DEFAULT_ROOT = "/data/aether";
+
     /// Pre-promotion-key shape, kept so existing callers stay source-compatible; `promotion` defaults to on.
     public StorageConfig(long memoryMaxBytes,
                          long diskMaxBytes,
@@ -50,11 +67,31 @@ public record StorageConfig(long memoryMaxBytes,
              true);
     }
 
-    /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
-    /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
-    /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
-    public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
-    private static final String DEFAULT_ROOT = "/data/aether";
+    /// The pre-#249 shape: the shared tier is the in-memory DHT ([SharedTierConfig#dht()]), today's behaviour, and the
+    /// paths are used as written ([#derivesPaths] false).
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
+             SharedTierConfig.dht(),
+             false);
+    }
 
     public static StorageConfig storageConfig() {
         var root = Option.option(System.getProperty(DEFAULT_ROOT_PROPERTY))
@@ -160,6 +197,76 @@ public record StorageConfig(long memoryMaxBytes,
                                  walPath,
                                  encrypted,
                                  promotion);
+    }
+
+    /// #249: this configuration with `shared` as the last tier of the instance's stack.
+    public StorageConfig withShared(SharedTierConfig shared) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 shared,
+                                 derivesPaths);
+    }
+
+    /// #249: an instance configured ONLY through `[storage.<name>.shared]`, with no `[storage.<name>]`
+    /// section of its own. Paths are left empty to mean "as if the section were absent": the node resolves
+    /// them as it would for a missing section -- the synthesized `artifacts`/`content` placement for those
+    /// two, their own subdirectories for any other name ([#derivesPaths]).
+    public static StorageConfig sharedOnly(SharedTierConfig shared) {
+        var defaults = storageConfig();
+
+        return new StorageConfig(defaults.memoryMaxBytes(),
+                                 defaults.diskMaxBytes(),
+                                 "",
+                                 "",
+                                 defaults.snapshotMutationThreshold(),
+                                 defaults.snapshotMaxInterval(),
+                                 defaults.snapshotRetentionCount(),
+                                 defaults.walPath(),
+                                 defaults.encrypted(),
+                                 defaults.promotion(),
+                                 shared,
+                                 true);
+    }
+
+    /// #249 N3: this configuration, marked as giving no paths of its own ([#derivesPaths]); the node derives them.
+    public StorageConfig derivingPaths() {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 shared,
+                                 true);
+    }
+
+    /// #249 N3: this configuration placed on `diskPath` and `snapshotPath`, which are its own from now on
+    /// ([#derivesPaths] false). Every other setting is kept.
+    public StorageConfig withPaths(String diskPath, String snapshotPath) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 shared,
+                                 false);
     }
 
     /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.

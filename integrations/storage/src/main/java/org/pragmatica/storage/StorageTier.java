@@ -26,10 +26,12 @@ public interface StorageTier {
     /// True when a successful [#put] means the block survives a power loss or a kernel crash on
     /// this node -- the bytes and the entries naming them are on the device, not only in the page
     /// cache or in memory. Every write a storage instance acknowledges must have landed on every
-    /// durable tier it holds (#1567); a non-durable tier is a cache. Defaults to false; in rc4 only
-    /// [LocalDiskTier] (and a wrapper delegating to it) returns true. An in-memory DHT tier is NOT
-    /// durable however many peers hold a copy (#1544), and [RemoteTier] reports false until it has
-    /// a production construction path (#249).
+    /// durable tier it holds (#1567); a non-durable tier is a cache. Defaults to false. True for
+    /// [LocalDiskTier], for the [RemoteTier] a node builds from `[storage.<instance>.shared] kind = "s3"`
+    /// ([RemoteTier#durableRemoteTier], #249: the put resolved on the provider's 200, so "survives" means
+    /// the provider's durability, not Aether's), and for a wrapper delegating to either. An in-memory DHT
+    /// tier is NOT durable however many peers hold a copy (#1544), and a [RemoteTier] built by its test or
+    /// pre-#249 factories reports false.
     default boolean isDurable() {
         return false;
     }

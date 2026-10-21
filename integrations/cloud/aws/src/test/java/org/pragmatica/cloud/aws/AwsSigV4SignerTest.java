@@ -129,4 +129,71 @@ class AwsSigV4SignerTest {
     private static void assertAmzDateCorrect(Map<String, String> headers) {
         assertThat(headers.get("X-Amz-Date")).isEqualTo("20150830T123600Z");
     }
+
+    /// #249: the signed host must equal the sent `Host` header. Mutation that reddens it: sign `URI#getHost`
+    /// alone again (MinIO on :9000 then answers SignatureDoesNotMatch).
+    /// #249: vectors where botocore's (name, value) ordering differs from sorting whole `name=value` strings, plus
+    /// AWS's published S3 SigV4 examples. Mutations that redden it: sort `name=value` strings (the first two
+    /// cases), or drop the sort (every case with more than one parameter).
+    @Nested
+    class CanonicalQuery {
+        @Test
+        void canonicalQuery_nameIsAPrefixOfAnother_sortsByNameThenValue() {
+            assertThat(AwsSigV4Signer.canonicalQuery("a-b=1&a=2")).isEqualTo("a=2&a-b=1");
+            assertThat(AwsSigV4Signer.canonicalQuery("InstanceId.10=y&InstanceId.1=x")).isEqualTo("InstanceId.1=x&InstanceId.10=y");
+            assertThat(AwsSigV4Signer.canonicalQuery("key.x=2&key=1")).isEqualTo("key=1&key.x=2");
+        }
+
+        @Test
+        void canonicalQuery_sameName_sortsByValue_andFillsBareNames() {
+            assertThat(AwsSigV4Signer.canonicalQuery("a=2&a=1")).isEqualTo("a=1&a=2");
+            assertThat(AwsSigV4Signer.canonicalQuery("list-type=2&prefix=a%2F&max-keys=10"))
+                .isEqualTo("list-type=2&max-keys=10&prefix=a%2F");
+            assertThat(AwsSigV4Signer.canonicalQuery("uploads")).isEqualTo("uploads=");
+            assertThat(AwsSigV4Signer.canonicalQuery("")).isEmpty();
+        }
+
+        /// AWS S3 documentation, "Signature Calculations for the Authorization Header", Example: GET Object.
+        @Test
+        void sign_awsPublishedGetObjectExample_matchesTheDocumentedSignature() {
+            assertSignature("https://examplebucket.s3.amazonaws.com/test.txt",
+                            Map.of("range", "bytes=0-9"),
+                            "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41");
+        }
+
+        /// Same documentation, Example: GET Bucket (List Objects), `?max-keys=2&prefix=J`, given out of order.
+        @Test
+        void sign_awsPublishedListObjectsExample_matchesTheDocumentedSignature() {
+            assertSignature("https://examplebucket.s3.amazonaws.com/?prefix=J&max-keys=2",
+                            Map.of(),
+                            "34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7");
+        }
+
+        private static void assertSignature(String url, Map<String, String> headers, String expected) {
+            var config = awsConfig("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "us-east-1");
+
+            AwsSigV4Signer.signAtTime(config, "s3", "GET", url, headers, new byte[0], Instant.parse("2013-05-24T00:00:00Z"))
+                          .onFailure(cause -> assertThat(cause).isNull())
+                          .onSuccess(signed -> assertThat(signed.get("Authorization")).endsWith("Signature=" + expected));
+        }
+    }
+
+    @Nested
+    class CanonicalHost {
+        @Test
+        void canonicalHost_nonDefaultPort_isIncluded() {
+            assertThat(AwsSigV4Signer.canonicalHost("http://localhost:9000/bucket/key"))
+                                           .isEqualTo("localhost:9000");
+        }
+
+        @Test
+        void canonicalHost_defaultOrAbsentPort_isOmitted() {
+            assertThat(AwsSigV4Signer.canonicalHost("https://s3.eu-central-1.amazonaws.com/k"))
+                                           .isEqualTo("s3.eu-central-1.amazonaws.com");
+            assertThat(AwsSigV4Signer.canonicalHost("https://s3.example.com:443/k"))
+                                           .isEqualTo("s3.example.com");
+            assertThat(AwsSigV4Signer.canonicalHost("http://minio:80/k"))
+                                           .isEqualTo("minio");
+        }
+    }
 }
