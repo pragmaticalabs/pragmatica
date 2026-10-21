@@ -45,7 +45,7 @@ FLAGS
     (no flag)        Reuse existing PG VM if present, else provision a fresh one.
     --fresh          Destroy any existing PG VM first, then provision new.
     --destroy        Destroy the PG VM and its SSH key, then exit.
-    --print-only     Print existing PG_URL if VM exists; exit 1 if not provisioned.
+    --print-only     Print the non-secret env lines if VM exists; exit 1 if not provisioned.
     --help, -h       Print this help and exit.
 
 ENVIRONMENT
@@ -65,8 +65,8 @@ OUTPUT
         export PG_URL=postgres://aether:<password>@<ip>:5432/aether_forge
         export PG_PASSWORD=<password>   (plus PG_USER, PG_HOST, PG_DB)
 
-    stdout carries only the non-secret lines (PG_USER, PG_HOST, PG_DB and the VM
-    comment); PG_URL and PG_PASSWORD are never printed. Tests pick them up via
+    stdout carries only the allow-listed lines (PG_USER, PG_HOST, PG_PORT, PG_DB);
+    PG_URL, PG_PASSWORD and everything else are never printed. Tests pick them up via
     `source /tmp/aether-test-pg.env`.
 
 EXAMPLES
@@ -426,10 +426,14 @@ EOF
 #
 #     set -a; source /tmp/aether-test-pg.env; set +a
 #
+# ALLOW-LIST, not deny-list: only the canonical `export PG_{USER,HOST,PORT,DB}=<plain value>`
+# lines are printed. Anything else — comments, other variables, unexported, indented or
+# quoted forms, a value carrying anything but [A-Za-z0-9._-] — is dropped, so a hand-edited
+# or foreign file cannot leak a secret through a form a deny-list did not anticipate.
 # ---------------------------------------------------------------------------
 print_env_summary() {
-    grep -v -e '^export PG_PASSWORD=' -e '^export PG_URL=' "$ENV_FILE" || true
-    echo "# PG_URL and PG_PASSWORD are in ${ENV_FILE} (mode 0600) and are not printed."
+    grep -E '^export PG_(USER|HOST|PORT|DB)=[A-Za-z0-9._-]+$' "$ENV_FILE" || true
+    echo "# PG_URL, PG_PASSWORD and every other variable are in ${ENV_FILE} (mode 0600) and are not printed."
 }
 
 # ---------------------------------------------------------------------------
