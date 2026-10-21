@@ -963,17 +963,17 @@ public final class StorageFactory {
     /// `artifacts` instance in [#createAll] -- see the ruling note there.
     private static StorageConfig defaultArtifactsConfig(StorageConfig defaults, boolean encrypted) {
         return StorageConfig.storageConfig(defaults.memoryMaxBytes(),
-                                 defaults.diskMaxBytes(),
-                                 defaults.diskPath(),
-                                 defaults.snapshotPath(),
-                                 defaults.snapshotMutationThreshold(),
-                                 defaults.snapshotMaxInterval(),
-                                 defaults.snapshotRetentionCount(),
-                                 defaults.walPath(),
-                                 encrypted,
-                                 defaults.promotion(),
-                                 defaults.prefetch(),
-                                 defaults.prefetchMaxInFlight());
+                                           defaults.diskMaxBytes(),
+                                           defaults.diskPath(),
+                                           defaults.snapshotPath(),
+                                           defaults.snapshotMutationThreshold(),
+                                           defaults.snapshotMaxInterval(),
+                                           defaults.snapshotRetentionCount(),
+                                           defaults.walPath(),
+                                           encrypted,
+                                           defaults.promotion(),
+                                           defaults.prefetch(),
+                                           defaults.prefetchMaxInFlight());
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
@@ -1011,17 +1011,17 @@ public final class StorageFactory {
         var contentDataDir = siblingDataDir(configs, defaults, CONTENT_NAME);
 
         return StorageConfig.storageConfig(defaults.memoryMaxBytes(),
-                                 defaults.diskMaxBytes(),
-                                 contentDataDir.resolve("blocks").toString(),
-                                 contentDataDir.resolve("snapshots").toString(),
-                                 defaults.snapshotMutationThreshold(),
-                                 defaults.snapshotMaxInterval(),
-                                 defaults.snapshotRetentionCount(),
-                                 defaults.walPath(),
-                                 encrypted,
-                                 defaults.promotion(),
-                                 defaults.prefetch(),
-                                 defaults.prefetchMaxInFlight());
+                                           defaults.diskMaxBytes(),
+                                           contentDataDir.resolve("blocks").toString(),
+                                           contentDataDir.resolve("snapshots").toString(),
+                                           defaults.snapshotMutationThreshold(),
+                                           defaults.snapshotMaxInterval(),
+                                           defaults.snapshotRetentionCount(),
+                                           defaults.walPath(),
+                                           encrypted,
+                                           defaults.promotion(),
+                                           defaults.prefetch(),
+                                           defaults.prefetchMaxInFlight());
     }
 
     /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream

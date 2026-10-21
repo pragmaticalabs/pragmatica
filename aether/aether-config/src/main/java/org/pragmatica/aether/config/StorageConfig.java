@@ -51,7 +51,6 @@ public record StorageConfig(long memoryMaxBytes,
                             boolean derivesPaths) {
     /// The default for `prefetchMaxInFlight`; the prefetch manager's own default is pinned to the same number by a test.
     public static final int DEFAULT_PREFETCH_MAX_IN_FLIGHT = 4;
-
     /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
     /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
     /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
