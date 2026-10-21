@@ -71,8 +71,9 @@ class SystemStreamDhtReclaimProbeTest {
         assertThat(result.segmentsSealed()).as("probe reached the seal path: " + result).isGreaterThan(0);
         assertThat(result.dhtAfterSeal()).as("probe wrote through to the DHT tier: " + result).isGreaterThan(result.dhtBaseline());
         assertThat(result.segmentsAfterRetention()).as("retention dropped every ref: " + result).isZero();
-        assertThat(result.diskAfterGc()).as("control: private disk tier freed by GC: " + result).isEqualTo(result.diskBaseline());
-        assertThat(result.dhtAfterGc()).as("R2 assertion: DHT entries back to baseline: " + result).isEqualTo(result.dhtBaseline());
+        assertThat(result.diskAfterGc()).as("control: private disk tier freed by GC: " + result).isEqualTo(result.diskBaseline() + result.liveRefs());
+        assertThat(result.sealedDhtKeysSurviving()).as("R2 assertion: no sealed-segment DHT entry survives: " + result).isZero();
+        assertThat(result.dhtAfterGc()).as("R2 assertion: DHT entries back to baseline plus live refs: " + result).isEqualTo(result.dhtBaseline() + result.liveRefs());
     }
 
     @RepeatedTest(3)
@@ -83,7 +84,7 @@ class SystemStreamDhtReclaimProbeTest {
         assertThat(result.segmentsSealed()).as("probe reached the seal path: " + result).isGreaterThan(0);
         assertThat(result.diskAfterSeal()).as("probe wrote blocks to the disk tier: " + result).isGreaterThan(result.diskBaseline());
         assertThat(result.segmentsAfterRetention()).as("retention dropped every ref: " + result).isZero();
-        assertThat(result.diskAfterGc()).as("disk blocks back to baseline: " + result).isEqualTo(result.diskBaseline());
+        assertThat(result.diskAfterGc()).as("disk blocks back to baseline plus live refs: " + result).isEqualTo(result.diskBaseline() + result.liveRefs());
     }
 
     private Result probe(Option<DHTClient> client, CountingDHTClient dht) {
@@ -112,6 +113,7 @@ class SystemStreamDhtReclaimProbeTest {
 
         var segmentsSealed = index.listSegments(STREAM, 0).size();
         var dhtAfterSeal = dht.size();
+        var sealedDhtKeys = dht.keys();
         var diskAfterSeal = diskBlocks();
         var enforcer = RetentionEnforcer.retentionEnforcer(storage,
                                                            index,
@@ -135,6 +137,8 @@ class SystemStreamDhtReclaimProbeTest {
         sleep(20);
         awaitTrue(() -> collectOnce(collector) == 0 && diskBlocks() == diskBaseline);
 
+        var survivors = (int) sealedDhtKeys.stream().filter(dht.keys()::contains).count();
+
         return new Result(segmentsSealed,
                           dhtBaseline,
                           dhtAfterSeal,
@@ -143,7 +147,9 @@ class SystemStreamDhtReclaimProbeTest {
                           diskAfterSeal,
                           diskBlocks(),
                           segmentsAfterRetention,
-                          dht.removes.get());
+                          dht.removes.get(),
+                          setup.metadataStore().listAllRefs().size(),
+                          survivors);
     }
 
     private static int collectOnce(StorageGarbageCollector collector) {
@@ -195,7 +201,9 @@ class SystemStreamDhtReclaimProbeTest {
                           long diskAfterSeal,
                           long diskAfterGc,
                           int segmentsAfterRetention,
-                          int dhtRemoveCalls) {}
+                          int dhtRemoveCalls,
+                          int liveRefs,
+                          int sealedDhtKeysSurviving) {}
 
     private static final class CountingDHTClient implements DHTClient {
         private final ConcurrentHashMap<String, byte[]> store = new ConcurrentHashMap<>();
@@ -203,6 +211,10 @@ class SystemStreamDhtReclaimProbeTest {
 
         int size() {
             return store.size();
+        }
+
+        java.util.Set<String> keys() {
+            return java.util.Set.copyOf(store.keySet());
         }
 
         @Override
