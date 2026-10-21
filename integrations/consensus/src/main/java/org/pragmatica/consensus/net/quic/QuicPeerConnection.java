@@ -582,7 +582,7 @@ public final class QuicPeerConnection {
     /// here: the connection is already unbound, so the transport routes new frames over the surviving link. A
     /// connection with no event loop (unit fixtures) or no live stream is closed at once.
     @Contract
-    void closeAfterDrain(long boundMs) {
+    void closeAfterDrain(long boundMs, Consumer<DrainEnd> onEnded) {
         var loop = connection.eventLoop();
         var open = openLaneStreams();
 
@@ -595,14 +595,41 @@ public final class QuicPeerConnection {
 
         var remaining = new AtomicInteger(open.size());
         var closed = new AtomicBoolean();
-        Runnable closeOnce = () -> {
+        Consumer<DrainEnd> endWith = end -> {
             if (closed.compareAndSet(false, true)) {
                 closeAsync();
+                onEnded.accept(end);
             }
         };
 
-        loop.schedule(closeOnce, boundMs, TimeUnit.MILLISECONDS);
-        open.forEach(stream -> finishLane(stream, remaining, closeOnce));
+        if (!scheduleBound(loop, () -> endWith.accept(DrainEnd.BOUND_HIT), boundMs)) {
+            // The loop is terminating (the group is shutting down mid-supersede): nothing can run the drain, and Netty
+            // is closing the channel anyway. Close here rather than let the rejection escape into the arbitration.
+            closeAsync();
+
+            return;
+        }
+
+        open.forEach(stream -> finishLane(stream, remaining, () -> endWith.accept(DrainEnd.FLUSHED)));
+    }
+
+    /// How a drain ended: every lane stream had closed, or the bound passed first.
+    enum DrainEnd {
+        FLUSHED,
+        BOUND_HIT
+    }
+
+    /// Whether the bound timer could be armed; false when the event loop no longer accepts tasks.
+    @Contract
+    @SuppressWarnings("JBCT-EX-03")  // Netty boundary: a terminated loop rejects with an exception
+    private static boolean scheduleBound(io.netty.channel.EventLoop loop, Runnable bound, long boundMs) {
+        try {
+            loop.schedule(bound, boundMs, TimeUnit.MILLISECONDS);
+
+            return true;
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            return false;
+        }
     }
 
     private void finishLane(QuicStreamChannel stream, AtomicInteger remaining, Runnable closeOnce) {

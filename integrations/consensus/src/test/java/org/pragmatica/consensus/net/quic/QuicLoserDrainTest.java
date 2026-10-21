@@ -42,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -122,7 +123,7 @@ class QuicLoserDrainTest {
             lane.write(Unpooled.wrappedBuffer(bytes));
         }
         lane.flush();
-        loser.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        loser.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS, end -> {});
 
         awaitTrue(() -> received.get() == BURST, AWAIT, "every frame of the burst delivered (got " + received.get() + ")");
         awaitTrue(() -> !loser.isActive(), AWAIT, "the drained connection closed");
@@ -141,10 +142,10 @@ class QuicLoserDrainTest {
         network.closeSupersededConnectionForTests(dualLoser, connectionFrom(LOW));
         network.closeSupersededConnectionForTests(redialLoser, connectionFrom(HIGH));
 
-        verify(dualLoser).closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        verify(dualLoser).closeAfterDrain(eq(QuicPeerConnection.DRAIN_BOUND_MS), any());
         verify(dualLoser, never()).close();
         verify(redialLoser).close();
-        verify(redialLoser, never()).closeAfterDrain(anyLong());
+        verify(redialLoser, never()).closeAfterDrain(anyLong(), any());
     }
 
     /// Routing of the other loser: a new connection that lost to an incumbent dialed by the other end is drained too.
@@ -163,7 +164,7 @@ class QuicLoserDrainTest {
 
         network.onPeerConnectedForTests(loser, new NodeAddress("127.0.0.1", 1), Map.of());
 
-        verify(loser).closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        verify(loser).closeAfterDrain(eq(QuicPeerConnection.DRAIN_BOUND_MS), any());
         verify(loser, never()).close();
     }
 
@@ -172,6 +173,7 @@ class QuicLoserDrainTest {
     @Test
     void closeAfterDrain_peerNeverFinishes_closesAtTheBound_notBefore() {
         var loop = new DefaultEventLoop();
+        var ended = new java.util.concurrent.CopyOnWriteArrayList<QuicPeerConnection.DrainEnd>();
         var channel = mock(QuicChannel.class);
         var stream = mock(QuicStreamChannel.class);
 
@@ -184,11 +186,12 @@ class QuicLoserDrainTest {
             var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
             var _ = connection.registerStream(StreamType.KV, stream);
 
-            connection.closeAfterDrain(400);
+            connection.closeAfterDrain(400, ended::add);
 
             verify(channel, never()).close();
             verify(stream).writeAndFlush(any());
             verify(channel, timeout(5_000)).close();
+            assertThat(ended).containsExactly(QuicPeerConnection.DrainEnd.BOUND_HIT);
         } finally {
             loop.shutdownGracefully();
         }
@@ -198,6 +201,7 @@ class QuicLoserDrainTest {
     @Test
     void closeAfterDrain_everyLaneClosed_closesWithoutWaitingForTheBound() {
         var loop = new DefaultEventLoop();
+        var ended = new java.util.concurrent.CopyOnWriteArrayList<QuicPeerConnection.DrainEnd>();
         var channel = mock(QuicChannel.class);
         var stream = mock(QuicStreamChannel.class);
 
@@ -212,14 +216,38 @@ class QuicLoserDrainTest {
             var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
             var _ = connection.registerStream(StreamType.KV, stream);
 
-            connection.closeAfterDrain(60_000);
+            connection.closeAfterDrain(60_000, ended::add);
             verify(channel, never()).close();
             closing.setSuccess();
 
             verify(channel, timeout(5_000)).close();
+            assertThat(ended).containsExactly(QuicPeerConnection.DrainEnd.FLUSHED);
         } finally {
             loop.shutdownGracefully();
         }
+    }
+
+    /// F1: a loop that no longer accepts tasks (the group is shutting down mid-supersede) must not let the rejection
+    /// escape into the arbitration; the connection is closed at once.
+    @Test
+    void closeAfterDrain_loopRejectsSchedule_closesAtOnceAndThrowsNothing() throws Exception {
+        var loop = new DefaultEventLoop();
+        var channel = mock(QuicChannel.class);
+        var stream = mock(QuicStreamChannel.class);
+
+        when(channel.isActive()).thenReturn(true);
+        when(channel.eventLoop()).thenReturn(loop);
+        when(stream.isActive()).thenReturn(true);
+        when(stream.closeFuture()).thenReturn(new DefaultChannelPromise(stream, loop));
+        loop.shutdownGracefully(0, 0, java.util.concurrent.TimeUnit.MILLISECONDS).sync();
+
+        var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
+        var _ = connection.registerStream(StreamType.KV, stream);
+
+        connection.closeAfterDrain(400, end -> fail("no drain ran"));
+
+        verify(channel).close();
+        verify(stream, never()).writeAndFlush(any());
     }
 
     private static QuicPeerConnection connectionFrom(NodeId dialer) {

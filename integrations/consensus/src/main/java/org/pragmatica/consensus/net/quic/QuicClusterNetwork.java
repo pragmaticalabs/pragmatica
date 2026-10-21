@@ -1013,13 +1013,30 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// The new connection lost the arbitration. When the incumbent was dialed by the other end this is the dual-dial
     /// race: the peer may already have written on the loser, so it drains like [#closeSupersededConnection] (#2030).
     private void closeDuplicate(QuicPeerConnection loser, PeerState state) {
-        var drain = state.activeConnection().filter(kept -> isDualDialLoser(loser, kept)).isPresent();
+        var kept = state.activeConnection();
 
-        if (drain) {
-            loser.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+        kept.onPresent(survivor -> observeSupersede(loser, survivor));
+        if (kept.filter(survivor -> isDualDialLoser(loser, survivor)).isPresent()) {
+            drainLoser(loser);
         } else {
             loser.close();
         }
+    }
+
+    /// #2030: finish the loser's lanes and close it when they have flushed or the bound passes; how it ended is
+    /// counted and logged so the bound can be tuned from the field.
+    private void drainLoser(QuicPeerConnection loser) {
+        loser.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS, end -> recordDrainEnd(loser, end));
+    }
+
+    @Contract
+    private void recordDrainEnd(QuicPeerConnection loser, QuicPeerConnection.DrainEnd end) {
+        quicMetrics.onLoserDrainEnded(end == QuicPeerConnection.DrainEnd.FLUSHED);
+        log.info("Dual-dial loser to peer {} closed: {}",
+                 loser.peerId(),
+                 end == QuicPeerConnection.DrainEnd.FLUSHED
+                 ? "every lane flushed"
+                 : "drain bound of " + QuicPeerConnection.DRAIN_BOUND_MS + " ms reached with lanes still open");
     }
 
     private void closeDroppedConnection(QuicPeerConnection connection) {
@@ -1039,7 +1056,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // is reading; let what is written on it flush before it closes. Shape 1 (the same dialer re-dialed over a
             // link it judged dead) keeps the immediate close: its peer has abandoned the link, a drain would only burn
             // its bound.
-            superseded.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS);
+            drainLoser(superseded);
         } else {
             closeDroppedConnection(superseded);
         }
@@ -1053,25 +1070,28 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     .or(false);
     }
 
-    /// #1727 — what is at risk when a superseded connection is closed at once. The close discards frames
-    /// quiche accepted but the peer has not acked, and there is no public API for acked bytes, so this counts
-    /// what IS observable: lanes with writes not yet accepted by quiche (unflushed) and lanes written within
-    /// [QuicPeerConnection#SUPERSEDE_RISK_WINDOW_NANOS] (possibly unacked). The cloud campaign reads the rate
-    /// from `quic_superseded_lane_streams_at_risk_total` to decide whether a drain-before-close is needed.
+    /// #1727 — what a superseded or duplicate connection holds when its arbitration is decided: frames quiche
+    /// accepted but the peer has not acked. There is no public API for acked bytes, so this counts what IS observable:
+    /// lanes with writes not yet accepted by quiche (unflushed) and lanes written within
+    /// [QuicPeerConnection#SUPERSEDE_RISK_WINDOW_NANOS] (possibly unacked). An immediate close discards them; the
+    /// loser of a dual dial is drained instead (#2030), so for it the figure is what the drain has to flush.
+    /// `quic_superseded_lane_streams_at_risk_total` accumulates it for both shapes.
     @Contract
     private void observeSupersede(QuicPeerConnection superseded, QuicPeerConnection replacement) {
         var risk = superseded.laneWritesAtRisk(System.nanoTime());
 
         quicMetrics.onSupersededClose(risk.lanesAtRisk());
-        log.info("Superseding connection to peer {} ({}): {} lane stream(s) with writes at risk of being discarded"
-                + " by the immediate close — {} with unflushed writes, {} written within {} ms (unacked writes are"
-                + " not observable)",
+        log.info("Superseding connection to peer {} ({}): {} lane stream(s) with unflushed or recent writes — {} with"
+                + " unflushed writes, {} written within {} ms (unacked writes are not observable); {}",
                  superseded.peerId(),
                  supersedeShape(superseded, replacement),
                  risk.lanesAtRisk(),
                  risk.unflushedLanes(),
                  risk.recentLanes(),
-                 TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS));
+                 TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS),
+                 isDualDialLoser(superseded, replacement)
+                 ? "draining before close"
+                 : "closing at once, writes not yet delivered are discarded");
     }
 
     /// Same dialer on both connections = the designated dialer re-dialed (same-direction re-dial); different
