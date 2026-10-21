@@ -384,6 +384,17 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aDirectiveThatLandsAfterTheSnapshot_stillCountsAsInFlight() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.joinAll(2);
+        fixture.hideFromTheScan(2);
+        fixture.joinAll(1);
+
+        assertThat(fixture.communityOf(3)).as("worker 2's directive is in the store but not in the snapshot the decision counted: it is still in flight, so w-0 is full").isEqualTo(SECOND);
+    }
+
+    @Test
     void join_growthOn_aCommitThatNeverReachedConsensus_endsTheFlight_soTheWorkersNextJoinDecides() {
         var fixture = fixture(config(true, 2, 5));
 
@@ -594,6 +605,11 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
             kvStore.put(CommunityKey.communityKey(id),
                         current.withState(current.state() == CommunityState.FORMING ? CommunityState.DEGRADED : CommunityState.FORMING));
+        }
+
+        /// The directive stays in the store (a `get` finds it) but the scan of directives no longer lists it, as when it is applied just after the snapshot.
+        void hideFromTheScan(int number) {
+            kvStore.hidden.add(ActivationDirectiveKey.activationDirectiveKey(worker(number)));
         }
 
         void removeDirective(int number) {
@@ -807,6 +823,18 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
         InMemoryKvStore(MessageRouter router) {
             super(router, stubSerializer(), stubDeserializer());
+        }
+
+        final java.util.Set<AetherKey> hidden = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, java.util.function.BiConsumer<KK, VV> consumer) {
+            super.forEach(keyClass, valueClass, (key, value) -> {
+                if (!hidden.contains((AetherKey) key)) {
+                    consumer.accept(key, value);
+                }
+            });
         }
 
         void put(AetherKey key, AetherValue value) {
