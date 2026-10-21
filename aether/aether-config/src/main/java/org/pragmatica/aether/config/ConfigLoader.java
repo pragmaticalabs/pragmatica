@@ -436,8 +436,8 @@ public final class ConfigLoader {
         var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc, env);
         // #290: secure by default. When `security_mode` is not configured the effective mode is
-        // API_KEY (was: NONE unless api-keys present), so a default-config node's management plane and
-        // dashboard require authentication rather than serving the control plane wide open. The
+        // API_KEY (was: NONE unless api-keys present), so a default-config node's management plane
+        // requires authentication rather than serving the control plane wide open. The
         // cluster-wide bootstrap admin key (BootstrapAdminKeyRegistrar) supplies a credential when
         // none was provisioned. An explicit `security_mode` (including "none") always wins.
         var securityMode = explicitMode.or(SecurityMode.API_KEY);
@@ -1268,10 +1268,6 @@ public final class ConfigLoader {
     private static TimeoutsConfig.ObservabilityTimeouts parseObservabilityTimeouts(TomlDocument doc,
                                                                                    TimeoutsConfig.ObservabilityTimeouts d) {
         return new TimeoutsConfig.ObservabilityTimeouts(parseTimeSpan(doc,
-                                                                      "timeouts.observability",
-                                                                      "dashboard_broadcast",
-                                                                      d.dashboardBroadcast()),
-                                                        parseTimeSpan(doc,
                                                                       "timeouts.observability",
                                                                       "metrics_sliding_window",
                                                                       d.metricsSlidingWindow()),

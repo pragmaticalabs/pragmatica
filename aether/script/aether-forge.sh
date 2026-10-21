@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Aether Forge - Standalone cluster simulator with visual dashboard
+# Aether Forge - Standalone cluster simulator (load and chaos REST API)
 #
 # Usage:
 #   ./aether-forge.sh [options]
@@ -12,7 +12,7 @@
 #   --auto-start                Start load generation after config loaded
 #
 # Environment variables:
-#   FORGE_PORT    Dashboard port (default: 8888)
+#   FORGE_PORT    Forge API port (default: 8888)
 #   CLUSTER_SIZE  Number of simulated nodes (default: 5)
 #   LOAD_RATE     Initial requests per second (default: 1000)
 #

@@ -13,7 +13,7 @@
     <artifactId>forge</artifactId>
     <packaging>pom</packaging>
     <name>Aether Forge</name>
-    <description>Standalone simulator CLI for testing Aether cluster resilience with visual dashboard</description>
+    <description>Standalone simulator CLI for testing Aether cluster resilience</description>
 
     <modules>
         <module>forge-simulator</module>

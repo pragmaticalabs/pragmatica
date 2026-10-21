@@ -47,8 +47,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /// #2184: the management server's WebSocket feeds, driven through a real socket by the JDK client. The
-/// server registers `/ws/dashboard`, `/ws/status` and `/ws/events` in that order; before #2184 the second and
-/// third never completed the handshake, and no endpoint's handler ever saw `Open`. The existing WebSocket
+/// server registers `/ws/status` and `/ws/events` in that order (until the dashboard was removed it also
+/// registered `/ws/dashboard` first); before #2184 every endpoint after the first never completed the
+/// handshake, and no endpoint's handler ever saw `Open`. The existing WebSocket
 /// tests in this module call `handle(...)` directly and could not see either defect.
 ///
 /// The harness is the mocked-collaborator `ManagementServer` of `ManagementServerDhtCatchUpGaugeTest`: the

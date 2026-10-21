@@ -391,7 +391,7 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     ///
     /// **This is a DERIVED fact, not a node-local observation, and that is what decides its gating.**
     /// `ClusterSyncCollector.allMetrics()` returns fresh known observations. Core nodes receive the
-    /// cluster-wide feed; workers retain a scoped view and do not publish cluster dashboard metrics. An un-gated emit would therefore write
+    /// cluster-wide feed; workers retain a scoped view and do not evaluate cluster alert thresholds. An un-gated emit would therefore write
     /// the same breach once per node. It is emitted through the aggregator's owner-gated
     /// {@link ClusterEventAggregator#emit} path, which is exactly the shape that gate exists for —
     /// deduplication comes free and no per-node partitioning or routing hop is needed.

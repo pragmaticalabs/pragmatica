@@ -21,32 +21,18 @@ import org.pragmatica.hlc.HlcClock;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #957 — the PRODUCTION evaluation path, which no other test on this branch touches.
+/// #957 — the PRODUCTION evaluation path, which no other test touches.
 ///
-/// **Why this class exists.** Every other test of the redesign calls `AlertManager.checkThreshold`
-/// directly. That is the right unit under test for hysteresis and emission, but it means the path an
-/// actual node takes — `DashboardMetricsPublisher.publishMetrics()` → `checkAndBroadcastAlerts()` →
-/// `checkThreshold` → `ThresholdBreached` — is exercised by NOTHING. The redesign's dependency on that
-/// path being un-gated was disclosed; the absence of any test pinning it was not.
+/// **Why this class exists.** Every other test of the alerting redesign calls
+/// `AlertManager.checkThreshold` directly. That is the right unit under test for hysteresis and
+/// emission, but it means the path an actual node takes — `AlertThresholdEvaluator.evaluateThresholds()`
+/// → `checkThreshold` → `ThresholdBreached` — would be exercised by NOTHING.
 ///
-/// Without something here, nothing goes red if someone re-introduces the `connectedClients() == 0`
-/// early return, and the un-gating this branch depends on would be protected by convention alone.
-///
-/// ## The two halves, and why one of them is deliberately disabled
-///
-/// On THIS branch `publishMetrics()` still returns early when no dashboard client is connected — the
-/// un-gating lives on `fix/alerting-structure-2026-09-08`, which merges BEFORE this work. So the real
-/// property cannot be asserted green here, and asserting it now would simply be a red test.
-///
-/// **The tripwire fired and has been discharged.** Rather than leave a `@Disabled` test that can be
-/// forgotten forever — this repo's most repeated failure — this class carried an ENABLED test
-/// asserting the gated behaviour, so that merging `fix/alerting-structure-2026-09-08` could not be
-/// completed silently. That merge has now happened: the tripwire was deleted and the two tests below
-/// enabled, which is exactly the action its failure message prescribed.
-///
-/// [#thresholdEvaluationReachesTheLogWithNoDashboardClient] and its control now pin the property for
-/// real: evaluation reaches the cluster event log with NO dashboard client connected.
-class DashboardMetricsPublisherEvaluationPathTest {
+/// Evaluation used to sit behind the dashboard publisher's `connectedClients() == 0` early return, so a
+/// headless cluster never evaluated a threshold. The dashboard is gone and so is the guard; this class
+/// pins that evaluation reaches the cluster event log with nothing connected, so the guard cannot come
+/// back unnoticed in whatever feed is built next.
+class AlertThresholdEvaluatorEvaluationPathTest {
 
     private static final HlcClock HLC = HlcClock.hlcClock(new NodeId("test-node"));
     private static final NodeId NODE = new NodeId("node-1");
@@ -71,7 +57,7 @@ class DashboardMetricsPublisherEvaluationPathTest {
                                          (KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class));
     }
 
-    /// A node reporting exactly one metric for one peer — the shape `checkAndBroadcastAlerts` iterates
+    /// A node reporting exactly one metric for one peer — the shape `evaluateAllMetrics` iterates
     /// (`node.metricsCollector().allMetrics()`, keyed by node id).
     private static ManageableNode nodeReporting(String metric, double value) {
         var collector = Mockito.mock(ClusterSyncCollector.class);
@@ -84,42 +70,38 @@ class DashboardMetricsPublisherEvaluationPathTest {
         return node;
     }
 
-    private static DashboardMetricsPublisher publisherFor(AlertManager alertManager, double value) {
+    private static AlertThresholdEvaluator evaluatorFor(AlertManager alertManager, double value) {
         var node = nodeReporting(CPU, value);
 
-        return DashboardMetricsPublisher.dashboardMetricsPublisher(() -> node, alertManager);
+        return AlertThresholdEvaluator.alertThresholdEvaluator(() -> node, alertManager);
     }
 
     /// **The real pin.** A metric above its critical threshold must reach the cluster event log with
-    /// NO dashboard client connected — a headless cluster is the normal production state, and alerting
+    /// NOTHING connected to the node — a headless cluster is the normal production state, and alerting
     /// is an operator capability, not a UI feature.
     ///
     /// Also pins that a sustained breach emits ONCE across 20 ticks rather than once per tick, since
     /// this is the path where the 1 Hz repetition actually happens.
     @Test
-    void thresholdEvaluationReachesTheLogWithNoDashboardClient() {
+    void thresholdEvaluationReachesTheLogOnAHeadlessNode() {
         var alertManager = manager();
         var sink = new RecordingSink();
 
         alertManager.bindEventSink(sink, HLC);
 
-        assertThat(DashboardWebSocketHandler.connectedClients())
-                .describedAs("precondition: zero clients — this test is worthless if one happened to be connected")
-                .isZero();
-
         for (int tick = 0; tick < 20; tick++) {
-            publisherFor(alertManager, 0.95).publishMetrics();
+            evaluatorFor(alertManager, 0.95).evaluateThresholds();
         }
 
         assertThat(sink.breaches())
                 .describedAs("a metric above its critical threshold must reach the event log on a headless "
-                             + "cluster, and a sustained breach must emit ONCE across 20 ticks")
+                             + "node, and a sustained breach must emit ONCE across 20 ticks")
                 .hasSize(1);
     }
 
     /// **The control, and it is not optional.** Without it, the assertion above is satisfied by an
     /// implementation that emits on every evaluation regardless of value — the mirror-image defect.
-    /// Same publisher, same zero connected clients, value below every threshold, nothing emitted.
+    /// Same evaluator, same headless node, value below every threshold, nothing emitted.
     @Test
     void valueBelowEveryThresholdEmitsNothingUnderTheSameConditions() {
         var alertManager = manager();
@@ -128,7 +110,7 @@ class DashboardMetricsPublisherEvaluationPathTest {
         alertManager.bindEventSink(sink, HLC);
 
         for (int tick = 0; tick < 20; tick++) {
-            publisherFor(alertManager, 0.10).publishMetrics();
+            evaluatorFor(alertManager, 0.10).evaluateThresholds();
         }
 
         assertThat(sink.breaches())

@@ -18,7 +18,7 @@ Each slice module has `slices/<Name>.toml` and a `routes.toml` under `src/main/r
 ## Configuration
 
 - `aether.toml`: runtime configuration, including the `[database]` section (PostgreSQL `localhost:5432`, database/user/password `forge`).
-- `forge.toml`: Forge cluster configuration (`nodes = 7`, management port `5150`, dashboard port `8888`, app HTTP port `8070`).
+- `forge.toml`: Forge cluster configuration (`nodes = 7`, management port `5150`, Forge API port `8888` (`dashboard_port` in the file), app HTTP port `8070`).
 - `src/main/resources/schema/` (`V001__create_tables.sql`, `V002__seed_data.sql`): schema and seed data; per-slice migrations live under each module's `src/main/resources/schema/`.
 
 ## Build
@@ -52,7 +52,7 @@ mvn -f examples/ecommerce/pom.xml install -P '!test-plan-gate'
    ./run-forge.sh --forge-from-source   # contributor path: build Forge and the platform from this checkout
    ```
 
-   Forge comes from the installer (see the [Quick Start](../../README.md#quick-start)). The script prints the endpoints: dashboard `http://localhost:8888`, app HTTP `http://localhost:8070` (nodes 8070-8076), management `http://localhost:5150`.
+   Forge comes from the installer (see the [Quick Start](../../README.md#quick-start)). The script prints the endpoints: Forge API `http://localhost:8888`, app HTTP `http://localhost:8070` (nodes 8070-8076), management `http://localhost:5150`.
 
    `run-forge.sh` also accepts `--with-load`, which passes `load-config.toml`; that file is not present in this directory.
 

@@ -59,7 +59,7 @@ public class AlertManager {
     /// RetentionPolicy (count + bytes + age) replaces the 100-entry cap. Renamed rather than left as
     /// `MAX_ALERT_HISTORY`, which would have named a thing that no longer exists.
     private static final int MAX_SLICE_FAILURE_HISTORY = 100;
-    /// Default bound on a history read. The dashboard polls `/api/alerts/history` every 2s, so this
+    /// Default bound on a history read. Clients poll `/api/alerts/history` (the removed dashboard did, every 2s), so this
     /// read must NOT become a full scan of the retained event window (up to 10,000 events) — it takes
     /// the most recent entries, preserving the effective shape of the 100-entry deque it replaces.
     private static final int DEFAULT_HISTORY_LIMIT = 100;
@@ -397,30 +397,27 @@ public class AlertManager {
         return derivedActiveAlerts.size();
     }
 
-    public Option<String> checkThreshold(String metric, NodeId nodeId, double value) {
-        return Option.option(thresholds.get(metric)).flatMap(threshold -> evaluateThreshold(threshold,
-                                                                                            metric,
-                                                                                            nodeId,
-                                                                                            value));
+    public void checkThreshold(String metric, NodeId nodeId, double value) {
+        Option.option(thresholds.get(metric)).onPresent(threshold -> evaluateThreshold(threshold, metric, nodeId, value));
     }
 
-    private Option<String> evaluateThreshold(Threshold threshold, String metric, NodeId nodeId, double value) {
+    private void evaluateThreshold(Threshold threshold, String metric, NodeId nodeId, double value) {
         var alertKey = metric + ":" + nodeId.id();
         var existing = Option.option(derivedActiveAlerts.get(alertKey));
 
-        return effectiveSeverity(threshold, existing, value).onEmpty(() -> resolveExistingAlert(alertKey,
-                                                                                                existing,
-                                                                                                threshold,
-                                                                                                metric,
-                                                                                                nodeId,
-                                                                                                value))
-                                .flatMap(severity -> handleAlertValue(alertKey,
-                                                                      existing,
-                                                                      severity,
-                                                                      metric,
-                                                                      nodeId,
-                                                                      value,
-                                                                      threshold));
+        effectiveSeverity(threshold, existing, value).onEmpty(() -> resolveExistingAlert(alertKey,
+                                                                                         existing,
+                                                                                         threshold,
+                                                                                         metric,
+                                                                                         nodeId,
+                                                                                         value))
+                                                     .onPresent(severity -> handleAlertValue(alertKey,
+                                                                                             existing,
+                                                                                             severity,
+                                                                                             metric,
+                                                                                             nodeId,
+                                                                                             value,
+                                                                                             threshold));
     }
 
     /// The severity this metric holds AFTER hysteresis (#969) — the whole of the damping logic.
@@ -474,17 +471,6 @@ public class AlertManager {
                               ActiveAlert alert) {
         derivedActiveAlerts.remove(alertKey);
         emitThresholdCleared(threshold, metric, nodeId, value, alert);
-        broadcastAlertResolved(metric, nodeId);
-    }
-
-    private void broadcastAlertResolved(String metric, NodeId nodeId) {
-        var message = "{\"type\":\"ALERT_RESOLVED\",\"timestamp\":" + System.currentTimeMillis()
-                    + ",\"data\":{\"metric\":\"" + escapeJson(metric)
-                    + "\",\"nodeId\":\"" + escapeJson(nodeId.id())
-                    + "\",\"resolvedAt\":" + System.currentTimeMillis()
-                    + "}}";
-
-        DashboardWebSocketHandler.broadcast(message);
     }
 
     /// Emit the raised threshold as an `AlertEvent.ThresholdAlert` on the outbound hop. Failure to
@@ -514,13 +500,13 @@ public class AlertManager {
                : AlertEvent.Severity.WARNING;
     }
 
-    private Option<String> handleAlertValue(String alertKey,
-                                            Option<ActiveAlert> existing,
-                                            String severity,
-                                            String metric,
-                                            NodeId nodeId,
-                                            double value,
-                                            Threshold threshold) {
+    private void handleAlertValue(String alertKey,
+                                  Option<ActiveAlert> existing,
+                                  String severity,
+                                  String metric,
+                                  NodeId nodeId,
+                                  double value,
+                                  Threshold threshold) {
         var shouldTrigger = existing.filter(alert -> alert.severity.equals(severity)).isEmpty();
 
         if (shouldTrigger) {
@@ -534,11 +520,7 @@ public class AlertManager {
             derivedActiveAlerts.put(alertKey, alert);
             emitThresholdBreached(alert);
             forwardThresholdAlert(alertKey, metric, nodeId, value, severity, threshold);
-
-            return Option.option(buildAlertMessage(alert));
         }
-
-        return Option.none();
     }
 
     @MessageReceiver
@@ -562,21 +544,6 @@ public class AlertManager {
 
         thresholds.remove(thresholdKey.metricName());
         log.debug("Threshold removed from cluster: {}", thresholdKey.metricName());
-    }
-
-    private String buildAlertMessage(ActiveAlert alert) {
-        return "{\"type\":\"ALERT\",\"timestamp\":" + System.currentTimeMillis()
-             + ",\"data\":{"
-             + "\"metric\":\"" + escapeJson(alert.metric)
-             + "\","
-             + "\"nodeId\":\"" + escapeJson(alert.nodeId.id())
-             + "\","
-             + "\"value\":" + alert.value
-             + ","
-             + "\"threshold\":" + alert.threshold
-             + ","
-             + "\"severity\":\"" + escapeJson(alert.severity)
-             + "\"}}";
     }
 
     /// Publish a threshold breach to the cluster event log (#957).
@@ -646,28 +613,6 @@ public class AlertManager {
     /// skipped — which is exactly the degradation the bootstrap window sees.
     private void emitClusterEvent(Function<HlcClock, ClusterEvent> factory) {
         eventSink.onPresent(sink -> hlcClock.onPresent(clock -> sink.emit(factory.apply(clock))));
-    }
-
-    @SuppressWarnings("JBCT-PAT-01")
-    public String thresholdsAsJson() {
-        var sb = new StringBuilder();
-
-        sb.append("{");
-        boolean first = true;
-
-        for (var entry : thresholds.entrySet()) {
-            if (!first) sb.append(",");
-
-            sb.append("\"").append(escapeJson(entry.getKey())).append("\":{");
-            sb.append("\"warning\":").append(entry.getValue().warning).append(",");
-            sb.append("\"critical\":").append(entry.getValue().critical);
-            sb.append("}");
-            first = false;
-        }
-
-        sb.append("}");
-
-        return sb.toString();
     }
 
     /// View record for `/api/alerts` and `/api/alerts/active`. Flattens the union of
@@ -847,7 +792,7 @@ public class AlertManager {
     /// - **Async.** The read crosses the partition transport, so this returns a `Promise`. Unbound
     ///   source (bootstrap window, `readOnly` factory) yields an empty list rather than failing.
     ///
-    /// **Bounded deliberately.** The dashboard polls this every 2 seconds; an unbounded projection would
+    /// **Bounded deliberately.** Clients poll this (the removed dashboard did, every 2 seconds); an unbounded projection would
     /// scan the full retained window (up to 10,000 events) on every poll.
     public Promise<List<AlertHistoryView>> alertHistoryAsList() {
         return alertHistoryAsList(DEFAULT_HISTORY_LIMIT);

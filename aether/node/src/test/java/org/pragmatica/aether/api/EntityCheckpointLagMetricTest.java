@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// A sink reachable from production but writing under the wrong name computes every lag and can never
 /// alert, and a bytecode reachability pin stays green for it (review mutation W1). So the name is asserted
 /// here, as the literal the alert threshold is seeded under, and the whole path — `recordCustom` through
-/// `DashboardMetricsPublisher.publishMetrics` to `ThresholdBreached` and `ThresholdCleared` — is driven
+/// `AlertThresholdEvaluator.evaluateThresholds` to `ThresholdBreached` and `ThresholdCleared` — is driven
 /// end to end.
 class EntityCheckpointLagMetricTest {
     private static final HlcClock HLC = HlcClock.hlcClock(new NodeId("test-node"));
@@ -54,13 +54,13 @@ class EntityCheckpointLagMetricTest {
         var sink = EntityCheckpointLagMetric.sinkFor(collector);
         var alertManager = alertManager();
         var events = new RecordingSink();
-        var publisher = DashboardMetricsPublisher.dashboardMetricsPublisher(() -> nodeWith(collector), alertManager);
+        var evaluator = AlertThresholdEvaluator.alertThresholdEvaluator(() -> nodeWith(collector), alertManager);
 
         alertManager.bindEventSink(events, HLC);
         alertManager.bindAlertConfig(AlertConfig.alertConfig());
 
         sink.report(12_000);
-        publisher.publishMetrics();
+        evaluator.evaluateThresholds();
 
         assertThat(events.breaches()).describedAs("a lag past the default CRITICAL threshold must raise").hasSize(1);
 
@@ -69,7 +69,7 @@ class EntityCheckpointLagMetricTest {
         org.awaitility.Awaitility.await()
             .atMost(org.pragmatica.lang.io.TimeSpan.timeSpan(3).seconds().duration())
             .untilAsserted(() -> {
-                publisher.publishMetrics();
+                evaluator.evaluateThresholds();
                 assertThat(events.clears()).describedAs("a lag far below WARNING must clear the alert").hasSize(1);
             });
     }

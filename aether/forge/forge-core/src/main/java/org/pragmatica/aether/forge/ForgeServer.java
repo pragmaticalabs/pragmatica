@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
-import java.awt.Desktop;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
@@ -18,7 +17,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.ember.EmberCluster;
@@ -30,20 +28,11 @@ import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
-import org.pragmatica.aether.api.StatusWebSocketHandler;
-import org.pragmatica.aether.api.StatusWebSocketPublisher;
-import org.pragmatica.aether.api.WebSocketAuthenticator;
-import org.pragmatica.aether.http.security.SecurityValidator;
-import org.pragmatica.aether.forge.api.StatusRoutes;
-import org.pragmatica.http.JsonCodec;
-import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
-import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
@@ -61,7 +50,6 @@ import org.slf4j.LoggerFactory;
 public final class ForgeServer {
     private static final Logger log = LoggerFactory.getLogger(ForgeServer.class);
     private static final int MAX_CONTENT_LENGTH = 65536;
-    private static final JsonCodec CODEC = JsonCodecAdapter.defaultCodec();
 
     private final StartupConfig startupConfig;
     private final EmberConfig forgeConfig;
@@ -74,19 +62,8 @@ public final class ForgeServer {
 
     private final java.util.concurrent.atomic.AtomicLong lastEventPollWarnMs = new java.util.concurrent.atomic.AtomicLong();
 
-    private volatile Option<StaticFileHandler> staticHandler = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
-    private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
-
-    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
-                                                                                                                              false));
-
-    private final StatusWebSocketHandler dashboardWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
-                                                                                                                                       false));
-
-    private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
-                                                                                                                                   false));
 
     private final HttpOperations http;
     /// The credential Forge presents on its OWN control-plane calls (currently the startup blueprint
@@ -226,7 +203,7 @@ public final class ForgeServer {
         System.out.println("  FORGE_BLUEPRINT     Artifact coordinates (groupId:artifactId:version)");
         System.out.println("  FORGE_LOAD_CONFIG   Path to load config file");
         System.out.println("  FORGE_AUTO_START    Set to \"true\" to auto-start load");
-        System.out.println("  FORGE_PORT          Dashboard port (default: 8888)");
+        System.out.println("  FORGE_PORT          Forge API port (default: 8888)");
         System.out.println("  CLUSTER_SIZE        Number of nodes (default: " + StartupConfig.DEFAULT_CLUSTER_SIZE + ")");
     }
 
@@ -250,7 +227,7 @@ public final class ForgeServer {
         log.info("=".repeat(60));
         log.info("    AETHER FORGE");
         log.info("=".repeat(60));
-        log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
+        log.info("  Forge API: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
         log.info("  Cluster QUIC ports: {}-{} (UDP, consensus)",
                  forgeConfig.basePort(),
@@ -280,7 +257,6 @@ public final class ForgeServer {
         apiHandler.onPresent(h -> h.addEvent("CLUSTER_STARTED",
                                              "Forge cluster started with " + forgeConfig.nodes() + " nodes"));
         startHttpServer();
-        openBrowser("http://localhost:" + forgeConfig.dashboardPort());
         log.info("Forge server running. Press Ctrl+C to stop.");
         joinMainThread();
     }
@@ -315,14 +291,6 @@ public final class ForgeServer {
         cluster = Option.some(clusterInstance);
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
         apiHandler = Option.some(apiHandlerInstance);
-        staticHandler = Option.some(StaticFileHandler.staticFileHandler());
-        var wsPublisherInstance = StatusWebSocketPublisher.statusWebSocketPublisher(wsHandler,
-                                                                                    () -> serializeStatus(clusterInstance,
-                                                                                                          metricsInstance,
-                                                                                                          startTime,
-                                                                                                          configurableLoadRunnerInstance));
-
-        wsPublisher = Option.some(wsPublisherInstance);
     }
 
     /// #198 §7 — make `forge run` honor `[app-http] api_versioning_detection` (+ `api_version_header`)
@@ -468,17 +436,6 @@ public final class ForgeServer {
         clusterInstance.withDataBaseDir(baseDir);
     }
 
-    private static String serializeStatus(EmberCluster cluster,
-                                          ForgeMetrics metrics,
-                                          long startTime,
-                                          ConfigurableLoadRunner loadRunner) {
-        var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
-
-        return CODEC.serialize(status)
-                    .map(bytes -> new String(bytes, StandardCharsets.UTF_8))
-                    .or("{}");
-    }
-
     private void startCluster() {
         log.info("Starting {} node cluster (start budget {}s)...",
                  forgeConfig.nodes(),
@@ -579,7 +536,6 @@ public final class ForgeServer {
         metrics.onPresent(m -> scheduler.scheduleAtFixedRate(m::snapshot, 500, 500, TimeUnit.MILLISECONDS));
         scheduler.scheduleAtFixedRate(this::pollNodeEvents, 2, 2, TimeUnit.SECONDS);
         metricsScheduler = Option.some(scheduler);
-        wsPublisher.onPresent(StatusWebSocketPublisher::start);
     }
 
     @Contract
@@ -602,7 +558,7 @@ public final class ForgeServer {
         var last = lastEventPollWarnMs.get();
 
         if (now - last >= EVENT_POLL_WARN_INTERVAL_MS && lastEventPollWarnMs.compareAndSet(last, now)) {
-            log.warn("Forge event poll of the cluster failed (the dashboard event timeline will be empty): {}",
+            log.warn("Forge event poll of the cluster failed (the Forge event timeline served at /api/events will be empty): {}",
                      cause.message());
         }
     }
@@ -749,8 +705,8 @@ public final class ForgeServer {
     }
 
     /// A `--blueprint` was supplied, so the whole point of this Forge run is to serve that slice. If
-    /// the startup deploy fails we must NOT keep running an empty cluster that looks healthy (banner +
-    /// dashboard up, but every request 404s) — that stranded a cold user in the #513 getting-started
+    /// the startup deploy fails we must NOT keep running an empty cluster that looks healthy (banner up,
+    /// but every request 404s) — that stranded a cold user in the #513 getting-started
     /// dry-run. Fail loud: the thrown exception propagates out of [#start] to [#main], which logs it
     /// and exits non-zero. Runs without `--blueprint` never reach this path and are unchanged.
     private void failStartupDeploy(String artifactCoords, String detail) {
@@ -800,7 +756,6 @@ public final class ForgeServer {
 
     public void stop() {
         log.info("Stopping Forge server...");
-        wsPublisher.onPresent(StatusWebSocketPublisher::stop);
         metricsScheduler.onPresent(ScheduledExecutorService::shutdownNow);
         httpServer.onPresent(server -> server.stop()
                                              .await(TimeSpan.timeSpan(10).seconds())
@@ -828,22 +783,14 @@ public final class ForgeServer {
     }
 
     private void startHttpServer() {
-        Option.all(apiHandler, staticHandler)
-              .map(ForgeRequestHandler::forgeRequestHandler)
-              .onPresent(this::launchHttpServer);
+        apiHandler.map(ForgeRequestHandler::forgeRequestHandler)
+                  .onPresent(this::launchHttpServer);
     }
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
-        var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", wsHandler);
-        var dashboardWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", dashboardWsHandler);
-        var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
-        var config = HttpServerConfig.httpServerConfig("forge-dashboard",
-                                                       forgeConfig.dashboardPort())
+        var config = HttpServerConfig.httpServerConfig("forge", forgeConfig.dashboardPort())
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
-                                     .withChunkedWrite()
-                                     .withWebSocket(wsEndpoint)
-                                     .withWebSocket(dashboardWsEndpoint)
-                                     .withWebSocket(eventWsEndpoint);
+                                     .withChunkedWrite();
 
         HttpServer.httpServer(config, requestHandler::handle)
                   .await(TimeSpan.timeSpan(10).seconds())
@@ -855,18 +802,5 @@ public final class ForgeServer {
                   .onFailure(cause -> {
                                  throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
                              });
-    }
-
-    private void openBrowser(String url) {
-        try {
-            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                Desktop.getDesktop().browse(new URI(url));
-                log.info("Opened browser to {}", url);
-            } else {
-                log.info("Could not open browser automatically. Please navigate to: {}", url);
-            }
-        } catch (Exception e) {
-            log.info("Could not open browser automatically. Please navigate to: {}", url);
-        }
     }
 }

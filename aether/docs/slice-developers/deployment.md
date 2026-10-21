@@ -322,7 +322,7 @@ mvn clean install -DskipTests
 echo ""
 echo "Slice installed to local Maven repository."
 echo "Forge will automatically detect the update."
-echo "Dashboard: http://localhost:8888"
+echo "Forge API: http://localhost:8888"
 ```
 
 ### deploy-test.sh
@@ -457,15 +457,13 @@ aether-forge
 Contributors running a Forge built from a monorepo checkout: `mvn package -pl aether/forge/forge-core -am -DskipTests`,
 then `java -jar aether/forge/forge-core/target/aether-forge.jar`.
 
-Default dashboard port: 8888. Management ports start at 5150.
+Default Forge API port: 8888. Management ports start at 5150.
 
-### Forge Dashboard
+### Forge API
 
-Access at `http://localhost:8888`:
-- View running slices
-- Monitor slice health
-- View request/response logs
-- Inspect dependency graph
+Forge has no web UI (the dashboard was removed in 1.0.0-rc5). Use `http://localhost:8888/api/nodes/status`
+for cluster state, and the CLI or the management API on ports 5150+ for slice status
+(`GET /api/v1/slices/status`) and health.
 
 ### Development Workflow
 

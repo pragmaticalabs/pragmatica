@@ -336,7 +336,7 @@ aether thresholds set cpu.usage 0.85 0.9   # 5% gap (alert fatigue)
 ### Monitoring Workflow
 
 1. Set thresholds for key metrics
-2. Monitor dashboard or alerts endpoint
+2. Monitor the alerts endpoint (`aether alerts active`) or the `/ws/events` feed
 3. Investigate warnings before they become critical
 4. Clear resolved alerts to reduce noise
 

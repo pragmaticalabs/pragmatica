@@ -15,11 +15,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #293 — the dashboard's INITIAL_STATE must be delivered on the AUTHENTICATED path (it was only ever
-/// pushed on the security-disabled onOpen branch). Verifies the `onAuthSuccess` callback fires exactly
+/// #293 — a feed's initial state must be deliverable on the AUTHENTICATED path (the removed dashboard feed
+/// only ever pushed it on the security-disabled onOpen branch). Verifies the `onAuthSuccess` callback fires exactly
 /// once on a successful authentication and never on failure or when security is disabled.
 class WebSocketAuthenticatorTest {
-    private static final String VALID_KEY = "dashboard-key-value-1";
+    private static final String VALID_KEY = "feed-key-value-1";
 
     private static String authMessage(String key) {
         return "{\"type\":\"AUTH\",\"apiKey\":\"" + key + "\"}";

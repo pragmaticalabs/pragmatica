@@ -56,7 +56,7 @@ graph TB
 
     subgraph HTTP["HTTP Layer"]
         AHS["AppHttpServer<br/>Route matching, forwarding,<br/>security validation"]
-        MS["ManagementServer<br/>60+ REST endpoints<br/>WebSocket: dashboard, status, events"]
+        MS["ManagementServer<br/>60+ REST endpoints<br/>WebSocket: status, events"]
     end
 
     subgraph Invoke["Invocation"]
@@ -318,7 +318,6 @@ graph TB
     subgraph Layer4["Layer 4: User"]
         User["Human Operator"]
         CLI["aether CLI"]
-        Dashboard["Dashboard"]
     end
 
     subgraph Layer3["Layer 3: Large LLM (Cloud)"]
@@ -347,9 +346,7 @@ graph TB
     end
 
     User --> CLI
-    User --> Dashboard
     CLI --> LLM
-    Dashboard --> LLM
 
     LLM --> L3Decisions
     L3Decisions --> SLM

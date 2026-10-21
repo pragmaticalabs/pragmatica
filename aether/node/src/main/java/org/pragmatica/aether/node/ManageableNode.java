@@ -307,7 +307,7 @@ public interface ManageableNode {
     /// the retired membership FSM snapshot. Cheap to call repeatedly — recomputes on each query.
     org.pragmatica.aether.deployment.membership.view.MembershipView membershipView();
     /// Post-E.8 (spec §7.2): unified `ClusterPhase` accessor that returns the value
-    /// derived by `ClusterPhaseView.compute()`. Status routes and any dashboard consumer
+    /// derived by `ClusterPhaseView.compute()`. Status routes and any other consumer
     /// should call this rather than reading the KV atom directly.
     Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier();
 
