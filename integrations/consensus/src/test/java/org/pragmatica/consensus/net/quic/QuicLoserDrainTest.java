@@ -47,6 +47,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
@@ -372,6 +373,41 @@ class QuicLoserDrainTest {
             connection.closeAfterDrain(60_000, end -> {});
 
             assertThat(connection.activityKickStopped()).isTrue();
+        } finally {
+            loop.shutdownGracefully();
+        }
+    }
+
+    @Test
+    void closeDisposition_namesWhatBecomesOfTheLoser() {
+        assertThat(QuicClusterNetwork.closeDisposition(connectionFrom(HIGH), connectionFrom(LOW))).isEqualTo("draining before close");
+        assertThat(QuicClusterNetwork.closeDisposition(connectionFrom(LOW), connectionFrom(LOW))).startsWith("closing at once");
+    }
+
+    /// A drain ends once: the lanes flushing and the bound passing afterwards must not close or report twice.
+    @Test
+    void closeAfterDrain_endsOnce_whenTheBoundPassesAfterTheLanesFlushed() throws Exception {
+        var loop = new DefaultEventLoop();
+        var ended = new java.util.concurrent.CopyOnWriteArrayList<QuicPeerConnection.DrainEnd>();
+        var channel = activeChannel();
+        var stream = liveStream();
+
+        try {
+            var closing = new DefaultChannelPromise(stream, loop);
+
+            when(channel.eventLoop()).thenReturn(loop);
+            when(stream.closeFuture()).thenReturn(closing);
+
+            var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
+            var _ = connection.registerStream(StreamType.KV, stream);
+
+            connection.closeAfterDrain(300, ended::add);
+            closing.setSuccess();
+            verify(channel, timeout(5_000)).close();
+            Thread.sleep(700);
+
+            assertThat(ended).containsExactly(QuicPeerConnection.DrainEnd.FLUSHED);
+            verify(channel, times(1)).close();
         } finally {
             loop.shutdownGracefully();
         }

@@ -657,7 +657,6 @@ public final class QuicPeerConnection {
 
     @Contract
     private void closeAsync() {
-        Option.option(activityKick).onPresent(QuicActivityKick::stop);
         var _ = connection.close();
     }
 

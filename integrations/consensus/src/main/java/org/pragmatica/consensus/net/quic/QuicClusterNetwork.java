@@ -1062,6 +1062,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// What becomes of the loser, for the supersede log line.
+    static String closeDisposition(QuicPeerConnection loser, QuicPeerConnection winner) {
+        return isDualDialLoser(loser, winner)
+               ? "draining before close"
+               : "closing at once, writes not yet delivered are discarded";
+    }
+
     /// The two links were dialed by different ends — the dual-dial race — as opposed to one end re-dialing.
     static boolean isDualDialLoser(QuicPeerConnection loser, QuicPeerConnection winner) {
         return loser.initiator()
@@ -1089,9 +1096,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                  risk.unflushedLanes(),
                  risk.recentLanes(),
                  TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS),
-                 isDualDialLoser(superseded, replacement)
-                 ? "draining before close"
-                 : "closing at once, writes not yet delivered are discarded");
+                 closeDisposition(superseded, replacement));
     }
 
     /// Same dialer on both connections = the designated dialer re-dialed (same-direction re-dial); different
