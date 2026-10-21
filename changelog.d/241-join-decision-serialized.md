@@ -1,0 +1,2 @@
+### Fixed
+- With derived-community growth on, a join event that reached the leader twice at the same moment could be decided twice, each decision counting or undoing the other's in-flight assignment, so four workers with `max_size = 2` could end in three communities. The leader now decides each join under one lock, a duplicate of a join whose assignment is in flight decides nothing, and a refused, lost or departed assignment ends the flight so the next join decides afresh. Part of #241.
