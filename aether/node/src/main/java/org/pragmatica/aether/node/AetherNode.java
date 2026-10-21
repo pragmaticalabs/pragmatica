@@ -11,7 +11,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Collection;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -175,7 +174,6 @@ import org.pragmatica.aether.metrics.deployment.DeploymentMetricsScheduler;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
 import org.pragmatica.storage.AppendLog;
@@ -289,7 +287,6 @@ import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StreamingConfig;
-import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
@@ -366,6 +363,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.aether.node.assembly.DrainAssembly;
 import org.pragmatica.aether.node.assembly.SwimAssembly;
+import org.pragmatica.aether.node.assembly.StorageAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
@@ -1260,7 +1258,7 @@ public interface AetherNode extends ManageableNode {
     /// single JVM, which would otherwise share one segment dir and collide on the `latest` snapshot
     /// link and content-addressed blocks — and (c) it is stable across a same-node restart because the
     /// node id is stable, so sealed segments are reclaimed on reboot.
-    private static Path streamDataDir(AetherNodeConfig config) {
+    static Path streamDataDir(AetherNodeConfig config) {
         return streamDataDir(config.storageConfig(), config.self());
     }
 
@@ -1280,7 +1278,7 @@ public interface AetherNode extends ManageableNode {
     /// suffix on the explicit path keeps co-located nodes (EmberCluster, containers sharing a mount)
     /// from ever sharing one WAL dir — the same invariant `streamDataDir` enforces, independent of
     /// operator input.
-    private static Path streamWalBaseDir(AetherNodeConfig config) {
+    static Path streamWalBaseDir(AetherNodeConfig config) {
         return streamWalBaseDir(config.storageConfig(), config.self());
     }
 
@@ -1299,23 +1297,6 @@ public interface AetherNode extends ManageableNode {
         return streamsConfig.hasExplicitWalPath()
                ? Path.of(streamsConfig.walPath()).resolve(self.id())
                : derivedWalDir;
-    }
-
-    /// The per-node stream WAL directory when it is writable.
-    ///
-    /// An UNWRITABLE dir is a BOOT ERROR by default (#634 item 2). The old behaviour — one startup WARN,
-    /// then every publish acks with no fsync — silently converted "durable entity" into "in-memory
-    /// entity": the ack path (`awaitDurable`) passes an already-resolved barrier when the WAL is absent, and
-    /// nothing downstream can tell. A node that cannot honour the durability its streams declare must
-    /// say so at the moment an operator is looking at it, not in a log line nobody reads back.
-    ///
-    /// Explicitly best-effort deployments (Forge on a read-only mount, dev profiles) opt in with the
-    /// `aether.allowNonDurableStreams=true` system property or `AETHER_ALLOW_NON_DURABLE_STREAMS=true`
-    /// env — and keep exactly the previous degrade-with-WARN.
-    private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
-        var walDir = streamWalBaseDir(config);
-
-        return createStreamDirectory(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
     }
 
     /// The stream partition logs open through the `streams` storage instance (#1567), under its log root —
@@ -1457,7 +1438,7 @@ public interface AetherNode extends ManageableNode {
         return Boolean.getBoolean("aether.allowNonDurableStreams") || "true".equalsIgnoreCase(System.getenv("AETHER_ALLOW_NON_DURABLE_STREAMS"));
     }
 
-    private static Option<Path> walDisabled(Path walDir, Cause cause) {
+    static Option<Path> walDisabled(Path walDir, Cause cause) {
         LOG.warn("Stream WAL disabled ({} not writable): {} — streaming runs non-crash-durable (in-memory tail)"
                 + " [explicitly allowed by aether.allowNonDurableStreams]",
                  walDir,
@@ -1807,11 +1788,6 @@ public interface AetherNode extends ManageableNode {
         var counted = membershipFsm.countedMembers();
 
         return counted.isEmpty() || counted.contains(owner);
-    }
-
-    private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
-        storageSetups.values().forEach(setup -> setup.snapshotManager()
-                                                     .maybeSnapshot());
     }
 
     /// 1d-iii / #265 owner-reconciled BATCH driver: once per [ReplicaSetController] reconcile pass, the
@@ -2302,82 +2278,24 @@ public interface AetherNode extends ManageableNode {
         var cacheDhtConfig = new AtomicReference<>(config.cache());
         var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
-        // #253 BLOCKING #1 (2026-09-04 ruling): a configured storage instance that fails to create
-        // is a boot failure -- `createAll` now returns `Result` and this aborts naming the instance
-        // and the cause, the same way `streamStorageResult`'s failure is propagated below, rather
-        // than silently dropping that one instance (the old behavior) and letting boot continue on
-        // whatever was left, e.g. a `wrapLocalDisk` refusal over plaintext artifacts.
-        // Stream storage is a first-class, disk-backed snapshot-capable StorageSetup (memory -> disk
-        // -> DHT) keyed under "streams". It has no `[storage.X]` section of its own -- `streams_encrypted`
-        // is a dedicated top-level `[storage.encryption]` flag -- so its parameters are resolved here
-        // and handed to `createAll` as a `StreamSetupRequest`; the returned map carries it under
-        // "streams" alongside the config-map instances, and its `instance()` is reused as
-        // `streamStorage` at the stream wiring site below.
-        //
-        // #852 round 2: it is part of the SAME `createAll` call, not a second one after it. As a second
-        // call its guard could refuse a boot whose earlier arms had already stamped their directories,
-        // leaving markers nothing owns -- see `StorageFactory.createAll`'s five-argument overload.
-        var streamsEncrypted = config.storageEncryption().map(StorageEncryptionConfig::streamsEncrypted).or(false);
-        var streamsKeyring = streamsEncrypted
-                             ? storageKeyring
-                             : Option.<EncryptionKeyring> empty();
-        var storageSetupsResult = StorageFactory.createAll(config.storageConfig(),
-                                                           config.self().id(),
-                                                           dhtClientOption,
-                                                           storageKeyring,
-                                                           new StorageFactory.StreamSetupRequest(dhtClientOption,
-                                                                                                 streamDataDir(config),
-                                                                                                 config.self().id(),
-                                                                                                 streamsKeyring,
-                                                                                                 config.streaming()
-                                                                                                       .segmentDiskMaxBytes(),
-                                                                                                 resolveStreamWalDir(config)));
+        var storageSetupsResult = StorageAssembly.createStorageSetups(new StorageAssembly.CreateStorageSetupsInputs(config,
+                                                                                                                    storageKeyring,
+                                                                                                                    dhtClientOption));
 
         if (storageSetupsResult.isFailure()) {
             return storageSetupsResult.map(ignored -> null);
         }
 
         var storageSetups = storageSetupsResult.fold(_ -> null, setups -> setups);
-        // Same invariant as "artifacts" and "content" below: `createAll` builds "streams" itself now,
-        // so its absence here would mean the guard above should already have failed.
-        var streamStorageSetup = Objects.requireNonNull(storageSetups.get(StorageFactory.STREAMS_NAME),
-                                                        "storageSetups missing \"streams\" after createAll succeeded -- invariant violated");
-        // #253 BLOCKING #1 (2026-09-04 ruling): `createAll`'s postcondition on success is that
-        // "artifacts" is ALWAYS present in `baseStorageSetups` -- either the operator's
-        // `[storage.artifacts]` config or the synthesized default, and either one failing now
-        // aborts boot at the `baseStorageSetupsResult` guard above, before this line is ever
-        // reached. The old `.or(StorageFactory.defaultArtifactStorage(...))` fallback substituted a
-        // second, independently-built, always-unencrypted instance whenever "artifacts" happened to
-        // be missing from the map -- which is exactly how a `wrapLocalDisk` refusal over
-        // pre-existing plaintext used to boot successfully anyway (BLOCKING #1's root cause).
-        // `defaultArtifactStorage` is retired as dead code; there is no longer a legitimate reason
-        // for "artifacts" to be absent here.
-        //
-        // #253 review round 2 NOTE: `Objects.requireNonNull` turns a violated invariant into a named
-        // failure pointing at THIS comment's reasoning, instead of a bare NPE at `.instance()` that
-        // gives a future reader no hint the absence was ever supposed to be impossible.
-        var artifactStorage = Objects.requireNonNull(storageSetups.get("artifacts"),
-                                                     "storageSetups missing \"artifacts\" after createAll succeeded -- invariant violated")
-                                     .instance();
-        // #783: same invariant as "artifacts" above -- `createAll` synthesizes a "content" entry
-        // whenever `[storage.content]` wasn't explicit, so its absence here would mean
-        // `baseStorageSetupsResult` should already have failed at the guard above. Replaces the old
-        // keyring-less `StorageFactory.defaultContentStorage(dhtClientOption)` call at the
-        // `registerRuntimeExtensions` site below, which built ContentStore's StorageInstance entirely
-        // outside `storageSetups` -- no MetadataStore, no demotion/GC, never encrypted (#250/#803,
-        // #253's WARN at that site is retired along with it).
-        var contentStorage = Objects.requireNonNull(storageSetups.get("content"),
-                                                    "storageSetups missing \"content\" after createAll succeeded -- invariant violated")
-                                    .instance();
-        // #1778: the versions of each artifact are kept in consensus, where concurrent publishes are folded by the
-        // applier; the bytes and per-version metadata stay in the DHT.
-        var artifactStore = RepositoryFactory.artifactStore(dhtClient,
-                                                            artifactStorage,
-                                                            config.sliceConfig(),
-                                                            clusterNode,
-                                                            kvStore);
-        var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
-        var repositories = repositoryFactory.createAll(config.sliceConfig());
+        var artifactStorageOut = StorageAssembly.artifactStorage(new StorageAssembly.ArtifactStorageInputs(config,
+                                                                                                           kvStore,
+                                                                                                           clusterNode,
+                                                                                                           dhtClient,
+                                                                                                           storageSetups));
+        var streamStorageSetup = artifactStorageOut.streamStorageSetup();
+        var contentStorage = artifactStorageOut.contentStorage();
+        var artifactStore = artifactStorageOut.artifactStore();
+        var repositories = artifactStorageOut.repositories();
         var sharedLibraryLoader = createSharedLibraryLoader(config);
         // #904: a configured resource provider whose secrets cannot be resolved is a boot failure
         // naming the secret, propagated exactly like `baseStorageSetupsResult` above -- never a boot
@@ -4095,46 +4013,11 @@ public interface AetherNode extends ManageableNode {
         appHttpServer.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
                                                                                                     () -> workerProjectionFreshRef.get()
                                                                                                                                   .getAsBoolean()));
-        // #231 Step 1: ClusterSyncScheduler (metricsScheduler) is quorum-driven via its
-        // onQuorumStateChange route below; task-assignment registration was redundant AND harmful
-        // (deactivate() drove the FSM to Dormant on METRICS-group reassignment even while quorum
-        // held, never resuming — the leader-change detection-blindness bug). DeploymentMetricsScheduler
-        // is leader-pinned via toggleDeploymentMetricsOnLeaderChange instead of task-assignment.
-        // #231 Step 2: the remaining control-plane components (CDM, LoadBalancer, ControlLoop,
-        // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
-        // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
-        // #250: real demotion + GC, fanned out across every storage setup this node holds via
-        // StorageFactory.composite* -- `artifacts`, `content` and `streams` (`storageSetups`, built
-        // above). #783: `content` used to be built by a separate keyring-less
-        // `defaultContentStorage` call entirely outside `storageSetups`, so it never reached
-        // compositeDemotionManager/compositeGarbageCollector and got no demotion or GC from this
-        // driver; it is now synthesized through the same `createAll` path as `artifacts` (see the
-        // `contentStorage` invariant comment above) and is covered like every other entry. Leader-
-        // pinned activation below (toggleStorageOnLeaderChange) is unchanged — only the no-op
-        // stand-in is replaced. Both
-        // DefaultDemotionManager and DefaultStorageGarbageCollector self-gate on their internal
-        // `active` flag, so the periodic driver below can call demote()/collectGarbage()
-        // unconditionally on every node (leader or not) and it safely no-ops until this node's
-        // adapter is activated.
-        //
-        // Promotion, and demotion of `artifacts` and `content`, are NOT leader-pinned: their fast tiers are
-        // private to each node, so a leader-only manager would warm only the leader's caches. Both are
-        // activated on every node when it reports ready (signalReadyActivatingStorage, below) and deactivated
-        // on stop. `streams` stays as it was: leader-pinned demotion, no promotion.
-        var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
-        var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
-        var compositePromotionManager = StorageFactory.compositePromotionManager(storageSetups);
-        var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
-                                                                                      compositeGarbageCollector);
-        var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
-                                                                                         compositePromotionManager,
-                                                                                         PromotionStallWatch.promotionStallWatch(storageSetups,
-                                                                                                                                 operatorWarningSink),
-                                                                                         compositeGarbageCollector);
-
-        LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",
-                 config.timeouts().storageMaintenance().interval(),
-                 storageSetups.keySet());
+        var storageMaintenanceOut = StorageAssembly.storageMaintenance(new StorageAssembly.StorageMaintenanceInputs(config,
+                                                                                                                    storageSetups,
+                                                                                                                    operatorWarningSink));
+        var delegatedStorageAdapter = storageMaintenanceOut.delegatedStorageAdapter();
+        var storageMaintenanceDriver = storageMaintenanceOut.storageMaintenanceDriver();
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
@@ -6018,18 +5901,10 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamPartitionBackfill,
                                                                                                        streamBackfillExecutor),
                                                                       STREAM_BACKFILL_REDRIVE_INTERVAL));
-        // A3b snapshot driver: `SnapshotManager.maybeSnapshot()` has no other caller — without this tick
-        // no metadata snapshot is ever taken and nothing survives a restart. Iterate ALL storage setups
-        // (streams + artifacts/content), so every MetadataStore's refs are persisted; maybeSnapshot
-        // self-gates on its mutation-count / interval trigger, so a 10s tick is cheap when not due.
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups),
-                                                                      METADATA_SNAPSHOT_INTERVAL));
-        // #250 storage maintenance driver: demote()/collectGarbage() have no other caller — without this
-        // tick, tiered storage never shrinks in production regardless of the leader-pinned adapter's
-        // activation state. Cadence is operator-configurable ([timeouts.storage_maintenance] interval,
-        // default 5m); both operations self-gate internally, so this tick is cheap when inactive or idle.
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::tick,
-                                                                      config.timeouts().storageMaintenance().interval()));
+        StorageAssembly.storageTicks(new StorageAssembly.StorageTicksInputs(config,
+                                                                            storageSetups,
+                                                                            storageMaintenanceDriver,
+                                                                            periodicTasks::defer));
         // #420/#1136: the DHT anti-entropy cycle. `DHTAntiEntropy.start()` had no caller, so the
         // "periodic 30 s repair" never ran in production and `[timeouts.dht] anti_entropy_interval`
         // was parsed by nothing. Armed here, with the node's other periodic work (#644: after

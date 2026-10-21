@@ -73,7 +73,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
-    static final String STREAMS_NAME = "streams";
+    public static final String STREAMS_NAME = "streams";
     /// #849: the `streams` DHT namespace. Its encryption marker lives at
     /// `stream-segments/.encryption-enabled`, same layout as `<name>-blocks/.encryption-enabled`.
     static final String STREAM_SEGMENTS_DHT_PREFIX = "stream-segments";
@@ -601,11 +601,11 @@ public final class StorageFactory {
     /// a dedicated top-level flag), which is why it arrives as a [StreamSetupRequest] rather than as
     /// another entry in `configs`; the returned map still keys it under `streams` like any other
     /// instance.
-    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
-                                                       String nodeId,
-                                                       Option<DHTClient> dhtClient,
-                                                       Option<EncryptionKeyring> keyring,
-                                                       StreamSetupRequest streams) {
+    public static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                              String nodeId,
+                                                              Option<DHTClient> dhtClient,
+                                                              Option<EncryptionKeyring> keyring,
+                                                              StreamSetupRequest streams) {
         var results = pendingSetups(withoutStreamsSection(configs),
                                     nodeId,
                                     dhtClient,
@@ -1125,12 +1125,12 @@ public final class StorageFactory {
     ///
     /// `diskMaxBytes` is `[streaming] segment_disk_max_bytes`; [StreamingConfig#DERIVE_SEGMENT_DISK_MAX_BYTES]
     /// derives the cap from the filesystem ([#streamDiskMaxBytes], #1604).
-    record StreamSetupRequest(Option<DHTClient> dhtClient,
-                              Path streamDataDir,
-                              String nodeId,
-                              Option<EncryptionKeyring> keyring,
-                              long diskMaxBytes,
-                              Option<Path> logRoot) {
+    public record StreamSetupRequest(Option<DHTClient> dhtClient,
+                                     Path streamDataDir,
+                                     String nodeId,
+                                     Option<EncryptionKeyring> keyring,
+                                     long diskMaxBytes,
+                                     Option<Path> logRoot) {
         StreamSetupRequest(Option<DHTClient> dhtClient,
                            Path streamDataDir,
                            String nodeId,
