@@ -7,10 +7,6 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// `withResolveFallbackObserver` had no production caller, so every DHT all-miss went unreported. Assembling an
@@ -19,28 +15,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// are normal traffic) scoped from the un-observed base. It cannot show the WARN is emitted; the DHT module's
 /// tests pin that.
 class DhtResolveObserverWiringTest {
-    private static final Path SOURCE = Path.of("src/main/java/org/pragmatica/aether/node/AetherNode.java");
-
     @Test
-    void assembly_wiresLoggingObserverOntoTheArtifactRepoDhtClient() throws IOException {
-        var source = Files.readString(SOURCE);
+    void assembly_wiresLoggingObserverOntoTheArtifactRepoDhtClient() {
+        var source = AssemblySource.spaced();
 
-        assertThat(source).contains("var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(");
+        assertThat(source).containsOnlyOnce("var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(");
     }
 
     @Test
-    void assembly_warnsOnlyForArtifactMetadataKeys() throws IOException {
-        var source = Files.readString(SOURCE);
+    void assembly_warnsOnlyForArtifactMetadataKeys() {
+        var source = AssemblySource.spaced();
 
-        assertThat(source).contains("ArtifactStore::isArtifactMetadataKeyHex");
+        assertThat(source).containsOnlyOnce("ArtifactStore::isArtifactMetadataKeyHex");
     }
 
     @Test
-    void assembly_scopesTheCacheClientFromTheUnobservedBase() throws IOException {
-        var source = Files.readString(SOURCE);
+    void assembly_scopesTheCacheClientFromTheUnobservedBase() {
+        var source = AssemblySource.spaced();
 
         // #1777 track 1: still scoped from the unobserved base; the declaration is now read live from the committed
         // `[cache]` section through a supplier
-        assertThat(source).contains("var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);");
+        assertThat(source).containsOnlyOnce("var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);");
     }
 }

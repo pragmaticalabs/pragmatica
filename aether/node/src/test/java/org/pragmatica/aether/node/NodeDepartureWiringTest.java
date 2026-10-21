@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.stream.Collectors;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,15 +18,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NodeDepartureWiringTest {
     @Test
     void membershipDeath_staysUnconditional_andCarriesNothingElse() {
-        assertThat(assemblyCode()).contains("membershipFsm.onConfirmedDeparture(departed->{onMembershipDeath(departed,dropDeadPeerLink,quorumLossDetectorRef,leaderReconcilerRef);});");
+        assertThat(assemblyCode()).containsOnlyOnce("membershipFsm.onConfirmedDeparture(departed->{onMembershipDeath(departed,dropDeadPeerLink,quorumLossDetectorRef,leaderReconcilerRef);});");
     }
 
     @Test
     void failedPair_rideOnlyTheReachableDeathEdge_neverJoinedHasItsOwn() {
         var code = assemblyCode();
 
-        assertThat(code).contains("membershipFsm.onReachableDeath(departureNotifier::onConfirmedDeparture);");
-        assertThat(code).contains("membershipFsm.onNeverReachableDeath(departureNotifier::onNeverJoined);");
+        assertThat(code).containsOnlyOnce("membershipFsm.onReachableDeath(departureNotifier::onConfirmedDeparture);");
+        assertThat(code).containsOnlyOnce("membershipFsm.onNeverReachableDeath(departureNotifier::onNeverJoined);");
         assertThat(code).doesNotContain("departureNotifier.onConfirmedDeparture(departed)");
     }
 
@@ -43,43 +37,13 @@ class NodeDepartureWiringTest {
     void sliceFloorRefusal_isClosedFromTheTransitionListener_forTheDeadStateOnly() {
         var code = assemblyCode();
 
-        assertThat(code).contains("closeSliceFloorRefusalOnDeath(managementServerRef,record);");
-        assertThat(code).contains("if(\"Dead\".equals(record.toState())){managementServerRef.get().onPresent(server->server.onMemberDeparted(record.nodeId()));}");
+        assertThat(code).containsOnlyOnce("closeSliceFloorRefusalOnDeath(managementServerRef,record);");
+        assertThat(code).containsOnlyOnce("if(\"Dead\".equals(record.toState())){managementServerRef.get().onPresent(server->server.onMemberDeparted(record.nodeId()));}");
     }
 
-    /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
-    /// because a pin that scans nothing always passes.
+    /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
+    /// stripped; each pin must match exactly once across that set. See [AssemblySource].
     static String assemblyCode() {
-        var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
-
-        assertThat(file).exists();
-
-        return readFile(file).lines()
-                             .map(line -> line.replaceFirst("//.*$", ""))
-                             .collect(Collectors.joining())
-                             .replaceAll("\\s+", "");
-    }
-
-    private static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + path, e);
-        }
-    }
-
-    private static Path sourceRoot() {
-        try {
-            var testClasses = Path.of(NodeDepartureWiringTest.class.getProtectionDomain()
-                                                                    .getCodeSource()
-                                                                    .getLocation()
-                                                                    .toURI());
-
-            return testClasses.getParent()
-                              .getParent()
-                              .resolve("src/main/java");
-        } catch (URISyntaxException e) {
-            throw new AssertionError("Cannot locate module source root", e);
-        }
+        return AssemblySource.stripped();
     }
 }
