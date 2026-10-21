@@ -25,6 +25,8 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -78,7 +80,7 @@ public sealed interface AwsSigV4Signer {
         var amzDate = TIMESTAMP_FORMAT.format(timestamp);
         var dateStamp = DATE_FORMAT.format(timestamp);
         var payloadHash = sha256Hex(body);
-        var allHeaders = buildSigningHeaders(headers, extractHost(url), amzDate, payloadHash);
+        var allHeaders = buildSigningHeaders(headers, canonicalHost(url), amzDate, payloadHash);
         var signedHeaderNames = buildSignedHeaderNames(allHeaders);
         var canonicalRequest = buildCanonicalRequest(method, url, allHeaders, signedHeaderNames, payloadHash);
         var credentialScope = buildCredentialScope(dateStamp, config.region(), service);
@@ -121,7 +123,7 @@ public sealed interface AwsSigV4Signer {
                                                 String payloadHash) {
         var uri = URI.create(url);
         var canonicalUri = Option.option(uri.getRawPath()).filter(p -> !p.isEmpty()).or("/");
-        var canonicalQueryString = Option.option(uri.getRawQuery()).or("");
+        var canonicalQueryString = canonicalQuery(Option.option(uri.getRawQuery()).or(""));
         var canonicalHeaders = headers.entrySet()
                                       .stream()
                                       .map(e -> e.getKey() + ":" + e.getValue() + "\n")
@@ -133,6 +135,37 @@ public sealed interface AwsSigV4Signer {
              + "\n" + canonicalHeaders
              + "\n" + signedHeaders
              + "\n" + payloadHash;
+    }
+
+    /// SigV4's canonical query string: the (already URI-encoded) parameters sorted by encoded NAME, then by encoded
+    /// value, each written `name=value`, a bare name given an empty value. #249: the raw query was signed in request
+    /// order, so S3 ListObjectsV2 failed with `SignatureDoesNotMatch`. Sorting whole `name=value` strings instead of
+    /// (name, value) pairs is wrong whenever one name is a prefix of another and the next character sorts before
+    /// `=` (`a=2&a-b=1`, `InstanceId.1` beside `InstanceId.10`); botocore sorts the pairs, and so does this.
+    static String canonicalQuery(String rawQuery) {
+        return Arrays.stream(rawQuery.split("&"))
+                     .filter(pair -> !pair.isEmpty())
+                     .map(QueryParameter::queryParameter)
+                     .sorted(QueryParameter.ORDER)
+                     .map(QueryParameter::canonical)
+                     .collect(Collectors.joining("&"));
+    }
+
+    /// One encoded query parameter; a bare name has an empty value.
+    record QueryParameter(String name, String value) {
+        static final Comparator<QueryParameter> ORDER = Comparator.comparing(QueryParameter::name).thenComparing(QueryParameter::value);
+
+        static QueryParameter queryParameter(String pair) {
+            var eq = pair.indexOf('=');
+
+            return eq < 0
+                   ? new QueryParameter(pair, "")
+                   : new QueryParameter(pair.substring(0, eq), pair.substring(eq + 1));
+        }
+
+        String canonical() {
+            return name + "=" + value;
+        }
     }
 
     private static String buildCredentialScope(String dateStamp, String region, String service) {
@@ -178,8 +211,20 @@ public sealed interface AwsSigV4Signer {
         return result;
     }
 
-    private static String extractHost(String url) {
-        return URI.create(url).getHost();
+    /// The `host` header value the HTTP client will send, which the signature must cover byte for byte: the
+    /// host, plus `:port` when the URL names a port other than the scheme's default (the JDK client's rule).
+    /// #249: signing the bare host made every request to an endpoint on a non-default port (MinIO on `:9000`,
+    /// a LocalStack edge) fail with `SignatureDoesNotMatch`.
+    static String canonicalHost(String url) {
+        var uri = URI.create(url);
+        var port = uri.getPort();
+        var defaultPort = port == -1 || ("https".equalsIgnoreCase(uri.getScheme())
+                                         ? port == 443
+                                         : port == 80);
+
+        return defaultPort
+               ? uri.getHost()
+               : uri.getHost() + ":" + port;
     }
 
     /// Computes HMAC-SHA256.

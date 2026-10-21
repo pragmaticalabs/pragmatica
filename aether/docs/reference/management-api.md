@@ -519,6 +519,9 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `community-growth-resumed` (INFO — the recovery: a worker of that source was admitted to a community again; published only after a published `community-growth-blocked` for the same `subject`)
 - `community-assignment-unplaced` (WARNING — the leader's commit of a worker's community assignment was refused 3 times in a row because the community changed between decision and commit, so the worker has no community; `subject` is the worker; it takes one when it is admitted again, restart it if it does not, issue #241)
 - `community-assignment-placed` (INFO — the recovery: the worker was assigned a community; published only after a published unplaced event for the same `subject`)
+- `community-placement-parked` (WARNING — a community placement operation is parked in `DRAIN_UNCERTAIN` or `BLOCKED` and needs an operator unless it resumes by itself; `subject` is the community, the message names the operation, phase, both nodes and the command to clear it, issue #241)
+- `community-placement-resumed` (INFO — the recovery: the operation left the parked phase by itself, a late drain acknowledgement or its target observed; may be published by a node other than the one that raised the warning)
+- `community-placement-cleared` (INFO — the other recovery: an operator cleared the operation; names the operator, the reason, the phase and both nodes, which the clear left as they were; also closes the warning cluster-wide)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
@@ -4794,6 +4797,25 @@ before retrying), or the node is not the leader; `401`/`403` when the caller is 
 CLI: `aether cluster clear-unconfirmed <node> --instance <id|unknown> [--force]`; exit 0 cleared, 3 no such mark, 1 any other refusal or failure,
 64 a missing or blank `--instance`.
 
+### POST /api/v1/cluster/communities/placement/clear/{id}
+
+Clears ONE parked community placement operation (#241), by community id, after the operator looked at the nodes the `community-placement-parked`
+warning names. An operation is parked in `DRAIN_UNCERTAIN` (its drain acknowledgement deadline passed: the previous worker may or may not be drained; a
+late acknowledgement resumes it by itself) or in `BLOCKED` with a target node the reconciler has not observed (an observed target resumes it by itself,
+and a clear is then refused). Body `{"reason": "<what you checked>"}`; an absent or blank `reason` is refused. Route target is `LEADER`, authorization OPERATOR.
+
+The clear is a single expected-value write that moves the operation to `COMPLETE`, with the operator and the reason in its detail. It removes, drains and
+terminates NOTHING: the previous worker keeps its directive and placement and the replacement stays, so the community may hold one worker more than its
+target until the next pass reduces it, and a previous worker that was already told to drain stays drained until an operator or the reconciler
+retires it. Verify both nodes first.
+
+The response is `{"community", "operation", "phase", "targetNode", "previousNode", "operator"}`, where `phase` is the phase the operation was parked in.
+The clear is audited: the cluster raises `community-placement-cleared` naming the operator, the reason, the phase and both nodes; it closes the open
+`community-placement-parked` warning cluster-wide, like `community-placement-resumed`, which closes it when the operation leaves the parked phase by itself.
+`400` for a missing `reason`; `404` when the community has no operation; `409` when the operation is not parked, changed or the clear was not confirmed
+committed (read the operation again before retrying), or the node is not the leader; `401`/`403` when the caller is not authorized.
+CLI: `aether cluster clear-placement <community> --reason <text>`; exit 0 cleared, 3 no such operation, 1 any other refusal or failure, 64 a missing or blank `--reason`.
+
 ### POST /api/v1/nodes/promote/{id}
 
 This compatibility endpoint acknowledges an existing immutable role. It never changes an
@@ -6589,11 +6611,30 @@ The `max_request_size` field accepts human-readable data size values:
 | `MB` | `"5MB"` | 5,242,880 |
 | `GB` | `"1GB"` | 1,073,741,824 |
 
-Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`.
+Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike. A plain integer is read as a byte count. A request forwarded to the node serving its route must also fit one cluster frame (32 MiB less a 64 KiB reserve); a larger one receives `413` with a detail saying it is too large to forward, and is not sent.
+
+#### Read timeout and minimum body rate
+
+```toml
+[app-http]
+read_timeout = "60s"     # Default: 60s. Zero disables.
+min_body_rate = "1KB"    # Bytes per second. Default: 1KB. Zero disables.
+```
+
+Both bounds apply the same way over HTTP/1.1 and HTTP/3.
+
+- `read_timeout` is an idle bound: a request that receives no body byte for this long is refused. Over HTTP/1.1, a connection that is silent for this long while no response is pending (a stalled body, an idle keep-alive connection) is closed. Over HTTP/3, a request stream whose body is silent this long receives `408 Request Timeout` and its input is reset. Upgraded WebSocket connections are exempt.
+- `min_body_rate` bounds a client that trickles just inside the idle bound. After a 10 s grace from the start of the request, the body's bytes are averaged over each 10 s window. A body arriving below the rate is refused: over HTTP/1.1 the connection is closed, and over HTTP/3 the request receives `408` and its stream input is reset. A slow upload above the rate completes however long it takes.
+
+#### Request trailers
+
+Request trailers (an HTTP/1.1 chunked trailer section, or an HTTP/3 HEADERS frame after the body) are accepted but not delivered to the handler, over HTTP/1.1 and HTTP/3 alike: a request exposes only its headers and body. A request-trailers API is tracked as #2310.
 
 ### Multipart File Upload
 
 The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
+
+A multipart route answers `415 Unsupported Media Type` when the request's Content-Type is not `multipart/form-data` (matched case-insensitively), and `400 Bad Request` when the body is malformed: no `boundary` parameter, no closing boundary delimiter (a truncated body), more than 128 parts, or a part the decoder cannot read. The ProblemDetail `detail` is a fixed description, never decoder internals. A filename-less part with a Content-Type other than `text/plain` is delivered as a file with an empty filename. A repeated field name keeps every value: `MultipartRequest.fieldValues(name)` returns them in body order, and `field(name)` returns the first.
 
 ### Voter reconfiguration diagnostics
 

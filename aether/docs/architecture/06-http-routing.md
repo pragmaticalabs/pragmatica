@@ -132,7 +132,8 @@ sequenceDiagram
 | Retry count | `connectedNodes.size() - 1` (try every node exactly once) |
 | Node selection | Round-robin, excluding already-tried nodes |
 | Timeout per attempt | `[timeouts.forwarding] app_timeout` (default: 5s) |
-| All retries exhausted | 504 Gateway Timeout |
+| Re-send of POST/PATCH/CONNECT | Only when provably not applied (refused before write, target not connected, or `HttpForwardNotApplied`) |
+| All retries exhausted | 503: "outcome unknown, may have been applied; retry only an idempotent operation", or "nothing was applied; safe to retry" (know 14a3606152) |
 
 ## Connectivity Filtering
 
@@ -165,7 +166,9 @@ New leader scans for stale routes during reconciliation - any `HttpNodeRouteKey`
 |----------|-------------|
 | No route found | 404 |
 | No connected nodes for route | 503 |
-| All retry attempts exhausted | 504 |
+| All retry attempts exhausted | 503 (detail says whether anything may have been applied) |
+| Request too large to forward | 413 |
+| Response too large to forward | 502 |
 | Serialization error | 500 |
 | Remote processing error | Forwarded status |
 

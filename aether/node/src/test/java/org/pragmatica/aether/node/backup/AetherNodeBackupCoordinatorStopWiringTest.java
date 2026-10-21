@@ -5,10 +5,7 @@
 package org.pragmatica.aether.node.backup;
 
 import org.junit.jupiter.api.Test;
-
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import org.pragmatica.aether.node.AssemblySource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -18,11 +15,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// tripwire, honest about being one (like `AetherNodeArtifactStoreWiringTest`): the coordinator's stop is handed to both node
 /// constructions, and `stop()` runs it before the cluster-event layer and the backup service go down.
 class AetherNodeBackupCoordinatorStopWiringTest {
-    private static final Path NODE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "AetherNode.java");
-
     @Test
-    void stop_endsTheBackupCoordinatorsTerm_beforeTheBackupServiceStops() throws IOException {
-        var source = Files.readString(NODE).replaceAll("\\s+", " ");
+    void stop_endsTheBackupCoordinatorsTerm_beforeTheBackupServiceStops() {
+        var source = AssemblySource.spaced();
+
+        assertThat(source).containsOnlyOnce("backupCoordinatorStop.run();")
+                          .containsOnlyOnce("kvBackupService.onPresent(KvBackupService::stop);");
+
+        // Offsets are comparable because `stop()` is one method in one file; the joined text puts `AetherNode.java` first.
         var stopsCoordinator = source.indexOf("backupCoordinatorStop.run();");
         var stopsService = source.indexOf("kvBackupService.onPresent(KvBackupService::stop);");
 
@@ -31,8 +31,8 @@ class AetherNodeBackupCoordinatorStopWiringTest {
     }
 
     @Test
-    void bothNodeConstructions_handTheCoordinatorsStop() throws IOException {
-        var source = Files.readString(NODE).replaceAll("\\s+", " ");
+    void bothNodeConstructions_handTheCoordinatorsStop() {
+        var source = AssemblySource.spaced();
 
         assertThat(source.split("backupRestoreCoordinator::onNodeStopping", -1).length - 1)
             .as("the primary and the delegating construction each pass the coordinator's stop")

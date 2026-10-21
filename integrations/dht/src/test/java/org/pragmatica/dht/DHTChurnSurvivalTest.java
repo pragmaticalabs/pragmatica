@@ -706,10 +706,15 @@ class DHTChurnSurvivalTest {
             switch (message) {
                 case DHTMessage.DigestRequest request ->
                     member.node().handleDigestRequest(request, response -> deliver(request.sender(), response));
+                case DHTMessage.StampDigestRequest request ->
+                    member.node().handleStampDigestRequest(request, response -> deliver(request.sender(), response));
                 case DHTMessage.DigestResponse response -> member.antiEntropy().onDigestResponse(response);
                 case DHTMessage.MigrationDataRequest request ->
                     member.node().handleMigrationDataRequest(request, response -> deliver(request.sender(), response));
+                case DHTMessage.MigrationPageRequest request ->
+                    member.node().handleMigrationPageRequest(request, response -> deliver(request.sender(), response));
                 case DHTMessage.MigrationDataResponse response -> member.antiEntropy().onMigrationDataResponse(response);
+                case DHTMessage.MigrationPageResponse response -> member.antiEntropy().onMigrationPageResponse(response);
                 case DHTMessage.MigrationDataAck ack -> member.rebalancer().onMigrationDataAck(ack);
                 default -> { }
             }

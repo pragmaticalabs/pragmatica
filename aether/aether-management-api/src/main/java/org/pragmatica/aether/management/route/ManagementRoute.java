@@ -58,6 +58,8 @@ public enum ManagementRoute {
     // leader's instantaneous live-member count — LEADER, because only the leader holds that view.
     CLUSTER_COMMUNITIES(GET, "/cluster/communities", List.of(), LEADER),
     CLUSTER_COMMUNITY_GET(GET, "/cluster/communities", List.of("id"), LEADER),
+    // #241: an operator clears ONE parked community placement operation after looking at its nodes; the leader owns the operation.
+    COMMUNITY_PLACEMENT_CLEAR(POST, "/cluster/communities/placement/clear", List.of("id"), LEADER),
     CLUSTER_JOURNAL(GET, "/cluster/journal", List.of(), LOCAL),
     CLUSTER_CONFIG_GET(GET, "/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_PROVISIONING_GET(GET, "/cluster/provisioning", List.of(), taskGroup(DEPLOYMENT)),
