@@ -40,7 +40,6 @@ import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
-import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.config.ConfigService;
@@ -75,7 +74,6 @@ import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
 import org.pragmatica.aether.node.prefetch.StoragePrefetchChannel;
 import org.pragmatica.consensus.topology.TopologyManager;
-import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -111,10 +109,8 @@ import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.SecurityOverrideSynchronizer;
-import org.pragmatica.aether.http.TlsRotation;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
-import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.SliceScopedResourceProvider;
@@ -296,7 +292,6 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -322,7 +317,6 @@ import org.pragmatica.dht.LoggingResolveFallbackObserver;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicPeerStateListener;
-import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -347,11 +341,10 @@ import org.pragmatica.aether.node.assembly.DrainAssembly;
 import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.aether.node.assembly.StorageAssembly;
 import org.pragmatica.aether.node.assembly.TopologyAssembly;
+import org.pragmatica.aether.node.assembly.ManagementAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
-import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.Server;
-import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 import org.pragmatica.swim.SwimHealth;
@@ -375,12 +368,10 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
-import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.node.assembly.DrainAssembly.clearOperatorDrainOnDeath;
-import static org.pragmatica.aether.node.assembly.DrainAssembly.requestDrainThroughFsm;
 
 
 public interface AetherNode extends ManageableNode {
@@ -6085,11 +6076,11 @@ public interface AetherNode extends ManageableNode {
         // hosting set by construction.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(entityOwnershipReconciler::tick,
                                                                       ENTITY_OWNERSHIP_RECONCILE_INTERVAL));
-        var certRenewalScheduler = createCertRenewalScheduler(config,
-                                                              clusterNode,
-                                                              appHttpServer,
-                                                              managementServerRef::get,
-                                                              operatorWarningSink);
+        var certRenewalScheduler = ManagementAssembly.certRenewal(new ManagementAssembly.CertRenewalInputs(config,
+                                                                                                           clusterNode,
+                                                                                                           operatorWarningSink,
+                                                                                                           appHttpServer,
+                                                                                                           managementServerRef));
         var startTimeMs = System.currentTimeMillis();
         var nodeLifecycle = NodeLifecycle.nodeLifecycle();
         var node = new aetherNode(workerMetadataChannel,
@@ -6238,103 +6229,29 @@ public interface AetherNode extends ManageableNode {
                                          .flatMap(_ -> RabiaNode.buildAndWireRouter(delegateRouter, allEntries))
                                          .map(_ -> {
                                                   if (config.managementPort() > 0) {
-                                                      var mgmtSecurityEnabled = config.appHttp()
-                                                                                      .managementSecurityEnabled();
-                                                      // #962: `[management] security_mode` decides whether the Management API authenticates and,
-                                                      // when absent, INHERITS `[app-http] security_mode`. Both planes check the same
-                                                      // `api-keys` and the same cluster bootstrap admin key. They authorize on
-                                                      // DIFFERENT axes though: app-HTTP route policies test the key's `roles`, this plane
-                                                      // tests its `authorization_role` (ADMIN > OPERATOR > VIEWER). The refusals name the
-                                                      // plane and the axis (ManagementServerImpl#denialDetail); the operator documentation
-                                                      // states the coupling where api-key mode is configured.
-                                                      //
-                                                      // #1121: `security_mode = "none"` leaves this plane FULLY OPEN. `ManagementServerImpl`
-                                                      // gates on `mgmtSecurityEnabled` and, when false, dispatches without consulting any
-                                                      // validator -- on the local path, the forwarded path, the websocket feeds and the Maven
-                                                      // push admission alike. An earlier version of this block installed
-                                                      // `denyUnlessPublicValidator` here and claimed non-public routes were refused unless a
-                                                      // bootstrap key was present; that validator was never consulted, so the claim was false
-                                                      // and the validator is gone. The validator below is built for the enabled case only.
-                                                      var configValidator = SecurityValidator.apiKeyValidator(config.appHttp()
-                                                                                                                    .apiKeys());
-
-                                                      if (!mgmtSecurityEnabled) {
-                                                          LOG.warn("Management API on port {} is FULLY OPEN: its security mode is \"none\" ([management] security_mode, or inherited from"
-                                                                  + " [app-http] security_mode when that is absent), which disables authentication and"
-                                                                  + " authorization on the management plane, so ANY caller that can reach the port can run every"
-                                                                  + " operation, including cluster changes and artifact pushes. Use it only on a loopback or"
-                                                                  + " otherwise isolated listener; set [management] security_mode = \"api-key\" to protect this plane (#1121).",
-                                                                   config.managementPort());
-                                                      }
-                                                      // The OTHER credential-less shape, and until now it had no voice at all. Above is
-                                                      // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
-                                                      // the published image now boots with, since `docker/aether-node/aether.toml` no longer
-                                                      // bakes a key. The node is fail-closed and that is intended, so this is not a
-                                                      // misconfiguration warning; it states WHICH credential is the only way in, because the
-                                                      // alternative is an operator reading 401s with nothing in the log explaining them.
-                                                      //
-                                                      // Deliberately not silent-because-intended: a default applied when nothing was
-                                                      // configured has to be loud, or it becomes the fail-open nobody notices. The precedent
-                                                      // is this repo's own log-and-drop-plus-caller-default, which turned a fail-closed
-                                                      // encryption refusal into a green boot with plaintext.
-                                                      if (mgmtSecurityEnabled && config.appHttp()
-                                                                                       .apiKeys()
-                                                                                       .isEmpty()) {
-                                                          LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
-                                                                  + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
-                                                                  + " The cluster bootstrap admin key (printed once at formation, derived from the"
-                                                                  + " cluster secret) is the only credential this node will accept; it is enumerable and"
-                                                                  + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
-                                                                  + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
-                                                                   config.managementPort());
-                                                      }
-
-                                                      var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
-                                                                                                                          () -> node.kvStore());
-                                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
-                                                                                                               () -> node,
-                                                                                                               entityCheckpointDriver,
-                                                                                                               alertManager,
-                                                                                                               configRegistry,
-                                                                                                               traceStore,
-                                                                                                               logLevelRegistry,
-                                                                                                               dynamicConfigManager,
-                                                                                                               scheduledTaskRegistry,
-                                                                                                               scheduledTaskManager,
-                                                                                                               sliceInvoker,
-                                                                                                               scheduledTaskStateRegistry,
-                                                                                                               config.tls(),
-                                                                                                               mgmtSecurityValidator,
-                                                                                                               mgmtSecurityEnabled,
-                                                                                                               () -> config.appHttp()
-                                                                                                                           .apiKeys(),
-                                                                                                               serverBossGroup,
-                                                                                                               serverWorkerGroup,
-                                                                                                               config.managementHttpProtocol(),
-                                                                                                               config.timeouts()
-                                                                                                                     .forwarding(),
-                                                                                                               Option.some(clusterNode.network()),
-                                                                                                               Option.some(serializer),
-                                                                                                               Option.some(deserializer),
-                                                                                                               target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                                                                membershipFsmRef,
-                                                                                                                                                target),
-                                                                                                               drainCommandRegistry::drainTargets,
-
-                                                      // #1720: operator drain and shutdown honour the slice minAvailable floor,
-                                                      // as the automatic drain does (same KV-backed guard, same counting rules).
-                                                      NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
-                                                                                                operatorWarningSink));
-
-                                                      managementServer.setOperatorWarningSink(operatorWarningSink);
-                                                      managementServerRef.set(Option.some(managementServer));
-                                                      // #278: expose the node's real MeterRegistry to slice-facing resource
-                                                      // provisioning so MetricsInterceptorFactory records into the SAME
-                                                      // registry the Management API scrapes, instead of each interceptor
-                                                      // fabricating its own disconnected one.
-                                                      resourceProviderSetup.spiProvider()
-                                                                           .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
-                                                                                                                   managementServer.meterRegistry()));
+                                                      var managementServer = ManagementAssembly.managementServer(new ManagementAssembly.ManagementServerInputs(config,
+                                                                                                                                                               kvStore,
+                                                                                                                                                               clusterNode,
+                                                                                                                                                               serializer,
+                                                                                                                                                               deserializer,
+                                                                                                                                                               membershipFsmRef,
+                                                                                                                                                               resourceProviderSetup,
+                                                                                                                                                               logLevelRegistry,
+                                                                                                                                                               traceStore,
+                                                                                                                                                               configRegistry,
+                                                                                                                                                               scheduledTaskRegistry,
+                                                                                                                                                               scheduledTaskStateRegistry,
+                                                                                                                                                               drainCommandRegistry,
+                                                                                                                                                               alertManager,
+                                                                                                                                                               dynamicConfigManager,
+                                                                                                                                                               operatorWarningSink,
+                                                                                                                                                               sliceInvoker,
+                                                                                                                                                               scheduledTaskManager,
+                                                                                                                                                               serverBossGroup,
+                                                                                                                                                               serverWorkerGroup,
+                                                                                                                                                               managementServerRef,
+                                                                                                                                                               entityCheckpointDriver,
+                                                                                                                                                               node));
 
                                                       return new aetherNode(workerMetadataChannel,
                                                                             config,
@@ -7308,7 +7225,7 @@ public interface AetherNode extends ManageableNode {
     /// (via `RabiaNode.rabiaNode`, before `assembleNode`) refuses the config otherwise, pinned by
     /// `AetherNodeSelfAbsentFromTopologyBootTest`. The old `.orElse(new NodeAddress("", 0))` was a
     /// dead branch that would have advertised a placeholder silently if that ordering ever changed.
-    private static NodeAddress findSelfAddress(AetherNodeConfig config) {
+    static NodeAddress findSelfAddress(AetherNodeConfig config) {
         return Option.from(config.topology()
                                  .coreNodes()
                                  .stream()
@@ -8225,110 +8142,6 @@ public interface AetherNode extends ManageableNode {
         clusterNode.network().send(request.sender(), response);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
-                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                                  AppHttpServer appHttpServer,
-                                                                                  Supplier<Option<ManagementServer>> managementServerSupplier,
-                                                                                  OperatorWarningSink warningSink) {
-        return config.certificateProvider()
-                     .flatMap(provider -> buildCertRenewalScheduler(config,
-                                                                    provider,
-                                                                    clusterNode,
-                                                                    appHttpServer,
-                                                                    managementServerSupplier,
-                                                                    warningSink));
-    }
-
-    @SuppressWarnings("JBCT-PAT-01")
-    private static Option<CertificateRenewalScheduler> buildCertRenewalScheduler(AetherNodeConfig config,
-                                                                                 org.pragmatica.net.tcp.security.CertificateProvider provider,
-                                                                                 RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                                 AppHttpServer appHttpServer,
-                                                                                 Supplier<Option<ManagementServer>> managementServerSupplier,
-                                                                                 OperatorWarningSink warningSink) {
-        var nodeId = config.self().id();
-        var hostname = resolveHostname(config);
-
-        return provider.issueCertificate(nodeId, hostname)
-                       .map(bundle -> createSchedulerFromBundle(provider,
-                                                                nodeId,
-                                                                hostname,
-                                                                bundle,
-                                                                clusterNode,
-                                                                appHttpServer,
-                                                                managementServerSupplier,
-                                                                warningSink))
-                       .option();
-    }
-
-    private static CertificateRenewalScheduler createSchedulerFromBundle(org.pragmatica.net.tcp.security.CertificateProvider provider,
-                                                                         String nodeId,
-                                                                         String hostname,
-                                                                         CertificateBundle bundle,
-                                                                         RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                         AppHttpServer appHttpServer,
-                                                                         Supplier<Option<ManagementServer>> managementServerSupplier,
-                                                                         OperatorWarningSink warningSink) {
-        var renewalAlarm = TlsRotation.clusterRenewal();
-
-        renewalAlarm.useSink(warningSink);
-
-        return CertificateRenewalScheduler.certificateRenewalScheduler(provider,
-                                                                       nodeId,
-                                                                       hostname,
-                                                                       newBundle -> onCertificateRenewed(newBundle,
-                                                                                                         clusterNode,
-                                                                                                         appHttpServer,
-                                                                                                         managementServerSupplier,
-                                                                                                         renewalAlarm),
-                                                                       bundle.notAfter());
-    }
-
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
-    static void onCertificateRenewed(CertificateBundle newBundle,
-                                     RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                     AppHttpServer appHttpServer,
-                                     Supplier<Option<ManagementServer>> managementServerSupplier,
-                                     TlsRotation renewalAlarm) {
-        var log = LoggerFactory.getLogger(AetherNode.class);
-
-        log.info("Certificate renewed, valid until {}", newBundle.notAfter());
-        Result.all(QuicSslContextFactory.createServerFromBundle(newBundle,
-                                                                ClientAuthPolicy.REQUIRED,
-                                                                QuicTlsProvider.CLUSTER_PROTOCOL),
-                   QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL))
-              .id()
-              .onSuccess(tuple -> {
-                             renewalAlarm.applied();
-                             triggerCertRotation(clusterNode,
-                                                 tuple.first(),
-                                                 tuple.last(),
-                                                 newBundle,
-                                                 appHttpServer,
-                                                 managementServerSupplier);
-                         })
-              .onFailure(cause -> {
-                             log.error("Failed to build SSL contexts from renewed certificate: {}",
-                                       cause.message());
-                             renewalAlarm.renewalRefused(cause);
-                         });
-    }
-
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void triggerCertRotation(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                            io.netty.handler.codec.quic.QuicSslContext serverSsl,
-                                            io.netty.handler.codec.quic.QuicSslContext clientSsl,
-                                            CertificateBundle newBundle,
-                                            AppHttpServer appHttpServer,
-                                            Supplier<Option<ManagementServer>> managementServerSupplier) {
-        var log = LoggerFactory.getLogger(AetherNode.class);
-
-        rotateQuicNetwork(clusterNode, serverSsl, clientSsl, log);
-        managementServerSupplier.get().onPresent(mgmt -> rotateManagementServer(mgmt, newBundle, log));
-        rotateAppHttpServer(appHttpServer, newBundle, log);
-    }
-
     private static boolean isWorkerDescriptor(MemberDescriptor descriptor) {
         return "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role());
     }
@@ -8442,44 +8255,11 @@ public interface AetherNode extends ManageableNode {
         return NodeInfo.nodeInfo(target.id(), target.address(), labels);
     }
 
-    private static void rotateQuicNetwork(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                          io.netty.handler.codec.quic.QuicSslContext serverSsl,
-                                          io.netty.handler.codec.quic.QuicSslContext clientSsl,
-                                          Logger log) {
-        if (clusterNode.network() instanceof QuicClusterNetwork quicNetwork) {
-            quicNetwork.rotateCertificate(serverSsl, clientSsl)
-                       .onSuccess(_ -> log.info("QUIC certificate rotation complete"))
-                       .onFailure(cause -> log.error("QUIC certificate rotation failed: {}",
-                                                     cause.message()));
-        } else {
-            log.warn("QUIC certificate rotation skipped: network is not QUIC-based");
-        }
-    }
-
-    private static void rotateManagementServer(ManagementServer mgmt, CertificateBundle newBundle, Logger log) {
-        mgmt.rotateCertificate(newBundle)
-            .onSuccess(_ -> log.info("Management server certificate rotation complete"))
-            .onFailure(cause -> log.error("Management server certificate rotation failed: {}",
-                                          cause.message()));
-    }
-
-    private static void rotateAppHttpServer(AppHttpServer appHttpServer, CertificateBundle newBundle, Logger log) {
-        appHttpServer.rotateCertificate(newBundle)
-                     .onSuccess(_ -> log.info("App HTTP server certificate rotation complete"))
-                     .onFailure(cause -> log.error("App HTTP server certificate rotation failed: {}",
-                                                   cause.message()));
-    }
-
     private static long resolveStreamMaxMemoryBytes() {
         return Option.option(System.getenv("STREAM_MAX_MEMORY_BYTES"))
                      .filter(s -> !s.isBlank())
                      .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
                      .or(128 * 1024 * 1024L);
-    }
-
-    /// #517: same invariant as [#findSelfAddress]; `localhost` was a dead placeholder, never a default.
-    private static String resolveHostname(AetherNodeConfig config) {
-        return findSelfAddress(config).host();
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
