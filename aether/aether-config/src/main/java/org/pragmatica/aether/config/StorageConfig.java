@@ -19,6 +19,14 @@ import org.pragmatica.lang.Verify;
 /// `promotion` is a kill switch for background tier promotion on this instance (default on): promotion copies hot
 /// blocks into the node's faster tiers, per node. It has no effect on `streams`, which never promotes.
 ///
+/// `prefetch` is the kill switch for cross-node block prefetching on this instance: on by default, it lets the
+/// node gossip hints about the blocks it reads often and copy hinted blocks into its own cache tiers. It is read
+/// for every instance but `streams`, which prefetches its own segments and takes no part in it.
+///
+/// `prefetchMaxInFlight` is the most prefetches that run at once on this instance (`prefetch_max_in_flight`, default
+/// 4). A hint that finds every slot taken is dropped and counted, never queued. The loader refuses a value that is not
+/// a positive integer; `prefetch = false` is how prefetching is switched off.
+///
 /// `shared` (#249) is the instance's cluster-shared last tier, from `[storage.<instance>.shared]`: the in-memory
 /// DHT by default, or an S3-compatible bucket ([SharedTierConfig]).
 ///
@@ -37,8 +45,12 @@ public record StorageConfig(long memoryMaxBytes,
                             String walPath,
                             boolean encrypted,
                             boolean promotion,
+                            boolean prefetch,
+                            int prefetchMaxInFlight,
                             SharedTierConfig shared,
                             boolean derivesPaths) {
+    /// The default for `prefetchMaxInFlight`; the prefetch manager's own default is pinned to the same number by a test.
+    public static final int DEFAULT_PREFETCH_MAX_IN_FLIGHT = 4;
     /// #912: names the root the default `disk_path`/`snapshot_path` resolve under, instead of `/data/aether`.
     /// A node whose storage sections omit their paths (the shipped image config sets none) otherwise writes
     /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
@@ -89,6 +101,66 @@ public record StorageConfig(long memoryMaxBytes,
              walPath,
              encrypted,
              promotion,
+             true,
+             DEFAULT_PREFETCH_MAX_IN_FLIGHT,
+             SharedTierConfig.dht(),
+             false);
+    }
+
+    /// The shape before prefetching existed: `prefetch` is on and the cap takes its default.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion,
+                         SharedTierConfig shared,
+                         boolean derivesPaths) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
+             true,
+             DEFAULT_PREFETCH_MAX_IN_FLIGHT,
+             shared,
+             derivesPaths);
+    }
+
+    /// The shape with the `prefetch` switch but before the in-flight cap existed: the cap takes its default; the
+    /// shared tier is the in-memory DHT and the paths are used as written.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion,
+                         boolean prefetch) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
+             prefetch,
+             DEFAULT_PREFETCH_MAX_IN_FLIGHT,
              SharedTierConfig.dht(),
              false);
     }
@@ -199,6 +271,60 @@ public record StorageConfig(long memoryMaxBytes,
                                  promotion);
     }
 
+    /// `prefetch` switches cross-node block prefetching off for this instance (`[storage.<name>] prefetch = false`).
+    public static StorageConfig storageConfig(long memoryMaxBytes,
+                                              long diskMaxBytes,
+                                              String diskPath,
+                                              String snapshotPath,
+                                              int snapshotMutationThreshold,
+                                              String snapshotMaxInterval,
+                                              int snapshotRetentionCount,
+                                              String walPath,
+                                              boolean encrypted,
+                                              boolean promotion,
+                                              boolean prefetch) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 prefetch);
+    }
+
+    /// `prefetchMaxInFlight` bounds the prefetches running at once (`[storage.<name>] prefetch_max_in_flight`).
+    public static StorageConfig storageConfig(long memoryMaxBytes,
+                                              long diskMaxBytes,
+                                              String diskPath,
+                                              String snapshotPath,
+                                              int snapshotMutationThreshold,
+                                              String snapshotMaxInterval,
+                                              int snapshotRetentionCount,
+                                              String walPath,
+                                              boolean encrypted,
+                                              boolean promotion,
+                                              boolean prefetch,
+                                              int prefetchMaxInFlight) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
+                                 SharedTierConfig.dht(),
+                                 false);
+    }
+
     /// #249: this configuration with `shared` as the last tier of the instance's stack.
     public StorageConfig withShared(SharedTierConfig shared) {
         return new StorageConfig(memoryMaxBytes,
@@ -211,6 +337,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  walPath,
                                  encrypted,
                                  promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
                                  shared,
                                  derivesPaths);
     }
@@ -248,6 +376,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  walPath,
                                  encrypted,
                                  promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
                                  shared,
                                  true);
     }
@@ -265,6 +395,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  walPath,
                                  encrypted,
                                  promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
                                  shared,
                                  false);
     }

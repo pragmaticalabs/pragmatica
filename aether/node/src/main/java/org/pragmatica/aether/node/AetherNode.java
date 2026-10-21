@@ -82,6 +82,8 @@ import org.pragmatica.aether.node.backup.GitBackupRepository;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
+import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
+import org.pragmatica.aether.node.prefetch.StoragePrefetchChannel;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
@@ -2608,8 +2610,14 @@ public interface AetherNode extends ManageableNode {
                           // can close.
                           Option<SpiResourceProvider> spiResourceProvider,
                           NodeReplacementService nodeReplacementService,
-                          UpgradeRunService upgradeRunService) implements AetherNode {
+                          UpgradeRunService upgradeRunService,
+                          StoragePrefetchChannel prefetchChannel) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public Option<PrefetchGossipStats> prefetchGossipStats() {
+                return PrefetchGossipStats.prefetchGossipStats(swimHealthDetector.appGossipStats(), prefetchChannel);
+            }
 
             @Override
             public Epoch currentGenerationEpoch() {
@@ -5315,6 +5323,14 @@ public interface AetherNode extends ManageableNode {
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
         swimHealthDetector.addTransportObservationEmitter(delegateRouter::route);
+        // Storage prefetch hints ride SWIM's application gossip: once per probe round the hottest blocks of one
+        // instance go to one random peer in a datagram of their own, and arriving hints reach the prefetch manager
+        // of the instance they name. The managers stay dormant until the node reports ready.
+        var prefetchChannel = StoragePrefetchChannel.storagePrefetchChannel(StorageFactory.prefetchManagers(storageSetups),
+                                                                            serializer,
+                                                                            deserializer);
+
+        swimHealthDetector.registerGossipChannel(StoragePrefetchChannel.CHANNEL, prefetchChannel);
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
         // observations directly. NODE_FAILED / NODE_LEFT events are emitted via the
         // canonical MembershipDecision route (MembershipDeltaProjector, Wave 4), keyed off
@@ -6855,7 +6871,8 @@ public interface AetherNode extends ManageableNode {
                                   backupRestoreCoordinator::onNodeStopping,
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service(),
-                                  upgradeWiring.service());
+                                  upgradeWiring.service(),
+                                  prefetchChannel);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -6881,11 +6898,14 @@ public interface AetherNode extends ManageableNode {
         // the DHT cannot answer. Without this the node would report ready while its DHT tiers still refuse
         // every operation.
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
+        BooleanSupplier nodeDraining = () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE;
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          () -> signalReadyActivatingStorage(nodeLifecycle::signalReady,
+                                                                                          () -> signalReadyActivatingStorage(() -> signalReadyAndWakePrefetch(nodeLifecycle::signalReady,
+                                                                                                                                                              storageSetups,
+                                                                                                                                                              nodeDraining),
                                                                                                                              storageSetups,
-                                                                                                                             () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE),
+                                                                                                                             nodeDraining),
                                                                                           nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
@@ -7095,7 +7115,8 @@ public interface AetherNode extends ManageableNode {
                                                                             backupRestoreCoordinator::onNodeStopping,
                                                                             resourceProviderSetup.spiProvider(),
                                                                             replacementWiring.service(),
-                                                                            upgradeWiring.service());
+                                                                            upgradeWiring.service(),
+                                                                            prefetchChannel);
                                                   }
 
                                                   return node;
@@ -7433,6 +7454,20 @@ public interface AetherNode extends ManageableNode {
 
         if (previous != current) {
             ctm.onClusterPhaseChanged(current);
+        }
+    }
+
+    /// The node reports ready: lifecycle first, then cross-node block prefetching wakes (it gossips hints and acts on
+    /// them only from here on). Run from the same self-ready signal as the readiness state, so a node that is not ready
+    /// neither tells peers what to fetch nor starts fetching for them. A node that has begun draining stays asleep: the
+    /// ready signal can fire again after the drain began, and a leaving node must not start fetching for its peers.
+    @Contract
+    static void signalReadyAndWakePrefetch(Runnable signalReady,
+                                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                                           BooleanSupplier draining) {
+        signalReady.run();
+        if (!draining.getAsBoolean()) {
+            StorageFactory.activatePrefetch(storageSetups);
         }
     }
 
@@ -8113,8 +8148,10 @@ public interface AetherNode extends ManageableNode {
     /// Promotion and demotion of this node's storage stop when the node starts draining, not only when it stops: a
     /// draining node is leaving, and a cycle that copies blocks into tiers about to be torn down gains nothing. FER: a
     /// manager that will not deactivate is logged and the drain goes on. Also run first thing in `shutdownStorage()`.
+    /// Cross-node prefetching sleeps with them: a draining node neither gossips hints nor fetches for its peers.
     @Contract
     private static void stopStorageMaintenance(Map<String, StorageFactory.StorageSetup> storageSetups) {
+        StorageFactory.deactivatePrefetch(storageSetups);
         StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be deactivated: {}",
                                                                                             cause.message()));
     }

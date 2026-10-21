@@ -9,12 +9,12 @@ import org.pragmatica.lang.Unit;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Manages cross-node block prefetching via SWIM piggyback hints.
+/// Manages cross-node block prefetching from hints gossiped over SWIM.
 ///
 /// Nodes record local block access frequencies. When gossip rounds occur,
 /// the manager exports top-N hints (blocks accessed above threshold).
 /// When receiving hints from other nodes, the manager triggers background
-/// prefetch for blocks not present locally.
+/// prefetch ([StorageInstance#warm]) for blocks not held by a node-private tier.
 ///
 /// Supports dormant/active lifecycle: prefetching is a background optimization
 /// that should only run when the node is ready.
@@ -23,13 +23,15 @@ public interface PrefetchManager {
     @Contract
     void recordAccess(BlockId blockId);
 
-    /// Collect hints to piggyback on SWIM gossip. Resets access counters for collected hints.
+    /// Collect hints to gossip over SWIM. Resets access counters for collected hints.
     List<PrefetchHint> collectHints();
 
     /// Process hints received from another node. Triggers background prefetch for missing blocks.
     @Contract
     void processHints(List<PrefetchHint> hints);
 
+    /// What this manager has done so far, for the operator surface.
+    PrefetchStats stats();
     /// Activate the prefetch manager, allowing hint collection and prefetch.
     Result<Unit> activate();
     /// Deactivate the prefetch manager. All operations become no-ops.
@@ -62,6 +64,11 @@ final class NoOpPrefetchManager implements PrefetchManager {
     @Contract
     public void processHints(List<PrefetchHint> hints) {
     // no-op
+    }
+
+    @Override
+    public PrefetchStats stats() {
+        return PrefetchStats.empty();
     }
 
     @Override

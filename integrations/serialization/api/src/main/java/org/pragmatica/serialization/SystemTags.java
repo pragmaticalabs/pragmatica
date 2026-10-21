@@ -662,6 +662,12 @@ public interface SystemTags {
         // every open PR head (10), scanned 2026-10-20. 1655 keeps decoding the old shape.
         pin(table, 2169, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue");
         pin(table, 2170, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier");
+        // Wiring the prefetch manager: the SWIM application-gossip datagram (2171) and its storage payload (2172, 2173).
+        // 2171..2173 were free on every origin branch (166 tips) and every open PR head (13), scanned 2026-10-20; #1337's
+        // topic publisher rows start after them, at 2174.
+        pin(table, 2171, "org.pragmatica.swim.SwimMessage.AppGossip");
+        pin(table, 2172, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip");
+        pin(table, 2173, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip.Hint");
         // #1337: the topic PUBLISHER row. 2171..2173 are taken by origin/feat/storage-prefetch-over-swim (found by the 2026-10-20 scan,
         // which also found them free on every open PR head), so these two start at 2174.
         pin(table, 2174, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey");

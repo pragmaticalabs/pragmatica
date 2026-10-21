@@ -17,7 +17,6 @@ import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.storage.AppendLog;
-import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.WritePolicy;
@@ -84,29 +83,30 @@ class KnownUnwiredSurfacesTest {
                   + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
     }
 
-    /// The cache-only-marker groundwork: `StorageInstance.warm` and the read-hit listener overload of
-    /// `StorageInstance.storageInstance` have no production caller until the prefetch wiring lands (the follow-up that
-    /// gossips hints over SWIM and builds a prefetch manager per instance). Registered so they cannot ship dead
-    /// silently: retire these assertions in THAT change, by turning them into reachability controls.
+    /// Reachability control for the read-hit listener overload of `StorageInstance.storageInstance`: `StorageFactory`
+    /// builds every production instance through it, so the scanner must reach it. It was registered here as unwired until
+    /// the prefetch wiring landed; if this flips, the scanner or the wiring changed.
+    ///
+    /// `StorageInstance.warm` was registered beside it, and is NOT asserted here any more: its production caller is the
+    /// prefetch manager in `integrations/storage`, which this gate's corpus (aether modules only) does not scan, so a
+    /// reachability check on `warm` would answer "no" whether or not the call exists. The call is pinned where the manager
+    /// is tested: `PrefetchManagerTest#processHints_blockOnlyInTheSharedTier_copiesItIntoTheCacheTier` goes red when the
+    /// manager stops calling `warm`.
     @Test
-    void storageWarmAndReadHitListener_areNotCalledFromProductionYet() throws Exception {
+    void storageReadHitListener_isCalledFromProduction() throws Exception {
         assertCorpusComplete();
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
-        var warm = MethodRef.of(StorageInstance.class.getDeclaredMethod("warm",
-                                                                                              BlockId.class));
         var listenerOverload = MethodRef.of(StorageInstance.class.getDeclaredMethod("storageInstance",
-                                                                                                          String.class,
-                                                                                                          List.class,
-                                                                                                          MetadataStore.class,
-                                                                                                          WritePolicy.class,
-                                                                                                          Option.class,
-                                                                                                          AppendLog.TornTailSink.class,
-                                                                                                          Consumer.class));
+                                                                                    String.class,
+                                                                                    List.class,
+                                                                                    MetadataStore.class,
+                                                                                    WritePolicy.class,
+                                                                                    Option.class,
+                                                                                    AppendLog.TornTailSink.class,
+                                                                                    Consumer.class));
 
-        assertFalse(reachability.isReachable(warm),
-                    "StorageInstance.warm has been wired into production: retire this entry (and keep the reachability as a control).");
-        assertFalse(reachability.isReachable(listenerOverload),
-                    "The read-hit listener overload has been wired into production: retire this entry (and keep the reachability as a control).");
+        assertTrue(reachability.isReachable(listenerOverload),
+                   "The read-hit listener overload is no longer reached from production: StorageFactory stopped using it.");
     }
 
     /// Every `apply` overload declared on [ApplyOrchestrator], by bytecode identity. The assertions

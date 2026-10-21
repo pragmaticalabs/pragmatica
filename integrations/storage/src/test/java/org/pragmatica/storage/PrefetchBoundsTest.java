@@ -125,7 +125,7 @@ class PrefetchBoundsTest {
     @Test
     void processHints_reclaimsAnElapsedCooldownWithoutDeactivation() {
         var manager = manager(1);
-        var hint = prefetchHint(blockIdOf(1).hexString(), 10, TierLevel.MEMORY.name());
+        var hint = prefetchHint(blockIdOf(1).hexString(), 10);
 
         manager.processHints(List.of(hint));
         assertThat(manager.cooldownEntries()).as("the attempt recorded a cooldown").isEqualTo(1);
@@ -140,9 +140,9 @@ class PrefetchBoundsTest {
     void processHints_alsoReclaimsElapsedCooldowns() {
         var manager = manager(1);
 
-        manager.processHints(List.of(prefetchHint(blockIdOf(1).hexString(), 10, TierLevel.MEMORY.name())));
+        manager.processHints(List.of(prefetchHint(blockIdOf(1).hexString(), 10)));
         clock.addAndGet(COOLDOWN_MS);
-        manager.processHints(List.of(prefetchHint(blockIdOf(2).hexString(), 10, TierLevel.MEMORY.name())));
+        manager.processHints(List.of(prefetchHint(blockIdOf(2).hexString(), 10)));
 
         assertThat(manager.cooldownEntries()).as("only the fresh attempt's cooldown remains").isEqualTo(1);
     }
@@ -162,7 +162,7 @@ class PrefetchBoundsTest {
     @Test
     void processHints_activeCooldownStillSuppressesARepeat_andElapsedOneAllowsIt() {
         var manager = manager(1);
-        var hint = prefetchHint(blockIdOf(1).hexString(), 10, TierLevel.MEMORY.name());
+        var hint = prefetchHint(blockIdOf(1).hexString(), 10);
 
         manager.processHints(List.of(hint));
         clock.addAndGet(COOLDOWN_MS - 1);
@@ -189,7 +189,7 @@ class PrefetchBoundsTest {
     void deactivate_clearsTheCooldowns() {
         var manager = manager(1);
 
-        manager.processHints(List.of(prefetchHint(blockIdOf(1).hexString(), 10, TierLevel.MEMORY.name())));
+        manager.processHints(List.of(prefetchHint(blockIdOf(1).hexString(), 10)));
         assertThat(manager.cooldownEntries()).as("the attempt recorded a cooldown").isEqualTo(1);
 
         manager.deactivate();
@@ -206,7 +206,7 @@ class PrefetchBoundsTest {
         var manager = new DefaultPrefetchManager(storage,
                                                  prefetchConfig(1, 5, COOLDOWN_MS, WINDOW_MS, CAPACITY),
                                                  () -> clock.getAndAdd(drift.get()));
-        var hint = prefetchHint(blockIdOf(1).hexString(), 10, TierLevel.MEMORY.name());
+        var hint = prefetchHint(blockIdOf(1).hexString(), 10);
 
         manager.activate();
         manager.processHints(List.of(hint));

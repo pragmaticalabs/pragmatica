@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
+import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StorageStatusKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -21,6 +22,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue.TierStatus;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.storage.PrefetchManager;
+import org.pragmatica.storage.PrefetchStats;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.ReadinessState;
 import org.pragmatica.storage.StorageInstance.TierInfo;
@@ -98,12 +101,26 @@ public final class StorageRoutes implements RouteSource {
                              PromotionDetail promotion,
                              GarbageCollectionDetail garbageCollection) {}
 
+    /// `prefetch` is the cross-node block prefetching this instance takes part in; absent for an instance that does not
+    /// (`[storage.<name>] prefetch = false`, and `streams`, which prefetches its own segments).
     record StorageDetailResponse(String name,
                                  List<TierDetail> tiers,
                                  SnapshotDetail snapshot,
                                  ReadinessDetail readiness,
                                  MaintenanceDetail maintenance,
-                                 Option<WalUsage> wal) {}
+                                 Option<WalUsage> wal,
+                                 Option<PrefetchStats> prefetch,
+                                 Option<GossipDetail> gossip) {}
+
+    /// What the node's prefetch gossip has done, shared by every instance that prefetches (one channel carries them
+    /// all); absent for an instance that does not prefetch, and before SWIM runs. `dropped` counts the datagrams SWIM
+    /// refused to send (a payload over its budget) or to accept (unknown channel, not a member, over the rate).
+    record GossipDetail(long sent,
+                        long received,
+                        long dropped,
+                        long droppedUnknownInstance,
+                        long droppedMalformed,
+                        long trimmed) {}
 
     record SnapshotResponse(String name, long epoch, long timestampMs) {}
 
@@ -166,7 +183,7 @@ public final class StorageRoutes implements RouteSource {
     Result<StorageDetailResponse> instanceDetail(String name) {
         var node = nodeSupplier.get();
 
-        return findSetup(name).map(setup -> toDetailResponse(setup, walUsageFor(node, setup)));
+        return findSetup(name).map(setup -> toDetailResponse(setup, walUsageFor(node, setup), gossipFor(node, setup)));
     }
 
     /// The `streams` instance is the only one with a WAL beside it; every other instance reports
@@ -378,13 +395,38 @@ public final class StorageRoutes implements RouteSource {
         return new StorageInstanceSummary(setup.name(), toTierDetails(setup), toReadinessDetail(setup), wal);
     }
 
-    private static StorageDetailResponse toDetailResponse(StorageSetup setup, Option<WalUsage> wal) {
+    private static StorageDetailResponse toDetailResponse(StorageSetup setup,
+                                                          Option<WalUsage> wal,
+                                                          Option<GossipDetail> gossip) {
         return new StorageDetailResponse(setup.name(),
                                          toTierDetails(setup),
                                          toSnapshotDetail(setup),
                                          toReadinessDetail(setup),
                                          toMaintenanceDetail(setup),
-                                         wal);
+                                         wal,
+                                         prefetchStatsOf(setup),
+                                         gossip);
+    }
+
+    /// Asked of the node only for an instance that prefetches, so the answer is "the gossip this instance's hints ride".
+    private static Option<GossipDetail> gossipFor(ManageableNode node, StorageSetup setup) {
+        return prefetchStatsOf(setup).flatMap(_ -> node.prefetchGossipStats())
+                              .map(StorageRoutes::toGossipDetail);
+    }
+
+    private static GossipDetail toGossipDetail(PrefetchGossipStats stats) {
+        return new GossipDetail(stats.swim().sent(),
+                                stats.swim().received(),
+                                stats.swim().dropped(),
+                                stats.channel().droppedUnknownInstance(),
+                                stats.channel().droppedMalformed(),
+                                stats.channel().trimmed());
+    }
+
+    static Option<PrefetchStats> prefetchStatsOf(StorageSetup setup) {
+        return setup.prefetchManager() == PrefetchManager.NOOP
+               ? Option.none()
+               : Option.some(setup.prefetchManager().stats());
     }
 
     private static MaintenanceDetail toMaintenanceDetail(StorageSetup setup) {
