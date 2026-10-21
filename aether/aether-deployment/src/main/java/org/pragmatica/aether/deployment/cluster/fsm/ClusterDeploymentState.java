@@ -1153,7 +1153,23 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            ctx.communityAdmission().forget(node);
+            ctx.communityAdmission().serialized(() -> decideAndAdmit(node, source, policy, configuration));
+        }
+
+        /// The decision is read-decide-register over state the other joins share, and a join event can reach the leader twice at once, so the
+        /// whole of it runs under the ledger's lock: two decisions never both see the same free slot, and a duplicate neither counts nor
+        /// undoes the in-flight registration of the event it duplicates. A worker whose assignment is already in flight decides nothing;
+        /// a refused commit or a lost one ends the flight first, so a retry is a fresh decision.
+        private void decideAndAdmit(NodeId node,
+                                    String source,
+                                    CommunityPolicy policy,
+                                    Option<AetherValue.ClusterConfigValue> configuration) {
+            if (ctx.communityAdmission().inFlight(node, ctx.nowMs())) {
+                log.debug("Worker {} already has an assignment in flight; its duplicate join decides nothing", node);
+
+                return;
+            }
+
             var candidates = DerivedCommunities.candidates(ctx, source, ctx.nowMs());
             var decision = CommunityGrowthPolicy.pick(source, candidates, policy);
 
@@ -1402,9 +1418,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                     .equals(transactionId))
                                             .forEach(result -> settleAssignment(targetNode,
                                                                                 result.accepted())))
-               .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
-                                             targetNode,
-                                             cause.message()));
+               .onFailure(cause -> commitLost(targetNode, cause));
+        }
+
+        private void commitLost(NodeId targetNode, Cause cause) {
+            log.error("Failed to submit activation directive for {}: {}", targetNode, cause.message());
+            ctx.communityAdmission().forget(targetNode);
         }
 
         /// A refused commit means the community changed between the decision and the commit. The worker would stay without a community
@@ -1432,6 +1451,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void retryOrReport(NodeId node) {
             if (ctx.communityAdmission().refused(node) < CommunityAdmissionLedger.MAX_ATTEMPTS) {
                 log.debug("Assignment changed before commit for {}; deciding its community afresh", node);
+                ctx.communityAdmission().forget(node);
                 ctx.dispatch(new WorkerJoinReceived(new WorkerJoinDecision(node,
                                                                            "worker",
                                                                            org.pragmatica.hlc.HlcTimestamp.ZERO)));
@@ -2844,6 +2864,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private Promise<Unit> handleNodeRemoval(NodeId removedNode) {
             drainEvictionsInProgress.remove(removedNode);
+            ctx.communityAdmission().forget(removedNode);
             rebuildSliceStateFromKVStoreEntries();
             var sliceKeysToRemove = sliceStates.keySet()
                                                .stream()

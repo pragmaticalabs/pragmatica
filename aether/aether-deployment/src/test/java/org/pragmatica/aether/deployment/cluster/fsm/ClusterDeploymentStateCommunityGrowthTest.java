@@ -330,6 +330,55 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aDuplicateJoinOfAWorkerWhoseAssignmentIsInFlight_decidesNothing() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.holdCommits();
+        fixture.joinAll(1);
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("one commit for the one assignment; the duplicate neither counts nor re-registers it").isEqualTo(1);
+    }
+
+    @Test
+    void join_growthOn_aDecisionWaitsForTheDecisionAlreadyRunning() throws InterruptedException {
+        var fixture = fixture(config(true, 2, 5));
+        var joiner = new Thread(() -> fixture.joinAll(1));
+
+        fixture.context().communityAdmission().serialized(() -> {
+            joiner.start();
+            org.awaitility.Awaitility.await().pollDelay(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(2)).until(() -> true);
+            assertThat(fixture.cluster().applies.get()).as("a second decision does not run while one is running").isZero();
+        });
+        joiner.join(5_000);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+    }
+
+    @Test
+    void join_growthOn_aCommitThatNeverReachedConsensus_endsTheFlight_soTheWorkersNextJoinDecides() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.failNext();
+        fixture.joinAll(1);
+        fixture.rejoin(1);
+
+        assertThat(fixture.hasDirective(1)).isTrue();
+    }
+
+    @Test
+    void join_growthOn_aWorkerThatLeftWhileItsAssignmentWasInFlight_decidesAfresh_whenItJoinsAgain() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.holdCommits();
+        fixture.joinAll(1);
+        fixture.leave(1);
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("the departure ended the flight, so the new join is a decision of its own").isEqualTo(2);
+    }
+
+    @Test
     void join_growthOn_aRetryOfAJoinerStillInFlight_isNotCountedAgainstItself() {
         var fixture = fixture(config(true, 1, 5));
 
@@ -516,6 +565,11 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
             kvStore.put(CommunityKey.communityKey(id),
                         current.withState(current.state() == CommunityState.FORMING ? CommunityState.DEGRADED : CommunityState.FORMING));
+        }
+
+        void leave(int number) {
+            harness.dispatch(new ClusterDeploymentEvents.WorkerLeaveReceived(
+                new org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision(worker(number), org.pragmatica.hlc.HlcTimestamp.ZERO)));
         }
 
         void rejoin(int number) {

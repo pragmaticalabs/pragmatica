@@ -57,6 +57,21 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending,
         pending.put(node, Pending.pending(communityId, nowMs));
     }
 
+    /// Runs `decision` with no other decision running on this ledger: read the shared state, decide and register as one step.
+    @Contract
+    public void serialized(Runnable decision) {
+        synchronized (this) {
+            decision.run();
+        }
+    }
+
+    /// Whether `node` has an assignment the leader decided less than [#PENDING_TTL_MS] ago: a duplicate of its join has nothing to decide.
+    public boolean inFlight(NodeId node, long nowMs) {
+        return Option.option(pending.get(node))
+                     .filter(entry -> nowMs - entry.atMs() <= PENDING_TTL_MS)
+                     .isPresent();
+    }
+
     /// Ends the in-flight assignment of `node`: its commit was refused or lost, so it holds no slot, and a retry of the same node must not
     /// count its own earlier attempt against the community it is retrying into.
     @Contract
@@ -105,10 +120,11 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending,
         return refusals.merge(node, 1, Integer::sum);
     }
 
-    /// The leader gave up on `node` for now: its count restarts, and it is remembered as unplaced so that its placement can be reported.
+    /// The leader gave up on `node` for now: its count restarts, it holds no slot, and it is remembered as unplaced so that its placement can be reported.
     @Contract
     public void giveUp(NodeId node) {
         refusals.remove(node);
+        pending.remove(node);
         unplaced.add(node);
     }
 
