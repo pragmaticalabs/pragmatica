@@ -18,6 +18,7 @@ import static org.pragmatica.scriptgate.ScriptGate.executed;
 import static org.pragmatica.scriptgate.ScriptGate.given;
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// `tools/provision-test-pg.sh` must not print `PG_PASSWORD`, the `PG_URL` that embeds it, or any other
 /// env-file line outside the allow-list. The `--print-only` and idempotent-reuse paths run for real against a
 /// stubbed Hetzner API and a fake env file. The fresh-provision path is pinned by sourcing the script's real
@@ -26,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProvisionTestPgOutputTest {
     private static final String SECRET = "fake-secret-0123456789abcdef";
     private static final String MAIN_FLOW = "# Main flow";
+
     private static final String ENV_BODY = """
                                            # PG VM 42  IP=192.0.2.10  provisioned=2026-01-01T00:00:00Z
                                            export PG_URL=postgres://aether:%s@192.0.2.10:5432/aether_forge
@@ -34,6 +36,7 @@ class ProvisionTestPgOutputTest {
                                            export PG_HOST=192.0.2.10
                                            export PG_DB=aether_forge
                                            """.formatted(SECRET, SECRET);
+
     /// Forms a deny-list anchored on the canonical line would miss.
     private static final String FOREIGN_BODY = """
                                                PG_PASSWORD=%s
@@ -48,7 +51,17 @@ class ProvisionTestPgOutputTest {
                                                PG_USER=%s
                                                export PG_USER=aether
                                                export PG_HOST=192.0.2.10
-                                               """.formatted(SECRET, SECRET, SECRET, SECRET, SECRET, SECRET, SECRET, SECRET, SECRET, SECRET);
+                                               """.formatted(SECRET,
+                                                             SECRET,
+                                                             SECRET,
+                                                             SECRET,
+                                                             SECRET,
+                                                             SECRET,
+                                                             SECRET,
+                                                             SECRET,
+                                                             SECRET,
+                                                             SECRET);
+
     private static final String INERT = "#!/bin/bash\nexit 0\n";
 
     private Path state;
@@ -78,10 +91,8 @@ class ProvisionTestPgOutputTest {
         var execution = executed(runScript("--print-only"));
 
         assertThat(execution.exitCode()).as(execution.output()).isZero();
-        assertThat(execution.output()).doesNotContain(SECRET)
-                  .doesNotContain("PG_PASSWORD=")
-                  .doesNotContain("PG_URL=")
-                  .contains("export PG_HOST=192.0.2.10")
+        assertNoCredentials(execution.output());
+        assertThat(execution.output()).contains("export PG_HOST=192.0.2.10")
                   .contains("export PG_USER=aether")
                   .contains("are in " + envFile);
     }
@@ -113,13 +124,13 @@ class ProvisionTestPgOutputTest {
     @Test
     void freshProvision_writeEnvFile_omitsPasswordAndUrl_butFileCarriesThem() {
         given(Result.lift(() -> Files.writeString(functions, functionsBeforeMainFlow())).mapToUnit());
-        var execution = executed(runCommand("f=$1; s=$2; set --; source \"$f\"; write_env_file 42 192.0.2.10 \"$s\"", functions.toString(), SECRET));
+        var execution = executed(runCommand("f=$1; s=$2; set --; source \"$f\"; write_env_file 42 192.0.2.10 \"$s\"",
+                                            functions.toString(),
+                                            SECRET));
 
         assertThat(execution.exitCode()).as(execution.output()).isZero();
-        assertThat(execution.output()).doesNotContain(SECRET)
-                  .doesNotContain("PG_PASSWORD=")
-                  .doesNotContain("PG_URL=")
-                  .contains("export PG_HOST=192.0.2.10")
+        assertNoCredentials(execution.output());
+        assertThat(execution.output()).contains("export PG_HOST=192.0.2.10")
                   .contains("export PG_USER=aether")
                   .contains("export PG_DB=aether_forge");
         assertThat(fileContent()).contains("export PG_PASSWORD=" + SECRET)
@@ -129,8 +140,13 @@ class ProvisionTestPgOutputTest {
     @Test
     void envFile_staysIntactAndSourceable() {
         executed(runScript("--print-only"));
-
         assertThat(fileContent()).isEqualTo(ENV_BODY);
+    }
+
+    private static void assertNoCredentials(String output) {
+        assertThat(output).doesNotContain(SECRET)
+                  .doesNotContain("PG_PASSWORD=")
+                  .doesNotContain("PG_URL=");
     }
 
     private String fileContent() {
@@ -138,8 +154,7 @@ class ProvisionTestPgOutputTest {
     }
 
     private String functionsBeforeMainFlow() {
-        var script = Result.lift(() -> Files.readString(ScriptRunner.repoRoot().resolve("tools/provision-test-pg.sh")))
-                           .or("");
+        var script = Result.lift(() -> Files.readString(ScriptRunner.repoRoot().resolve("tools/provision-test-pg.sh"))).or("");
 
         return script.substring(0, script.indexOf(MAIN_FLOW));
     }
@@ -152,6 +167,7 @@ class ProvisionTestPgOutputTest {
         environment.put("HCLOUD_TOKEN", "stub-token-not-real");
         environment.put("AETHER_SSH_KEY", "/nonexistent/key");
         environment.put("PG_ENV_FILE", envFile.toString());
+
         return environment;
     }
 
