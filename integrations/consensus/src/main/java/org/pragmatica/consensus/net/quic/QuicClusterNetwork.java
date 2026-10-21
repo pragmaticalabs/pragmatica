@@ -2787,7 +2787,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private boolean dialedByThisNode(QuicPeerConnection connection) {
-        return connection.initiator().filter(self.id()::equals).isPresent();
+        return connection.initiator()
+                         .filter(self.id()::equals)
+                         .isPresent();
     }
 
     /// Package-private test seam (#2138) — the eviction a closed bound connection triggers.
@@ -2798,7 +2800,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Package-private test seam (#2138) — datagram sockets the dial client currently holds.
     int datagramChannelCountForTests() {
-        return Option.option(client).map(QuicClusterClient::datagramChannelCount).or(0);
+        return Option.option(client)
+                     .map(QuicClusterClient::datagramChannelCount)
+                     .or(0);
     }
 
     private void onChannelClosed(NodeId peerId, QuicPeerConnection closed) {
