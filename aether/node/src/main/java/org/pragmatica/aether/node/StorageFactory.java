@@ -1405,13 +1405,25 @@ public final class StorageFactory {
         return dhtClient.fold(() -> new TierBuild.SharedBuild(Option.empty(), Option.empty()),
                               client -> {
                                   var readGate = Promise.<Unit> promise();
-                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix, name, readGate);
+                                  var dht = DhtStorageTier.dhtStorageTier(client,
+                                                                          dhtKeyPrefix,
+                                                                          name,
+                                                                          readGate,
+                                                                          addressingFor(keyring));
                                   var tier = keyring.<StorageTier> fold(() -> dht,
                                                                         ring -> EncryptingStorageTier.wrap(dht, ring));
                                   var check = new DhtMarkerCheck(name, dhtKeyPrefix, keyring, readGate);
 
                                   return new TierBuild.SharedBuild(Option.some(tier), Option.some(check));
                               });
+    }
+
+    /// A6: plaintext DHT values ARE the block content, so their reads take the verified single-replica path;
+    /// ciphertext under a keyring hashes to nothing the block id names, and its wrapper authenticates it instead.
+    private static DhtStorageTier.Addressing addressingFor(Option<EncryptionKeyring> keyring) {
+        return keyring.isEmpty()
+               ? DhtStorageTier.Addressing.CONTENT
+               : DhtStorageTier.Addressing.OPAQUE;
     }
 
     /// #858: runs post-formation (`AetherNode.start()`, via [#verifyDhtMarkers]) -- replaces the

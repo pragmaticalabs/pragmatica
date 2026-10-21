@@ -41,16 +41,33 @@ public final class MemoryStorageEngine implements StorageEngine {
     private static final byte[] NO_VALUE = new byte[0];
 
     /// A stored entry: a live value, or a TOMBSTONE (#1777 track 3) — a removed key, ordered exactly like a value
-    /// so it supersedes every older copy and loses to every newer write.
+    /// so it supersedes every older copy and loses to every newer write. `valueCrc` is the value's CRC32, computed
+    /// once when the entry is created, so a repair digest reads stamps and never values (A6).
     private record VersionedEntry(byte[] value,
                                   long version,
                                   long epochIncarnation,
                                   long epochTerm,
                                   long epochCounter,
-                                  boolean tombstone) {
+                                  boolean tombstone,
+                                  long valueCrc) {
         boolean live() {
             return ! tombstone;
         }
+    }
+
+    private static VersionedEntry versionedEntry(byte[] value,
+                                                 long version,
+                                                 long epochIncarnation,
+                                                 long epochTerm,
+                                                 long epochCounter,
+                                                 boolean tombstone) {
+        return new VersionedEntry(value,
+                                  version,
+                                  epochIncarnation,
+                                  epochTerm,
+                                  epochCounter,
+                                  tombstone,
+                                  KeyStamp.crcOf(value));
     }
 
     private final ConcurrentHashMap<ByteArrayKey, VersionedEntry> data = new ConcurrentHashMap<>();
@@ -89,7 +106,7 @@ public final class MemoryStorageEngine implements StorageEngine {
 
     @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
-        data.put(new ByteArrayKey(key), new VersionedEntry(value.clone(), 0L, 0L, 0L, 0L, false));
+        data.put(new ByteArrayKey(key), versionedEntry(value.clone(), 0L, 0L, 0L, 0L, false));
 
         return Promise.success(Unit.unit());
     }
@@ -106,12 +123,12 @@ public final class MemoryStorageEngine implements StorageEngine {
         }
 
         return Promise.success(storeVersioned(key,
-                                              new VersionedEntry(value.clone(),
-                                                                 version,
-                                                                 epochIncarnation,
-                                                                 epochTerm,
-                                                                 epochCounter,
-                                                                 false),
+                                              versionedEntry(value.clone(),
+                                                             version,
+                                                             epochIncarnation,
+                                                             epochTerm,
+                                                             epochCounter,
+                                                             false),
                                               true,
                                               true,
                                               new AtomicBoolean(),
@@ -126,12 +143,7 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                      long epochTerm,
                                                      long epochCounter) {
         return writeDisplacing(key,
-                               new VersionedEntry(value.clone(),
-                                                  version,
-                                                  epochIncarnation,
-                                                  epochTerm,
-                                                  epochCounter,
-                                                  false));
+                               versionedEntry(value.clone(), version, epochIncarnation, epochTerm, epochCounter, false));
     }
 
     @Override
@@ -140,8 +152,7 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                         long epochIncarnation,
                                                         long epochTerm,
                                                         long epochCounter) {
-        return writeDisplacing(key,
-                               new VersionedEntry(NO_VALUE, version, epochIncarnation, epochTerm, epochCounter, true));
+        return writeDisplacing(key, versionedEntry(NO_VALUE, version, epochIncarnation, epochTerm, epochCounter, true));
     }
 
     private Promise<Displaced> writeDisplacing(byte[] key, VersionedEntry incoming) {
@@ -174,12 +185,7 @@ public final class MemoryStorageEngine implements StorageEngine {
 
         var supersededLive = new AtomicBoolean();
         var written = storeVersioned(key,
-                                     new VersionedEntry(NO_VALUE,
-                                                        version,
-                                                        epochIncarnation,
-                                                        epochTerm,
-                                                        epochCounter,
-                                                        true),
+                                     versionedEntry(NO_VALUE, version, epochIncarnation, epochTerm, epochCounter, true),
                                      true,
                                      true,
                                      supersededLive,
@@ -196,12 +202,12 @@ public final class MemoryStorageEngine implements StorageEngine {
                                        long epochTerm,
                                        long epochCounter) {
         return Promise.success(storeVersioned(key,
-                                              new VersionedEntry(value.clone(),
-                                                                 version,
-                                                                 epochIncarnation,
-                                                                 epochTerm,
-                                                                 epochCounter,
-                                                                 false),
+                                              versionedEntry(value.clone(),
+                                                             version,
+                                                             epochIncarnation,
+                                                             epochTerm,
+                                                             epochCounter,
+                                                             false),
                                               false,
                                               true,
                                               new AtomicBoolean(),
@@ -211,14 +217,14 @@ public final class MemoryStorageEngine implements StorageEngine {
     @Override
     public Promise<Boolean> putReplica(DHTMessage.KeyValue entry, boolean createIfAbsent) {
         return Promise.success(storeVersioned(entry.key(),
-                                              new VersionedEntry(entry.tombstone()
-                                                                 ? NO_VALUE
-                                                                 : entry.value().clone(),
-                                                                 entry.version(),
-                                                                 entry.epochIncarnation(),
-                                                                 entry.epochTerm(),
-                                                                 entry.epochCounter(),
-                                                                 entry.tombstone()),
+                                              versionedEntry(entry.tombstone()
+                                                             ? NO_VALUE
+                                                             : entry.value().clone(),
+                                                             entry.version(),
+                                                             entry.epochIncarnation(),
+                                                             entry.epochTerm(),
+                                                             entry.epochCounter(),
+                                                             entry.tombstone()),
                                               false,
                                               createIfAbsent,
                                               new AtomicBoolean(),
@@ -333,14 +339,14 @@ public final class MemoryStorageEngine implements StorageEngine {
         restored.set(true);
 
         return prior.fold(() -> null,
-                          entry -> new VersionedEntry(entry.tombstone()
-                                                      ? NO_VALUE
-                                                      : entry.value().clone(),
-                                                      entry.version(),
-                                                      entry.epochIncarnation(),
-                                                      entry.epochTerm(),
-                                                      entry.epochCounter(),
-                                                      entry.tombstone()));
+                          entry -> versionedEntry(entry.tombstone()
+                                                  ? NO_VALUE
+                                                  : entry.value().clone(),
+                                                  entry.version(),
+                                                  entry.epochIncarnation(),
+                                                  entry.epochTerm(),
+                                                  entry.epochCounter(),
+                                                  entry.tombstone()));
     }
 
     @Override
@@ -539,6 +545,37 @@ public final class MemoryStorageEngine implements StorageEngine {
                                                             partition))
                                    .map(MemoryStorageEngine::toKeyValue)
                                    .toList());
+    }
+
+    /// Stamps from the index beside the values: no value is read or copied (A6).
+    @Override
+    public Promise<List<KeyStamp>> stampsForPartition(ConsistentHashRing<?> ring, Partition partition) {
+        return Promise.success(data.entrySet()
+                                   .stream()
+                                   .filter(e -> inPartition(ring,
+                                                            e.getKey(),
+                                                            partition))
+                                   .map(MemoryStorageEngine::toKeyStamp)
+                                   .toList());
+    }
+
+    /// Stamps from the index beside the values: no value is read or copied (A6).
+    @Override
+    public Promise<List<KeyStamp>> stamps() {
+        return Promise.success(data.entrySet().stream().map(MemoryStorageEngine::toKeyStamp).toList());
+    }
+
+    private static KeyStamp toKeyStamp(Map.Entry<ByteArrayKey, VersionedEntry> e) {
+        var entry = e.getValue();
+
+        return new KeyStamp(e.getKey().data(),
+                            entry.version(),
+                            entry.epochIncarnation(),
+                            entry.epochTerm(),
+                            entry.epochCounter(),
+                            entry.tombstone(),
+                            entry.valueCrc(),
+                            entry.value().length);
     }
 
     private static DHTMessage.KeyValue toKeyValue(Map.Entry<ByteArrayKey, VersionedEntry> e) {

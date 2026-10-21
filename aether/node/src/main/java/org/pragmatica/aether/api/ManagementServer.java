@@ -820,6 +820,36 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.dht.strays.purged.partitions", dhtGauge(DHTNode::purgedStrayPartitionCount));
         observability.gauge("aether.dht.gc.unagreed.partitions",
                             dhtGauge(node -> node.unagreedPartitions(agreementWindow)));
+        registerDhtRepairMetrics();
+    }
+
+    /// A6, the DHT repair plane: the repair deficit — partitions this node replicates that are catching up or
+    /// diverged and not yet repaired, where a further loss can lose entries; the repair pages and bytes sent; and
+    /// the verified single-replica reads that moved past a replica, found a corrupt copy, or fell back to the
+    /// quorum. Legacy peers and exchanges are non-zero only during a rolling upgrade.
+    private void registerDhtRepairMetrics() {
+        observability.gauge("aether.dht.repair.deficit.partitions", dhtGauge(DHTNode::repairDeficitPartitions));
+        observability.gauge("aether.dht.repair.pages.sent",
+                            dhtGauge(node -> node.repair()
+                                                 .pagesSent()));
+        observability.gauge("aether.dht.repair.bytes.sent",
+                            dhtGauge(node -> node.repair()
+                                                 .pageBytesSent()));
+        observability.gauge("aether.dht.repair.legacy.peers",
+                            dhtGauge(node -> node.repair()
+                                                 .legacyPeerCount()));
+        observability.gauge("aether.dht.repair.legacy.exchanges",
+                            dhtGauge(node -> node.repair()
+                                                 .legacyExchanges()));
+        observability.gauge("aether.dht.read.verified.fallbacks",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadFallbacks()));
+        observability.gauge("aether.dht.read.verified.mismatches",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadMismatches()));
+        observability.gauge("aether.dht.read.verified.quorum.fallbacks",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadQuorumFallbacks()));
     }
 
     private Supplier<Number> dhtGauge(org.pragmatica.lang.Functions.Fn1<Number, DHTNode> reading) {
