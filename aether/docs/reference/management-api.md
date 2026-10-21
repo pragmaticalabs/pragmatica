@@ -6578,11 +6578,30 @@ The `max_request_size` field accepts human-readable data size values:
 | `MB` | `"5MB"` | 5,242,880 |
 | `GB` | `"1GB"` | 1,073,741,824 |
 
-Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`.
+Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike. A plain integer is read as a byte count. A request forwarded to the node serving its route must also fit one cluster frame (32 MiB less a 64 KiB reserve); a larger one receives `413` with a detail saying it is too large to forward, and is not sent.
+
+#### Read timeout and minimum body rate
+
+```toml
+[app-http]
+read_timeout = "60s"     # Default: 60s. Zero disables.
+min_body_rate = "1KB"    # Bytes per second. Default: 1KB. Zero disables.
+```
+
+Both bounds apply the same way over HTTP/1.1 and HTTP/3.
+
+- `read_timeout` is an idle bound: a request that receives no body byte for this long is refused. Over HTTP/1.1, a connection that is silent for this long while no response is pending (a stalled body, an idle keep-alive connection) is closed. Over HTTP/3, a request stream whose body is silent this long receives `408 Request Timeout` and its input is reset. Upgraded WebSocket connections are exempt.
+- `min_body_rate` bounds a client that trickles just inside the idle bound. After a 10 s grace from the start of the request, the body's bytes are averaged over each 10 s window. A body arriving below the rate is refused: over HTTP/1.1 the connection is closed, and over HTTP/3 the request receives `408` and its stream input is reset. A slow upload above the rate completes however long it takes.
+
+#### Request trailers
+
+Request trailers (an HTTP/1.1 chunked trailer section, or an HTTP/3 HEADERS frame after the body) are accepted but not delivered to the handler, over HTTP/1.1 and HTTP/3 alike: a request exposes only its headers and body. A request-trailers API is tracked as #2310.
 
 ### Multipart File Upload
 
 The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
+
+A multipart route answers `415 Unsupported Media Type` when the request's Content-Type is not `multipart/form-data` (matched case-insensitively), and `400 Bad Request` when the body is malformed: no `boundary` parameter, no closing boundary delimiter (a truncated body), more than 128 parts, or a part the decoder cannot read. The ProblemDetail `detail` is a fixed description, never decoder internals. A filename-less part with a Content-Type other than `text/plain` is delivered as a file with an empty filename. A repeated field name keeps every value: `MultipartRequest.fieldValues(name)` returns them in body order, and `field(name)` returns the first.
 
 ### Voter reconfiguration diagnostics
 

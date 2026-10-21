@@ -38,6 +38,30 @@ public interface DHTClient {
     /// @return the value if found, or empty if not present on any replica
     Promise<Option<byte[]>> get(byte[] key);
 
+    /// Get a CONTENT-ADDRESSED value (A6): one whose bytes hash to `sha256` by SHA-256, so any copy that hashes
+    /// right is the value. For keyspaces where that holds by construction only — AHSE blocks, keyed by the
+    /// SHA-256 of their content. Ordinary keys use [#get(byte[])] and its quorum read.
+    ///
+    /// Because a verified copy cannot be stale, a single replica answers: an implementation may read one replica
+    /// and move to the next on a miss or a hash mismatch, instead of reading a quorum, and never returns a copy
+    /// that fails the hash check. This default is the plain quorum [#get(byte[])], unverified, for clients with no
+    /// single-replica path (test doubles); [DistributedDHTClient] overrides it.
+    ///
+    /// @param key    the key to look up
+    /// @param sha256 the SHA-256 digest the value's bytes must hash to
+    /// @return the verified value, or empty if no replica holds it
+    default Promise<Option<byte[]>> getContentAddressed(byte[] key, byte[] sha256) {
+        return get(key);
+    }
+
+    /// Whether a CONTENT-ADDRESSED value exists (A6, D5), answered by the same path as
+    /// [#getContentAddressed(byte[], byte[])] so the two agree: positive exactly when a verified copy would be returned.
+    /// This default is the plain quorum [#exists(byte[])], for clients with no single-replica path (test doubles);
+    /// [DistributedDHTClient] overrides it.
+    default Promise<Boolean> existsContentAddressed(byte[] key, byte[] sha256) {
+        return exists(key);
+    }
+
     /// Get a value by string key.
     default Promise<Option<byte[]>> get(String key) {
         return get(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));

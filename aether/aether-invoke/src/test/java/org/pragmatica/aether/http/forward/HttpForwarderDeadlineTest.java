@@ -91,9 +91,12 @@ class HttpForwarderDeadlineTest {
 
         assertThat(result.isFailure()).isTrue();
 
+        // The budget exhaustion is the origin; the client-facing cause says nothing left this node (know 14a3606152).
+        String origin = result.fold(cause -> cause.source().map(Cause::message).or("no origin"), _ -> "unexpectedly succeeded");
         String cause = result.fold(Cause::message, _ -> "unexpectedly succeeded");
 
-        assertThat(cause).contains("budget exhausted");
+        assertThat(origin).contains("budget exhausted");
+        assertThat(cause).contains("nothing was applied; safe to retry");
         assertThat(network.sentMessages()).as("an exhausted budget must not start a hop").isEmpty();
     }
 

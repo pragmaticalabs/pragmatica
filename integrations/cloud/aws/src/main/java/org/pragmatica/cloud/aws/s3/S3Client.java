@@ -16,8 +16,11 @@
  */
 package org.pragmatica.cloud.aws.s3;
 
+import java.time.Duration;
 import java.util.List;
 
+import org.pragmatica.cloud.aws.AwsCredentials;
+import org.pragmatica.cloud.aws.AwsCredentialsProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Option;
@@ -31,9 +34,10 @@ import org.pragmatica.lang.Unit;
 public interface S3Client {
     /// Stores an object in the bucket.
     Promise<Unit> putObject(String key, byte[] content, String contentType);
-    /// Retrieves an object from the bucket. Returns None if not found.
+    /// Retrieves an object from the bucket. Returns None only if the object is not found (404); any other
+    /// failure, including the provider being unavailable, fails the promise.
     Promise<Option<byte[]>> getObject(String key);
-    /// Checks whether an object exists in the bucket.
+    /// Checks whether an object exists in the bucket: false only on a 404, any other failure fails the promise.
     Promise<Boolean> headObject(String key);
     /// Deletes an object from the bucket.
     Promise<Unit> deleteObject(String key);
@@ -47,6 +51,19 @@ public interface S3Client {
 
     /// Creates an S3Client with custom HTTP operations (for testing).
     static S3Client s3Client(S3Config config, HttpOperations http) {
-        return new RestS3Client(config, http);
+        return s3Client(config,
+                        http,
+                        AwsCredentialsProvider.staticCredentials(AwsCredentials.awsCredentials(config.accessKeyId(),
+                                                                                               config.secretAccessKey())),
+                        Option.none());
+    }
+
+    /// Creates an S3Client that signs with what `credentials` answers per request (the static keys in
+    /// `config` are not read) and bounds each HTTP exchange by `requestTimeout` when present.
+    static S3Client s3Client(S3Config config,
+                             HttpOperations http,
+                             AwsCredentialsProvider credentials,
+                             Option<Duration> requestTimeout) {
+        return new RestS3Client(config, http, credentials, requestTimeout);
     }
 }
