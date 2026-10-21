@@ -356,6 +356,19 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aJoinAfterTheCommitWasAccepted_decidesAfresh_notBlockedByTheOldFlight() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.joinAll(1);
+        fixture.removeDirective(1);
+        var afterTheFirst = fixture.cluster().applies.get();
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("the accepted commit ended the flight: the rejoin within 30 s is a decision of its own").isEqualTo(afterTheFirst + 1);
+        assertThat(fixture.hasDirective(1)).isTrue();
+    }
+
+    @Test
     void join_growthOn_aCommitThatNeverReachedConsensus_endsTheFlight_soTheWorkersNextJoinDecides() {
         var fixture = fixture(config(true, 2, 5));
 
@@ -566,6 +579,14 @@ class ClusterDeploymentStateCommunityGrowthTest {
 
             kvStore.put(CommunityKey.communityKey(id),
                         current.withState(current.state() == CommunityState.FORMING ? CommunityState.DEGRADED : CommunityState.FORMING));
+        }
+
+        void removeDirective(int number) {
+            var key = ActivationDirectiveKey.activationDirectiveKey(worker(number));
+            var authority = kvStore.getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, java.util.UUID.randomUUID().toString(), authority, List.of(),
+                List.of(new KVCommand.Mutation<>(key, kvStore.get(key), Option.none()))))));
         }
 
         void leave(int number) {

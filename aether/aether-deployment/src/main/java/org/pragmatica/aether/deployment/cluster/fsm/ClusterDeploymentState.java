@@ -1438,6 +1438,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void confirmPlaced(NodeId node) {
+            ctx.communityAdmission().settled(node);
             if (ctx.communityAdmission().placed(node)) {
                 OperatorWarnings.raise(log,
                                        ctx.operatorWarnings(),
