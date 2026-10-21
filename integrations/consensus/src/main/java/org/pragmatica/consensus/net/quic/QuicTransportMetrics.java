@@ -99,6 +99,9 @@ public final class QuicTransportMetrics {
     /// drain-before-close is worth building.
     private final LongAdder supersededCloses = new LongAdder();
     private final LongAdder supersededLaneStreamsAtRisk = new LongAdder();
+    /// #2030: how the drain of a dual-dial loser ended — every lane flushed, or the bound passed first.
+    private final LongAdder loserDrainsFlushed = new LongAdder();
+    private final LongAdder loserDrainsBoundHit = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -250,6 +253,22 @@ public final class QuicTransportMetrics {
         supersededLaneStreamsAtRisk.add(lanesAtRisk);
     }
 
+    /// #2030: a drained loser closed; `flushed` is true when every lane had closed, false when the bound passed first.
+    @Contract
+    public void onLoserDrainEnded(boolean flushed) {
+        (flushed
+         ? loserDrainsFlushed
+         : loserDrainsBoundHit).increment();
+    }
+
+    public long loserDrainsFlushedCount() {
+        return loserDrainsFlushed.sum();
+    }
+
+    public long loserDrainsBoundHitCount() {
+        return loserDrainsBoundHit.sum();
+    }
+
     public long supersededCloseCount() {
         return supersededCloses.sum();
     }
@@ -332,6 +351,8 @@ public final class QuicTransportMetrics {
         // #1727: superseded closes and the lane streams they put at risk (unflushed or written in the last 2 s).
         metrics.put("quic_superseded_closes_total", supersededCloses.sum());
         metrics.put("quic_superseded_lane_streams_at_risk_total", supersededLaneStreamsAtRisk.sum());
+        metrics.put("quic_loser_drains_flushed_total", loserDrainsFlushed.sum());
+        metrics.put("quic_loser_drains_bound_hit_total", loserDrainsBoundHit.sum());
 
         return Map.copyOf(metrics);
     }
