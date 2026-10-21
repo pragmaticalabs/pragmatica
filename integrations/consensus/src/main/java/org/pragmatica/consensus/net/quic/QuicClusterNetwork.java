@@ -1010,6 +1010,35 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// The new connection lost the arbitration. When the incumbent was dialed by the other end this is the dual-dial
+    /// race: the peer may already have written on the loser, so it drains like [#closeSupersededConnection] (#2030).
+    private void closeDuplicate(QuicPeerConnection loser, PeerState state) {
+        var kept = state.activeConnection();
+
+        kept.onPresent(survivor -> observeSupersede(loser, survivor));
+        if (kept.filter(survivor -> isDualDialLoser(loser, survivor)).isPresent()) {
+            drainLoser(loser);
+        } else {
+            loser.close();
+        }
+    }
+
+    /// #2030: finish the loser's lanes and close it when they have flushed or the bound passes; how it ended is
+    /// counted and logged so the bound can be tuned from the field.
+    private void drainLoser(QuicPeerConnection loser) {
+        loser.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS, end -> recordDrainEnd(loser, end));
+    }
+
+    @Contract
+    private void recordDrainEnd(QuicPeerConnection loser, QuicPeerConnection.DrainEnd end) {
+        quicMetrics.onLoserDrainEnded(end == QuicPeerConnection.DrainEnd.FLUSHED);
+        log.info("Dual-dial loser to peer {} closed: {}",
+                 loser.peerId(),
+                 end == QuicPeerConnection.DrainEnd.FLUSHED
+                 ? "every lane flushed"
+                 : "drain bound of " + QuicPeerConnection.DRAIN_BOUND_MS + " ms reached with lanes still open");
+    }
+
     private void closeDroppedConnection(QuicPeerConnection connection) {
         connection.close()
                   .onFailure(cause -> log.warn("Failed to close dropped connection for peer {}: {}",
@@ -1022,28 +1051,52 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void closeSupersededConnection(QuicPeerConnection superseded, QuicPeerConnection replacement) {
         observeSupersede(superseded, replacement);
         quicMetrics.onConnectionClosed();
-        closeDroppedConnection(superseded);
+        if (isDualDialLoser(superseded, replacement)) {
+            // #2030 shape 2: both peers are alive and dialed each other, so the loser still carries frames the peer
+            // is reading; let what is written on it flush before it closes. Shape 1 (the same dialer re-dialed over a
+            // link it judged dead) keeps the immediate close: its peer has abandoned the link, a drain would only burn
+            // its bound.
+            drainLoser(superseded);
+        } else {
+            closeDroppedConnection(superseded);
+        }
     }
 
-    /// #1727 — what is at risk when a superseded connection is closed at once. The close discards frames
-    /// quiche accepted but the peer has not acked, and there is no public API for acked bytes, so this counts
-    /// what IS observable: lanes with writes not yet accepted by quiche (unflushed) and lanes written within
-    /// [QuicPeerConnection#SUPERSEDE_RISK_WINDOW_NANOS] (possibly unacked). The cloud campaign reads the rate
-    /// from `quic_superseded_lane_streams_at_risk_total` to decide whether a drain-before-close is needed.
+    /// What becomes of the loser, for the supersede log line.
+    static String closeDisposition(QuicPeerConnection loser, QuicPeerConnection winner) {
+        return isDualDialLoser(loser, winner)
+               ? "draining before close"
+               : "closing at once, writes not yet delivered are discarded";
+    }
+
+    /// The two links were dialed by different ends — the dual-dial race — as opposed to one end re-dialing.
+    static boolean isDualDialLoser(QuicPeerConnection loser, QuicPeerConnection winner) {
+        return loser.initiator()
+                    .flatMap(old -> winner.initiator()
+                                          .map(current -> !old.equals(current)))
+                    .or(false);
+    }
+
+    /// #1727 — what a superseded or duplicate connection holds when its arbitration is decided: frames quiche
+    /// accepted but the peer has not acked. There is no public API for acked bytes, so this counts what IS observable:
+    /// lanes with writes not yet accepted by quiche (unflushed) and lanes written within
+    /// [QuicPeerConnection#SUPERSEDE_RISK_WINDOW_NANOS] (possibly unacked). An immediate close discards them; the
+    /// loser of a dual dial is drained instead (#2030), so for it the figure is what the drain has to flush.
+    /// `quic_superseded_lane_streams_at_risk_total` accumulates it for both shapes.
     @Contract
     private void observeSupersede(QuicPeerConnection superseded, QuicPeerConnection replacement) {
         var risk = superseded.laneWritesAtRisk(System.nanoTime());
 
         quicMetrics.onSupersededClose(risk.lanesAtRisk());
-        log.info("Superseding connection to peer {} ({}): {} lane stream(s) with writes at risk of being discarded"
-                + " by the immediate close — {} with unflushed writes, {} written within {} ms (unacked writes are"
-                + " not observable)",
+        log.info("Superseding connection to peer {} ({}): {} lane stream(s) with unflushed or recent writes — {} with"
+                + " unflushed writes, {} written within {} ms (unacked writes are not observable); {}",
                  superseded.peerId(),
                  supersedeShape(superseded, replacement),
                  risk.lanesAtRisk(),
                  risk.unflushedLanes(),
                  risk.recentLanes(),
-                 TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS));
+                 TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS),
+                 closeDisposition(superseded, replacement));
     }
 
     /// Same dialer on both connections = the designated dialer re-dialed (same-direction re-dial); different
@@ -1834,7 +1887,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             }
             case PeerState.AttachResult.DUPLICATE -> {
                 log.debug("Duplicate connection from {}, closing new (existing is active)", peerId);
-                connection.close();
+                closeDuplicate(connection, state);
 
                 return;
             }

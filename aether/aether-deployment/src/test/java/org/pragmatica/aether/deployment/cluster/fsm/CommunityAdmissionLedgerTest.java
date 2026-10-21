@@ -17,6 +17,22 @@ class CommunityAdmissionLedgerTest {
     private static final NodeId C = new NodeId("c");
 
     @Test
+    void inFlight_holdsForExactly30Seconds_andNotForAnUnknownOrSettledNode() {
+        var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
+
+        ledger.register(A, "eu-w-0", 1_000L);
+
+        assertThat(ledger.inFlight(A, 1_000L)).isTrue();
+        assertThat(ledger.inFlight(A, 31_000L)).as("30 s after the decision is still in flight").isTrue();
+        assertThat(ledger.inFlight(A, 31_001L)).as("one millisecond later it is not").isFalse();
+        assertThat(ledger.inFlight(B, 1_000L)).isFalse();
+        ledger.register(C, "eu-w-0", 1_000L);
+        ledger.settled(C);
+        assertThat(ledger.inFlight(C, 1_000L)).as("a settled assignment is not in flight").isFalse();
+        assertThat(ledger.isRecent(C, 1_000L)).as("but the worker still counts as just placed").isTrue();
+    }
+
+    @Test
     void pendingByCommunity_countsInFlightAssignmentsPerCommunity() {
         var ledger = CommunityAdmissionLedger.communityAdmissionLedger();
 

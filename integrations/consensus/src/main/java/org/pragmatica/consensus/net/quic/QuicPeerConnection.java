@@ -16,12 +16,14 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.BooleanSupplier;
@@ -568,6 +570,94 @@ public final class QuicPeerConnection {
     /// Check if the underlying QUIC connection is active.
     public boolean isActive() {
         return connection.isActive();
+    }
+
+    /// #2030 — how long [#closeAfterDrain] waits for the lane streams to finish before it closes anyway.
+    static final long DRAIN_BOUND_MS = 2_000;
+
+    /// #2030 — close the LOSER of a dual-dial race without discarding what is already written on it. The peer is alive
+    /// (it dialed us at the same time), so each lane stream is finished with the end marker, which queues behind every
+    /// write already on the stream, and the connection is closed once every lane stream has closed — the peer finishes
+    /// its half when it reads the marker — or after [#DRAIN_BOUND_MS], whichever comes first. Nothing new is written
+    /// here: the connection is already unbound, so the transport routes new frames over the surviving link. A
+    /// connection with no event loop (unit fixtures) or no live stream is closed at once.
+    @Contract
+    void closeAfterDrain(long boundMs, Consumer<DrainEnd> onEnded) {
+        var loop = connection.eventLoop();
+        var open = openLaneStreams();
+
+        Option.option(activityKick).onPresent(QuicActivityKick::stop);
+        if (loop == null || open.isEmpty() || !connection.isActive()) {
+            closeAsync();
+
+            return;
+        }
+
+        var remaining = new AtomicInteger(open.size());
+        var closed = new AtomicBoolean();
+        Consumer<DrainEnd> endWith = end -> {
+            if (closed.compareAndSet(false, true)) {
+                closeAsync();
+                onEnded.accept(end);
+            }
+        };
+
+        if (!scheduleBound(loop, () -> endWith.accept(DrainEnd.BOUND_HIT), boundMs)) {
+            // The loop is terminating (the group is shutting down mid-supersede): nothing can run the drain, and Netty
+            // is closing the channel anyway. Close here rather than let the rejection escape into the arbitration.
+            closeAsync();
+
+            return;
+        }
+
+        open.forEach(stream -> finishLane(stream, remaining, () -> endWith.accept(DrainEnd.FLUSHED)));
+    }
+
+    /// How a drain ended: every lane stream had closed, or the bound passed first.
+    enum DrainEnd {
+        FLUSHED,
+        BOUND_HIT
+    }
+
+    /// Whether the bound timer could be armed; false when the event loop no longer accepts tasks.
+    @Contract
+    @SuppressWarnings("JBCT-EX-03")  // Netty boundary: a terminated loop rejects with an exception
+    private static boolean scheduleBound(io.netty.channel.EventLoop loop, Runnable bound, long boundMs) {
+        try {
+            loop.schedule(bound, boundMs, TimeUnit.MILLISECONDS);
+
+            return true;
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            return false;
+        }
+    }
+
+    private void finishLane(QuicStreamChannel stream, AtomicInteger remaining, Runnable closeOnce) {
+        stream.closeFuture().addListener(_ -> closeWhenLast(remaining, closeOnce));
+        var _ = stream.writeAndFlush(laneEndFrame());
+    }
+
+    private static void closeWhenLast(AtomicInteger remaining, Runnable closeOnce) {
+        if (remaining.decrementAndGet() == 0) {
+            closeOnce.run();
+        }
+    }
+
+    private List<QuicStreamChannel> openLaneStreams() {
+        var open = new ArrayList<QuicStreamChannel>();
+
+        for (var stream : longLivedStreams) {
+            if (stream != null && stream.isActive()) {
+                open.add(stream);
+            }
+        }
+
+        return open;
+    }
+
+    @Contract
+    private void closeAsync() {
+        var _ = connection.close();
     }
 
     /// Close all streams and the underlying connection.

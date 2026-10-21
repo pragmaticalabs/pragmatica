@@ -39,9 +39,13 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending,
     public static final long PENDING_TTL_MS = 30_000L;
     public static final long JOIN_GRACE_MS = 60_000L;
 
-    public record Pending(String communityId, long atMs) {
+    public record Pending(String communityId, long atMs, boolean settled) {
         public static Pending pending(String communityId, long atMs) {
-            return new Pending(communityId, atMs);
+            return new Pending(communityId, atMs, false);
+        }
+
+        Pending settle() {
+            return new Pending(communityId, atMs, true);
         }
     }
 
@@ -55,6 +59,28 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending,
     @Contract
     public void register(NodeId node, String communityId, long nowMs) {
         pending.put(node, Pending.pending(communityId, nowMs));
+    }
+
+    /// Runs `decision` with no other decision running on this ledger: read the shared state, decide and register as one step.
+    @Contract
+    public void serialized(Runnable decision) {
+        synchronized (this) {
+            decision.run();
+        }
+    }
+
+    /// Whether `node` has an assignment the leader decided less than [#PENDING_TTL_MS] ago: a duplicate of its join has nothing to decide.
+    public boolean inFlight(NodeId node, long nowMs) {
+        return Option.option(pending.get(node))
+                     .filter(entry -> !entry.settled() && nowMs - entry.atMs() <= PENDING_TTL_MS)
+                     .isPresent();
+    }
+
+    /// The commit of `node`'s assignment was accepted: it is no longer in flight, so a later join of the same node decides afresh. The
+    /// entry stays, because the worker still counts as live for [#JOIN_GRACE_MS] and its slot still counts until its directive is visible.
+    @Contract
+    public void settled(NodeId node) {
+        pending.computeIfPresent(node, (_, entry) -> entry.settle());
     }
 
     /// Ends the in-flight assignment of `node`: its commit was refused or lost, so it holds no slot, and a retry of the same node must not
@@ -105,10 +131,11 @@ public record CommunityAdmissionLedger(ConcurrentMap<NodeId, Pending> pending,
         return refusals.merge(node, 1, Integer::sum);
     }
 
-    /// The leader gave up on `node` for now: its count restarts, and it is remembered as unplaced so that its placement can be reported.
+    /// The leader gave up on `node` for now: its count restarts, it holds no slot, and it is remembered as unplaced so that its placement can be reported.
     @Contract
     public void giveUp(NodeId node) {
         refusals.remove(node);
+        pending.remove(node);
         unplaced.add(node);
     }
 

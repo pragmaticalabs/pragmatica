@@ -6,8 +6,10 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.CommunityGrowthPolicy;
 import org.pragmatica.aether.deployment.cluster.CommunityGrowthPolicy.Candidate;
@@ -16,6 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
 
@@ -26,16 +29,17 @@ import org.pragmatica.lang.Contract;
 /// is kept until its termination is confirmed does not keep a community full. A joiner assigned a moment ago counts through the
 /// leader's own [CommunityAdmissionLedger] until its directive is visible.
 sealed interface DerivedCommunities {
+    /// The directives of one snapshot of the KV: the live load per community, and every node that snapshot holds a directive for.
+    /// The nodes are the "already visible" test for in-flight assignments, so a directive that lands after the snapshot is counted as in
+    /// flight and never as nothing: reading it from the live store a moment later would drop it from both counts.
+    record Directives(Map<String, Integer> loads, Set<NodeId> visible) {}
+
     static List<Candidate> candidates(ClusterDeploymentContext ctx, String source, long nowMs) {
-        var loads = liveLoads(ctx, nowMs);
-        var pending = ctx.communityAdmission()
-                         .pendingByCommunity(nowMs,
-                                             node -> ctx.kvStore()
-                                                        .get(ActivationDirectiveKey.activationDirectiveKey(node))
-                                                        .isPresent());
+        var directives = directives(ctx, nowMs);
+        var pending = ctx.communityAdmission().pendingByCommunity(nowMs, directives.visible()::contains);
         var found = new ArrayList<Candidate>();
 
-        collect(ctx, source, loads, pending, found);
+        collect(ctx, source, directives.loads(), pending, found);
         addPendingMints(source, pending, found);
 
         return List.copyOf(found);
@@ -84,25 +88,26 @@ sealed interface DerivedCommunities {
         }
     }
 
-    private static Map<String, Integer> liveLoads(ClusterDeploymentContext ctx, long nowMs) {
-        var loads = new HashMap<String, Integer>();
+    private static Directives directives(ClusterDeploymentContext ctx, long nowMs) {
+        var directives = new Directives(new HashMap<>(), new HashSet<>());
 
         ctx.kvStore()
            .forEach(ActivationDirectiveKey.class,
                     ActivationDirectiveValue.class,
-                    (key, directive) -> countIfLive(ctx, nowMs, loads, key, directive));
+                    (key, directive) -> countIfLive(ctx, nowMs, directives, key, directive));
 
-        return loads;
+        return directives;
     }
 
     @Contract
     private static void countIfLive(ClusterDeploymentContext ctx,
                                     long nowMs,
-                                    Map<String, Integer> loads,
+                                    Directives directives,
                                     ActivationDirectiveKey key,
                                     ActivationDirectiveValue directive) {
+        directives.visible().add(key.nodeId());
         if (ctx.communityAdmission().isRecent(key.nodeId(), nowMs) || !ctx.communityLiveness().isAbsent(key.nodeId())) {
-            loads.merge(directive.communityId(), 1, Integer::sum);
+            directives.loads().merge(directive.communityId(), 1, Integer::sum);
         }
     }
 
