@@ -28,6 +28,12 @@ import static org.pragmatica.lang.Unit.unit;
 /// during normal operation, not only on deactivation. Reclaiming scans the table, so it runs from
 /// [#collectHints]/[#processHints] and, when the table is full, from [#recordAccess] at most once per
 /// [#RECLAIM_INTERVAL_MS].
+///
+/// A hint is acted on through [StorageInstance#warm], which fetches the block into the local cache tiers
+/// unless a node-private tier already holds it. (It cannot be `exists` followed by `get`: `exists` on a
+/// cluster-shared tier is true for every block ever written, so that pair never fetched anything.) At most
+/// [PrefetchConfig#maxInFlight] prefetches run at once (an operator key, `prefetch_max_in_flight`); a hint that finds none free is dropped and counted, not queued --
+/// hints go stale in seconds, and a queue would only delay the ones that are still worth acting on.
 final class DefaultPrefetchManager implements PrefetchManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultPrefetchManager.class);
     private static final long RECLAIM_INTERVAL_MS = 1_000L;
@@ -39,6 +45,15 @@ final class DefaultPrefetchManager implements PrefetchManager {
     private final ConcurrentHashMap<String, Long> cooldowns = new ConcurrentHashMap<>();
     private final AtomicLong lastReclaimMillis = new AtomicLong();
     private final AtomicInteger reclaimPasses = new AtomicInteger();
+    private final AtomicInteger inFlight = new AtomicInteger();
+    private final AtomicLong hintsSent = new AtomicLong();
+    private final AtomicLong hintsReceived = new AtomicLong();
+    private final AtomicLong started = new AtomicLong();
+    private final AtomicLong warmed = new AtomicLong();
+    private final AtomicLong droppedCooldown = new AtomicLong();
+    private final AtomicLong droppedInFlight = new AtomicLong();
+    private final AtomicLong droppedUntracked = new AtomicLong();
+    private final AtomicLong droppedDormant = new AtomicLong();
     private volatile boolean active = false;
 
     DefaultPrefetchManager(StorageInstance storage, PrefetchConfig config) {
@@ -77,6 +92,8 @@ final class DefaultPrefetchManager implements PrefetchManager {
 
         if (hasRoomFor(key)) {
             observations.computeIfAbsent(key, _ -> new Observation()).touch(clockMillis.getAsLong());
+        } else {
+            droppedUntracked.incrementAndGet();
         }
     }
 
@@ -115,6 +132,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
         var hints = selectTopHints(snapshotCandidates());
 
         hints.forEach(h -> observations.remove(h.blockIdHex()));
+        hintsSent.addAndGet(hints.size());
 
         return Collections.unmodifiableList(hints);
     }
@@ -131,11 +149,28 @@ final class DefaultPrefetchManager implements PrefetchManager {
     @Contract
     public void processHints(List<PrefetchHint> hints) {
         if (!active) {
+            droppedDormant.addAndGet(hints.size());
+
             return;
         }
 
         reclaimExpired();
+        hintsReceived.addAndGet(hints.size());
         hints.stream().filter(this::aboveThreshold).filter(this::notOnCooldown).forEach(this::attemptPrefetch);
+    }
+
+    @Override
+    public PrefetchStats stats() {
+        return PrefetchStats.prefetchStats(active,
+                                           observations.size(),
+                                           hintsSent.get(),
+                                           hintsReceived.get(),
+                                           started.get(),
+                                           warmed.get(),
+                                           droppedCooldown.get(),
+                                           droppedInFlight.get(),
+                                           droppedUntracked.get(),
+                                           droppedDormant.get());
     }
 
     @Override
@@ -178,7 +213,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     private static PrefetchHint toHint(Candidate candidate) {
-        return PrefetchHint.prefetchHint(candidate.blockIdHex(), candidate.count(), TierLevel.MEMORY.name());
+        return PrefetchHint.prefetchHint(candidate.blockIdHex(), candidate.count());
     }
 
     // --- Hint processing ---
@@ -188,31 +223,50 @@ final class DefaultPrefetchManager implements PrefetchManager {
 
     private boolean notOnCooldown(PrefetchHint hint) {
         var now = clockMillis.getAsLong();
+        var cooledDown = option(cooldowns.get(hint.blockIdHex())).map(lastAttempt -> (now - lastAttempt) >= config.cooldownMs())
+                               .or(true);
 
-        return option(cooldowns.get(hint.blockIdHex())).map(lastAttempt -> (now - lastAttempt) >= config.cooldownMs())
-                     .or(true);
+        if (!cooledDown) {
+            droppedCooldown.incrementAndGet();
+        }
+
+        return cooledDown;
     }
 
     private void attemptPrefetch(PrefetchHint hint) {
-        BlockId.fromHex(hint.blockIdHex()).onSuccess(id -> checkAndFetch(id, hint.blockIdHex()));
+        BlockId.fromHex(hint.blockIdHex()).onSuccess(id -> startIfSlotFree(id, hint.blockIdHex()));
     }
 
-    private void checkAndFetch(BlockId id, String blockIdHex) {
-        storage.exists(id).onSuccess(exists -> initiateIfMissing(exists, id, blockIdHex));
-    }
+    /// The slot is taken before the attempt and given back when it ends, whatever way it ends.
+    private void startIfSlotFree(BlockId id, String blockIdHex) {
+        if (inFlight.incrementAndGet() > config.maxInFlight()) {
+            inFlight.decrementAndGet();
+            droppedInFlight.incrementAndGet();
 
-    private void initiateIfMissing(boolean exists, BlockId id, String blockIdHex) {
-        if (exists) {
             return;
         }
 
         cooldowns.put(blockIdHex, clockMillis.getAsLong());
-        log.debug("Prefetching block {} from remote tier", id);
-        storage.get(id)
-               .onSuccess(opt -> opt.onPresent(_ -> log.debug("Prefetch complete for block {}", id)))
-               .onFailure(cause -> log.debug("Prefetch failed for block {}: {}",
-                                             id,
-                                             cause.message()));
+        started.incrementAndGet();
+        log.debug("Prefetching block {} into the local cache tiers", id);
+        storage.warm(id).withResult(result -> finishPrefetch(result, id));
+    }
+
+    /// FER: a failed prefetch is absorbed (logged at debug) because it costs only a later read of the block from the
+    /// shared tier; the slot is already given back and the cooldown stays, so a dead hint is not retried every round.
+    private void finishPrefetch(Result<Boolean> result, BlockId id) {
+        inFlight.decrementAndGet();
+        result.onSuccess(copied -> countWarmed(copied, id))
+              .onFailure(cause -> log.debug("Prefetch failed for block {}: {}",
+                                            id,
+                                            cause.message()));
+    }
+
+    private void countWarmed(boolean copied, BlockId id) {
+        if (copied) {
+            warmed.incrementAndGet();
+            log.debug("Prefetch complete for block {}", id);
+        }
     }
 
     // --- Test observation ---

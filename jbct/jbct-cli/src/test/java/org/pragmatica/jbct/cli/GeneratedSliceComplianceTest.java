@@ -182,7 +182,7 @@ class GeneratedSliceComplianceTest {
     }
 
     private JbctConfig config() {
-        return ConfigLoader.load(Option.some(tempDir.resolve("hello").resolve("jbct.toml")), Option.none());
+        return ConfigLoader.load(Option.some(tempDir.resolve("hello").resolve("jbct.toml")), Option.none()).unwrap();
     }
 
     private LintContext context(JbctConfig jbctConfig) {

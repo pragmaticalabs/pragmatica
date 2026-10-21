@@ -41,6 +41,21 @@ class CommunityValueTest {
     }
 
     @Nested
+    class Restamping {
+        @Test
+        void withTargetSize_changesOnlyTheTargetSize() {
+            var v = CommunityValue.communityValue("orders", "WORKER", 5, CommunityState.ACTIVE, 1000L, Option.some(2000L));
+
+            assertThat(v.withTargetSize(9)).isEqualTo(CommunityValue.communityValue("orders",
+                                                                                    "WORKER",
+                                                                                    9,
+                                                                                    CommunityState.ACTIVE,
+                                                                                    1000L,
+                                                                                    Option.some(2000L)));
+        }
+    }
+
+    @Nested
     class Canonicalization {
         @Test
         void construct_nullDissolvedAt_normalizesToNone() {

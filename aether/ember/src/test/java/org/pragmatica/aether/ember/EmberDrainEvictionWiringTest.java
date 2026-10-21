@@ -19,16 +19,6 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -39,6 +29,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -64,14 +55,20 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// are the observable. Both are asserted, because the first alone would be satisfied by a loop that
 /// logged and then bailed at its own draining-set check.
 ///
-/// The loop has a SECOND entry: `resumeDrainEvictions`, called from every `reconcile()` tick
-/// (`deployment.reconciliationInterval`, 30s). It reads the same readiness view, so a tick would
-/// eventually log the same line and a purely time-bounded assertion would be a race against it.
-/// `resumeDrainEvictions` logs `Resuming drain evictions for N nodes` immediately before it calls
-/// `startDrainEviction`, so the test attributes by PRODUCER instead: no such line may precede the
-/// eviction. With the registration reverted the tick becomes the only producer, and both halves of
-/// the assertion fail — the line is absent inside the bound, and when it does arrive it is preceded
-/// by the `Resuming` marker.
+/// The loop has more entries than the pong: `resumeDrainEvictions` runs from `Active.onEntry` (the leader's
+/// activation) and from every `reconcile()` tick (`deployment.reconciliationInterval`, 30s), and reads the same
+/// readiness view, so either would eventually log the same line. The pong's own entry is SYNCHRONOUS — the pong fan
+/// calls the listener, which dispatches into the CDM FSM, on the thread that delivered the pong — whereas both resume
+/// entries run on the scheduler or leader-change thread. The test therefore attributes by THREAD: the eviction must
+/// start on the thread that delivered the pong, with the DRAINING report still present. With the registration
+/// reverted the only producers are the resume entries, which never run on the test thread, so the assertion fails.
+///
+/// The pong is sent only after the leader's CDM has logged its activation: `LeaderManager` reports the leader
+/// before the CDM's leader-change handler has moved it from Dormant to Active, and a pong dispatched to a Dormant CDM
+/// is ignored (the eviction then starts from `Active.onEntry`'s resume, on another thread). The resume inside
+/// `onEntry` may still interleave with the pong; it starts the eviction first (and, with no slice on the drainee,
+/// completes it in the same call), after which the pong's own call starts a second episode on the pong thread, which
+/// is what the thread attribution observes.
 ///
 /// A fabricated worker id is used as the drainee (as in `EmberDrainAcknowledgementWiringTest`) so the
 /// reconciler neither drains nor dials a real peer; it holds no slice, which is what makes
@@ -101,7 +98,8 @@ class EmberDrainEvictionWiringTest {
     private static final long POLL_MS = 100;
     private static final String ACTIVE_LOGGER =
             "org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState$Active";
-    private static final String RESUME_MARKER = "Resuming drain evictions";
+    /// First line of `ClusterDeploymentState.Active.onEntry`; the FSM state is already Active when it is logged.
+    private static final String ACTIVATION_MARKER = "became leader, activating cluster deployment manager";
 
     private EmberCluster cluster;
 
@@ -125,21 +123,35 @@ class EmberDrainEvictionWiringTest {
                                                                          "devi"),
                                                 START_BOUND);
 
-        var leader = awaitLeader();
         var drainee = NodeId.nodeId("drainee-evict-" + UUID.randomUUID()).unwrap();
-        var drainingAtEvictionEntry = new java.util.concurrent.atomic.AtomicBoolean();
-        var capture = EvictionLogCapture.attach(message -> {
-            if (message.contains("Starting drain eviction for node " + drainee)) {
-                drainingAtEvictionEntry.set(leader.metricsCollector().reportedStates().get(drainee) == NodeReportedState.DRAINING);
+        var pongThread = Thread.currentThread().getName();
+        var drainingAtPongThreadEviction = new java.util.concurrent.atomic.AtomicBoolean();
+        var leaderRef = new java.util.concurrent.atomic.AtomicReference<AetherNode>();
+        var capture = LogCapture.capture(ACTIVE_LOGGER, Level.INFO, true, event -> {
+            if (event.getMessage().getFormattedMessage().contains("Starting drain eviction for node " + drainee)
+                    && pongThread.equals(event.getThreadName())) {
+                drainingAtPongThreadEviction.set(leaderRef.get().metricsCollector().reportedStates().get(drainee) == NodeReportedState.DRAINING);
             }
         });
 
         try {
+            var leader = awaitLeader();
+
+            awaitCondition("the leader's cluster deployment manager must log its activation (it is Active from that line on) before the pong is sent",
+                           System.currentTimeMillis() + 60_000L,
+                           () -> contains(capture, ACTIVATION_MARKER),
+                           capture::messages);
+            leaderRef.set(leader);
             leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
 
-            assertThat(drainingAtEvictionEntry.get())
-                .describedAs("the DRAINING report must be present when its synchronous eviction callback starts; "
-                             + "a later readiness sweep may expire it while that callback waits for the KV monitor")
+            assertThat(drainingAtPongThreadEviction.get())
+                .describedAs("the pong's synchronous callback must start the eviction on the pong's own thread while "
+                             + "the DRAINING report is present; false means the registration is missing or the CDM "
+                             + "ignored the pong. Timing assumption: the pong is sent after the CDM logged its activation, "
+                             + "so it meets an Active CDM. Residual window: that line is the first of Active.onEntry, so a "
+                             + "pong landing while onEntry is still running can be ignored and the eviction then starts "
+                             + "from onEntry's resume on another thread; a failure here with the registration intact "
+                             + "points at that window, not at the product")
                 .isTrue();
 
             var started = "Starting drain eviction for node " + drainee;
@@ -148,20 +160,15 @@ class EmberDrainEvictionWiringTest {
             awaitCondition("the DRAINING pong must start the leader-side drain eviction — the registration in "
                            + "assembleNode is the only production path to it",
                            System.currentTimeMillis() + EVICTION_BOUND_MS,
-                           () -> capture.contains(started),
+                           () -> contains(capture, started),
                            capture::messages);
             awaitCondition("the loop must RUN, not merely log its entry: with no slice on the drainee its "
                            + "terminal step is completeDrain",
                            System.currentTimeMillis() + EVICTION_BOUND_MS,
-                           () -> capture.contains(completed),
+                           () -> contains(capture, completed),
                            capture::messages);
-
-            assertThat(capture.messagesBefore(started))
-                .describedAs("the eviction must be attributed to the pong, not to a reconcile tick that "
-                             + "happened to land inside the bound")
-                .noneMatch(message -> message.contains(RESUME_MARKER));
         } finally {
-            capture.detach();
+            capture.close();
         }
     }
 
@@ -207,91 +214,7 @@ class EmberDrainEvictionWiringTest {
                                    1L, 0L, 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
     }
 
-    /// Log4j2 programmatic appender over the eviction loop's own logger, capturing INFO in arrival
-    /// order — the order is what carries the producer attribution above.
-    private static final class EvictionLogCapture extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-        private final LoggerConfig loggerConfig;
-        private final Level originalLevel;
-        private final java.util.function.Consumer<String> observation;
-
-        private EvictionLogCapture(Layout<?> layout, LoggerConfig loggerConfig, Level originalLevel,
-                                   java.util.function.Consumer<String> observation) {
-            super(ACTIVE_LOGGER + "-eviction-capture", (Filter) null, layout, true, Property.EMPTY_ARRAY);
-            this.loggerConfig = loggerConfig;
-            this.originalLevel = originalLevel;
-            this.observation = observation;
-        }
-
-        static EvictionLogCapture attach(java.util.function.Consumer<String> observation) {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-            var capture = new EvictionLogCapture(PatternLayout.createDefaultLayout(),
-                                                 loggerConfig,
-                                                 loggerConfig.getLevel(), observation);
-
-            capture.start();
-            loggerConfig.addAppender(capture, Level.INFO, null);
-            loggerConfig.setLevel(Level.INFO);
-            ctx.updateLoggers();
-
-            return capture;
-        }
-
-        void detach() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            loggerConfig.removeAppender(getName());
-            loggerConfig.setLevel(originalLevel);
-            ctx.updateLoggers();
-            stop();
-        }
-
-        List<String> messages() {
-            return List.copyOf(messages);
-        }
-
-        boolean contains(String text) {
-            return messages().stream()
-                             .anyMatch(message -> message.contains(text));
-        }
-
-        /// Every message logged before the first occurrence of `text`; empty if it has not arrived.
-        List<String> messagesBefore(String text) {
-            var snapshot = messages();
-
-            for (var index = 0; index < snapshot.size(); index++) {
-                if (snapshot.get(index)
-                            .contains(text)) {
-                    return snapshot.subList(0, index);
-                }
-            }
-
-            return List.of();
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.INFO)) {
-                var message = event.getMessage().getFormattedMessage();
-                observation.accept(message);
-                messages.add(message);
-            }
-        }
-
-        private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER);
-
-            if (ACTIVE_LOGGER.equals(existing.getName())) {
-                return existing;
-            }
-
-            var fresh = new LoggerConfig(ACTIVE_LOGGER, Level.INFO, true);
-
-            configuration.addLogger(ACTIVE_LOGGER, fresh);
-
-            return fresh;
-        }
+    private static boolean contains(LogCapture capture, String text) {
+        return capture.messages().stream().anyMatch(message -> message.contains(text));
     }
-
 }

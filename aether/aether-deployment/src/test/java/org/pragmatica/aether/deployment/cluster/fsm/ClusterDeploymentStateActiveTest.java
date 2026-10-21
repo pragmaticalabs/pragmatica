@@ -288,7 +288,7 @@ class ClusterDeploymentStateActiveTest {
             activeState().sliceStates().put(sliceKey, SliceState.ACTIVE);
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(cluster.commands)
                     .as("the committed SliceTarget still names this artifact — the projection was stale, so nothing may be unloaded")
@@ -314,7 +314,7 @@ class ClusterDeploymentStateActiveTest {
             activeState().sliceStates().put(strayKey, SliceState.ACTIVE);
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(cluster.commands)
                     .as("with no committed target the slice IS orphaned and must still be cleaned up")
@@ -365,18 +365,18 @@ class ClusterDeploymentStateActiveTest {
 
             // Sweep 1 issues the UNLOAD. Nothing applies it to the store (the recording cluster
             // commits nothing), which is exactly the timed-out rollback: the key is still there.
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
             assertThat(unloadsOf(orphanKey)).as("first sweep unloads the orphan").hasSize(1);
 
             // Sweep 2 must look at the committed store again and re-issue — the projection having
             // forgotten the key is not evidence the key is gone.
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
             assertThat(unloadsOf(orphanKey)).as("second sweep re-issues while the key is still committed").hasSize(2);
 
             // The node acts on the UNLOAD and removes its key: only now does the sweep stop.
             kvStore.remove(orphanKey);
             cluster.commands.clear();
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
             assertThat(cluster.commands).as("an absent key is not re-issued").isEmpty();
         }
 
@@ -386,8 +386,8 @@ class ClusterDeploymentStateActiveTest {
             harness.dispatch(new Activate());
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(removalsOf(orphanKey)).as("an UNLOAD nobody acted on is removed, and re-removed while it persists").hasSize(2);
         }
@@ -400,8 +400,8 @@ class ClusterDeploymentStateActiveTest {
             harness.dispatch(new Activate());
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(removalsOf(orphanKey)).as("an orphan already unloading is removed, and re-removed while it persists").hasSize(2);
         }
@@ -412,7 +412,7 @@ class ClusterDeploymentStateActiveTest {
             harness.dispatch(new Activate());
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(cluster.commands).as("a targeted version is not an orphan").isEmpty();
         }
@@ -431,7 +431,7 @@ class ClusterDeploymentStateActiveTest {
             harness.dispatch(new Activate());
             cluster.commands.clear();
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(unloadsOf(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT)))
                     .as("the old version of a rolling update is still routed, so it is not an orphan")
@@ -467,7 +467,8 @@ class ClusterDeploymentStateActiveTest {
             var localHarness = FsmTestHarness.harness("orphan-unwired-" + SELF.id() + "-" + System.nanoTime(), factory);
 
             localHarness.dispatch(new Activate());
-            ((ClusterDeploymentState.Active) localHarness.state()).staleEntryCleaner().cleanupOrphanedSliceEntries();
+            var activeLocal = (ClusterDeploymentState.Active) localHarness.state();
+            activeLocal.sweepStaleEntries(true);
 
             assertThat(localCluster.commands.stream()
                                             .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(orphanKey))
@@ -486,8 +487,8 @@ class ClusterDeploymentStateActiveTest {
             cluster.commands.clear();
             cluster.failApplies = true;
 
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
-            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries(activeState().placementNodes());
 
             assertThat(unloadsOf(orphanKey)).as("each sweep re-issues against a store that still holds the key").hasSize(2);
             assertThat(kvStore.get(orphanKey).isPresent()).as("nothing landed, so the key is still committed").isTrue();
@@ -608,6 +609,9 @@ class ClusterDeploymentStateActiveTest {
             var router = MessageRouter.mutable();
             var localKv = new InMemoryKvStore(router);
             var localCluster = new RecordingClusterNode(SELF);
+
+            lastCluster = localCluster;
+            localKv.put(topicRowKey(), org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue.topicPublisherValue(NODE_A, org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier.EPHEMERAL));
             var artifactBase = ArtifactBase.artifactBase("org.example:slice-a").unwrap();
             localKv.put(SliceTargetKey.sliceTargetKey(artifactBase),
                         SliceTargetValue.sliceTargetValue(Version.version("1.0.0").unwrap(), 1));
@@ -634,11 +638,41 @@ class ClusterDeploymentStateActiveTest {
             return (ClusterDeploymentState.Active) localHarness.state();
         }
 
+        private RecordingClusterNode lastCluster;
+
+        private AetherKey topicRowKey() {
+            return org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey.topicPublisherKey(
+                org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress("default", "orders", "1.0.0").unwrap(), ARTIFACT, NODE_A);
+        }
+
+        private boolean removedTopicRow() {
+            return lastCluster.commands.stream().anyMatch(command -> command instanceof KVCommand.Remove<AetherKey> remove && remove.key().equals(topicRowKey()));
+        }
+
+        /// #1337: the topic-row sweep honours the same guard as the other stale sweeps.
+        @Test
+        void cleanupStaleTopicRows_notYetWiredSentinel_isNoOp() {
+            var unwired = activeWith(() -> MembershipFsm.MEMBERSHIP_NOT_WIRED);
+
+            unwired.staleEntryCleaner().cleanupStaleTopicRows(unwired.placementNodes());
+
+            assertThat(removedTopicRow()).as("an unresolved member set must not classify every node's topic rows as stale").isFalse();
+        }
+
+        @Test
+        void cleanupStaleTopicRows_wiredEmptyMembers_removesTheRowOfANodeNoLongerPlacing() {
+            var wired = activeWith(Set::of);
+
+            wired.staleEntryCleaner().cleanupStaleTopicRows(wired.placementNodes());
+
+            assertThat(removedTopicRow()).isTrue();
+        }
+
         @Test
         void cleanupStaleSliceEntries_notYetWiredSentinel_isNoOp() {
             var active = activeWith(() -> MembershipFsm.MEMBERSHIP_NOT_WIRED);
 
-            active.cleanupStaleSliceEntries();
+            active.staleEntryCleaner().cleanupStaleSliceEntries(active.placementNodes());
 
             assertThat(active.sliceStates())
                     .as("NOT_WIRED sentinel must NOT mass-classify a KV-known node's slice as stale")
@@ -649,7 +683,7 @@ class ClusterDeploymentStateActiveTest {
         void cleanupStaleSliceEntries_wiredEmptyMembers_removesStaleEntry() {
             var active = activeWith(Set::of);
 
-            active.cleanupStaleSliceEntries();
+            active.staleEntryCleaner().cleanupStaleSliceEntries(active.placementNodes());
 
             assertThat(active.sliceStates())
                     .as("a wired (resolved) member set that excludes NODE_A MUST drive its slice cleanup")

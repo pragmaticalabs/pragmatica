@@ -1,0 +1,10 @@
+# Test fixture for NodeDeploymentStateTopicSubscriptionNamespaceTest (#1337).
+#
+# Shaped as the slice processor generates a publisher binding: `publish.topic.N.config` is the topic name for a typed topic and
+# `topicName` carries it, so the address resolves without a ConfigService section; the publisher's TIER is then read from the slice's
+# own `orders` section.
+publish.topics.count=1
+publish.topic.0.config=orders
+publish.topic.0.topicName=orders
+publish.topic.0.messageType=com.example.OrderPlaced
+reactive.count=0

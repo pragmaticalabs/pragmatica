@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.stream.Collectors;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,29 +16,46 @@ import static org.assertj.core.api.Assertions.assertThat;
 class OperatorWarningWiringTest {
     @Test
     void assembly_bindsOneSinkToThisNodesAggregator() {
-        assertThat(assemblyCode()).contains("varoperatorWarningSink=OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);");
+        assertThat(assemblyCode()).containsOnlyOnce("varoperatorWarningSink=OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);");
     }
 
     @Test
     void assembly_givesTheSinkToSwimCoreAbsenceAndReplication() {
         var code = assemblyCode();
 
-        assertThat(code).contains("swimHealthDetector.setOperatorWarningSink(operatorWarningSink);");
-        assertThat(code).contains("coreAbsenceDetector.setOperatorWarningSink(operatorWarningSink);");
-        assertThat(code).contains("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("swimHealthDetector.setOperatorWarningSink(operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("coreAbsenceDetector.setOperatorWarningSink(operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
     }
 
     /// #752: the declarative consumer manager reports a divergence from its consumer runtime to this node's sink.
+    /// A storage instance whose promotion keeps failing without copying anything reaches this node's sink through the stall
+    /// watch the maintenance driver runs after every promotion cycle. The watch and the driver are tested with their own sink
+    /// and managers, so un-binding either here, or handing the watch a different sink or a partial setup map, left them green.
+    @Test
+    void assembly_givesTheMaintenanceDriverAStallWatchOverEverySetupOnThisNodesSink() {
+        assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector);");
+    }
+
+    /// The ready signal can fire again after a drain began; the node tells it whether it is draining from the drain procedure's own
+    /// state, for storage maintenance and for prefetching alike. `StoragePromotionWiringTest` and `AetherNodeReadySignalPrefetchTest`
+    /// test the guards with a supplied predicate, so binding a constant here left them green.
+    @Test
+    void assembly_tellsTheStorageReadySignalWhetherTheDrainProcedureHasStarted() {
+        assertThat(assemblyCode()).containsOnlyOnce("BooleanSuppliernodeDraining=()->drainProcedure.state()!=DrainProcedure.DrainState.INACTIVE;");
+        assertThat(assemblyCode()).containsOnlyOnce("signalReadyActivatingStorage(()->signalReadyAndWakePrefetch(nodeLifecycle::signalReady,storageSetups,nodeDraining),storageSetups,nodeDraining)");
+    }
+
     @Test
     void assembly_givesTheSinkToTheStreamConsumerManager() {
-        assertThat(assemblyCode()).contains("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");
+        assertThat(assemblyCode()).containsOnlyOnce("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");
     }
 
     /// #1935: a declared stream consumer that cannot be registered reaches this node's sink. The deployment test hands
     /// the context a test sink, so un-binding it here left every unit test green.
     @Test
     void assembly_givesTheSinkToNodeDeployment() {
-        assertThat(assemblyCode()).contains("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
+        assertThat(assemblyCode()).containsOnlyOnce("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
     }
 
     /// #1996: request frames the transport drops at an offline-buffer flush reach the event stream only if the assembly routes
@@ -52,12 +63,12 @@ class OperatorWarningWiringTest {
     /// hands it over. The aggregator and transport tests call their halves directly, so un-binding either left them green.
     @Test
     void assembly_routesDroppedOfflineFramesToTheEventAggregator() {
-        assertThat(assemblyCode()).contains("MessageRouter.Entry.route(NetworkServiceMessage.OfflineFramesExpired.class,eventAggregator::onOfflineFramesExpired)");
+        assertThat(assemblyCode()).containsOnlyOnce("MessageRouter.Entry.route(NetworkServiceMessage.OfflineFramesExpired.class,eventAggregator::onOfflineFramesExpired)");
     }
 
     @Test
     void assembly_givesTheTransportTheClusterOfflineBufferCap() {
-        assertThat(assemblyCode()).contains("clusterNode.network().setOfflineBufferCap(config.timeouts().cluster().offlineBufferCap());");
+        assertThat(assemblyCode()).containsOnlyOnce("clusterNode.network().setOfflineBufferCap(config.timeouts().cluster().offlineBufferCap());");
     }
 
     /// The stream-forward and replication transports are adapters assembled here; each must pass the caller's wait on to the
@@ -66,15 +77,15 @@ class OperatorWarningWiringTest {
     void assembly_streamForwardAndReplicationAdaptersPassTheCallersWaitToTheNetwork() {
         var code = assemblyCode();
 
-        assertThat(code).contains("network.send(target,message,callerWait);");
-        assertThat(code).contains("replicationNetwork.send(target,message,callerWait);");
+        assertThat(code).containsOnlyOnce("network.send(target,message,callerWait);");
+        assertThat(code).containsOnlyOnce("replicationNetwork.send(target,message,callerWait);");
     }
 
     /// #1734: the entity-ownership reconciler's first-mint ceiling warning reaches this node's sink only if the assembly hands
     /// it over; the reconciler tests pass their own sink, so un-binding it here left them green.
     @Test
     void assembly_givesTheSinkToTheEntityOwnershipReconciler() {
-        assertThat(assemblyCode()).contains("EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,ENTITY_OWNERSHIP_RECONCILE_INTERVAL,System::nanoTime,operatorWarningSink);");
+        assertThat(assemblyCode()).containsOnlyOnce("EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,ENTITY_OWNERSHIP_RECONCILE_INTERVAL,System::nanoTime,operatorWarningSink);");
     }
 
     /// A certificate rotation the HTTP listeners refuse is an operator event; un-binding the sink here would leave the
@@ -83,8 +94,8 @@ class OperatorWarningWiringTest {
     void assembly_givesTheSinkToTheHttpListenersForCertificateRotationRefusals() {
         var code = assemblyCode();
 
-        assertThat(code).contains("appHttpServer.setOperatorWarningSink(operatorWarningSink);");
-        assertThat(code).contains("managementServer.setOperatorWarningSink(operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("appHttpServer.setOperatorWarningSink(operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("managementServer.setOperatorWarningSink(operatorWarningSink);");
     }
 
     /// #1564 (R10): the replication warnings raised at resource activation, the deploy warnings and the refused
@@ -93,21 +104,21 @@ class OperatorWarningWiringTest {
     void assembly_givesTheSinkToActivationDeployAndClusterEventsRefusal() {
         var code = assemblyCode();
 
-        assertThat(code).contains("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
         // The node's operator-warning sink is the sixth argument; what follows it (the HEADER-mode flag admission needs, #1206) is pinned on its own.
-        assertThat(code).contains("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink,");
-        assertThat(code).contains("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode());");
-        assertThat(code).contains("cause->raiseClusterEventsRefusal(operatorWarningSink,alertManager,cause)");
+        assertThat(code).containsOnlyOnce("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink,");
+        assertThat(code).containsOnlyOnce("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode());");
+        assertThat(code).containsOnlyOnce("cause->raiseClusterEventsRefusal(operatorWarningSink,alertManager,cause)");
         // v1680 N-r3-1: the refusal is also a REST-visible alert, resolved when a corrected config commits the stream.
-        assertThat(code).contains("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
+        assertThat(code).containsOnlyOnce("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
         // v1735 B1: local-only, so the recovery clear resolves it completely (a replicated copy would outlive it).
-        assertThat(code).contains("alertManager.injectLocal(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),\"CRITICAL\",");
+        assertThat(code).containsOnlyOnce("alertManager.injectLocal(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),\"CRITICAL\",");
     }
 
     /// #1934: the stream consumer runtime reports a consumer whose delivery passes keep throwing to this node's sink.
     @Test
     void assembly_givesTheSinkToTheStreamConsumerRuntime() {
-        assertThat(assemblyCode()).contains("streamConsumerRuntime.operatorWarnings(operatorWarningSink);");
+        assertThat(assemblyCode()).containsOnlyOnce("streamConsumerRuntime.operatorWarnings(operatorWarningSink);");
     }
 
     /// #1564 N2: the cluster-events local partition built at construction takes the committed
@@ -115,21 +126,21 @@ class OperatorWarningWiringTest {
     /// `ClusterEventsLimitsTest`), never a separately hardcoded config.
     @Test
     void assembly_buildsTheClusterEventsConfigFromTheCommittedFactors() {
-        assertThat(assemblyCode()).contains("varclusterEventsStreamConfig=clusterEventsLimits.streamConfig(clusterEventsStreamName,kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,AetherValue.ClusterConfigValue.class));");
+        assertThat(assemblyCode()).containsOnlyOnce("varclusterEventsStreamConfig=clusterEventsLimits.streamConfig(clusterEventsStreamName,kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,AetherValue.ClusterConfigValue.class));");
     }
 
     @Test
     void assembly_evictsIdleThrottleKeysOncePerMinute() {
         var code = assemblyCode();
 
-        assertThat(code).contains("periodicTasks.defer(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,OPERATOR_WARNING_EVICTION_INTERVAL,OPERATOR_WARNING_EVICTION_INTERVAL));");
-        assertThat(code).contains("TimeSpanOPERATOR_WARNING_EVICTION_INTERVAL=TimeSpan.timeSpan(60).seconds();");
+        assertThat(code).containsOnlyOnce("periodicTasks.defer(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,OPERATOR_WARNING_EVICTION_INTERVAL,OPERATOR_WARNING_EVICTION_INTERVAL));");
+        assertThat(code).containsOnlyOnce("TimeSpanOPERATOR_WARNING_EVICTION_INTERVAL=TimeSpan.timeSpan(60).seconds();");
     }
 
     /// #1431: the owner gate's block alarm reaches this node's sink, so an oversized peer event is an operator event.
     @Test
     void assembly_givesTheSinkToTheOwnerPromotionBlockAlarm() {
-        assertThat(assemblyCode()).contains("ownerPromotionAlarm(operatorWarningSink),");
+        assertThat(assemblyCode()).containsOnlyOnce("ownerPromotionAlarm(operatorWarningSink),");
     }
 
     /// #1937: the promoted owner's BACKFILL reports a peer's oversized event through the same sink, once per transition. Red
@@ -138,44 +149,13 @@ class OperatorWarningWiringTest {
     void assembly_givesTheSinkToTheBackfillBlockAlarm() {
         // #2080: both bindings (the alarm and the escape's reader and bound) live in one helper the wiring test drives; the assembly
         // must call it with this node's sink.
-        assertThat(assemblyCode()).contains("backfill.blockAlarm(ownerPromotionAlarm(sink));")
-                                  .contains("bindPromotionAlarm(streamPartitionBackfill,operatorWarningSink,")
-                                  .contains("streamingConfig.promotionEscapeAfter());");
+        assertThat(assemblyCode()).containsOnlyOnce("backfill.blockAlarm(ownerPromotionAlarm(sink));")
+                                  .containsOnlyOnce("bindPromotionAlarm(streamPartitionBackfill,operatorWarningSink,kvStore,streamingConfig.promotionEscapeAfter());");
     }
 
-    /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
-    /// because a pin that scans nothing always passes.
+    /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
+    /// stripped; each pin must match exactly once across that set. See [AssemblySource].
     private static String assemblyCode() {
-        var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
-
-        assertThat(file).exists();
-
-        return readFile(file).lines()
-                             .map(line -> line.replaceFirst("//.*$", ""))
-                             .collect(Collectors.joining())
-                             .replaceAll("\\s+", "");
-    }
-
-    private static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + path, e);
-        }
-    }
-
-    private static Path sourceRoot() {
-        try {
-            var testClasses = Path.of(OperatorWarningWiringTest.class.getProtectionDomain()
-                                                                      .getCodeSource()
-                                                                      .getLocation()
-                                                                      .toURI());
-
-            return testClasses.getParent()
-                              .getParent()
-                              .resolve("src/main/java");
-        } catch (URISyntaxException e) {
-            throw new AssertionError("Cannot locate module source root", e);
-        }
+        return AssemblySource.stripped();
     }
 }

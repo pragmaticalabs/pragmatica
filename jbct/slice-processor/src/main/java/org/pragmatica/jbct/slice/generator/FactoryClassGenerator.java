@@ -568,7 +568,7 @@ public class FactoryClassGenerator {
             // More than 15 asynchronously provisioned dependencies: batch them into <=15-wide Tuple
             // parts (materialized with .id()) that all launch before the outer join, then cascade
             // Tuple.map to rebind every value for the factory. This lifts the former hard limit while
-            // preserving Promise.all's concurrency and fail-fast semantics.
+            // preserving Promise.all's concurrency and collect-all-failures semantics.
             var partExprs = entries.stream().map(AllEntry::promiseExpression).toList();
             var openParens = BatchedAll.openBatchedPromiseBody(out, partExprs, varNames, chainMethod);
 

@@ -23,15 +23,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.LogCapture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,36 +43,19 @@ class OperatorWarningsTest {
     private final List<OperatorWarning> emitted = new CopyOnWriteArrayList<>();
     private static final String HAND_OFF_LOGGER = OperatorWarningSink.HandOff.class.getName();
 
-    private CapturingAppender appender;
-    private CapturingAppender handOffAppender;
-    private LoggerContext context;
+    private LogCapture capture;
+    private LogCapture handOffCapture;
 
     @BeforeEach
     void captureLog() {
-        context = (LoggerContext) LogManager.getContext(false);
-        appender = capture(LOGGER_NAME, "OperatorWarningsCapture");
-        handOffAppender = capture(HAND_OFF_LOGGER, "OperatorWarningsHandOffCapture");
-        context.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.TRACE, false);
+        handOffCapture = LogCapture.capture(HAND_OFF_LOGGER, Level.TRACE, false);
     }
 
     @AfterEach
     void releaseLog() {
-        context.getConfiguration().removeLogger(LOGGER_NAME);
-        context.getConfiguration().removeLogger(HAND_OFF_LOGGER);
-        context.updateLoggers();
-        appender.stop();
-        handOffAppender.stop();
-    }
-
-    private CapturingAppender capture(String loggerName, String appenderName) {
-        var capturing = new CapturingAppender(appenderName);
-        var loggerConfig = new LoggerConfig(loggerName, Level.TRACE, false);
-
-        capturing.start();
-        loggerConfig.addAppender(capturing, Level.TRACE, null);
-        context.getConfiguration().addLogger(loggerName, loggerConfig);
-
-        return capturing;
+        capture.close();
+        handOffCapture.close();
     }
 
     @Test
@@ -94,9 +72,9 @@ class OperatorWarningsTest {
         assertThat(emitted).containsExactly(OperatorWarning.operatorWarning(REPLICA_FSYNC_FAILED,
                                                                             "orders[3]",
                                                                             "sync failed for orders[3]"));
-        assertThat(appender.events).hasSize(1);
-        assertThat(appender.events.getFirst().getLevel()).isEqualTo(Level.WARN);
-        assertThat(appender.events.getFirst().getMessage().getFormattedMessage())
+        assertThat(capture.entries()).hasSize(1);
+        assertThat(capture.entries().getFirst().level()).isEqualTo(Level.WARN);
+        assertThat(capture.entries().getFirst().message())
             .isEqualTo("[replica-fsync-failed] sync failed for orders[3]");
     }
 
@@ -110,9 +88,9 @@ class OperatorWarningsTest {
                                "repaired {}",
                                "g:orders[0]");
 
-        assertThat(appender.events).hasSize(1);
-        assertThat(appender.events.getFirst().getLevel()).isEqualTo(Level.INFO);
-        assertThat(appender.events.getFirst().getMessage().getFormattedMessage())
+        assertThat(capture.entries()).hasSize(1);
+        assertThat(capture.entries().getFirst().level()).isEqualTo(Level.INFO);
+        assertThat(capture.entries().getFirst().message())
             .isEqualTo("[stream-consumer-state-repaired] repaired g:orders[0]");
     }
 
@@ -120,9 +98,9 @@ class OperatorWarningsTest {
     void raise_criticalCode_logsAtError() {
         OperatorWarnings.raise(SITE_LOG, OperatorWarningSink.handingOffTo(emitted::add), CORE_ABSENCE_FENCE, "core", "fence firing");
 
-        assertThat(appender.events).hasSize(1);
-        assertThat(appender.events.getFirst().getLevel()).isEqualTo(Level.ERROR);
-        assertThat(appender.events.getFirst().getMessage().getFormattedMessage())
+        assertThat(capture.entries()).hasSize(1);
+        assertThat(capture.entries().getFirst().level()).isEqualTo(Level.ERROR);
+        assertThat(capture.entries().getFirst().message())
             .isEqualTo("[core-absence-fence] fence firing");
     }
 
@@ -134,13 +112,13 @@ class OperatorWarningsTest {
 
         assertThatCode(() -> OperatorWarnings.raise(SITE_LOG, throwing, REPLICA_FSYNC_FAILED, "orders[3]", "sync failed"))
             .doesNotThrowAnyException();
-        assertThat(appender.events).hasSize(1);
-        assertThat(appender.events.getFirst().getMessage().getFormattedMessage())
+        assertThat(capture.entries()).hasSize(1);
+        assertThat(capture.entries().getFirst().message())
             .isEqualTo("[replica-fsync-failed] sync failed");
 
-        await(() -> !handOffAppender.events.isEmpty());
-        assertThat(handOffAppender.events.getFirst().getLevel()).isEqualTo(Level.WARN);
-        assertThat(handOffAppender.events.getFirst().getMessage().getFormattedMessage())
+        await(() -> !handOffCapture.entries().isEmpty());
+        assertThat(handOffCapture.entries().getFirst().level()).isEqualTo(Level.WARN);
+        assertThat(handOffCapture.entries().getFirst().message())
             .contains("[replica-fsync-failed] operator warning for orders[3] not emitted")
             .contains("event log unavailable");
     }
@@ -153,7 +131,7 @@ class OperatorWarningsTest {
                                                     "orders[3]",
                                                     "sync failed"))
             .doesNotThrowAnyException();
-        assertThat(appender.events).hasSize(1);
+        assertThat(capture.entries()).hasSize(1);
     }
 
     /// #1617 R2: `raise` never waits for the publisher. A publisher that takes 2 s must not make `raise`
@@ -204,9 +182,7 @@ class OperatorWarningsTest {
         sink.accept(warning);
 
         assertThat(sink.dropped()).as("an accepted warning after the drain drops nothing").isEqualTo(10L);
-        assertThat(handOffAppender.events.stream()
-                                         .map(event -> event.getMessage()
-                                                            .getFormattedMessage()))
+        assertThat(handOffCapture.messages())
             .anyMatch(line -> line.startsWith("10 operator warning event(s) dropped"));
     }
 
@@ -244,18 +220,5 @@ class OperatorWarningsTest {
 
     private static void explode(OperatorWarning warning) {
         throw new IllegalStateException("event log unavailable");
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name) {
-            super(name, null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(event.toImmutable());
-        }
     }
 }

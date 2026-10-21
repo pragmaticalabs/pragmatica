@@ -310,6 +310,9 @@ public interface SystemTags {
         pin(table, 518, "org.pragmatica.aether.http.handler.security.Principal");
         pin(table, 519, "org.pragmatica.aether.http.handler.security.Role");
         pin(table, 520, "org.pragmatica.aether.http.handler.security.SecurityContext");
+        // #2244 F1: the out-of-band not-applied answer to a forwarded request, appended.
+        pin(table, 521, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied");
+        pin(table, 522, "org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason");
         // slice invocation  [base 640]
         // RETIRED 2026-08-27 (#571): `DHTNotification` was deleted — it had zero senders and zero
         // receivers. These two pins STAY, and deleting them would be the bug: the table is what makes
@@ -452,7 +455,10 @@ public interface SystemTags {
         pin(table, 1631, "org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue");
         pin(table, 1632, "org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue");
         pin(table, 1633, "org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource");
-        pin(table, 1634, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue");
+        // #1155: tag 1634 was ScheduledTaskStateValue's, before it gained `boundHolder`. It stays the tag of that old shape (decode-only, see
+        // LegacyScheduledTaskStateValue): a snapshot or persisted state written by an older build decodes as one unit, so one old-shape row
+        // under a tag that now meant the new shape would fail the whole restore. The current shape took 2168.
+        pin(table, 1634, "org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue");
         pin(table, 1635, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue");
         pin(table, 1636, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue");
         pin(table, 1637, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus");
@@ -477,7 +483,10 @@ public interface SystemTags {
         pin(table, 1652, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue");
         pin(table, 1653, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue");
         pin(table, 1654, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue");
-        pin(table, 1655, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue");
+        // #1337: tag 1655 was TopicSubscriptionValue's, before it gained `tier`. It stays the tag of that old shape (decode-only, see
+        // LegacyTopicSubscriptionValue): a snapshot or persisted state written by an older build decodes as one unit, so one old-shape
+        // row under a tag that now meant the new shape would fail the whole restore. The current shape took 2169, its tier enum 2170.
+        pin(table, 1655, "org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue");
         pin(table, 1656, "org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry");
         pin(table, 1657, "org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue");
         pin(table, 1658, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue");
@@ -638,7 +647,35 @@ public interface SystemTags {
         // #2087: the owner's visible position, announced to its replicas. 2140 and 2141 went to #2118, so this takes the
         // next free slot (scanned across every open PR head and every origin branch on 2026-10-11).
         pin(table, 2142, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
-        // ---- 2143..16383 RESERVED ----
+        // A6, the DHT repair plane: stamp digests and paged migration. 2143..2162 are taken on open branches
+        // (scanned across every origin branch on 2026-10-18), so these take the next free slots.
+        pin(table, 2163, "org.pragmatica.dht.DHTMessage.StampDigestRequest");
+        pin(table, 2164, "org.pragmatica.dht.DHTMessage.MigrationPageRequest");
+        pin(table, 2165, "org.pragmatica.dht.DHTMessage.MigrationPageResponse");
+        // #1155: the durable in-flight claim of a SINGLE-mode scheduled task. 2143..2162 are taken by origin branches and 2163..2165 by
+        // #2265 (scanned across all refs on 2026-10-18), so this takes the next free slots.
+        pin(table, 2166, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskClaimKey");
+        pin(table, 2167, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue");
+        // #1155: ScheduledTaskStateValue with `boundHolder`; 2168 is free on every origin branch and open PR head (scanned 2026-10-19).
+        pin(table, 2168, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue");
+        // #1337: TopicSubscriptionValue with `tier`, and the tier enum; 2169 and 2170 were free on every origin branch (159 tips) and
+        // every open PR head (10), scanned 2026-10-20. 1655 keeps decoding the old shape.
+        pin(table, 2169, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue");
+        pin(table, 2170, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier");
+        // Wiring the prefetch manager: the SWIM application-gossip datagram (2171) and its storage payload (2172, 2173).
+        // 2171..2173 were free on every origin branch (166 tips) and every open PR head (13), scanned 2026-10-20; #1337's
+        // topic publisher rows start after them, at 2174.
+        pin(table, 2171, "org.pragmatica.swim.SwimMessage.AppGossip");
+        pin(table, 2172, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip");
+        pin(table, 2173, "org.pragmatica.aether.node.prefetch.StoragePrefetchGossip.Hint");
+        // #1337: the topic PUBLISHER row. 2171..2173 are taken by origin/feat/storage-prefetch-over-swim (found by the 2026-10-20 scan,
+        // which also found them free on every open PR head), so these two start at 2174.
+        pin(table, 2174, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey");
+        pin(table, 2175, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue");
+        // A6 fix round: the gated verified read. 2166..2170 and 2174..2175 are pinned on rc5 and 2171..2173 on an open PR, so this
+        // takes 2176 (scanned against the rc5 tip and every open PR head on 2026-10-20).
+        pin(table, 2176, "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
+        // ---- 2177..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

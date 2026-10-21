@@ -65,7 +65,7 @@ public interface UpgradeRunReconciler {
 
                                                         return cause.<Unit> promise();
                                                     },
-                                                    promise -> promise.onResultRun(() -> running.set(false)));
+                                                    promise -> promise.withResult(_ -> running.set(false)));
             }
 
             private Promise<Unit> tick() {
@@ -90,17 +90,17 @@ public interface UpgradeRunReconciler {
                                   .timeout(bound)
                                   .recover(cause -> new BeginResult.Deferred("replacement not started: " + cause.message()))
                                   .flatMap(result -> switch (result) {
-                    case BeginResult.Started _ -> plan.next().fold(Promise::unitPromise,
-                                                                   next -> commit(run, next));
-                    case BeginResult.Deferred _ -> Promise.unitPromise();
-                    case BeginResult.Refused refused -> commit(run,
-                                                               run.with(run.index(),
-                                                                        "",
-                                                                        UpgradeRunState.PAUSED,
-                                                                        org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop.NONE,
-                                                                        "could not start the replacement of " + node.id() + ": " + refused.reason(),
-                                                                        environment.now()));
-                });
+                                               case BeginResult.Started _ -> plan.next().fold(Promise::unitPromise,
+                                                                                              next -> commit(run, next));
+                                               case BeginResult.Deferred _ -> Promise.unitPromise();
+                                               case BeginResult.Refused refused -> commit(run,
+                                                                                          run.with(run.index(),
+                                                                                                   "",
+                                                                                                   UpgradeRunState.PAUSED,
+                                                                                                   org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop.NONE,
+                                                                                                   "could not start the replacement of " + node.id() + ": " + refused.reason(),
+                                                                                                   environment.now()));
+                                           });
             }
 
             private Promise<Unit> commit(UpgradeRunValue before, UpgradeRunValue next) {

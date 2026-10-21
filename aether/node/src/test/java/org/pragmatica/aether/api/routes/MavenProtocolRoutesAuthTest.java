@@ -26,19 +26,12 @@ import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configurator;
-import org.apache.logging.log4j.core.config.Property;
 
 import java.lang.reflect.Proxy;
-import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,28 +61,16 @@ class MavenProtocolRoutesAuthTest {
     private static final BooleanSupplier SECURITY_ENABLED = () -> true;
     private static final BooleanSupplier SECURITY_DISABLED = () -> false;
 
-    private CapturingAppender appender;
-    private LoggerContext loggerContext;
+    private LogCapture capture;
 
     @BeforeEach
     void installLogCapture() {
-        Configurator.setLevel(ROUTE_LOGGER, Level.WARN);
-        loggerContext = (LoggerContext) LogManager.getContext(false);
-        appender = new CapturingAppender();
-        appender.start();
-        loggerContext.getConfiguration()
-                     .getLoggerConfig(ROUTE_LOGGER)
-                     .addAppender(appender, Level.WARN, null);
-        loggerContext.updateLoggers();
+        capture = LogCapture.capture(ROUTE_LOGGER, Level.WARN, true);
     }
 
     @AfterEach
     void removeLogCapture() {
-        loggerContext.getConfiguration()
-                     .getLoggerConfig(ROUTE_LOGGER)
-                     .removeAppender(appender.getName());
-        appender.stop();
-        loggerContext.updateLoggers();
+        capture.close();
     }
 
     @Test
@@ -260,8 +241,8 @@ class MavenProtocolRoutesAuthTest {
         routes.handle(putRequest(), response);
 
         assertThat(response.awaitStatus()).isEqualTo(HttpStatus.OK);
-        assertThat(appender.warnings()).hasSize(1);
-        assertThat(appender.warnings().getFirst()).contains("UNAUTHENTICATED artifact publication")
+        assertThat(capture.messages()).hasSize(1);
+        assertThat(capture.messages().getFirst()).contains("UNAUTHENTICATED artifact publication")
                                                   .contains("security_mode=NONE")
                                                   .contains(PUT_PATH);
     }
@@ -274,8 +255,8 @@ class MavenProtocolRoutesAuthTest {
         routes.handle(putRequest(), response);
 
         assertThat(response.awaitStatus()).isEqualTo(HttpStatus.OK);
-        assertThat(appender.warnings()).hasSize(1);
-        assertThat(appender.warnings().getFirst()).contains("UNAUTHENTICATED artifact publication")
+        assertThat(capture.messages()).hasSize(1);
+        assertThat(capture.messages().getFirst()).contains("UNAUTHENTICATED artifact publication")
                                                   .contains("AETHER_INSECURE_DEV_MODE=true")
                                                   .contains(PUT_PATH);
     }
@@ -291,7 +272,7 @@ class MavenProtocolRoutesAuthTest {
                    .run(() -> routes.handle(putRequest(), response));
 
         assertThat(response.awaitStatus()).isEqualTo(HttpStatus.OK);
-        assertThat(appender.warnings()).isEmpty();
+        assertThat(capture.messages()).isEmpty();
     }
 
     @Test
@@ -302,7 +283,7 @@ class MavenProtocolRoutesAuthTest {
         routes.handle(putRequest(), response);
 
         assertThat(response.awaitStatus()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        assertThat(appender.warnings()).isEmpty();
+        assertThat(capture.messages()).isEmpty();
     }
 
     private static MavenProtocolRoutes routesWith(BooleanSupplier devModeEnabled,
@@ -403,27 +384,6 @@ class MavenProtocolRoutesAuthTest {
         @Override
         public ResponseWriter header(String name, String value) {
             return this;
-        }
-    }
-
-    /// Captures WARN events emitted by `MavenProtocolRoutes` so the #520 loud-bypass warning can be
-    /// asserted directly rather than eyeballed. The node logs through SLF4J onto log4j2, so the
-    /// appender attaches to the log4j2 `LoggerConfig` for the route's logger name; `Configurator`
-    /// raises that logger to WARN because the default configuration would otherwise filter it.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender() {
-            super("maven-protocol-routes-capture", null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> warnings() {
-            return List.copyOf(messages);
         }
     }
 }

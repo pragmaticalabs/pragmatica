@@ -2609,8 +2609,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                        })
                        .onFailure(_ -> {
                            if (wrote.get()) {
-                           restoreWitness(streamName, partition, wal);
-                       }
+                               restoreWitness(streamName, partition, wal);
+                           }
                        })
                        .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                     partition,
@@ -3518,9 +3518,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A ring released in the meantime has no reader left to expose the event to.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
-                                 .onSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
-                                                                                                                                streamName,
-                                                                                                                                partition)));
+                                 .withSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
+                                                                                                                                  streamName,
+                                                                                                                                  partition)));
     }
 
     /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind
@@ -4154,21 +4154,46 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// [InstalledSlice] names what this install recorded and every entry of its range it relies on (#1638 F1); it
     /// stays pending until settled by [#releaseProvenance] or [#trimProvenance]. A partition that keeps no log records
     /// no provenance, and this is a no-op for it.
+    ///
+    /// #2299: the slice is installed onto the log the page is written into, so a partition not materialized yet is
+    /// materialized first ([#logForInstall]); installing onto no log and letting the page's first append create it
+    /// dropped the source's history and made the next live append raise `HISTORY_MISSING`.
     public Result<InstalledSlice> installProvenance(String streamName,
                                                     int partition,
                                                     long fromOffset,
                                                     long toOffset,
                                                     List<ProvenanceEntry> slice) {
-        return walFor(streamName, partition).map(wal -> installProvenance(wal,
-                                                                          streamName,
-                                                                          partition,
-                                                                          fromOffset,
-                                                                          toOffset,
-                                                                          slice))
-                     .or(() -> Result.success(InstalledSlice.installedSlice(streamName,
-                                                                            partition,
-                                                                            List.of(),
-                                                                            List.of())));
+        return logForInstall(streamName, partition, fromOffset).map(wal -> installProvenance(wal,
+                                                                                             streamName,
+                                                                                             partition,
+                                                                                             fromOffset,
+                                                                                             toOffset,
+                                                                                             slice))
+                            .or(() -> success(emptyInstall(streamName, partition)));
+    }
+
+    /// The log a catch-up page starting at `fromOffset` is written into: the partition's own when it is materialized,
+    /// else the one the page's first append would materialize through the same resolution ([#resolveAppendTarget],
+    /// F1f included), built now so the install lands on it. A partition this node cannot materialize (not held here,
+    /// budget-deferred, paced) has no log to install onto, and its refusal is absorbed here (design-out): the page's first
+    /// append resolves the same target and returns the same refusal, so nothing of the page is applied and the failure
+    /// still reaches the backfill, which retries.
+    private Option<AppendLog> logForInstall(String streamName, int partition, long fromOffset) {
+        return walFor(streamName, partition).orElse(() -> materializedLog(streamName, partition, fromOffset));
+    }
+
+    private Option<AppendLog> materializedLog(String streamName, int partition, long fromOffset) {
+        return resolveStreamEntry(streamName).flatMap(held -> catchUpTarget(held, partition, fromOffset))
+                                 .option()
+                                 .flatMap(_ -> walFor(streamName, partition));
+    }
+
+    /// A page from offset 0 is the replicate append [#appendReplicatedAt] marks as starting an empty partition.
+    private Result<OffHeapRingBuffer> catchUpTarget(StreamEntry entry, int partition, long fromOffset) {
+        return resolveAppendTarget(entry.config().name(),
+                                   partition,
+                                   entry,
+                                   fromOffset == 0L);
     }
 
     private Result<InstalledSlice> installProvenance(AppendLog wal,
@@ -4337,15 +4362,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The head is read outside the partition's ordered section: a live append landing between that read and the
     /// replay's first append makes the replay's appends at those offsets a verification instead, and the unknown
     /// entry then starts above records the live batch attributed -- conservative, never permissive.
+    ///
+    /// #2299: the head is read from the log the replay writes into, so a partition not materialized yet is
+    /// materialized first ([#logForInstall], as an empty partition may be: its head is -1, so the replay starts at 0);
+    /// reading it before the log existed recorded nothing and left the replayed records without a history, which the
+    /// next live append flagged as `HISTORY_MISSING` instead of `HISTORY_INCOMPLETE`.
     public Result<InstalledSlice> installUnattributed(String streamName, int partition, long toOffset) {
+        return logForInstall(streamName, partition, 0L).map(wal -> installUnattributed(wal,
+                                                                                       streamName,
+                                                                                       partition,
+                                                                                       toOffset))
+                            .or(() -> success(emptyInstall(streamName, partition)));
+    }
+
+    private Result<InstalledSlice> installUnattributed(AppendLog wal, String streamName, int partition, long toOffset) {
         var start = nextExpectedOffset(streamName, partition);
 
-        return walFor(streamName, partition).filter(_ -> toOffset >= start)
-                     .map(wal -> recordUnattributed(wal, streamName, partition, start))
-                     .or(() -> Result.success(InstalledSlice.installedSlice(streamName,
-                                                                            partition,
-                                                                            List.of(),
-                                                                            List.of())));
+        return toOffset >= start
+               ? recordUnattributed(wal, streamName, partition, start)
+               : success(emptyInstall(streamName, partition));
+    }
+
+    private static InstalledSlice emptyInstall(String streamName, int partition) {
+        return InstalledSlice.installedSlice(streamName, partition, List.of(), List.of());
     }
 
     private Result<InstalledSlice> recordUnattributed(AppendLog wal, String streamName, int partition, long start) {

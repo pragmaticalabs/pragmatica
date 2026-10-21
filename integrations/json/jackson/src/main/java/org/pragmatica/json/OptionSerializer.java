@@ -50,10 +50,15 @@ public class OptionSerializer extends ValueSerializer<Option<?>> {
         }
     }
 
+    /// Contextualizes only for a property declared as an Option. A container property (`List<Option<X>>`,
+    /// `Map<K, Option<X>>`) also reaches here for its elements, and its content type is the Option itself:
+    /// deriving the element serializer from it would hand the Option's value to an Option serializer
+    /// (ClassCastException). Same recursion guard as OptionDeserializer's (#696).
     @Override
     public ValueSerializer<?> createContextual(SerializationContext prov, BeanProperty property) {
         return Option.option(property)
                      .map(BeanProperty::getType)
+                     .filter(type -> type.getRawClass() == Option.class)
                      .filter(JavaType::hasContentType)
                      .map(type -> createContextualSerializer(prov, type))
                      .or(this);

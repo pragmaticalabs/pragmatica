@@ -208,8 +208,8 @@ public final class WorkerMetadataIndex {
                                    if (key instanceof AetherKey.NodeArtifactKey endpoint
                                        && value instanceof AetherValue.NodeArtifactValue state
                                        && state.state() == SliceState.ACTIVE) {
-                                   peers.add(endpoint.nodeId());
-                               }
+                                       peers.add(endpoint.nodeId());
+                                   }
                                });
             }
         }
@@ -256,7 +256,9 @@ public final class WorkerMetadataIndex {
             case AetherKey.ScheduledTaskKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.ScheduledTaskPauseKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.ScheduledTaskStateKey entry -> Set.of(artifact(entry.artifact()));
+            case AetherKey.ScheduledTaskClaimKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.TopicSubscriptionKey entry -> Set.of(GLOBAL, artifact(entry.artifact()));
+            case AetherKey.TopicPublisherKey entry -> Set.of(GLOBAL, artifact(entry.artifact()));
             case AetherKey.StreamRegistrationKey entry -> Set.of(artifact(entry.artifact()),
                                                                  "stream:" + entry.streamName());
             case AetherKey.StreamCursorCheckpointKey entry -> Set.of("stream:" + entry.streamName());

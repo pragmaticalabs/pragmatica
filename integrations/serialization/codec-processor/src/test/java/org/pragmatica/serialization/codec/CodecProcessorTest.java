@@ -7,8 +7,27 @@ import org.junit.jupiter.api.Test;
 
 import org.pragmatica.serialization.SliceCodec;
 
+import javax.annotation.processing.AbstractProcessor;
+import javax.annotation.processing.RoundEnvironment;
+import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.annotation.processing.SupportedSourceVersion;
+import javax.lang.model.SourceVersion;
+import javax.lang.model.element.TypeElement;
+import javax.tools.JavaFileObject;
+import javax.tools.StandardLocation;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import static com.google.testing.compile.CompilationSubject.assertThat;
 import static com.google.testing.compile.Compiler.javac;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CodecProcessorTest {
 
@@ -652,6 +671,826 @@ class CodecProcessorTest {
 
             assertThat(compilation).failed();
             assertThat(compilation).hadErrorContaining("has no codec");
+        }
+    }
+
+    /// `@Json` refuses at compile time what its generated codec cannot carry, rather than failing at the first
+    /// request. Map keys are the subtle case: a JSON object key is a string, so only a String, an enum, or a
+    /// value object over a String qualifies.
+    @Nested
+    class JsonTests {
+        @Test
+        void json_generatesCodec_forMapKeyedByValueObjectOverString() {
+            var source = JavaFileObjects.forSourceString("com.example.Prices",
+                """
+                package com.example;
+
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.Map;
+
+                @Json
+                public record Prices(Map<Sku, Long> bySku) {
+                    public record Sku(String value) {
+                        public static Result<Sku> sku(String value) {
+                            return Result.success(new Sku(value));
+                        }
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.PricesJson")
+                                   .contentsAsUtf8String()
+                                   .contains("Sku.sku(in.readKey())");
+        }
+
+        @Test
+        void json_failsCompilation_forIntegerMapKey() {
+            var source = JavaFileObjects.forSourceString("com.example.Counts",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+                import java.util.Map;
+
+                @Json
+                public record Counts(Map<Integer, String> byId) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Counts' cannot get a generated codec");
+            assertThat(compilation).hadErrorContaining("map key must be a String");
+        }
+
+        @Test
+        void json_failsCompilation_forMapKeyedByValueObjectOverLong() {
+            var source = JavaFileObjects.forSourceString("com.example.Ledger",
+                """
+                package com.example;
+
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.Map;
+
+                @Json
+                public record Ledger(Map<AccountNo, Long> balances) {
+                    public record AccountNo(long value) {
+                        public static Result<AccountNo> accountNo(long value) {
+                            return Result.success(new AccountNo(value));
+                        }
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("map key must be a String");
+        }
+
+        @Test
+        void json_failsCompilation_forInterfaceComponent() {
+            var source = JavaFileObjects.forSourceString("com.example.Holder",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Holder(Runnable task) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Holder' cannot get a generated codec");
+            assertThat(compilation).hadErrorContaining("neither a record nor an enum");
+        }
+    }
+
+    /// A type Jackson would shape through its annotations is refused, wherever the annotation sits: a generated
+    /// codec would silently ignore it and change the wire form.
+    @Nested
+    class JacksonAnnotatedTypes {
+        @Test
+        void json_failsCompilation_forJsonPropertyOnComponent() {
+            var source = JavaFileObjects.forSourceString("com.example.Renamed",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Renamed(@JsonProperty("user_name") String userName) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Renamed' cannot get a generated codec");
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Renamed");
+        }
+
+        @Test
+        void json_failsCompilation_forJsonTypeInfoOnImplementedInterface() {
+            var source = JavaFileObjects.forSourceString("com.example.Shapes",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonTypeInfo;
+                import org.pragmatica.serialization.json.Json;
+
+                public interface Shapes {
+                    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+                    sealed interface Shape permits Circle {}
+
+                    @Json
+                    record Circle(int r) implements Shape {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonTypeInfo on com.example.Shapes.Shape");
+        }
+
+        @Test
+        void json_failsCompilation_forJsonPropertyOnEnumConstant() {
+            var source = JavaFileObjects.forSourceString("com.example.Level",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public enum Level {
+                    @JsonProperty("lo") LOW,
+                    HIGH
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Level.LOW");
+        }
+
+        @Test
+        void json_failsCompilation_forJacksonMetaAnnotation() {
+            var marker = JavaFileObjects.forSourceString("com.example.Snake",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JacksonAnnotationsInside;
+                import java.lang.annotation.Retention;
+                import java.lang.annotation.RetentionPolicy;
+
+                @Retention(RetentionPolicy.RUNTIME)
+                @JacksonAnnotationsInside
+                public @interface Snake {}
+                """);
+            var source = JavaFileObjects.forSourceString("com.example.Tagged",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                @Snake
+                public record Tagged(String name) {}
+                """);
+
+            var compilation = compileWith(marker, source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.example.Snake on com.example.Tagged");
+        }
+
+        // Jackson binds through creator parameters, so an annotation found only on a parameter must refuse the type.
+        @Test
+        void json_failsCompilation_forJsonPropertyOnlyOnCanonicalConstructorParameter() {
+            var source = JavaFileObjects.forSourceString("com.example.Renamed",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Renamed(String userName) {
+                    public Renamed(@JsonProperty("user_name") String userName) {
+                        this.userName = userName;
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on parameter userName of com.example.Renamed.<init>");
+        }
+
+        @Test
+        void json_failsCompilation_forJsonPropertyOnlyOnFactoryParameter() {
+            var source = JavaFileObjects.forSourceString("com.example.Handle",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Handle(String value) {
+                    public static Result<Handle> handle(@JsonProperty("h") String value) {
+                        return Result.success(new Handle(value));
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on parameter value of com.example.Handle.handle");
+        }
+
+        // A container refused for its element says why the element was refused, not just that the container was.
+        @Test
+        void json_failsCompilation_namingTheInnermostRefusal_forARefusedListElement() {
+            var source = JavaFileObjects.forSourceString("com.example.Outer",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.List;
+
+                @Json
+                public record Outer(List<Inner> items) {
+                    public record Inner(@JsonProperty("n") String name) {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("component items: java.util.List<com.example.Outer.Inner>: com.example.Outer.Inner: "
+                                                       + "Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Outer.Inner");
+        }
+
+        // The innermost refusal is found through any depth of container nesting.
+        @Test
+        void json_failsCompilation_namingTheInnermostRefusal_throughNestedContainers() {
+            var source = JavaFileObjects.forSourceString("com.example.Deep",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.List;
+
+                @Json
+                public record Deep(List<List<Bad>> rows) {
+                    public record Bad(@JsonProperty("n") String name) {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("component rows: java.util.List<java.util.List<com.example.Deep.Bad>>: "
+                                                       + "java.util.List<com.example.Deep.Bad>: com.example.Deep.Bad: "
+                                                       + "Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Deep.Bad");
+        }
+
+        // ...and through a map value as well as a list element.
+        @Test
+        void json_failsCompilation_namingTheInnermostRefusal_forAListNestedInAMapValue() {
+            var source = JavaFileObjects.forSourceString("com.example.Deeper",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.List;
+                import java.util.Map;
+
+                @Json
+                public record Deeper(Map<String, List<Bad>> byName) {
+                    public record Bad(@JsonProperty("n") String name) {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("component byName: java.util.Map<java.lang.String,java.util.List<com.example.Deeper.Bad>>: "
+                                                       + "java.util.List<com.example.Deeper.Bad>: com.example.Deeper.Bad: "
+                                                       + "Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Deeper.Bad");
+        }
+
+        @Test
+        void json_generatesCodec_forUnannotatedSiblingOfRefusedType() {
+            var source = JavaFileObjects.forSourceString("com.example.Plain",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Plain(String userName) {}
+                """);
+
+            assertThat(compileWith(source)).succeeded();
+        }
+    }
+
+    /// The `@Json` user surface: one flat `<Flat>Json` entry point per annotated type, which is also that type's
+    /// `ServiceLoader` provider for `JsonCodecs.codecFor`, listed in one services file however many rounds it took.
+    @Nested
+    class JsonEntryPointAndServices {
+        private static final String SERVICES = "META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider";
+
+        @Test
+        void entryPoint_isAFlatClassNamedAfterTheType_withCodecShortcutsAndHiddenMachinery() {
+            var source = JavaFileObjects.forSourceString("com.example.Ticketing",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public interface Ticketing {
+                    @Json
+                    record BuyRequest(Seat seat) {}
+
+                    record Seat(String row) {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.Ticketing_BuyRequestJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("@org.pragmatica.serialization.json.spi.GeneratedFor(\"com.example.Ticketing.BuyRequest\")\n"
+                                + "public final class Ticketing_BuyRequestJson implements org.pragmatica.serialization.json.spi.JsonCodecProvider {");
+            entryPoint.contains("public static final org.pragmatica.serialization.json.JsonTypeCodec<com.example.Ticketing.BuyRequest> CODEC = Ticketing_BuyRequestJsonCodec.CODEC;");
+            entryPoint.contains("public static org.pragmatica.lang.Result<com.example.Ticketing.BuyRequest> decode(byte[] json) {");
+            entryPoint.contains("public static org.pragmatica.lang.Result<com.example.Ticketing.BuyRequest> decode(java.lang.String json) {");
+            entryPoint.contains("public static byte[] encode(com.example.Ticketing.BuyRequest value) {");
+            entryPoint.contains("public static final java.util.Map<java.lang.Class<?>, org.pragmatica.serialization.json.JsonTypeCodec<?>> CODECS");
+            entryPoint.contains("java.util.Map.entry(com.example.Ticketing.Seat.class, Ticketing_SeatJsonCodec.CODEC)");
+            entryPoint.contains("\n    interface Ticketing_SeatJsonCodec {");
+            entryPoint.contains("org.pragmatica.serialization.json.spi.JsonReader in");
+            entryPoint.contains("    public Ticketing_BuyRequestJson() {}");
+            entryPoint.contains("    public java.lang.Class<?> type() {\n        return com.example.Ticketing.BuyRequest.class;\n    }");
+            entryPoint.contains("    public org.pragmatica.serialization.json.JsonTypeCodec<?> codec() {\n        return CODEC;\n    }");
+            entryPoint.doesNotContain("public interface");
+        }
+
+        // One provider per @Json type, sorted by name; a type reachable only as a component (Inner) has none, and no
+        // per-package class or manifest is generated.
+        @Test
+        void services_listsEveryEntryPoint_sorted_andNothingElse() {
+            var first = JavaFileObjects.forSourceString("com.example.a.First",
+                """
+                package com.example.a;
+
+                @org.pragmatica.serialization.json.Json
+                public record First(Inner inner) {
+                    public record Inner(String text) {}
+                }
+                """);
+            var second = JavaFileObjects.forSourceString("com.example.a.Second",
+                """
+                package com.example.a;
+
+                @org.pragmatica.serialization.json.Json
+                public enum Second { ONE, UNKNOWN }
+                """);
+            var other = JavaFileObjects.forSourceString("com.example.b.Other",
+                """
+                package com.example.b;
+
+                @org.pragmatica.serialization.json.Json
+                public record Other(long id) {}
+                """);
+
+            var compilation = compileWith(other, second, first);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
+                                   .contentsAsUtf8String()
+                                   .isEqualTo("com.example.a.FirstJson\ncom.example.a.SecondJson\ncom.example.b.OtherJson\n");
+            assertEquals(Set.of("com.example.a.FirstJson", "com.example.a.SecondJson", "com.example.b.OtherJson"),
+                         compilation.generatedSourceFiles()
+                                    .stream()
+                                    .map(file -> file.getName().replaceAll("^.*?/com/", "com/").replace(".java", "").replace('/', '.'))
+                                    .collect(Collectors.toSet()));
+            assertEquals(List.of(SERVICES),
+                         compilation.generatedFiles()
+                                    .stream()
+                                    .filter(file -> file.getKind() == JavaFileObject.Kind.OTHER)
+                                    .map(file -> file.getName().replaceAll("^.*?/META-INF/", "META-INF/"))
+                                    .toList());
+        }
+
+        // The binary @Codec registry option leaves JSON alone: the provider is still named after the type.
+        @Test
+        void services_ignoresTheBinaryRegistrySuffixOption() {
+            var source = JavaFileObjects.forSourceString("com.example.Msg",
+                """
+                package com.example;
+
+                @org.pragmatica.serialization.json.Json
+                public record Msg(String text) {}
+                """);
+
+            var compilation = javac().withProcessors(new CodecProcessor())
+                                     .withOptions("-Acodec.registry.suffix=Test")
+                                     .compile(source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
+                                   .contentsAsUtf8String()
+                                   .isEqualTo("com.example.MsgJson\n");
+        }
+
+        // Late is generated by another processor in Early's round, or in the round after (when EarlyJson is a root):
+        // either way the one services file, written in the last round, lists both.
+        @Test
+        void services_listsTypesArrivingInLaterRounds() {
+            for (var trigger : List.of("com.example.Early", "com.example.EarlyJson")) {
+                var compilation = javac().withProcessors(new CodecProcessor(), new LateJsonType(trigger))
+                                         .compile(early());
+
+                assertThat(compilation).succeeded();
+                assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
+                                       .contentsAsUtf8String()
+                                       .isEqualTo("com.example.EarlyJson\ncom.example.LateJson\n");
+            }
+        }
+
+        // @Deprecated is an annotation CodecProcessor does not claim, so the helper is asked in Early's round too.
+        private static JavaFileObject early() {
+            return JavaFileObjects.forSourceString("com.example.Early",
+                                                   "package com.example;\n\n@Deprecated\n@org.pragmatica.serialization.json.Json\npublic record Early(String text) {}\n");
+        }
+    }
+
+    /// Stands in for another processor that generates a `@Json` type: once, in the round where `trigger` is a root.
+    @SupportedAnnotationTypes("*")
+    @SupportedSourceVersion(SourceVersion.RELEASE_25)
+    static final class LateJsonType extends AbstractProcessor {
+        private final String trigger;
+        private boolean generated;
+
+        LateJsonType(String trigger) {
+            this.trigger = trigger;
+        }
+
+        @Override
+        public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
+            var triggered = roundEnv.getRootElements()
+                                    .stream()
+                                    .anyMatch(root -> root instanceof TypeElement type && type.getQualifiedName().contentEquals(trigger));
+
+            if (triggered && !generated) {
+                generated = true;
+                try (var writer = processingEnv.getFiler().createSourceFile("com.example.Late").openWriter()) {
+                    writer.write("package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Late(long id) {}\n");
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// A generated name that is already taken (by a user type, or by a class generated for another source) is one
+    /// clean compile error naming both and the way out, never the Filer's exception text.
+    @Nested
+    class JsonNameClashes {
+        @Test
+        void userTypeNamedLikeTheEntryPoint_isOneCleanError() {
+            var order = JavaFileObjects.forSourceString("com.example.Order",
+                                                        "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Order(String id) {}\n");
+            var userType = JavaFileObjects.forSourceString("com.example.OrderJson",
+                                                           "package com.example;\n\npublic class OrderJson {}\n");
+
+            var compilation = compileWith(order, userType);
+
+            assertSingleCleanError(compilation,
+                                   "Cannot generate com.example.OrderJson for com.example.Order: the type com.example.OrderJson already exists",
+                                   "If it is stale output of an older build, clean the build",
+                                   "otherwise rename com.example.OrderJson, or rename or move com.example.Order.");
+        }
+
+        // Flat names are injective: a nested A.B is A_BJson, a top-level A_B is A_0BJson, so both compile, each entry
+        // point typed to its own type, and the services file lists both.
+        @Test
+        void nestedTypeAndTopLevelTypeWithAnUnderscore_getDistinctEntryPoints() {
+            var nested = JavaFileObjects.forSourceString("com.example.A",
+                                                         "package com.example;\n\npublic interface A {\n    @org.pragmatica.serialization.json.Json\n    record B(String x) {}\n}\n");
+            var topLevel = JavaFileObjects.forSourceString("com.example.A_B",
+                                                           "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record A_B(String y) {}\n");
+
+            var compilation = compileWith(nested, topLevel);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.A_BJson")
+                                   .contentsAsUtf8String()
+                                   .contains("JsonTypeCodec<com.example.A.B> CODEC = A_BJsonCodec.CODEC;");
+            assertThat(compilation).generatedSourceFile("com.example.A_0BJson")
+                                   .contentsAsUtf8String()
+                                   .contains("JsonTypeCodec<com.example.A_B> CODEC = A_0BJsonCodec.CODEC;");
+            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT,
+                                                  "META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider")
+                                   .contentsAsUtf8String()
+                                   .isEqualTo("com.example.A_0BJson\ncom.example.A_BJson\n");
+        }
+
+        // Inside one entry point too: a reachable nested Outer.In and a reachable top-level Outer_In get distinct
+        // nested codec interfaces, never a numbered fallback.
+        @Test
+        void reachableTypesWithCollidingJoinedNames_getDistinctNestedCodecs() {
+            var outer = JavaFileObjects.forSourceString("com.example.Outer",
+                                                        "package com.example;\n\npublic interface Outer {\n    record In(String a) {}\n}\n");
+            var flat = JavaFileObjects.forSourceString("com.example.Outer_In",
+                                                       "package com.example;\n\npublic record Outer_In(String b) {}\n");
+            var root = JavaFileObjects.forSourceString("com.example.Root",
+                                                       "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Root(Outer.In first, Outer_In second) {}\n");
+
+            var compilation = compileWith(outer, flat, root);
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.RootJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("java.util.Map.entry(com.example.Outer.In.class, Outer_InJsonCodec.CODEC)");
+            entryPoint.contains("java.util.Map.entry(com.example.Outer_In.class, Outer_0InJsonCodec.CODEC)");
+            entryPoint.doesNotContain("JsonCodec2");
+        }
+
+        // A class with the entry point's name that was generated for another source (by its marker) is refused, never
+        // overwritten: one source's codec must not silently replace another's.
+        @Test
+        void classGeneratedForAnotherSource_isOneCleanError() {
+            var order = JavaFileObjects.forSourceString("com.example.Order",
+                                                        "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Order(String id) {}\n");
+            var other = JavaFileObjects.forSourceString("com.example.OrderJson",
+                                                        "package com.example;\n\n@org.pragmatica.serialization.json.spi.GeneratedFor(\"com.example.Other\")\npublic final class OrderJson {}\n");
+
+            var compilation = compileWith(order, other);
+
+            assertSingleCleanError(compilation,
+                                   "Cannot generate com.example.OrderJson for com.example.Order: it already exists, generated for com.example.Other",
+                                   "Rename one of the two");
+        }
+
+        // Flat names are unique within a package only: reachable types of two packages sharing one get numbered nested
+        // codec names, assigned in qualified-name order, and the entry point compiles and keeps each codec apart.
+        @Test
+        void reachableTypesOfTwoPackagesWithOneFlatName_getNumberedNestedCodecs() {
+            var compilation = compileWith(sameFlatName("y", "String a"),
+                                          sameFlatName("z", "long b"),
+                                          JavaFileObjects.forSourceString("com.example.Root",
+                                                                          "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Root(com.example.z.Foo second, com.example.y.Foo first) {}\n"));
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.RootJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("java.util.Map.entry(com.example.y.Foo.class, FooJsonCodec.CODEC)");
+            entryPoint.contains("java.util.Map.entry(com.example.z.Foo.class, FooJsonCodec2.CODEC)");
+            entryPoint.contains("\n    interface FooJsonCodec {");
+            entryPoint.contains("\n    interface FooJsonCodec2 {");
+        }
+
+        // The entry point's root keeps its plain nested name; a reached type of another package with its flat name is
+        // numbered.
+        @Test
+        void rootAndAReachableTypeOfAnotherPackageWithItsFlatName_rootKeepsThePlainName() {
+            var compilation = compileWith(sameFlatName("y", "String a"),
+                                          JavaFileObjects.forSourceString("com.example.Foo",
+                                                                          "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Foo(com.example.y.Foo inner) {}\n"));
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.FooJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("JsonTypeCodec<com.example.Foo> CODEC = FooJsonCodec.CODEC;");
+            entryPoint.contains("java.util.Map.entry(com.example.y.Foo.class, FooJsonCodec2.CODEC)");
+        }
+
+        // Root first is a rule of its own, not a side effect of qualified-name order: this root (z) sorts after the
+        // reached y.Foo, and still keeps the plain name while y.Foo is numbered.
+        @Test
+        void rootSortingAfterAReachedTypeOfItsFlatName_stillKeepsThePlainName() {
+            var compilation = compileWith(sameFlatName("y", "String a"),
+                                          JavaFileObjects.forSourceString("com.example.z.Foo",
+                                                                          "package com.example.z;\n\n@org.pragmatica.serialization.json.Json\npublic record Foo(com.example.y.Foo inner) {}\n"));
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.z.FooJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("JsonTypeCodec<com.example.z.Foo> CODEC = FooJsonCodec.CODEC;");
+            entryPoint.contains("java.util.Map.entry(com.example.y.Foo.class, FooJsonCodec2.CODEC)");
+        }
+
+        private static JavaFileObject sameFlatName(String packageSegment, String component) {
+            return JavaFileObjects.forSourceString("com.example." + packageSegment + ".Foo",
+                                                   "package com.example." + packageSegment + ";\n\npublic record Foo(" + component + ") {}\n");
+        }
+
+        private static void assertSingleCleanError(Compilation compilation, String... fragments) {
+            assertThat(compilation).failed();
+            assertEquals(1, compilation.errors().size(), compilation.errors().toString());
+            var message = compilation.errors().getFirst().getMessage(null);
+
+            for (var fragment : fragments) {
+                assertTrue(message.contains(fragment), message);
+            }
+
+            assertFalse(message.contains("\tat ") || message.contains("Exception") || message.contains("FilerException"), message);
+        }
+    }
+
+    /// `@Json` where the processor cannot serve it is one clean compile error, never a broken generated source or a
+    /// silently ignored annotation.
+    @Nested
+    class UnsupportedJsonPlacements {
+        @Test
+        void typeInTheUnnamedPackage_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("Loose",
+                                                                          "@org.pragmatica.serialization.json.Json\npublic record Loose(String a) {}\n"));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json type 'Loose' is in the unnamed package",
+                                                   "Declare it in a named package");
+        }
+
+        // Annotation processing never sees a local type; the annotation elsewhere in the class (here @Override) is what
+        // makes javac initialise the processor.
+        @Test
+        void localRecord_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    public Object make() {
+                        @Json
+                        record Point(int x) {}
+
+                        return new Point(1);
+                    }
+
+                    @Override
+                    public String toString() {
+                        return "holder";
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Point'",
+                                                   "Declare it as a top-level or member type");
+        }
+
+        // A member @Json type beside it still gets its codec; only the local one is refused.
+        @Test
+        void localEnum_isOneCleanError_besideAMemberJsonType() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    @Json
+                    public record Member(int a) {}
+
+                    public Object make() {
+                        @Json
+                        enum Colour { RED, GREEN }
+
+                        return Colour.RED;
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Colour'",
+                                                   "Declare it as a top-level or member type");
+            assertThat(compilation).hadNoteContaining("Generated JSON codec: Holder_MemberJson");
+        }
+
+        // A member type is unseen too when a type enclosing it is local: the check walks the enclosing chain.
+        @Test
+        void memberOfALocalClass_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    public Object make() {
+                        class Box {
+                            @Json
+                            record Point(int x) {}
+                        }
+
+                        return new Box.Point(1);
+                    }
+
+                    @Override
+                    public String toString() {
+                        return "holder";
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Point'",
+                                                   "Declare it as a top-level or member type");
+        }
+
+        // The same for a member of an anonymous class, which is no local class: anonymous nesting is its own case.
+        @Test
+        void memberOfAnAnonymousClass_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    public Object make() {
+                        return new Object() {
+                            @Json
+                            record Point(int x) {}
+
+                            @Override
+                            public String toString() {
+                                return new Point(1).toString();
+                            }
+                        };
+                    }
+
+                    @Override
+                    public String toString() {
+                        return "holder";
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Point'",
+                                                   "Declare it as a top-level or member type");
+        }
+    }
+
+    /// Generated readers track fields as bits of one long (field i is `1L << i`): 64 components fit, a 65th
+    /// would wrap onto bit 0 and a missing first field would go unnoticed.
+    @Nested
+    class ComponentLimit {
+        @Test
+        void json_generatesCodec_forSixtyFourComponents() {
+            var compilation = compileWith(wideRecord("Wide64", 64));
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.Wide64Json")
+                                   .contentsAsUtf8String()
+                                   .contains("long REQUIRED = -1L;");
+        }
+
+        @Test
+        void json_failsCompilation_forSixtyFiveComponents() {
+            var compilation = compileWith(wideRecord("Wide65", 65));
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Wide65' cannot get a generated codec: 65 components; generated codecs support at most 64");
+        }
+
+        private static JavaFileObject wideRecord(String name, int components) {
+            var fields = IntStream.range(0, components)
+                                                   .mapToObj(i -> "String f" + i)
+                                                   .collect(Collectors.joining(", "));
+
+            return JavaFileObjects.forSourceString("com.example." + name,
+                                                   "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record "
+                                                   + name + "(" + fields + ") {}\n");
         }
     }
 

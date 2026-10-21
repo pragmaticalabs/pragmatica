@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -33,6 +34,7 @@ import static org.pragmatica.lang.parse.TimeSpan.timeSpan;
 public final class ClusterBootstrapConfigParser {
     private ClusterBootstrapConfigParser() {}
 
+    private static final Pattern TIMEOUT_PATTERN = Pattern.compile("[0-9]+[smh]");
     private static final String REQUIRED_CONFIG_VERSION = "1.0.0";
     private static final String CLUSTER_SECTION = "cluster";
     private static final String CLUSTER_CORE_SECTION = "cluster.core";
@@ -71,10 +73,15 @@ public final class ClusterBootstrapConfigParser {
     /// reads it back through [RollbackPolicyParser#fromClusterToml]. #1564: the `[replication]` defaults the same
     /// way, read back through [ReplicationDefaultsParser#fromClusterToml].
     public static Result<ClusterBootstrapConfig> fromDocument(TomlDocument doc) {
+        // #1455: typed reads answer Option and default a present-but-wrong-typed value; the document
+        // records those reads and the parse refuses here naming every one.
         return RollbackPolicyParser.parse(doc)
                                    .flatMap(_ -> ReplicationDefaultsParser.parse(doc))
                                    .flatMap(_ -> parseConfigVersion(doc))
-                                   .flatMap(_ -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc, cluster)));
+                                   .flatMap(_ -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc, cluster)))
+                                   .flatMap(config -> doc.requireNoTypeMismatches()
+                                                         .mapError(ClusterBootstrapConfigParser::wrapError)
+                                                         .map(_ -> config));
     }
 
     private static Result<ClusterBootstrapConfig> buildConfig(TomlDocument doc, ClusterIdentity cluster) {
@@ -84,13 +91,17 @@ public final class ClusterBootstrapConfigParser {
         var infrastructure = parseInfrastructure(doc);
         var operations = parseOperations(doc);
 
-        return Result.all(sources, operations).flatMap((s, ops) -> CommunityPlacementParser.parse(doc, s).map(communities -> ClusterBootstrapConfig.clusterBootstrapConfig(cluster,
-                                                                                                                                                                           coreTopology,
-                                                                                                                                                                           s,
-                                                                                                                                                                           runtimes,
-                                                                                                                                                                           infrastructure,
-                                                                                                                                                                           ops,
-                                                                                                                                                                           communities)));
+        return Result.all(sources,
+                          operations,
+                          CommunityPolicyParser.parse(doc))
+                     .flatMap((s, ops, policy) -> CommunityPlacementParser.parse(doc, s).map(communities -> ClusterBootstrapConfig.clusterBootstrapConfig(cluster,
+                                                                                                                                                          coreTopology,
+                                                                                                                                                          s,
+                                                                                                                                                          runtimes,
+                                                                                                                                                          infrastructure,
+                                                                                                                                                          ops,
+                                                                                                                                                          communities,
+                                                                                                                                                          policy)));
     }
 
     /// W6 — document-level format gate (RFC-0016 §3.5). `config_version` is the version of the whole
@@ -409,8 +420,10 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static LoadBalancerMode parseLoadBalancerMode(TomlDocument doc, String section, SourceType type) {
-        return doc.getString(section, "load_balancer")
-                  .flatMap(raw -> LoadBalancerMode.loadBalancerMode(raw).option())
+        return doc.getParsed(section,
+                             "load_balancer",
+                             "one of: none, external, elected",
+                             raw -> LoadBalancerMode.loadBalancerMode(raw).option())
                   .or(defaultLoadBalancerMode(type));
     }
 
@@ -703,13 +716,22 @@ public final class ClusterBootstrapConfigParser {
         return TlsDeploymentConfig.tlsDeploymentConfig(autoGenerate);
     }
 
+    /// #1455: the bootstrap orchestrator reads these as a whole number with an `s`, `m` or `h` suffix and takes its default
+    /// for anything else, so `"soon"` or `"10d"` was accepted here and silently replaced by the default there.
+    private static Option<String> timeout(TomlDocument doc, String key) {
+        return doc.getParsed(OPERATIONS_TIMEOUTS_SECTION,
+                             key,
+                             "a whole number with an s, m or h suffix, such as 300s, 5m or 1h",
+                             raw -> option(raw).filter(TIMEOUT_PATTERN.asMatchPredicate()));
+    }
+
     private static TimeoutsConfig parseTimeoutsConfig(TomlDocument doc) {
         if (!doc.hasSection(OPERATIONS_TIMEOUTS_SECTION)) {
             return TimeoutsConfig.defaultTimeoutsConfig();
         }
 
-        var healthCheck = doc.getString(OPERATIONS_TIMEOUTS_SECTION, "health_check").or("300s");
-        var quorumFormation = doc.getString(OPERATIONS_TIMEOUTS_SECTION, "quorum_formation").or("600s");
+        var healthCheck = timeout(doc, "health_check").or("300s");
+        var quorumFormation = timeout(doc, "quorum_formation").or("600s");
 
         return TimeoutsConfig.timeoutsConfig(healthCheck, quorumFormation);
     }

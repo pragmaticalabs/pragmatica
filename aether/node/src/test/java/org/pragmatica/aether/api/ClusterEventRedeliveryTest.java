@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.StreamError;
@@ -21,6 +22,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.api.ClusterEventRedelivery.DropReason.EXPIRED;
@@ -296,7 +298,7 @@ class ClusterEventRedeliveryTest {
             for (long elapsed = 0; elapsed < ClusterEventRedelivery.RETRY_HORIZON_MS - 10_000; elapsed += 1_000) {
                 advanceAndRedeliver(1_000);
             }
-            assertThat(logged.stream().filter(line -> line.startsWith("ERROR "))).as("nothing is reported inside the horizon").isEmpty();
+            assertThat(logged.messages(Level.ERROR)).as("nothing is reported inside the horizon").isEmpty();
             for (long elapsed = 0; elapsed <= 20_000 + 2 * ClusterEventRedelivery.MAX_BACKOFF_MS; elapsed += 1_000) {
                 advanceAndRedeliver(1_000);
             }
@@ -306,7 +308,7 @@ class ClusterEventRedeliveryTest {
 
         assertThat(redelivery.held()).as("both events are still held").isEqualTo(2L);
         assertThat(redelivery.dropped(EXPIRED)).isZero();
-        assertThat(logged.stream().filter(line -> line.startsWith("ERROR ")))
+        assertThat(logged.messages(Level.ERROR))
             .hasSize(1)
             .allMatch(line -> line.contains("kept, not dropped"));
     }
@@ -326,7 +328,7 @@ class ClusterEventRedeliveryTest {
         }
 
         assertThat(redelivery.dropped(OVERFLOW)).isEqualTo(1L);
-        assertThat(logged.stream().filter(line -> line.startsWith("WARN ")))
+        assertThat(logged.messages(Level.WARN))
             .hasSize(1)
             .allMatch(line -> line.contains("dropping the oldest"));
     }
@@ -353,7 +355,7 @@ class ClusterEventRedeliveryTest {
         }
 
         assertThat(redelivery.dropped(OVERFLOW)).isEqualTo(1L);
-        assertThat(logged.stream().filter(line -> line.startsWith("WARN ")))
+        assertThat(logged.messages(Level.WARN))
             .hasSize(1)
             .allMatch(line -> line.contains("all in flight") && line.contains("dropping the new"));
     }
@@ -430,8 +432,7 @@ class ClusterEventRedeliveryTest {
             release();
         }
 
-        assertThat(logged).anyMatch(line -> line.startsWith("WARN ")
-                                            && line.contains("ALERT_INJECTED/PERMANENT=1"));
+        assertThat(logged.messages(Level.WARN)).anyMatch(line -> line.contains("ALERT_INJECTED/PERMANENT=1"));
     }
 
     /// The first expiry is reported once at ERROR (the stream refused publishes for a whole horizon), not per event.
@@ -451,44 +452,19 @@ class ClusterEventRedeliveryTest {
         }
 
         assertThat(redelivery.dropped(EXPIRED)).as("control").isEqualTo(2L);
-        assertThat(logged.stream()
-                         .filter(line -> line.startsWith("ERROR ")))
+        assertThat(logged.messages(Level.ERROR))
             .hasSize(1)
             .allMatch(line -> line.contains("is refusing publishes"));
     }
 
-    private final List<String> captured = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private org.apache.logging.log4j.core.LoggerContext logContext;
-    private org.apache.logging.log4j.core.appender.AbstractAppender appender;
+    private LogCapture logCapture;
 
-    private List<String> capture() {
-        logContext = (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
-        appender = new org.apache.logging.log4j.core.appender.AbstractAppender("RedeliveryCapture",
-                                                                               null,
-                                                                               null,
-                                                                               true,
-                                                                               org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY) {
-            @Override
-            public void append(org.apache.logging.log4j.core.LogEvent event) {
-                captured.add(event.getLevel() + " " + event.getMessage().getFormattedMessage());
-            }
-        };
-        appender.start();
-
-        var config = new org.apache.logging.log4j.core.config.LoggerConfig(ClusterEventRedelivery.class.getName(),
-                                                                           org.apache.logging.log4j.Level.TRACE,
-                                                                           false);
-
-        config.addAppender(appender, org.apache.logging.log4j.Level.TRACE, null);
-        logContext.getConfiguration().addLogger(ClusterEventRedelivery.class.getName(), config);
-        logContext.updateLoggers();
-
-        return captured;
+    private LogCapture capture() {
+        logCapture = LogCapture.capture(ClusterEventRedelivery.class, Level.TRACE, false);
+        return logCapture;
     }
 
     private void release() {
-        logContext.getConfiguration().removeLogger(ClusterEventRedelivery.class.getName());
-        logContext.updateLoggers();
-        appender.stop();
+        logCapture.close();
     }
 }

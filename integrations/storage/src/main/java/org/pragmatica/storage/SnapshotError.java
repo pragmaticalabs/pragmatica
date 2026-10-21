@@ -1,5 +1,7 @@
 package org.pragmatica.storage;
 
+import java.nio.file.Path;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
@@ -92,6 +94,33 @@ public sealed interface SnapshotError extends Cause {
                  + " and none of the " + retained
                  + " other retained snapshot(s) restores; refusing to start with EMPTY metadata. "
                  + "See docs/operators/runbooks/backup-recovery.md";
+        }
+    }
+
+    /// #1473: the volume-identity sentinel outside the volume says this node wrote a snapshot
+    /// directory before, and the directory now in front of it is empty or carries another volume's
+    /// id. An unmounted mount point looks exactly like this; a first boot never does, because it has
+    /// no sentinel.
+    record VolumeNotPreviouslyWritten(Path snapshotPath, Path sentinel) implements SnapshotError {
+        @Override
+        public String message() {
+            return "Snapshot directory " + snapshotPath
+                 + " is not the volume this node wrote before (sentinel " + sentinel
+                 + " records a volume id the directory does not carry); refusing to start with EMPTY metadata. "
+                 + "Mount the original volume, or delete the sentinel only if the volume was replaced on purpose";
+        }
+    }
+
+    /// #1473: the sentinel says this node wrote a volume at `snapshotPath` before, and the disk tier for it
+    /// did not come up at all (the mount point is missing or not writable). That is the unmounted volume
+    /// reaching the snapshot layer as "no disk tier"; booting on empty metadata would be the defect.
+    record VolumeUnavailable(Path snapshotPath, Path sentinel) implements SnapshotError {
+        @Override
+        public String message() {
+            return "The disk tier for snapshot directory " + snapshotPath
+                 + " is unavailable, but sentinel " + sentinel
+                 + " records that this node wrote a volume there before; refusing to start with EMPTY metadata. "
+                 + "Mount the original volume, or delete the sentinel only if the volume was retired on purpose";
         }
     }
 }

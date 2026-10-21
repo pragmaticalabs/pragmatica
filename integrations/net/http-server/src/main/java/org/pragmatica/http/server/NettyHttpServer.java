@@ -23,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 import org.pragmatica.http.*;
@@ -52,6 +54,9 @@ import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.stream.ChunkedWriteHandler;
+import io.netty.handler.timeout.IdleState;
+import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -280,7 +285,14 @@ final class NettyHttpServer implements HttpServer {
             var pipeline = ch.pipeline();
 
             sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
+            // I3: reader-idle events; HttpRequestHandler closes the connection on one unless a response is pending
+            pipeline.addLast(new IdleStateHandler(config.readTimeout().millis(),
+                                                  0,
+                                                  0,
+                                                  TimeUnit.MILLISECONDS));
             pipeline.addLast(new HttpServerCodec());
+            // F6: the minimum body rate, checked on the chunks before the aggregator assembles them
+            pipeline.addLast(new BodyRateGuardHandler(config.bodyRateLimit()));
             pipeline.addLast(new HttpObjectAggregator(config.maxContentLength()));
             if (config.chunkedWriteEnabled()) {
                 pipeline.addLast(new ChunkedWriteHandler());
@@ -394,6 +406,10 @@ final class NettyHttpServer implements HttpServer {
 
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final Map<String, WebSocketEndpoint> wsEndpoints;
+        /// Requests dispatched whose response write has not completed. Written from whatever thread completes the
+        /// response, read on the event loop, hence atomic. While it is non-zero the client is waiting on us, so a
+        /// silent connection is not idle.
+        private final AtomicInteger pendingResponses = new AtomicInteger();
 
         HttpRequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                            Map<String, WebSocketEndpoint> wsEndpoints) {
@@ -415,22 +431,48 @@ final class NettyHttpServer implements HttpServer {
             var requestId = IdGenerator.generate("req");
 
             if (request.decoderResult().isFailure()) {
-                refuseUndecodable(ctx,
-                                  requestId,
-                                  request.decoderResult().cause());
+                rejectUndecodable(ctx, requestId, request);
 
                 return;
             }
 
             var requestContext = createRequestContext(requestId, request);
-            var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
+            var responseWriter = new NettyResponseWriter(ctx,
+                                                         requestId,
+                                                         HttpUtil.isKeepAlive(request),
+                                                         pendingResponses::decrementAndGet);
 
+            pendingResponses.incrementAndGet();
             try {
                 handler.accept(requestContext, responseWriter);
             } catch (Exception e) {
                 log.error("Error handling request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
+        }
+
+        /// I2: Netty's decoder does not drop a request it could not decode. It hands on a placeholder (an empty-body
+        /// `GET /bad-request` for an unreadable request line, the real line with no body for oversized headers)
+        /// marked by a failed `decoderResult()`. It must never reach the handler as a real request: it is answered
+        /// and the connection is closed, because the decoder's position in the byte stream is no longer trustworthy.
+        private void rejectUndecodable(ChannelHandlerContext ctx, String requestId, FullHttpRequest request) {
+            var cause = request.decoderResult().cause();
+            var status = undecodableStatus(cause, request);
+
+            log.debug("Rejecting undecodable request {} with {}: {}", requestId, status.code(), cause.getMessage());
+            pendingResponses.incrementAndGet();
+            new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(status,
+                                                                                                    status.message());
+        }
+
+        /// An over-long line with no headers decoded is the request line (414); an over-long line after the headers
+        /// (a chunk-size line) is a malformed body (400).
+        private static HttpStatus undecodableStatus(Throwable cause, FullHttpRequest request) {
+            return switch (cause) {
+                case TooLongHttpHeaderException _ -> HttpStatus.REQUEST_HEADER_FIELDS_TOO_LARGE;
+                case TooLongHttpLineException _ when request.headers().isEmpty() -> HttpStatus.REQUEST_URI_TOO_LONG;
+                default -> HttpStatus.BAD_REQUEST;
+            };
         }
 
         private void handleWebSocketFrame(ChannelHandlerContext ctx, WebSocketFrame frame) {
@@ -458,7 +500,24 @@ final class NettyHttpServer implements HttpServer {
                 endpointOf(handshake).onPresent(endpoint -> open(ctx, endpoint));
             }
 
+            if (evt instanceof IdleStateEvent idle && idle.state() == IdleState.READER_IDLE) {
+                closeIfIdle(ctx);
+            }
+
             super.userEventTriggered(ctx, evt);
+        }
+
+        /// I3: no byte for the read timeout and no response owed means a stalled request (its aggregation buffer
+        /// pinned) or an idle keep-alive connection: close it. A connection awaiting its response is waiting on us,
+        /// and an upgraded WebSocket is legitimately silent, so neither is closed.
+        private void closeIfIdle(ChannelHandlerContext ctx) {
+            var webSocket = option(ctx.channel().attr(WS_STATE).get()).flatMap(opt -> opt).isPresent();
+
+            if (pendingResponses.get() == 0 && !webSocket) {
+                log.debug("Closing HTTP connection {}: no request bytes within the read timeout",
+                          ctx.channel().remoteAddress());
+                ctx.close();
+            }
         }
 
         /// #2184: the endpoint is resolved from the handshake itself, so the session exists only once the
@@ -491,21 +550,6 @@ final class NettyHttpServer implements HttpServer {
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             log.error("Error in HTTP handler", cause);
             ctx.close();
-        }
-
-        /// #2310: a request the decoder could not read completely is refused, never dispatched. The aggregator
-        /// still emits it, carrying the failure, with whatever it had read: a trailer section over the size limit
-        /// would otherwise reach the handler as a complete request without its trailers, and an over-limit header
-        /// section as a placeholder request. The decoder discards the rest of the connection, so it is closed.
-        /// `@Contract`: a Netty handler-boundary write, as [ResponseWriter#error] is.
-        @Contract
-        private static void refuseUndecodable(ChannelHandlerContext ctx, String requestId, Throwable cause) {
-            var status = cause instanceof TooLongHttpHeaderException
-                         ? HttpStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
-                         : HttpStatus.BAD_REQUEST;
-
-            log.debug("Refusing undecodable request {}: {}", requestId, cause.getMessage());
-            new NettyResponseWriter(ctx, requestId, false).error(status, status.message());
         }
 
         private HttpRequest createRequestContext(String requestId, FullHttpRequest request) {
@@ -566,15 +610,18 @@ final class NettyHttpServer implements HttpServer {
         private final ChannelHandlerContext ctx;
         private final String requestId;
         private final boolean keepAlive;
+        private final Runnable onWritten;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
         private final Promise<Unit> flushed = Promise.promise();
 
         private final java.util.concurrent.atomic.AtomicBoolean written = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive) {
+        /// `onWritten` runs once, when the response write completes (succeeded or failed).
+        NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive, Runnable onWritten) {
             this.ctx = ctx;
             this.requestId = requestId;
             this.keepAlive = keepAlive;
+            this.onWritten = onWritten;
             this.responseHeaders = new DefaultHttpHeaders();
         }
 
@@ -640,6 +687,7 @@ final class NettyHttpServer implements HttpServer {
         private Promise<Unit> send(FullHttpResponse response) {
             var future = ctx.writeAndFlush(response);
 
+            future.addListener(_ -> onWritten.run());
             if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);
             }

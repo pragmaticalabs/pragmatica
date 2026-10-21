@@ -17,7 +17,6 @@
 
 package org.pragmatica.usercode;
 
-import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -26,15 +25,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +32,7 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -80,34 +71,18 @@ class PromiseContinuationEscapeTest {
     private static final String ESCAPED_FRAGMENT = "escaped";
     private static final String THIS_CLASS = PromiseContinuationEscapeTest.class.getSimpleName();
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("PromiseContinuationEscapeCapture");
-        appender.start();
-
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.setLevel(Level.INFO);
-        loggerConfig.addAppender(appender, null, null);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.INFO, false);
         LogManager.getLogger(LOGGER_NAME).info(SENTINEL);
-        assertThat(appender.messages()).as("positive control: the capture must see the Promise logger").contains(SENTINEL);
+        assertThat(capture.messages()).as("positive control: the capture must see the Promise logger").contains(SENTINEL);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     // ---- 1. AssertionError: contained (dependent fails, logged, NOT rethrown) -------------------------
@@ -518,7 +493,7 @@ class PromiseContinuationEscapeTest {
         assertThat(result).isInstanceOf(Result.Failure.class);
         assertThat(((Result.Failure<?>) result).cause()).isNotInstanceOf(CoreError.Exception.class);
         assertThat(((Result.Failure<?>) result).cause().message()).contains("lift-control");
-        assertThat(appender.events().stream().filter(event -> event.level() == Level.ERROR).toList())
+        assertThat(capture.entries().stream().filter(event -> event.level() == Level.ERROR).toList())
             .as("a mapped exception is not an escape and must not be logged")
             .isEmpty();
     }
@@ -572,7 +547,7 @@ class PromiseContinuationEscapeTest {
     }
 
     private void assertErrorLogged(String continuation, String fragment) {
-        var errors = appender.events()
+        var errors = capture.entries()
                              .stream()
                              .filter(event -> event.level() == Level.ERROR)
                              .filter(event -> event.message().contains(ESCAPED_FRAGMENT))
@@ -580,50 +555,7 @@ class PromiseContinuationEscapeTest {
                              .filter(event -> event.message().contains(continuation + " continuation"))
                              .toList();
 
-        assertThat(errors).as("exactly one ERROR line for the %s escape; all events: %s", continuation, appender.events()).hasSize(1);
+        assertThat(errors).as("exactly one ERROR line for the %s escape; all events: %s", continuation, capture.entries()).hasSize(1);
         assertThat(errors.getFirst().message()).as("origin: the top frame of the escape, which is this test class").contains(THIS_CLASS);
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.INFO, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
-    private record CapturedEvent(Level level, String message) {}
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<CapturedEvent> captured = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            captured.add(new CapturedEvent(event.getLevel(), event.getMessage().getFormattedMessage()));
-        }
-
-        List<CapturedEvent> events() {
-            return List.copyOf(captured);
-        }
-
-        List<String> messages() {
-            return captured.stream()
-                           .map(CapturedEvent::message)
-                           .toList();
-        }
     }
 }

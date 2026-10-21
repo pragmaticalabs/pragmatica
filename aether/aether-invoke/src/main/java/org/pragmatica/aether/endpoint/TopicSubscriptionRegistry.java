@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -49,7 +50,13 @@ public interface TopicSubscriptionRegistry {
     /// place it would be an unpinned constructor of the wrong key, credible-looking and untested. The
     /// sibling [EndpointRegistry.Endpoint#toKey] is kept because it has a live caller. Re-add this one
     /// with a test when something needs it; the record carries all four components.
-    record TopicSubscription(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) {
+    ///
+    /// `tier` is the delivery tier the subscriber's handler requires, as its row recorded it (#1337).
+    record TopicSubscription(ResourceAddress address,
+                             Artifact artifact,
+                             MethodName methodName,
+                             NodeId nodeId,
+                             TopicTier tier) {
         /// Bare topic name — addressing metadata only, NOT the runtime routing identity. Routing
         /// matches on the full [#routingKey] (`namespace:name:version`); this accessor is kept for
         /// display/diagnostics and for any caller that still needs the un-namespaced name.
@@ -65,7 +72,7 @@ public interface TopicSubscriptionRegistry {
         }
     }
 
-    record TopicSubscriber(Artifact artifact, MethodName methodName, NodeId nodeId) {}
+    record TopicSubscriber(Artifact artifact, MethodName methodName, NodeId nodeId, TopicTier tier) {}
 
     static TopicSubscriptionRegistry topicSubscriptionRegistry() {
         record topicSubscriptionRegistry(Map<TopicSubscriptionKey, TopicSubscription> subscriptions,
@@ -82,7 +89,11 @@ public interface TopicSubscriptionRegistry {
             public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
-                var subscription = new TopicSubscription(key.address(), key.artifact(), key.methodName(), value.nodeId());
+                var subscription = new TopicSubscription(key.address(),
+                                                         key.artifact(),
+                                                         key.methodName(),
+                                                         value.nodeId(),
+                                                         value.tier());
 
                 subscriptions.put(key, subscription);
                 log.debug("Registered topic subscription: {}", subscription);
@@ -120,7 +131,10 @@ public interface TopicSubscriptionRegistry {
                     var index = (counter.getAndIncrement() & 0x7FFFFFFF) % group.size();
                     var selected = group.get(index);
 
-                    result.add(new TopicSubscriber(selected.artifact(), selected.methodName(), selected.nodeId()));
+                    result.add(new TopicSubscriber(selected.artifact(),
+                                                   selected.methodName(),
+                                                   selected.nodeId(),
+                                                   selected.tier()));
                 }
 
                 return result;

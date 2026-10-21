@@ -10,20 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +39,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.testlogging.LogCapture;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,8 +65,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///   ClusterSyncPing(drainNodes=[self])          the leader's heartbeat, injected at the router
 ///     -> MessageRouter entry ClusterSyncPing -> ClusterSyncCollector.onClusterSyncPing
 ///     -> handleDrainCommand  (logs "includes self", the CONTROL below)
-///     -> AetherNode.commandedDrain -> DrainProcedure.initiate(COMMANDED)
-///     -> emitDrainInitiatedSafely -> AetherNode.drainInitiatedEmitter   <- the hunk under test
+///     -> DrainAssembly.commandedDrain -> DrainProcedure.initiate(COMMANDED)
+///     -> emitDrainInitiatedSafely -> DrainAssembly.drainInitiatedEmitter   <- the hunk under test
 ///     -> ScheduledTaskManager.onDrainInitiated -> TaskOps.cancelAllModeTimers  (the ASSERTION)
 /// ```
 ///
@@ -109,20 +99,11 @@ class ScheduledTaskDrainWiringBootTest {
     private AetherNode node;
     private MessageRouter.DelegateRouter delegateRouter;
     private final AtomicInteger jvmExits = new AtomicInteger();
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("ScheduledTaskDrainWiringCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.INFO, null);
-        loggerConfig.setLevel(Level.INFO);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.INFO, false);
     }
 
     @AfterEach
@@ -133,11 +114,7 @@ class ScheduledTaskDrainWiringBootTest {
                 .onFailure(cause -> {});
         }
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
         ConfigService.clear();
         ResourceProvider.clear();
     }
@@ -164,14 +141,14 @@ class ScheduledTaskDrainWiringBootTest {
         delegateRouter.route(drainPing());
 
         await().atMost(LINE_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("control: the injected ping reached ClusterSyncCollector.handleDrainCommand")
                    .anyMatch(line -> line.contains(DRAIN_COMMAND_SEEN)));
 
         await().atMost(LINE_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("a real DrainProcedure.initiate must reach ScheduledTaskManager.onDrainInitiated "
-                       + "through AetherNode.drainInitiatedEmitter — round 1 keyed this on an event with "
+                       + "through DrainAssembly.drainInitiatedEmitter — round 1 keyed this on an event with "
                        + "no producer, so nothing got here")
                    .anyMatch(line -> line.contains(TIMERS_CANCELLED)));
     }
@@ -210,7 +187,7 @@ class ScheduledTaskDrainWiringBootTest {
     }
 
     private long count(String fragment) {
-        return appender.messages()
+        return capture.messages()
                        .stream()
                        .filter(line -> line.contains(fragment))
                        .count();
@@ -238,41 +215,5 @@ class ScheduledTaskDrainWiringBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.INFO, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing every message the bound logger emits.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> messages() {
-            return List.copyOf(messages);
-        }
     }
 }

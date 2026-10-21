@@ -44,6 +44,9 @@ public final class TerraHttpServer {
         this.routes = routes;
     }
 
+    /// Routes take the same JSON wire form as on Aether: the router's generated codec, with
+    /// `JsonMapper.valueObjectJsonMapper()` as the fallback mapper, so a nested value object is bare in
+    /// both directions.
     public static Promise<TerraHttpServer> start(TerraApplication application,
                                                  TerraHttpConfig config,
                                                  HttpAuthenticator authenticator) {
@@ -52,7 +55,7 @@ public final class TerraHttpServer {
                                                                   config,
                                                                   authenticator,
                                                                   factories,
-                                                                  JsonMapper.defaultJsonMapper()));
+                                                                  JsonMapper.valueObjectJsonMapper()));
     }
 
     /// Ownership transfers on entry, including on failed startup. Factories outside the selected

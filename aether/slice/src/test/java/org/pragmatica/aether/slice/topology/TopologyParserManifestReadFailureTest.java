@@ -4,19 +4,13 @@
 package org.pragmatica.aether.slice.topology;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,16 +54,12 @@ class TopologyParserManifestReadFailureTest {
         var slice = (Slice) loader.loadClass(ProbeSlice.class.getName())
                                   .getDeclaredConstructor()
                                   .newInstance();
-        var warnings = new ArrayList<String>();
-        var detach = capturingWarnings(warnings);
 
-        try {
+        try (var capture = LogCapture.capture(TopologyParser.class, Level.WARN, true)) {
             assertThat(TopologyParser.parse(slice, ARTIFACT).isEmpty()).isTrue();
-        } finally {
-            detach.run();
-        }
 
-        return warnings;
+            return capture.messages(Level.WARN);
+        }
     }
 
     /// Defines [ProbeSlice] itself (child-first for that one name) so the slice's defining loader is
@@ -122,31 +112,5 @@ class TopologyParserManifestReadFailureTest {
                 throw new ClassNotFoundException(name, e);
             }
         }
-    }
-
-    /// Capture WARN lines of the parser's logger; the returned runnable detaches the appender. The
-    /// filter on the logger NAME keeps other loggers' WARNs out.
-    private static Runnable capturingWarnings(List<String> sink) {
-        var context = (LoggerContext) LogManager.getContext(false);
-        var config = context.getConfiguration();
-        var loggerConfig = config.getLoggerConfig(TopologyParser.class.getName());
-        var appender = new AbstractAppender("manifest-warn-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && TopologyParser.class.getName().equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
     }
 }

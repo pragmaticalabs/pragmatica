@@ -198,9 +198,10 @@ forwardRequestWithRetry(request, response, availableNodes, triedNodes, routeKey,
 
 **Retry behavior:**
 1. Retry count is derived automatically from connected nodes: `connectedNodes.size() - 1` (try every available node exactly once)
-2. On timeout/failure, select different node from `availableNodes - triedNodes`
-3. If no untried nodes remain, return 504 Gateway Timeout
+2. On timeout/failure, select different node from `availableNodes - triedNodes`. A POST, PATCH or CONNECT is re-sent only when the attempt provably was not applied: the transport refused it before writing, the target was not connected, or the target answered `HttpForwardNotApplied` (no local route, wire budget exhausted on arrival, request undecodable). After a timeout or a failure answer from the slice it is not re-sent (#2244)
+3. If no untried nodes remain, return 503: "outcome unknown, may have been applied; retry only an idempotent operation" when any attempt may have been applied, "nothing was applied; safe to retry" when none was (know 14a3606152)
 4. Track tried nodes to avoid repeating failures
+5. A request whose encoded forward exceeds the cluster frame limit is answered 413 and never sent; a response that exceeds it is answered 502 by the serving node (#2249)
 
 ## Node Connectivity Filtering
 
@@ -250,7 +251,9 @@ private void cleanupStaleHttpRoutes() {
 |----------|-------------|-------------|
 | No route found | 404 | Route not in registry |
 | No connected nodes | 503 | All nodes for route are disconnected |
-| Forward timeout | 504 | All retry attempts exhausted |
+| Forward failed | 503 | All attempts failed; the detail says whether anything may have been applied (know 14a3606152) |
+| Request too large to forward | 413 | Encoded request exceeds the cluster frame limit; nothing sent |
+| Response too large to forward | 502 | The serving node's response exceeds the cluster frame limit |
 | Serialization error | 500 | Failed to serialize request/response |
 | Remote processing error | Varies | Forwarded from remote node |
 

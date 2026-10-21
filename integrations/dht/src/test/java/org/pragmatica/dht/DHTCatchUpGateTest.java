@@ -964,7 +964,7 @@ class DHTCatchUpGateTest {
         }
 
         private void deliver(NodeId target, ProtocolMessage message) {
-            if (holdingPullAnswers && message instanceof DHTMessage.MigrationDataResponse) {
+            if (holdingPullAnswers && (message instanceof DHTMessage.MigrationDataResponse || message instanceof DHTMessage.MigrationPageResponse)) {
                 heldPullAnswers.add(Map.entry(target, message));
 
                 return;
@@ -983,17 +983,20 @@ class DHTCatchUpGateTest {
         }
 
         private void countCatchUp(ProtocolMessage message) {
-            if (message instanceof DHTMessage.DigestRequest || message instanceof DHTMessage.MigrationDataRequest) {
+            if (message instanceof DHTMessage.DigestRequest || message instanceof DHTMessage.MigrationDataRequest
+                || message instanceof DHTMessage.StampDigestRequest || message instanceof DHTMessage.MigrationPageRequest) {
                 catchUpTraffic++;
             }
         }
 
-        /// Every digest request sent, by target.
-        private final List<Map.Entry<NodeId, DHTMessage.DigestRequest>> digests = new ArrayList<>();
+        /// Every digest request sent — the legacy and the stamp form (A6) — as target and partition.
+        private final List<Map.Entry<NodeId, Integer>> digests = new ArrayList<>();
 
         private void logDigest(NodeId target, ProtocolMessage message) {
-            if (message instanceof DHTMessage.DigestRequest request) {
-                digests.add(Map.entry(target, request));
+            switch (message) {
+                case DHTMessage.DigestRequest request -> digests.add(Map.entry(target, request.partitionStart()));
+                case DHTMessage.StampDigestRequest request -> digests.add(Map.entry(target, request.partition()));
+                default -> { }
             }
         }
 
@@ -1004,7 +1007,7 @@ class DHTCatchUpGateTest {
         long digestsTo(Collection<NodeId> targets, Partition partition) {
             return digests.stream()
                           .filter(entry -> targets.contains(entry.getKey()))
-                          .filter(entry -> entry.getValue().partitionStart() == partition.value())
+                          .filter(entry -> entry.getValue() == partition.value())
                           .count();
         }
 
@@ -1018,10 +1021,15 @@ class DHTCatchUpGateTest {
                 case DHTMessage.ExistsResponse response -> member.client().onExistsResponse(response);
                 case DHTMessage.DigestRequest request ->
                     member.node().handleDigestRequest(request, response -> reply(request.sender(), response));
+                case DHTMessage.StampDigestRequest request ->
+                    member.node().handleStampDigestRequest(request, response -> reply(request.sender(), response));
                 case DHTMessage.DigestResponse response -> member.antiEntropy().onDigestResponse(response);
                 case DHTMessage.MigrationDataRequest request ->
                     member.node().handleMigrationDataRequest(request, response -> reply(request.sender(), response));
+                case DHTMessage.MigrationPageRequest request ->
+                    member.node().handleMigrationPageRequest(request, response -> reply(request.sender(), response));
                 case DHTMessage.MigrationDataResponse response -> member.antiEntropy().onMigrationDataResponse(response);
+                case DHTMessage.MigrationPageResponse response -> member.antiEntropy().onMigrationPageResponse(response);
                 default -> { }
             }
         }

@@ -16,7 +16,7 @@ import org.pragmatica.http.routing.MultipartRequest;
 import org.pragmatica.http.routing.PathUtils;
 import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
-import org.pragmatica.json.JsonMapper;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
@@ -32,28 +32,34 @@ public final class SliceRequestContext implements RequestContext {
 
     private final HttpRequestContext httpContext;
     private final Route<?> route;
-    private final JsonMapper jsonMapper;
+    private final JsonCodec jsonCodec;
     private final HttpHeaders responseHeaders;
 
     private Supplier<List<String>> pathParamsSupplier = lazy(() -> pathParamsSupplier = value(initPathParams()));
 
     private Supplier<Result<MultipartRequest>> multipartSupplier = lazy(() -> multipartSupplier = value(initMultipart()));
 
-    private SliceRequestContext(HttpRequestContext httpContext, Route<?> route, JsonMapper jsonMapper) {
+    private SliceRequestContext(HttpRequestContext httpContext, Route<?> route, JsonCodec jsonCodec) {
         this.httpContext = httpContext;
         this.route = route;
-        this.jsonMapper = jsonMapper;
+        this.jsonCodec = jsonCodec;
         this.responseHeaders = DefaultHttpHeadersFactory.headersFactory().withCombiningHeaders(true).newHeaders();
     }
 
     public static SliceRequestContext sliceRequestContext(HttpRequestContext httpContext,
                                                           Route<?> route,
-                                                          JsonMapper jsonMapper) {
-        return new SliceRequestContext(httpContext, route, jsonMapper);
+                                                          JsonCodec jsonCodec) {
+        return new SliceRequestContext(httpContext, route, jsonCodec);
     }
 
     public HttpRequestContext original() {
         return httpContext;
+    }
+
+    /// The codec the router decodes this request's body with, so a context rebuilt around the same request (Terra's,
+    /// after authentication) reads the body in the same wire form the router writes responses in.
+    public JsonCodec jsonCodec() {
+        return jsonCodec;
     }
 
     public SecurityContext security() {
@@ -87,7 +93,7 @@ public final class SliceRequestContext implements RequestContext {
 
     @Override
     public <T> Result<T> fromJson(TypeToken<T> literal) {
-        return jsonMapper.readBytes(httpContext.body(), literal);
+        return jsonCodec.deserialize(httpContext.body(), literal);
     }
 
     @Override

@@ -17,8 +17,10 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.GarbageCollectorConfig;
+import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.TierLevel;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -107,21 +109,23 @@ class StorageMaintenanceWiringTest {
     }
 
     /// The composite (what `AetherNode` actually hands to `DelegatedStorageAdapter` and
-    /// `StorageMaintenanceDriver`) must fan `activate()` out to every underlying real setup, not just
-    /// flip its own flag — pinning that leader-pinned activation reaches every storage instance.
+    /// `StorageMaintenanceDriver`) ticks every setup, but leader-pinned activation reaches only `streams`:
+    /// `artifacts` and `content` demote per node, activated by `StorageFactory#activateNodeMaintenance` when the node
+    /// reports ready (their fast tiers are private to each node, and promotion fills them on every node).
     @Test
-    void compositeDemotionManager_activate_fansOutToEveryUnderlyingSetup() {
-        var setup1 = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "node-1").unwrap();
-        var setup2 = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir2, "node-2").unwrap();
-        var composite = StorageFactory.compositeDemotionManager(Map.of("a", setup1, "b", setup2));
+    void compositeDemotionManager_activate_reachesOnlyTheLeaderPinnedStreamsSetup() {
+        var streams = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "node-1").unwrap();
+        var perNode = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir2, "node-2").unwrap();
+        var composite = StorageFactory.compositeDemotionManager(Map.of(StorageFactory.STREAMS_NAME, streams, ARTIFACTS, perNode));
 
         assertThat(composite.isActive()).isFalse();
 
         composite.activate();
 
         assertThat(composite.isActive()).isTrue();
-        assertThat(setup1.demotionManager().isActive()).isTrue();
-        assertThat(setup2.demotionManager().isActive()).isTrue();
+        assertThat(streams.demotionManager().isActive()).as("streams demotion stays leader-pinned").isTrue();
+        assertThat(perNode.demotionManager().isActive()).as("a per-node instance is not activated by leadership")
+                                                        .isFalse();
     }
 
     /// The other Constraint 4 half: the driver must actually CALL `demote()`/`collectGarbage()` on
@@ -130,8 +134,7 @@ class StorageMaintenanceWiringTest {
     void storageMaintenanceDriver_tick_invokesBothDemoteAndCollectGarbage() {
         var demoteCalls = new AtomicInteger();
         var gcCalls = new AtomicInteger();
-        var driver = StorageMaintenanceDriver.storageMaintenanceDriver(countingDemotionManager(demoteCalls),
-                                                                        countingGarbageCollector(gcCalls));
+        var driver = driverOf(countingDemotionManager(demoteCalls), countingGarbageCollector(gcCalls));
 
         driver.tick();
 
@@ -306,10 +309,9 @@ class StorageMaintenanceWiringTest {
 
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(setups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(setups);
-        var driver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
-                                                                        compositeGarbageCollector);
+        var driver = driverOf(compositeDemotionManager, compositeGarbageCollector);
 
-        compositeDemotionManager.activate();
+        StorageFactory.activateNodeMaintenance(setups);
         compositeGarbageCollector.activate();
 
         driver.tick();
@@ -533,12 +535,23 @@ class StorageMaintenanceWiringTest {
     private static void tickRealDriver(Map<String, StorageFactory.StorageSetup> setups) {
         var demotionManager = StorageFactory.compositeDemotionManager(setups);
         var garbageCollector = StorageFactory.compositeGarbageCollector(setups);
-        var driver = StorageMaintenanceDriver.storageMaintenanceDriver(demotionManager, garbageCollector);
+        var driver = driverOf(demotionManager, garbageCollector);
 
-        demotionManager.activate();
+        StorageFactory.activateNodeMaintenance(setups);
         garbageCollector.activate();
 
         driver.tick();
+    }
+
+    /// A driver over the given demotion and GC with no promotion: the promotion cycle runs inline on the ticking thread,
+    /// where these tests can see its effect, and nothing is watched.
+    private static StorageMaintenanceDriver driverOf(DemotionManager demotionManager, StorageGarbageCollector garbageCollector) {
+        return StorageMaintenanceDriver.storageMaintenanceDriver(demotionManager,
+                                                                  PromotionManager.NOOP,
+                                                                  PromotionStallWatch.promotionStallWatch(Map.of(),
+                                                                                                          OperatorWarningSink.logOnly()),
+                                                                  garbageCollector,
+                                                                  Runnable::run);
     }
 
     /// Mirrors `LocalDiskTier`'s own private `blockPath` sharding (`{base}/{hex[0:2]}/{hex[2:4]}/{hex}`)

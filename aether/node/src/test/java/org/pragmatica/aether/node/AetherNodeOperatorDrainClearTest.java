@@ -18,6 +18,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
+import org.pragmatica.aether.node.assembly.DrainAssembly;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -37,7 +38,7 @@ class AetherNodeOperatorDrainClearTest {
         var registry = DrainCommandRegistry.drainCommandRegistry();
 
         registry.requestDrain(DRAINED);
-        AetherNode.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Dead"));
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Dead"));
 
         assertThat(registry.isDrainRequested(DRAINED)).isFalse();
         assertThat(registry.drainTargets()).isEmpty();
@@ -48,7 +49,7 @@ class AetherNodeOperatorDrainClearTest {
         var registry = DrainCommandRegistry.drainCommandRegistry();
 
         registry.requestDrain(DRAINED);
-        AetherNode.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Member", "Departing"));
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Member", "Departing"));
 
         assertThat(registry.isDrainRequested(DRAINED)).isTrue();
     }
@@ -58,7 +59,7 @@ class AetherNodeOperatorDrainClearTest {
         var registry = DrainCommandRegistry.drainCommandRegistry();
 
         registry.requestDrain(DRAINED);
-        AetherNode.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Member"));
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Member"));
 
         assertThat(registry.isDrainRequested(DRAINED)).as("the command is still in flight; the leader must keep delivering it").isTrue();
     }
@@ -69,7 +70,7 @@ class AetherNodeOperatorDrainClearTest {
 
         registry.requestDrain(DRAINED);
         registry.requestDrain(OTHER);
-        AetherNode.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Dead"));
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Dead"));
 
         assertThat(registry.drainTargets()).containsExactly(OTHER);
     }
@@ -83,7 +84,7 @@ class AetherNodeOperatorDrainClearTest {
 
     /// The tests above hand-build transition records, so they cannot see which edges a real FSM emits. These drive a
     /// REAL [`MembershipFsm`] with the hook wired the way `AetherNode`'s `onTransition` listener wires it, and enter the
-    /// drain through `AetherNode.requestDrainThroughFsm`, the production sink (registry first, then the FSM).
+    /// drain through `DrainAssembly.requestDrainThroughFsm`, the production sink (registry first, then the FSM).
     @Nested
     class DrivenThroughTheRealFsm {
         private static final TimeSpan FIRING_TIMEOUT = TimeSpan.timeSpan(80).millis();
@@ -99,12 +100,12 @@ class AetherNodeOperatorDrainClearTest {
                                                   departureTimeout,
                                                   LONG_TIMEOUT);
 
-            fsm.onTransition(record -> AetherNode.clearOperatorDrainOnDeath(registry, record));
+            fsm.onTransition(record -> DrainAssembly.clearOperatorDrainOnDeath(registry, record));
             return fsm;
         }
 
         private void drain(MembershipFsm fsm, NodeId target) {
-            AetherNode.requestDrainThroughFsm(registry, new AtomicReference<>(fsm), target);
+            DrainAssembly.requestDrainThroughFsm(registry, new AtomicReference<>(fsm), target);
         }
 
         private static void promoteCore(MembershipFsm fsm, NodeId id) {

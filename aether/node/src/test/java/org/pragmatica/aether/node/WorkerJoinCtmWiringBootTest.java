@@ -9,19 +9,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Stream;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,6 +30,7 @@ import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testlogging.LogCapture;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,25 +67,13 @@ class WorkerJoinCtmWiringBootTest {
     private static final String CTM_OBSERVED_ON_WORKER_CHANNEL = "node " + WORKER.id() + " observed on WorkerJoinDecision";
 
     private AetherNode node;
-    private CapturingAppender appender;
-    private List<LoggerConfig> loggerConfigs;
-    private List<Level> originalLevels;
+    private LogCapture ctmCapture;
+    private LogCapture projectorCapture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("WorkerJoinCtmWiringCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfigs = List.of(getOrCreateLoggerConfig(ctx.getConfiguration(), CTM_LOGGER),
-                                getOrCreateLoggerConfig(ctx.getConfiguration(), PROJECTOR_LOGGER));
-        originalLevels = loggerConfigs.stream()
-                                      .map(LoggerConfig::getLevel)
-                                      .toList();
-        loggerConfigs.forEach(config -> {
-            config.addAppender(appender, Level.DEBUG, null);
-            config.setLevel(Level.DEBUG);
-        });
-        ctx.updateLoggers();
+        ctmCapture = LogCapture.capture(CTM_LOGGER, Level.DEBUG, false);
+        projectorCapture = LogCapture.capture(PROJECTOR_LOGGER, Level.DEBUG, false);
     }
 
     @AfterEach
@@ -105,17 +84,8 @@ class WorkerJoinCtmWiringBootTest {
                 .onFailure(cause -> {});
         }
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        for (var i = 0; i < loggerConfigs.size(); i++) {
-            loggerConfigs.get(i)
-                         .removeAppender(appender.getName());
-            loggerConfigs.get(i)
-                         .setLevel(originalLevels.get(i));
-        }
-
-        ctx.updateLoggers();
-        appender.stop();
+        projectorCapture.close();
+        ctmCapture.close();
         ConfigService.clear();
         ResourceProvider.clear();
     }
@@ -137,7 +107,7 @@ class WorkerJoinCtmWiringBootTest {
 
         ctm.activate();
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("control: the CTM is active and the capture on %s sees its lines", CTM_LOGGER)
                    .anyMatch(line -> line.contains(CTM_ACTIVATED)));
 
@@ -148,11 +118,11 @@ class WorkerJoinCtmWiringBootTest {
         fsm.onSwimHealthy(WORKER, 1L);
 
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("control: the projector emitted a WorkerJoinDecision for the worker onto the router")
                    .anyMatch(line -> line.contains(PROJECTOR_WORKER_JOINED) && line.contains(WORKER.id())));
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(messages())
                    .as("the WorkerJoinDecision must reach ClusterTopologyManager.onWorkerJoin through the node's router")
                    .anyMatch(line -> line.contains(CTM_OBSERVED_ON_WORKER_CHANNEL)));
     }
@@ -181,39 +151,7 @@ class WorkerJoinCtmWiringBootTest {
                                 .build();
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration, String loggerName) {
-        var existing = configuration.getLoggerConfig(loggerName);
-
-        if (loggerName.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(loggerName, Level.DEBUG, false);
-
-        configuration.addLogger(loggerName, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing every message the bound loggers emit.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> messages() {
-            return List.copyOf(messages);
-        }
+    private List<String> messages() {
+        return Stream.concat(ctmCapture.messages().stream(), projectorCapture.messages().stream()).toList();
     }
 }

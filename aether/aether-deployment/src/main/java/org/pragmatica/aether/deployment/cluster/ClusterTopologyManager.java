@@ -296,6 +296,16 @@ public interface ClusterTopologyManager extends TopologyManager {
         return java.util.Map.of();
     }
 
+    /// The current wait for a complete inventory (the last reason and when), empty once an admission has got past it.
+    default Option<LastProvisionFailure> inventoryWait() {
+        return Option.none();
+    }
+
+    /// How many provisions have waited for a complete inventory (not counted toward the provisioning circuit).
+    default long inventoryWaits() {
+        return 0L;
+    }
+
     /// The sink the unconfirmed-termination events go to (readable so that the node's wiring can be pinned).
     default org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
         return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();

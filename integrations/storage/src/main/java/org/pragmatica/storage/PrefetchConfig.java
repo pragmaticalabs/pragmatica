@@ -9,13 +9,17 @@ package org.pragmatica.storage;
 ///        block must reach `accessThreshold` with no gap longer than this
 /// @param maxTrackedBlocks soft cap on blocks with a live observation counter; past it new blocks are
 ///        not observed until idle counters are reclaimed
+/// @param maxInFlight most prefetches running at once; a hint that finds no free slot is dropped and counted
 public record PrefetchConfig(int accessThreshold,
                              int maxHintsPerGossip,
                              long cooldownMs,
                              long observationWindowMs,
-                             int maxTrackedBlocks) {
+                             int maxTrackedBlocks,
+                             int maxInFlight) {
     private static final long DEFAULT_OBSERVATION_WINDOW_MS = 300_000L;
     private static final int DEFAULT_MAX_TRACKED_BLOCKS = 10_000;
+    /// The default for [#maxInFlight] (the hierarchical-storage design's `max-concurrent`).
+    public static final int DEFAULT_MAX_IN_FLIGHT = 4;
 
     /// Clamp parameters to valid ranges.
     public PrefetchConfig {
@@ -24,11 +28,18 @@ public record PrefetchConfig(int accessThreshold,
         cooldownMs = Math.max(cooldownMs, 0);
         observationWindowMs = Math.max(observationWindowMs, 1);
         maxTrackedBlocks = Math.max(maxTrackedBlocks, 1);
+        maxInFlight = Math.max(maxInFlight, 1);
     }
 
-    /// Default configuration: threshold=10, maxHints=5, cooldown=30s, observation window=5min, 10,000 tracked blocks.
+    /// Default configuration: threshold=10, maxHints=5, cooldown=30s, observation window=5min, 10,000 tracked blocks,
+    /// 4 prefetches in flight.
     public static PrefetchConfig prefetchConfig() {
-        return new PrefetchConfig(10, 5, 30_000L, DEFAULT_OBSERVATION_WINDOW_MS, DEFAULT_MAX_TRACKED_BLOCKS);
+        return new PrefetchConfig(10,
+                                  5,
+                                  30_000L,
+                                  DEFAULT_OBSERVATION_WINDOW_MS,
+                                  DEFAULT_MAX_TRACKED_BLOCKS,
+                                  DEFAULT_MAX_IN_FLIGHT);
     }
 
     /// Custom threshold, hint count and cooldown, with the default observation window and tracked-block cap.
@@ -37,7 +48,27 @@ public record PrefetchConfig(int accessThreshold,
                                   maxHintsPerGossip,
                                   cooldownMs,
                                   DEFAULT_OBSERVATION_WINDOW_MS,
-                                  DEFAULT_MAX_TRACKED_BLOCKS);
+                                  DEFAULT_MAX_TRACKED_BLOCKS,
+                                  DEFAULT_MAX_IN_FLIGHT);
+    }
+
+    /// The default configuration with a different in-flight cap (clamped to at least 1).
+    public static PrefetchConfig prefetchConfig(int maxInFlight) {
+        return new PrefetchConfig(10, 5, 30_000L, DEFAULT_OBSERVATION_WINDOW_MS, DEFAULT_MAX_TRACKED_BLOCKS, maxInFlight);
+    }
+
+    /// Custom parameters with the default in-flight cap.
+    public static PrefetchConfig prefetchConfig(int accessThreshold,
+                                                int maxHintsPerGossip,
+                                                long cooldownMs,
+                                                long observationWindowMs,
+                                                int maxTrackedBlocks) {
+        return new PrefetchConfig(accessThreshold,
+                                  maxHintsPerGossip,
+                                  cooldownMs,
+                                  observationWindowMs,
+                                  maxTrackedBlocks,
+                                  DEFAULT_MAX_IN_FLIGHT);
     }
 
     /// Full factory with custom parameters.
@@ -45,7 +76,13 @@ public record PrefetchConfig(int accessThreshold,
                                                 int maxHintsPerGossip,
                                                 long cooldownMs,
                                                 long observationWindowMs,
-                                                int maxTrackedBlocks) {
-        return new PrefetchConfig(accessThreshold, maxHintsPerGossip, cooldownMs, observationWindowMs, maxTrackedBlocks);
+                                                int maxTrackedBlocks,
+                                                int maxInFlight) {
+        return new PrefetchConfig(accessThreshold,
+                                  maxHintsPerGossip,
+                                  cooldownMs,
+                                  observationWindowMs,
+                                  maxTrackedBlocks,
+                                  maxInFlight);
     }
 }

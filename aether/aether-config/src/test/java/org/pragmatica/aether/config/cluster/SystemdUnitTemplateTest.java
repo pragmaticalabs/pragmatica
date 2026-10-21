@@ -93,6 +93,16 @@ class SystemdUnitTemplateTest {
     }
 
     @Nested
+    class StateDirectory {
+        @Test
+        void generate_always_provisionsTheNodeStateDirectory() {
+            var unit = SystemdUnitTemplate.generate("/usr/local/aether/run.sh", "/etc/aether/other.env", "deploy", "deploy");
+
+            assertTrue(unit.contains("StateDirectory=aether"), "systemd must create /var/lib/aether for the node user");
+        }
+    }
+
+    @Nested
     class CustomGeneration {
         @Test
         void generate_customParams_allApplied() {

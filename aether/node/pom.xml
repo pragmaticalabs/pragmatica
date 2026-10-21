@@ -334,6 +334,11 @@
             <artifactId>assertj-core</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
         </dependency>
@@ -370,6 +375,14 @@
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-layout-template-json</artifactId>
             <scope>runtime</scope>
+        </dependency>
+        <!-- #249: the S3 shared tier's boot admission and ciphertext-at-rest tests run against MinIO in a container
+             (@Tag("S3"), excluded from the default build). TEST scope only. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>1.21.4</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

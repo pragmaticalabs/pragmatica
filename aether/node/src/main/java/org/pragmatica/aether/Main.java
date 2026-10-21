@@ -56,6 +56,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.OwnRestoreWatchdog;
+import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
@@ -92,7 +93,7 @@ public record Main(String[] args) {
         new Main(args).run();
     }
 
-    private record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
+    record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
 
     private void run() {
         publishConfigPath();
@@ -115,34 +116,23 @@ public record Main(String[] args) {
         var coreMax = parseCoreMax(aetherConfig);
         var tlsBundle = resolveTls(nodeId, peers, aetherConfig).expect("Failed to resolve TLS configuration at node startup");
         var appHttpTls = aetherConfig.filter(AetherConfig::tlsEnabled).map(_ -> tlsBundle.tls());
-        var config = AetherNodeConfig.builder()
-                                     .self(nodeId)
-                                     .coreNodes(peers)
-                                     .managementPort(managementPort)
-                                     .sliceConfig(sliceConfig)
-                                     // #1777 track 1: placeholder only — the DHT's factors come from the committed
-                                     // `[replication]` section once consensus state is restored
-                                     .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
-                                     .coreMax(coreMax)
-                                     .appHttp(resolveAppHttp(aetherConfig))
-                                     .tls(appHttpTls)
-                                     .quicTls(tlsBundle.tls())
-                                     .certificateProvider(tlsBundle.provider())
-                                     .configProvider(resolveConfigProvider())
-                                     .environment(environment)
-                                     .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
-                                     .storageConfig(resolveStorage(aetherConfig))
-                                     .backupConfig(resolveBackup(aetherConfig))
-                                     .membership(resolveMembership(aetherConfig))
-                                     .streaming(resolveStreaming(aetherConfig))
-                                     .build()
-                                     // #298 — stamp the boot-gated cluster identity onto runtime config.
-                                     // enforceClusterNamePresent() above already aborted the boot if this
-                                     // were missing or malformed, so the value is present and validated.
-                                     .withClusterName(resolveClusterName())
-                                     .withAutoHeal(resolveAutoHeal(aetherConfig))
-                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig))
-                                     .withAlerts(resolveAlertConfig(aetherConfig));
+        var config = nodeConfig(nodeId,
+                                peers,
+                                managementPort,
+                                sliceConfig,
+                                coreMax,
+                                aetherConfig,
+                                appHttpTls,
+                                tlsBundle,
+                                environment,
+                                resolveConfigProvider())
+                               // #298 — stamp the boot-gated cluster identity onto runtime config.
+                               // enforceClusterNamePresent() above already aborted the boot if this
+                               // were missing or malformed, so the value is present and validated.
+                               .withClusterName(resolveClusterName())
+                               .withAutoHeal(resolveAutoHeal(aetherConfig))
+                               .withStorageEncryption(resolveStorageEncryption(aetherConfig))
+                               .withAlerts(resolveAlertConfig(aetherConfig));
 
         config = withResolvedClusterSecret(config, aetherConfig);
         enforceWalDurabilityBootable(config);
@@ -154,10 +144,53 @@ public record Main(String[] args) {
         startNodeAndWait(node, nodeId);
     }
 
-    private static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
+    /// The node's runtime config from the resolved boot inputs, before the boot-gated stamps `run` applies after it.
+    /// Package-visible so a test can pin what each resolver feeds in: the `[app-http]`/`[management]` security
+    /// resolution (#962) is only reachable through here.
+    static AetherNodeConfig nodeConfig(NodeId nodeId,
+                                       List<NodeInfo> peers,
+                                       int managementPort,
+                                       SliceConfig sliceConfig,
+                                       int coreMax,
+                                       Option<AetherConfig> aetherConfig,
+                                       Option<org.pragmatica.net.tcp.TlsConfig> appHttpTls,
+                                       TlsBundle tlsBundle,
+                                       Option<EnvironmentIntegration> environment,
+                                       Option<ConfigurationProvider> configProvider) {
+        return AetherNodeConfig.builder()
+                               .self(nodeId)
+                               .coreNodes(peers)
+                               .managementPort(managementPort)
+                               .sliceConfig(sliceConfig)
+                               // #1777 track 1: placeholder only — the DHT's factors come from the committed
+                               // `[replication]` section once consensus state is restored
+                               .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
+                               .coreMax(coreMax)
+                               .appHttp(resolveAppHttp(aetherConfig))
+                               .tls(appHttpTls)
+                               .quicTls(tlsBundle.tls())
+                               .certificateProvider(tlsBundle.provider())
+                               .configProvider(configProvider)
+                               .environment(environment)
+                               .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
+                               .storageConfig(resolveStorage(aetherConfig))
+                               .backupConfig(resolveBackup(aetherConfig))
+                               .membership(resolveMembership(aetherConfig))
+                               .streaming(resolveStreaming(aetherConfig))
+                               .build();
+    }
+
+    static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::appHttp)
                            .filter(AppHttpConfig::enabled)
-                           .or(AppHttpConfig.appHttpConfig());
+                           .or(() -> disabledAppHttp(aetherConfig));
+    }
+
+    /// A disabled `[app-http]` is replaced whole by the fail-closed default (#573), but the Management API's own
+    /// `[management] security_mode` is not part of the app plane and survives (#962).
+    private static AppHttpConfig disabledAppHttp(Option<AetherConfig> aetherConfig) {
+        return AppHttpConfig.appHttpConfig().withManagementSecurityMode(aetherConfig.flatMap(config -> config.appHttp()
+                                                                                                             .managementSecurityMode()));
     }
 
     /// First-boot consistency gate: compares this container's `aether.cluster` label
@@ -463,10 +496,14 @@ public record Main(String[] args) {
                            .or(HttpProtocol.H1);
     }
 
-    private static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::storage)
-                           .filter(m -> !m.isEmpty())
-                           .or(Map.of());
+    /// #249: the storage map the node is handed, with every shared-only instance's paths derived HERE, once
+    /// ([StorageFactory#derivedStorage]). Every reader in the node -- the instances `StorageFactory.createAll` builds,
+    /// the synthesized `content` placement, the stream segment and WAL directories -- reads this map, so none of
+    /// them can see a shared-only instance's blank paths. A keyring exists exactly when `[storage.encryption]` is
+    /// present (the node refuses to boot when it cannot resolve one), which is the `encrypted` the derivation needs.
+    public static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
+        return StorageFactory.derivedStorage(aetherConfig.map(AetherConfig::storage).or(Map.of()),
+                                             resolveStorageEncryption(aetherConfig).isPresent());
     }
 
     private static Option<StorageEncryptionConfig> resolveStorageEncryption(Option<AetherConfig> aetherConfig) {

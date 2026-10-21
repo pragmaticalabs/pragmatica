@@ -23,8 +23,26 @@
             <artifactId>serialization-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json-codegen</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- Testing -->
+        <!-- @Json and the runtime its generated codecs compile against -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Jackson annotations on @Json fixtures: the generator must refuse such types -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>com.google.testing.compile</groupId>
             <artifactId>compile-testing</artifactId>
@@ -52,6 +70,13 @@
                     <compilerArgs>
                         <arg>-proc:none</arg>
                     </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
                 </configuration>
             </plugin>
         </plugins>

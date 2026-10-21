@@ -86,11 +86,24 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigWithManagement(String securityMode, String cidr) {
+        return cloudConfigWithManagementOverlay(Map.of("app-http", Map.<String, Object>of("security_mode", securityMode)), cidr);
+    }
+
+    /// An overlay with an explicit `[app-http]` mode and/or `[management]` table (#962). Either mode may be absent.
+    private static ClusterBootstrapConfig cloudConfigWithModes(Option<String> appMode, Option<String> managementMode, String cidr) {
+        var overlay = new java.util.HashMap<String, Map<String, Object>>();
+
+        appMode.onPresent(mode -> overlay.put("app-http", Map.<String, Object>of("security_mode", mode)));
+        managementMode.onPresent(mode -> overlay.put("management", Map.<String, Object>of("security_mode", mode)));
+        return cloudConfigWithManagementOverlay(overlay, cidr);
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithManagementOverlay(Map<String, Map<String, Object>> tables, String cidr) {
         var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
         var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
                             firewallRule(8080, "tcp", cidr, none()));
-        var overlay = new TomlDocument(Map.of("app-http", Map.of("security_mode", securityMode)));
+        var overlay = new TomlDocument(tables);
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
@@ -103,9 +116,13 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigWithOverlay(Map<String, Object> appHttp) {
+        return cloudConfigWithOverlaySections(Map.of("app-http", appHttp));
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithOverlaySections(Map<String, Map<String, Object>> sections) {
         var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
-        var overlay = new TomlDocument(Map.of("app-http", appHttp));
+        var overlay = new TomlDocument(sections);
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
@@ -603,14 +620,83 @@ class ClusterBootstrapConfigValidatorTest {
             }
         }
 
-        /// C5b: the node does not trim `enabled`, so `" true "` is a DISABLED server there; PF-34 must agree (it used to trim and refuse). The same
-        /// file loaded by the node is accepted, which is the property: bootstrap and node give the same verdict.
+        /// C5b (#1455): the node does not trim `enabled`, so `" true "` is not a boolean and the node REFUSES it (it used to boot with the
+        /// server silently disabled). PF-35 refuses it too: bootstrap and node give the same verdict, and the verdict is "refused".
         @Test
         void validate_paddedEnabled_agreesWithTheNode() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", " true ")))
-                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
-            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isSuccess())
-                .as("the node loads the padded-enabled file as a disabled server").isTrue();
+                .onSuccess(v -> Assertions.fail("Expected PF-35 for a padded enabled"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-35")
+                                                               .contains(" true ")
+                                                               .doesNotContain("PF-34"));
+            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isFailure())
+                .as("the node refuses the padded-enabled file").isTrue();
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "false")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-35"));
+        }
+
+        /// PF-35 is general (#1455): the node's own loader judges the composed node_config, so every key the node refuses is refused
+        /// before provisioning, not only `[app-http] enabled`.
+        @Test
+        void validate_anyNodeConfigTheNodeRefuses_returnsPf35NamingTheKey() {
+            var refused = List.of(
+                Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", "yes")),
+                Map.<String, Map<String, Object>>of("ttm", Map.<String, Object>of("enabled", "on")),
+                Map.<String, Map<String, Object>>of("app-http", Map.<String, Object>of("protocol", "h2")),
+                Map.<String, Map<String, Object>>of("timeouts.invocation", Map.<String, Object>of("timeout", "fast")),
+                Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("nodes", "many")));
+            var keys = List.of("cluster.tls", "ttm.enabled", "app-http.protocol", "timeouts.invocation.timeout", "cluster.nodes");
+
+            for (var i = 0; i < refused.size(); i++) {
+                var key = keys.get(i);
+
+                validate(cloudConfigWithOverlaySections(refused.get(i)))
+                    .onSuccess(v -> Assertions.fail("Expected PF-35 for " + key))
+                    .onFailure(cause -> assertThat(cause.message()).as(key).contains("PF-35").contains(key));
+            }
+        }
+
+        /// PF-35 runs the node's full load path, not only its parse: values the node refuses at its VALIDATION step are refused too.
+        @Test
+        void validate_nodeConfigTheNodeRefusesAtValidation_returnsPf35() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
+                                                                                         "tls", Map.<String, Object>of("auto_generate", false))))
+                .onSuccess(v -> Assertions.fail("Expected PF-35 for auto_generate = false without certificates"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-35").contains("cert"));
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("slice", Map.<String, Object>of("artifact_archive_retention", "forever"))))
+                .onSuccess(v -> Assertions.fail("Expected PF-35 for an unparseable archive retention"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-35").contains("retention"));
+        }
+
+        /// #2272's PF-24 and this change's PF-35 compose: PF-35's node load path includes the loader's own security-mode refusal, so an
+        /// unsupported security_mode is reported by PF-24 AND (as the node would report it) by PF-35, while a wrong-typed value alone is
+        /// PF-35 only. The node stops at its first refusal (the security mode, before the type gate), so PF-35 names that one.
+        @Test
+        void validate_pf24AndPf35Compose() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("app-http", Map.<String, Object>of("security_mode", "bogus-mode"),
+                                                                                         "cluster", Map.<String, Object>of("tls", "yes"))))
+                .onSuccess(v -> Assertions.fail("Expected PF-24 and PF-35"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-24").contains("PF-35").contains("bogus-mode"));
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", "yes"))))
+                .onSuccess(v -> Assertions.fail("Expected PF-35"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-35").contains("cluster.tls").doesNotContain("PF-24"));
+        }
+
+        @Test
+        void validate_nodeSideTlsPaths_areNotRefusedAgainstTheOperatorFilesystem() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
+                                                                                         "tls", Map.<String, Object>of("auto_generate", false,
+                                                                                                                       "cert_path", "/etc/aether/tls/node.pem",
+                                                                                                                       "key_path", "/etc/aether/tls/node-key.pem",
+                                                                                                                       "ca_path", "/etc/aether/tls/ca.pem"))))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-35").doesNotContain("not found"));
+        }
+
+        @Test
+        void validate_nodeConfigTheNodeAccepts_isNotPf35() {
+            validate(cloudConfigWithOverlaySections(Map.<String, Map<String, Object>>of("cluster", Map.<String, Object>of("tls", true),
+                                                                                         "app-http", Map.<String, Object>of("protocol", "h1", "enabled", "TRUE"))))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-35"));
         }
 
         /// C5: a padded or odd-cased security_mode is the SAME mode at PF-34 and at the node: both refuse a jwt server with no jwks_url.
@@ -656,6 +742,86 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_publicManagementPortWithAuthEnabled_succeeds() {
             validate(cloudConfigWithPublicManagement("api_key"))
                 .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-24"));
+        }
+
+        /// PF-24 judges the EFFECTIVE management mode (#962), never the app plane's mode alone. Each helper call
+        /// is `validate` on a source whose management port is open to 0.0.0.0/0 unless stated.
+        private static boolean refusedAsPf24(ClusterBootstrapConfig config) {
+            return validate(config).fold(cause -> cause.message().contains("PF-24"), _ -> false);
+        }
+
+        @Test
+        void validate_managementNoneWhileAppHttpIsApiKey_returnsPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), some("none"), "0.0.0.0/0"))).isTrue();
+        }
+
+        @Test
+        void validate_managementApiKeyWhileAppHttpIsNone_isNotPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), some("api-key"), "0.0.0.0/0"))).isFalse();
+        }
+
+        @Test
+        void validate_managementAbsent_inheritsAppHttpNone_returnsPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("none"), none(), "0.0.0.0/0"))).isTrue();
+        }
+
+        @Test
+        void validate_managementAbsent_inheritsAppHttpApiKey_isNotPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), none(), "0.0.0.0/0"))).isFalse();
+        }
+
+        @Test
+        void validate_managementNoneWithNoAppHttpMode_returnsPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(none(), some("none"), "0.0.0.0/0"))).isTrue();
+        }
+
+        @Test
+        void validate_managementNoneIsReadLikeTheNode_paddedAndOddCased() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), some("  None "), "0.0.0.0/0"))).isTrue();
+        }
+
+        /// A management value no node can honour is REFUSED here, before any server is provisioned, in the loader's words (key, value,
+        /// allowed values); it is not read as closed and passed on to fail at boot.
+        private static String refusalOf(ClusterBootstrapConfig config) {
+            return validate(config).fold(cause -> cause.message(), _ -> "");
+        }
+
+        @Test
+        void validate_managementJwt_isRefusedAtBootstrap_namingKeyValueAndAllowedValues() {
+            assertThat(refusalOf(cloudConfigWithModes(some("none"), some("jwt"), "203.0.113.0/24")))
+                .contains("PF-24")
+                .contains("[management] security_mode = \"jwt\"")
+                .contains("the management plane has no JWT mode")
+                .contains("Allowed values: none, api-key");
+        }
+
+        @Test
+        void validate_managementTypo_isRefusedAtBootstrap() {
+            assertThat(refusalOf(cloudConfigWithModes(some("api-key"), some("nnone"), "203.0.113.0/24")))
+                .contains("PF-24")
+                .contains("[management] security_mode = \"nnone\"")
+                .contains("is not a security mode")
+                .contains("Allowed values: none, api-key");
+        }
+
+        @Test
+        void validate_appHttpTypo_isRefusedAtBootstrap() {
+            assertThat(refusalOf(cloudConfigWithModes(some("nnone"), none(), "203.0.113.0/24")))
+                .contains("PF-24")
+                .contains("[app-http] security_mode = \"nnone\"")
+                .contains("Allowed values: none, api-key, jwt");
+        }
+
+        /// Control: supported modes (including the accepted spellings) raise no such refusal.
+        @Test
+        void validate_supportedModes_areNotRefusedAsUnsupported() {
+            assertThat(refusalOf(cloudConfigWithModes(some("API_KEY"), some(" None "), "203.0.113.0/24"))).doesNotContain("Allowed values");
+            assertThat(refusalOf(cloudConfigWithModes(some("api-key"), some("api-key"), "203.0.113.0/24"))).doesNotContain("Allowed values");
+        }
+
+        @Test
+        void validate_managementNoneOnAScopedPort_isNotPf24() {
+            assertThat(refusedAsPf24(cloudConfigWithModes(some("api-key"), some("none"), "203.0.113.0/24"))).isFalse();
         }
 
         @Test

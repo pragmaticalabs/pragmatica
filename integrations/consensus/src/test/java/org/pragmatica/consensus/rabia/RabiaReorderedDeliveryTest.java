@@ -18,6 +18,7 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -828,7 +829,7 @@ class RabiaReorderedDeliveryTest {
         lagging.stop().await();
         Thread.sleep(500);
         assertThat(lagging.bufferedDecisionCountForTesting()).isZero();
-        assertThat(engineWarnings).noneMatch(message -> message.contains(STILL_MISSING));
+        assertThat(engineWarnings()).noneMatch(message -> message.contains(STILL_MISSING));
     }
 
     /// M4 r1 — the expiry guard: a timer that fires while the engine is Paused (quorum lost; a sync round
@@ -851,7 +852,7 @@ class RabiaReorderedDeliveryTest {
         assertThat(lagging.isPaused()).as("control: paused before the timer fires").isTrue();
         Thread.sleep(700);
         assertThat(lagging.isPaused()).as("the timer left the paused engine alone").isTrue();
-        assertThat(engineWarnings).noneMatch(message -> message.contains(STILL_MISSING));
+        assertThat(engineWarnings()).noneMatch(message -> message.contains(STILL_MISSING));
     }
 
     /// M4 r1 — the same guard for Syncing: the timer fires during a sync round that is already under way
@@ -872,8 +873,8 @@ class RabiaReorderedDeliveryTest {
         lagging.settleForTesting().await();
         assertThat(lagging.isActive() || lagging.isPaused()).as("control: a sync round is under way").isFalse();
         Thread.sleep(700);
-        assertThat(engineWarnings).as("control: the far gap was reported").anyMatch(message -> message.contains("resyncing"));
-        assertThat(engineWarnings).noneMatch(message -> message.contains(STILL_MISSING));
+        assertThat(engineWarnings()).as("control: the far gap was reported").anyMatch(message -> message.contains("resyncing"));
+        assertThat(engineWarnings()).noneMatch(message -> message.contains(STILL_MISSING));
     }
 
     private static Decision<TestCommand> readdressed(Decision<TestCommand> decision, long phase) {
@@ -881,45 +882,21 @@ class RabiaReorderedDeliveryTest {
     }
 
     private static final String STILL_MISSING = "still missing slot";
-    private final List<String> engineWarnings = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private final org.apache.logging.log4j.core.appender.AbstractAppender warningAppender =
-        new org.apache.logging.log4j.core.appender.AbstractAppender("decision-gap-warnings", (org.apache.logging.log4j.core.Filter) null, null, true,
-                                                                    org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY) {
-            @Override
-            public void append(org.apache.logging.log4j.core.LogEvent event) {
-                if (event.getLevel() == org.apache.logging.log4j.Level.WARN) {
-                    engineWarnings.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-    private org.apache.logging.log4j.core.config.LoggerConfig warningLogger;
-    private org.apache.logging.log4j.Level warningOriginalLevel;
+    private LogCapture engineWarningCapture;
 
     private void captureEngineWarnings() {
-        warningAppender.start();
-        var context = (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
-        var configuration = context.getConfiguration();
-        var name = RabiaEngine.class.getName();
-        var existing = configuration.getLoggerConfig(name);
-        if (!name.equals(existing.getName())) {
-            existing = new org.apache.logging.log4j.core.config.LoggerConfig(name, org.apache.logging.log4j.Level.WARN, false);
-            configuration.addLogger(name, existing);
-        }
-        warningLogger = existing;
-        warningOriginalLevel = existing.getLevel();
-        warningLogger.addAppender(warningAppender, org.apache.logging.log4j.Level.WARN, null);
-        warningLogger.setLevel(org.apache.logging.log4j.Level.WARN);
-        context.updateLoggers();
+        engineWarningCapture = LogCapture.capture(RabiaEngine.class, org.apache.logging.log4j.Level.WARN, false);
     }
 
     @AfterEach
     void releaseEngineWarnings() {
-        if (warningLogger != null) {
-            warningLogger.removeAppender(warningAppender.getName());
-            warningLogger.setLevel(warningOriginalLevel);
-            ((org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false)).updateLoggers();
+        if (engineWarningCapture != null) {
+            engineWarningCapture.close();
         }
-        warningAppender.stop();
+    }
+
+    private List<String> engineWarnings() {
+        return engineWarningCapture.messages(org.apache.logging.log4j.Level.WARN);
     }
 
     /// Commits slots P and P+1 on the first two voters while everything the third would see of any slot

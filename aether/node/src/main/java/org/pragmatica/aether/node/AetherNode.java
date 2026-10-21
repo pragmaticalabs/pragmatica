@@ -82,6 +82,8 @@ import org.pragmatica.aether.node.backup.GitBackupRepository;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
+import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
+import org.pragmatica.aether.node.prefetch.StoragePrefetchChannel;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
@@ -150,6 +152,7 @@ import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.InvocationMessage;
+import org.pragmatica.aether.invoke.ScheduledClaimStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
@@ -327,6 +330,7 @@ import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.aether.metrics.NodeReportedStateHolder;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -371,6 +375,7 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.aether.node.assembly.DrainAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
@@ -403,6 +408,9 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.aether.node.assembly.DrainAssembly.clearOperatorDrainOnDeath;
+import static org.pragmatica.aether.node.assembly.DrainAssembly.requestDrainThroughFsm;
 
 
 public interface AetherNode extends ManageableNode {
@@ -994,6 +1002,31 @@ public interface AetherNode extends ManageableNode {
                                                        GitBackupRepository.DEFAULT_TIMEOUT);
     }
 
+    /// A6: the repair plane's current protocol — stamp digests and paged pulls — and the freshness-gated verified read
+    /// of content-addressed keys, answered with a Get- or ExistsResponse. The legacy DHT routes stay beside these for
+    /// peers still on the previous version during a rolling upgrade. Without the verified-read route every remote
+    /// verified read waits out its phase deadline before falling back to the quorum read.
+    @Contract
+    static void routeDhtRepairPlane(List<MessageRouter.Entry<?>> allEntries,
+                                    DHTNode dhtNode,
+                                    DHTNetwork dhtNetwork,
+                                    DHTAntiEntropy dhtAntiEntropy) {
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.StampDigestRequest.class,
+                                                 request -> dhtNode.handleStampDigestRequest(request,
+                                                                                             response -> dhtNetwork.send(request.sender(),
+                                                                                                                         response))));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageRequest.class,
+                                                 request -> dhtNode.handleMigrationPageRequest(request,
+                                                                                               response -> dhtNetwork.send(request.sender(),
+                                                                                                                           response))));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageResponse.class,
+                                                 dhtAntiEntropy::onMigrationPageResponse));
+        allEntries.add(MessageRouter.Entry.route(DHTMessage.VerifiedReadRequest.class,
+                                                 request -> dhtNode.handleVerifiedReadRequest(request,
+                                                                                              response -> dhtNetwork.send(request.sender(),
+                                                                                                                          response))));
+    }
+
     @SuppressWarnings("unchecked")
     private static void routeKvBackup(List<MessageRouter.Entry<?>> allEntries, KvBackupService service) {
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
@@ -1131,22 +1164,6 @@ public interface AetherNode extends ManageableNode {
         onNttReconcile(quorumLossDetectorRef, leaderReconcilerRef);
     }
 
-    /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
-    /// is BOTH enqueued into the `DrainCommandRegistry` (the leader's cluster-sync ping carries it;
-    /// the target self-drains via its `DrainProcedure`, unchanged) AND routed through the
-    /// authoritative `MembershipFsm` as a `DrainRequested` event — the target transitions to
-    /// DEPARTING (stops counting toward effective, H2 timeout terminalizes it if it goes silent,
-    /// higher-incarnation `SwimHealthy` recovers it mid-drain) instead of the drain bypassing the
-    /// FSM entirely. The FSM holder is deref'd lazily: the registry-backed sinks are wired before
-    /// the FSM exists; pre-FSM the registry path alone applies (boot window only).
-    @Contract
-    static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
-                                       AtomicReference<MembershipFsm> membershipFsmRef,
-                                       NodeId target) {
-        drainCommandRegistry.requestDrain(target);
-        Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
-    }
-
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
     /// A4 catch-up: number of events pulled per forward-read page during partition backfill.
     int STREAM_CATCHUP_BATCH_SIZE = 256;
@@ -1270,11 +1287,18 @@ public interface AetherNode extends ManageableNode {
     /// link and content-addressed blocks — and (c) it is stable across a same-node restart because the
     /// node id is stable, so sealed segments are reclaimed on reboot.
     private static Path streamDataDir(AetherNodeConfig config) {
-        var artifactsConfig = Option.option(config.storageConfig().get("artifacts")).or(StorageConfig.storageConfig());
+        return streamDataDir(config.storageConfig(), config.self());
+    }
+
+    /// #249: [#streamDataDir(AetherNodeConfig)] over the node's storage map, which is the DERIVED one
+    /// ([StorageFactory#derivedStorage], applied once in `Main`): a shared-only `artifacts` reads its derived default
+    /// path here, never the blank path of its raw configuration.
+    static Path streamDataDir(Map<String, StorageConfig> storage, NodeId self) {
+        var artifactsConfig = Option.option(storage.get("artifacts")).or(StorageConfig.storageConfig());
 
         return Path.of(artifactsConfig.diskPath())
                    .resolveSibling("stream-segments")
-                   .resolve(config.self().id());
+                   .resolve(self.id());
     }
 
     /// The per-node stream WAL BASE directory (#634-3): the `streams` storage instance's explicit
@@ -1283,9 +1307,14 @@ public interface AetherNode extends ManageableNode {
     /// from ever sharing one WAL dir — the same invariant `streamDataDir` enforces, independent of
     /// operator input.
     private static Path streamWalBaseDir(AetherNodeConfig config) {
-        var streamsConfig = Option.option(config.storageConfig().get("streams")).or(StorageConfig.storageConfig());
+        return streamWalBaseDir(config.storageConfig(), config.self());
+    }
 
-        return effectiveWalBase(streamsConfig, config.self(), streamDataDir(config).resolve("wal"));
+    /// #249: [#streamWalBaseDir(AetherNodeConfig)] over the node's derived storage map, as [#streamDataDir(Map, NodeId)].
+    static Path streamWalBaseDir(Map<String, StorageConfig> storage, NodeId self) {
+        var streamsConfig = Option.option(storage.get("streams")).or(StorageConfig.storageConfig());
+
+        return effectiveWalBase(streamsConfig, self, streamDataDir(storage, self).resolve("wal"));
     }
 
     /// The pure wal-path decision, package-visible so the SUFFIX invariant is pinned (review m10
@@ -1984,27 +2013,6 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the
-    /// drains the topology manager started itself had a removal path. A node that was drained, left and came back under the
-    /// SAME id (ids come from config) was then told to drain again by the same leader. The entry ends with the node's
-    /// departure, on either of two edges: into DEAD (the departure the drain was for), and out of DEAD (a drain commanded on
-    /// an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise be inherited by the
-    /// rejoin). It deliberately does NOT end on DEPARTING back to MEMBER: that edge is the FSM's VIEW refuting or withdrawing
-    /// the drain (a higher-incarnation `SwimHealthy` from a live SWIM refutation, or the #1054 undelivered-drain withdrawal),
-    /// while the command is still in flight and the target is still to be told to drain. Clearing there stops the leader
-    /// pinging the DRAIN and the node never leaves.
-    @Contract
-    static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry,
-                                          MembershipTransitionRecord record) {
-        if (isDrainEpisodeEnd(record)) {
-            drainCommandRegistry.clearDrain(record.nodeId());
-        }
-    }
-
-    private static boolean isDrainEpisodeEnd(MembershipTransitionRecord record) {
-        return "Dead".equals(record.toState()) || "Dead".equals(record.fromState());
-    }
-
     @Contract
     static void reconcileReplicaSetOnCountedBoundary(AtomicReference<ReplicaSetController> controllerRef,
                                                      MembershipTransitionRecord record) {
@@ -2074,6 +2082,17 @@ public interface AetherNode extends ManageableNode {
     /// An owner-promotion block as an operator event, and its end as the recovery (#1937). The oversized-event refusal and the
     /// members-unreachable wait each raise on a transition and recover on the opposite one (flood-guarded by the sink); the other
     /// blocks stay a WARN and the partition status read until #1574 gives them a code.
+    /// What `GET /api/v1/cluster/provisioning` reports for the leader: the decision snapshot with the manager's circuit, last failure
+    /// and current inventory wait. Package-private so that the hand-off of each to the endpoint can be pinned.
+    static ProvisioningDiagnostics provisioningDiagnosticsOf(LeaderReconciler.ProvisioningDecisionSnapshot decision,
+                                                             ClusterTopologyManager manager) {
+        return new ProvisioningDiagnostics(decision,
+                                           manager.circuitBreakerState(),
+                                           manager.lastProvisionFailure(),
+                                           manager.inventoryWait(),
+                                           manager.inventoryWaits());
+    }
+
     static OwnerActivation.BlockAlarm ownerPromotionAlarm(OperatorWarningSink sink) {
         return new OwnerActivation.BlockAlarm() {
             @Override
@@ -2558,8 +2577,14 @@ public interface AetherNode extends ManageableNode {
                           // can close.
                           Option<SpiResourceProvider> spiResourceProvider,
                           NodeReplacementService nodeReplacementService,
-                          UpgradeRunService upgradeRunService) implements AetherNode {
+                          UpgradeRunService upgradeRunService,
+                          StoragePrefetchChannel prefetchChannel) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public Option<PrefetchGossipStats> prefetchGossipStats() {
+                return PrefetchGossipStats.prefetchGossipStats(swimHealthDetector.appGossipStats(), prefetchChannel);
+            }
 
             @Override
             public Epoch currentGenerationEpoch() {
@@ -2780,6 +2805,7 @@ public interface AetherNode extends ManageableNode {
             /// storage failure here must not skip `clusterNode.stop()` behind it.
             @Contract
             private Unit shutdownStorage() {
+                stopStorageMaintenance(storageSetups);
                 storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
 
                 return Unit.unit();
@@ -2813,26 +2839,46 @@ public interface AetherNode extends ManageableNode {
                 return formationUnlessSwimFails(startClusterAsync(), outcome);
             }
 
+            /// The in-process formation effects (event-loop metrics, the first election kick) are a DEPENDENT step
+            /// (`withSuccess`): whoever awaited the start proceeds with them in place. Discovery registration blocks on the
+            /// provider and the instance tag is an external signal bootstrap polls, so those two stay detached.
             private Promise<Unit> startClusterAsync() {
                 return clusterNode.start()
-                                  .onSuccess(_ -> {
-                                                 log.info("Aether node {} cluster formation complete",
-                                                          self());
-                                                 clusterNode.network()
-                                                            .server()
-                                                            .onPresent(server -> {
-                                                                           eventLoopMetricsCollector.register(server.bossGroup());
-                                                                           eventLoopMetricsCollector.register(server.workerGroup());
-                                                                           log.info("Registered EventLoopGroups for metrics collection");
-                                                                       });
-                                                 clusterNode.leaderManager()
-                                                            .triggerElection();
-                                                 discoveryProvider.onPresent(this::registerWithDiscovery);
-                                                 applyNodeIdTag();
-                                             })
+                                  .withSuccess(_ -> runFormationEffects())
+                                  .onSuccess(_ -> registerFormedNode())
                                   .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
+            }
+
+            // A dependent step must not fail the start it follows: a throw from the effects is logged, not propagated.
+            // FER (degrade forward): formation has succeeded, so a failed metrics registration or election kick is absorbed with a
+            // WARN. Guarantee earned: the start reports formation, not its by-products. Mechanism: a single run, the WARN is the record.
+            @Contract
+            private void runFormationEffects() {
+                Result.lift(this::onClusterFormed).onFailure(cause -> log.warn("Cluster formation effects failed: {}",
+                                                                               cause.message()));
+            }
+
+            @Contract
+            private void onClusterFormed() {
+                log.info("Aether node {} cluster formation complete", self());
+                clusterNode.network().server().onPresent(this::registerEventLoopGroups);
+                clusterNode.leaderManager().triggerElection();
+            }
+
+            private void registerEventLoopGroups(Server server) {
+                eventLoopMetricsCollector.register(server.bossGroup());
+                eventLoopMetricsCollector.register(server.workerGroup());
+                log.info("Registered EventLoopGroups for metrics collection");
+            }
+
+            // Detached on purpose: `registerSelf` is awaited (it blocks its thread) and the tag is an external signal;
+            // nothing in this process reads either after the start resolves.
+            @Contract
+            private void registerFormedNode() {
+                discoveryProvider.onPresent(this::registerWithDiscovery);
+                applyNodeIdTag();
             }
 
             private void registerWithDiscovery(DiscoveryProvider dp) {
@@ -3030,9 +3076,7 @@ public interface AetherNode extends ManageableNode {
             }
 
             private ProvisioningDiagnostics assembleProvisioningDiagnostics(LeaderReconciler.ProvisioningDecisionSnapshot decision) {
-                return new ProvisioningDiagnostics(decision,
-                                                   clusterTopologyManagerInstance.circuitBreakerState(),
-                                                   clusterTopologyManagerInstance.lastProvisionFailure());
+                return provisioningDiagnosticsOf(decision, clusterTopologyManagerInstance);
             }
 
             @Override
@@ -3530,76 +3574,24 @@ public interface AetherNode extends ManageableNode {
                                                                                             .map(v -> (AetherValue.ClusterConfigValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var leaderAwareSnapshotSource = snapshotSource;
-        // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
-        // The DRAINING-atom-writing ConsensusDrainCoordinator was removed in Phase 2b — the
-        // FSM-integrated DrainCoordinator wired into MembershipFsm/CTM is now a no-op stub.
-        // The §8.2 unified drain procedure is owned by DrainProcedure (constructed below).
-        var inFlightTrackerForDrain = InFlightRequestTracker.inFlightRequestTracker();
-
-        invocationHandler.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
-                                                                                                        () -> workerProjectionFreshRef.get()
-                                                                                                                                      .getAsBoolean()));
-        // E2 Phase 2b (2026-05-28): DrainProcedure replaces SelfDrainCoordinator's execution
-        // surface. It is a *pure procedure* — no triggers, no periodic ticks, no orphan
-        // checker. The single caller in Phase 2b is the QuorumLossDetector quorum-loss
-        // listener wired further down. Operator/CTM-initiated drain is delivered as a `DRAIN`
-        // command on the leader↔node heartbeat (membership v2 §7.5.4) — there is no KV drain
-        // record. Drain is heartbeat-reported and leader-cached, never stored in the KV-Store.
-        //
-        // `jvmExit` is threaded in from the factory: production is
-        // `Runtime.getRuntime().halt(2)`, single-JVM hosts (Forge/Ember) pass a per-node
-        // callback that stops the node gracefully without taking down the whole test JVM.
-        //
-        // `swimLeaveEmitter` is a no-op for Phase 2b — the SWIM `LEAVE` acceleration wiring
-        // (spec §8.2 step 3) lands in Phase 6 once the SwimHealthDetector exposes a
-        // `voluntaryLeave` API. The drain still halts the node; LEAVE is purely an
-        // acceleration of peer-side suspect aging, not a correctness requirement.
-        // Item-8 graft (stream-namespaces rebuild): forward-declared best-effort emitter resolved
-        // once the ClusterEventAggregator is constructed below. DrainProcedure invokes it once at
-        // the INACTIVE→DRAINING transition (single-shot via its CAS gate); the lambda no-ops until
-        // the aggregator is bound. Kept as a Consumer<DrainReason> so aether-deployment stays free
-        // of any ClusterEvent dependency.
-        var clusterEventDrainEmitterRef = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<org.pragmatica.aether.deployment.cluster.DrainReason>>(reason -> {});
-        // #427 graceful-departure push: the leaving node pushes its held DHT chunks to their new
-        // replicas, ack-gated, before it halts. The DrainProcedure invokes this supplier once at
-        // DRAINING and its quiesced-fork exit waits for it (bounded by the push's own budget; the
-        // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
-        // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
-        // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
-        // #1818: the push excludes every node the leader commanded to drain alongside this one (the
-        // ping's global drain set), so it never lands on, or counts as a survivor, a co-drainer.
-        var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
-        var movementDrain = new AtomicReference<Option<CommunityDrainCoordinator>>(Option.none());
-
-        departingSendersRef.set(DhtDeparturePush.departingSenders(metricsCollector, dhtTopologyListener));
-        var dhtDeparturePush = DhtDeparturePush.dhtDeparturePush(dhtRebalancer,
-                                                                 metricsCollector,
-                                                                 departurePushObserverRef::get);
-        Supplier<Promise<Unit>> departurePush = () -> dhtDeparturePush.get()
-                                                                      .flatMap(_ -> movementDrain.get()
-                                                                                                 .fold(Promise::unitPromise,
-                                                                                                       CommunityDrainCoordinator::onQuiesced));
-        // #273 item 1: forward-declared hook resolved once the ScheduledTaskManager is built below. The
-        // drain edge for scheduled tasks is THIS emitter, not a MembershipDecision — `NodeDraining` has
-        // no producer since the membership-v2 finale removed the per-node lifecycle projection.
-        var scheduledTaskDrainHookRef = new java.util.concurrent.atomic.AtomicReference<Runnable>(() -> {});
-        var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
-                                                           () -> {},
-                                                           drainInitiatedEmitter(scheduledTaskDrainHookRef,
-                                                                                 clusterEventDrainEmitterRef),
-                                                           departurePush,
-                                                           jvmExit);
-        var communityDrain = CommunityDrainCoordinator.communityDrainCoordinator(config.self(),
-                                                                                 () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                                        LeaderValue.class)
-                                                                                              .map(LeaderValue::leader),
-                                                                                 () -> selfPlacementOperation(kvStore,
-                                                                                                              config.self()),
-                                                                                 clusterNode.network()::send,
-                                                                                 () -> commandedDrain(drainProcedure,
-                                                                                                      nodeReportedStateHolder));
-
-        movementDrain.set(Option.some(communityDrain));
+        var drain = DrainAssembly.drainInfrastructure(new DrainAssembly.InfrastructureInputs(config,
+                                                                                             kvStore,
+                                                                                             clusterNode,
+                                                                                             invocationHandler,
+                                                                                             workerProjectionFreshRef,
+                                                                                             departingSendersRef,
+                                                                                             metricsCollector,
+                                                                                             dhtRebalancer,
+                                                                                             dhtTopologyListener,
+                                                                                             nodeReportedStateHolder,
+                                                                                             storageSetups,
+                                                                                             jvmExit));
+        var inFlightTrackerForDrain = drain.inFlightTrackerForDrain();
+        var clusterEventDrainEmitterRef = drain.clusterEventDrainEmitterRef();
+        var departurePushObserverRef = drain.departurePushObserverRef();
+        var scheduledTaskDrainHookRef = drain.scheduledTaskDrainHookRef();
+        var drainProcedure = drain.drainProcedure();
+        var communityDrain = drain.communityDrain();
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
         // P3 (membership unification): ClusterPhase derives from QUIC quorum + leader presence.
@@ -3854,52 +3846,52 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                  .maxNodes()
                                                                                                                                                  .or(Integer.MAX_VALUE),
                                                                                                                                      new org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler.Actuator() {
-            @Override
-            public Result<String> sourceBinding(SourceName source) {
-                                                                                                                                         return lifecycleManager.sourceBinding(source);
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Result<String> sourceBinding(SourceName source) {
+                                                                                                                                             return lifecycleManager.sourceBinding(source);
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> create(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return clusterTopologyManager.provisionPlacementNode(operation);
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> create(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return clusterTopologyManager.provisionPlacementNode(operation);
+                                                                                                                                         }
 
-            @Override
-            public Promise<Boolean> retirementSafe(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return Promise.success(operation.previousNode()
-                                                                                                                                                                         .map(node -> deploymentMap.byNode(node)
-                                                                                                                                                                                                   .isEmpty())
-                                                                                                                                                                         .or(true));
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Boolean> retirementSafe(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return Promise.success(operation.previousNode()
+                                                                                                                                                                             .map(node -> deploymentMap.byNode(node)
+                                                                                                                                                                                                       .isEmpty())
+                                                                                                                                                                             .or(true));
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> drain(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         operation.previousNode()
-                                                                                                                                                  .onPresent(node -> clusterNode.network()
-                                                                                                                                                                                .send(node,
-                                                                                                                                                                                      new CommunityPlacementMessage.DrainRequested(config.self(),
-                                                                                                                                                                                                                                   operation.operationId())));
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> drain(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             operation.previousNode()
+                                                                                                                                                      .onPresent(node -> clusterNode.network()
+                                                                                                                                                                                    .send(node,
+                                                                                                                                                                                          new CommunityPlacementMessage.DrainRequested(config.self(),
+                                                                                                                                                                                                                                       operation.operationId())));
 
-                                                                                                                                         return Promise.unitPromise();
-                                                                                                                                     }
+                                                                                                                                             return Promise.unitPromise();
+                                                                                                                                         }
 
-            @Override
-            public Promise<Unit> terminate(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return operation.previousNode()
-                                                                                                                                                         .fold(Promise::unitPromise,
-                                                                                                                                                               node -> lifecycleManager.terminateNode(node,
-                                                                                                                                                                                                      SourceName.sourceNameOrDefault(operation.previousSource())));
-                                                                                                                                     }
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Unit> terminate(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return operation.previousNode()
+                                                                                                                                                             .fold(Promise::unitPromise,
+                                                                                                                                                                   node -> lifecycleManager.terminateNode(node,
+                                                                                                                                                                                                          SourceName.sourceNameOrDefault(operation.previousSource())));
+                                                                                                                                         }
 
-            @Override
-            public Promise<Boolean> previousInstanceExists(AetherValue.CommunityPlacementOperationValue operation) {
-                                                                                                                                         return operation.previousNode()
-                                                                                                                                                         .fold(() -> Promise.success(false),
-                                                                                                                                                               node -> lifecycleManager.instancesForNode(node,
-                                                                                                                                                                                                         SourceName.sourceNameOrDefault(operation.previousSource()))
-                                                                                                                                                                                       .map(instances -> !instances.isEmpty()));
-                                                                                                                                     }
-        },
+                                                                                                                                         @Override
+                                                                                                                                         public Promise<Boolean> previousInstanceExists(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                             return operation.previousNode()
+                                                                                                                                                             .fold(() -> Promise.success(false),
+                                                                                                                                                                   node -> lifecycleManager.instancesForNode(node,
+                                                                                                                                                                                                             SourceName.sourceNameOrDefault(operation.previousSource()))
+                                                                                                                                                                                           .map(instances -> !instances.isEmpty()));
+                                                                                                                                         }
+                                                                                                                                     },
                                                                                                                                      operation -> eventAggregator.emitAsLeader(new ClusterEvent.NodeLifecycleChanged(hlcClock.now(),
                                                                                                                                                                                                                      ClusterEvent.Severity.WARNING,
                                                                                                                                                                                                                      "Community placement requires operator attention: " + operation.detail(),
@@ -3922,6 +3914,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                 "implicit-worker-retirement"))),
                                                                                                                                      TimeSpan.timeSpan(45).seconds());
 
+        placementReconciler.operatorWarnings(operatorWarningSink);
         clusterTopologyManager.installCommunityPlacement(placementReconciler);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
@@ -3955,6 +3948,7 @@ public interface AetherNode extends ManageableNode {
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
         // ClusterEvent dependency.
         eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
+        eventAggregator.bindSelfIsVoter(() -> isInstalledVoterOrUnknown(clusterNode.voterConfiguration(), config.self()));
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
@@ -4043,7 +4037,9 @@ public interface AetherNode extends ManageableNode {
                                                                              clusterNode.leaderManager(),
                                                                              ScheduledTaskManager.DEFAULT_COMPLETION_BOUND,
                                                                              ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),
-                                                                                                                           delegateRouter::route));
+                                                                                                                           delegateRouter::route),
+                                                                             scheduledClaimStore(kvStore,
+                                                                                                 switchableCluster));
         // #273 item 1: resolve the drain hook now the manager exists. `DrainProcedure.initiate` runs this
         // once at the INACTIVE->DRAINING CAS, for every trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED).
         scheduledTaskDrainHookRef.set(scheduledTaskManager::onDrainInitiated);
@@ -4146,14 +4142,23 @@ public interface AetherNode extends ManageableNode {
         // `active` flag, so the periodic driver below can call demote()/collectGarbage()
         // unconditionally on every node (leader or not) and it safely no-ops until this node's
         // adapter is activated.
+        //
+        // Promotion, and demotion of `artifacts` and `content`, are NOT leader-pinned: their fast tiers are
+        // private to each node, so a leader-only manager would warm only the leader's caches. Both are
+        // activated on every node when it reports ready (signalReadyActivatingStorage, below) and deactivated
+        // on stop. `streams` stays as it was: leader-pinned demotion, no promotion.
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
+        var compositePromotionManager = StorageFactory.compositePromotionManager(storageSetups);
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
                                                                                       compositeGarbageCollector);
         var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
+                                                                                         compositePromotionManager,
+                                                                                         PromotionStallWatch.promotionStallWatch(storageSetups,
+                                                                                                                                 operatorWarningSink),
                                                                                          compositeGarbageCollector);
 
-        LOG.info("Storage maintenance enabled: demotion+GC cadence={}, storage setups={}",
+        LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",
                  config.timeouts().storageMaintenance().interval(),
                  storageSetups.keySet());
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
@@ -4247,26 +4252,27 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
+        routeDhtRepairPlane(aetherEntries, dhtNode, dhtNetwork, dhtAntiEntropy);
         // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
         // drain can confirm the chunk reached a surviving replica before halting.
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
                                                     event -> {
                                                         if (!configuredWorker(config)) {
-                                                        dhtTopologyListener.onNodeJoined(event);
-                                                    }
+                                                            dhtTopologyListener.onNodeJoined(event);
+                                                        }
                                                     }));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                                     event -> {
                                                         if (!configuredWorker(config)) {
-                                                        dhtTopologyListener.onNodeRemoved(event);
-                                                    }
+                                                            dhtTopologyListener.onNodeRemoved(event);
+                                                        }
                                                     }));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                                     event -> {
                                                         if (!configuredWorker(config)) {
-                                                        dhtTopologyListener.onNodeDecommissioned(event);
-                                                    }
+                                                            dhtTopologyListener.onNodeDecommissioned(event);
+                                                        }
                                                     }));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
@@ -4521,11 +4527,13 @@ public interface AetherNode extends ManageableNode {
                                         .toList();
         Runnable announceJoinTrigger = selfNodeInfo == null
                                        ? () -> {}
-                                       : () -> swimHealthDetector.announceJoin(selfNodeInfo,
-                                                                               swimConfig.clusterName(),
-                                                                               bootIncarnation,
-                                                                               bootToken,
-                                                                               swimSeeds);
+                                       : joinAnnouncement(config,
+                                                          swimHealthDetector,
+                                                          selfNodeInfo,
+                                                          swimConfig.clusterName(),
+                                                          bootIncarnation,
+                                                          bootToken,
+                                                          swimSeeds);
         // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
         // closes over the encryptor + announce trigger that are only in scope here. It fails the
@@ -4785,10 +4793,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                             descriptor);
                                                                                                                                                      if (membershipFsm.countedMembers()
                                                                                                                                                                       .contains(peer)) {
-                                                                                                                                                     clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
-                                                                                                                                                                                                                                 descriptor.role(),
-                                                                                                                                                                                                                                 hlcClock.now()));
-                                                                                                                                                 }
+                                                                                                                                                         clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
+                                                                                                                                                                                                                                     descriptor.role(),
+                                                                                                                                                                                                                                     hlcClock.now()));
+                                                                                                                                                     }
                                                                                                                                                  }),
                                                                                                   System::nanoTime,
                                                                                                   config.timeouts()
@@ -4835,8 +4843,8 @@ public interface AetherNode extends ManageableNode {
                                                      if (clusterNode.leaderManager()
                                                                     .isLeader() && candidateHealth.request(request.sender(),
                                                                                                            request.communityId())) {
-                                                     sendObservationProbe(clusterNode, request.sender());
-                                                 }
+                                                         sendObservationProbe(clusterNode, request.sender());
+                                                     }
 
                                                      governorAuthority.handle(request)
                                                                       .onSuccess(response -> clusterNode.network()
@@ -4911,11 +4919,7 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(governorRecovery::poll,
                                                                       config.timeouts().cluster().pingInterval()));
         // End hierarchical health assembly. Missing reports affect placement, never membership death.
-        // #1054: every DRAINING pong the leader records is a drain acknowledgement, latched by the FSM for the
-        // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
-        // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
-        // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
-        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, clusterDeploymentManager));
+        DrainAssembly.bindDrainReport(pongSignalFan, membershipFsm, clusterDeploymentManager);
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
@@ -5023,6 +5027,10 @@ public interface AetherNode extends ManageableNode {
         // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
         leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
+        // #1404 — gossip can be lost with the leader that sent it; the committed capacity reservations are the durable
+        // record of what was requested, and count toward core capacity on the terms LeaderReconciler documents.
+        leaderReconciler.setDurableProvisioningSupplier(() -> pendingCoreAllocations(lifecycleManager.allocatedNodes("core"),
+                                                                                     installedVoterIds(clusterNode)));
         leaderReconciler.setInstalledVotersSupplier(() -> installedVoterIds(clusterNode));
         // Drain-victim slice-owner demotion (Approach 3, #1488): wire the authoritative KV-Store-backed
         // active-slice-ownership predicate so the reconciler drains a node currently serving / hosting
@@ -5121,61 +5129,23 @@ public interface AetherNode extends ManageableNode {
         // #1050 (verify-1057-r2 S1): the FAULTY edge is the death evidence that re-arms a departed-node reap the CTM
         // abandoned while SWIM still reported the node SUSPECTED. Pinned by `SwimFaultyToCtmRoutingTest`.
         swimHealthDetector.addObservationListener(obs -> routeSwimFaultyToCtm(obs, clusterTopologyManager));
-        // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
-        // unified tracker's stable membership (armed after first quorum; grace =
-        // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
-        // Trigger detection (QuorumLossDetector) and procedure execution (DrainProcedure)
-        // stay separated.
-        Consumer<QuorumLossIntent> quorumLossChain = ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent).andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS))
-                                                                                                                        .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
-
-        quorumLossDetector.setQuorumLossListener(quorumLossChain);
-        wireQuorumCountTriggers(quorumLossDetector, membershipFsm, clusterNode::onVoterConfiguration);
-        // Fix C (split-brain self-fence co-confirmation): before the QUORUM_LOSS drain commits, the
-        // detector consults this snapshot of the FSM's counted (MEMBER+SUSPECT) set vs raw-SWIM
-        // liveness of the members missing from the STRICT (MEMBER-only) count. The strict count is
-        // the detector's numerator; a false-FAULTY storm can wedge a still-present, SWIM-alive peer
-        // pre-MEMBER (SUSPECT), dropping strict below quorum while the cluster is intact. Suppression
-        // requires counted-still-quorate AND every stuck member SWIM-alive — a genuine partition
-        // fails both (unreachable members are NOT SWIM-alive and age out of SUSPECT), so the real
-        // self-fence is never masked.
-        quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm,
-                                                                                     swimHealthDetector::healthOf,
-                                                                                     installedVoterIds(clusterNode)));
-        // A6: gate the quorum-loss self-drain with the SAME cold-boot window the SWIM FAULTY-suppression
-        // uses. On a simultaneous full-cluster restart SWIM's first probe-acks lag the QUIC attach, so the
-        // detector's SWIM-alive count momentarily decays below threshold and healthy nodes would self-fence
-        // before convergence (the 3/5-wedge root cause). Deferring the fence during the bounded cold-boot
-        // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
-        quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
-        metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
-        // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
-        // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
-        var nodeReadyAgain = nodeReadyAgain(metricsCollector::reportedStates);
-
-        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), nodeReadyAgain));
-        // The leader never processes its own ping, so it re-derives its mark from its own registry each interval. Only
-        // the LEADER: an operator drain never leaves the registry, so a node that was leader once and is not now would
-        // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
-        var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
-                                                       drainCommandRegistry::drainTargets,
-                                                       drainSetObserver(alertManager, config.self(), nodeReadyAgain));
-
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
-                                                                      config.timeouts().cluster().pingInterval()));
-        // Workers renew core contact from identified core ping OR pong responses. This is
-        // reachability evidence only; all mutations still require committed core authority.
-        var coreAbsenceDetector = CoreAbsenceDetector.coreAbsenceDetector(config.timeouts().cluster().coreAbsence(),
-                                                                          config.timeouts().cluster().pingInterval());
-
-        coreAbsenceDetector.setCoreAbsenceListener(_ -> initiateDrain(drainProcedure,
-                                                                      nodeReportedStateHolder,
-                                                                      DrainReason.CORE_ABSENCE));
-        coreAbsenceDetector.setFenceSuppressor(() -> !configuredWorker(config));
-        coreAbsenceDetector.setOperatorWarningSink(operatorWarningSink);
-        metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
-        coreAbsenceDetector.start();
+        var quorumLossDrain = DrainAssembly.quorumLossDrain(new DrainAssembly.QuorumLossInputs(config,
+                                                                                               clusterNode,
+                                                                                               leaderReconciler,
+                                                                                               quorumLossDetector,
+                                                                                               membershipFsm,
+                                                                                               swimHealthDetector,
+                                                                                               swimIsBootingSupplier,
+                                                                                               metricsCollector,
+                                                                                               nodeReportedStateHolder,
+                                                                                               drainProcedure,
+                                                                                               alertManager,
+                                                                                               isLeaderSupplier,
+                                                                                               drainCommandRegistry,
+                                                                                               operatorWarningSink,
+                                                                                               periodicTasks::defer));
+        var quorumLossChain = quorumLossDrain.quorumLossChain();
+        var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
         // Assigned workers use challenge-bound governor evidence. Report expiry blocks new
         // placement; it never synthesizes individual member death or provider termination.
         var communityReachability = org.pragmatica.aether.deployment.cluster.fsm.CommunityReachability.communityReachability(config.timeouts()
@@ -5225,6 +5195,14 @@ public interface AetherNode extends ManageableNode {
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
         swimHealthDetector.addTransportObservationEmitter(delegateRouter::route);
+        // Storage prefetch hints ride SWIM's application gossip: once per probe round the hottest blocks of one
+        // instance go to one random peer in a datagram of their own, and arriving hints reach the prefetch manager
+        // of the instance they name. The managers stay dormant until the node reports ready.
+        var prefetchChannel = StoragePrefetchChannel.storagePrefetchChannel(StorageFactory.prefetchManagers(storageSetups),
+                                                                            serializer,
+                                                                            deserializer);
+
+        swimHealthDetector.registerGossipChannel(StoragePrefetchChannel.CHANNEL, prefetchChannel);
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
         // observations directly. NODE_FAILED / NODE_LEFT events are emitted via the
         // canonical MembershipDecision route (MembershipDeltaProjector, Wave 4), keyed off
@@ -6765,7 +6743,8 @@ public interface AetherNode extends ManageableNode {
                                   backupRestoreCoordinator::onNodeStopping,
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service(),
-                                  upgradeWiring.service());
+                                  upgradeWiring.service(),
+                                  prefetchChannel);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -6791,9 +6770,14 @@ public interface AetherNode extends ManageableNode {
         // the DHT cannot answer. Without this the node would report ready while its DHT tiers still refuse
         // every operation.
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
+        BooleanSupplier nodeDraining = () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE;
 
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          nodeLifecycle::signalReady,
+                                                                                          () -> signalReadyActivatingStorage(() -> signalReadyAndWakePrefetch(nodeLifecycle::signalReady,
+                                                                                                                                                              storageSetups,
+                                                                                                                                                              nodeDraining),
+                                                                                                                             storageSetups,
+                                                                                                                             nodeDraining),
                                                                                           nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
@@ -6820,183 +6804,192 @@ public interface AetherNode extends ManageableNode {
                                          .flatMap(_ -> RabiaNode.buildAndWireRouter(delegateRouter, allEntries))
                                          .map(_ -> {
                                                   if (config.managementPort() > 0) {
-                                                  var mgmtSecurityEnabled = config.appHttp()
-                                                                                  .securityEnabled();
-                                                  // #573: the false arm must DENY, not permit-all. It previously used the validator now
-                                                  // named `permitAllValidator`, which grants ADMIN + SERVICE to every caller — so a node
-                                                  // whose `[app-http] enabled` was false (the DEFAULT) served an unauthenticated,
-                                                  // fully-privileged Management API. `denyUnlessPublicValidator` refuses anything but a
-                                                  // Public route, and by FAILING rather than succeeding it also lets the
-                                                  // `kvStoreAwareValidator` below consult the cluster's bootstrap admin keys, which the
-                                                  // unconditionally-succeeding grant short-circuited entirely.
-                                                  var configValidator = mgmtSecurityEnabled
-                                                                        ? SecurityValidator.apiKeyValidator(config.appHttp()
-                                                                                                                  .apiKeys())
-                                                                        : SecurityValidator.denyUnlessPublicValidator();
+                                                      var mgmtSecurityEnabled = config.appHttp()
+                                                                                      .managementSecurityEnabled();
+                                                      // #962: `[management] security_mode` decides whether the Management API authenticates and,
+                                                      // when absent, INHERITS `[app-http] security_mode`. Both planes check the same
+                                                      // `api-keys` and the same cluster bootstrap admin key. They authorize on
+                                                      // DIFFERENT axes though: app-HTTP route policies test the key's `roles`, this plane
+                                                      // tests its `authorization_role` (ADMIN > OPERATOR > VIEWER). The refusals name the
+                                                      // plane and the axis (ManagementServerImpl#denialDetail); the operator documentation
+                                                      // states the coupling where api-key mode is configured.
+                                                      //
+                                                      // #1121: `security_mode = "none"` leaves this plane FULLY OPEN. `ManagementServerImpl`
+                                                      // gates on `mgmtSecurityEnabled` and, when false, dispatches without consulting any
+                                                      // validator -- on the local path, the forwarded path, the websocket feeds and the Maven
+                                                      // push admission alike. An earlier version of this block installed
+                                                      // `denyUnlessPublicValidator` here and claimed non-public routes were refused unless a
+                                                      // bootstrap key was present; that validator was never consulted, so the claim was false
+                                                      // and the validator is gone. The validator below is built for the enabled case only.
+                                                      var configValidator = SecurityValidator.apiKeyValidator(config.appHttp()
+                                                                                                                    .apiKeys());
 
-                                                  if (!mgmtSecurityEnabled) {
-                                                  LOG.warn("Management API on port {} has NO configured credentials — non-public routes will be"
-                                                          + " REFUSED unless a cluster bootstrap admin key is present in KV. Set [app-http] enabled"
-                                                          + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
-                                                           config.managementPort());
-                                              }
-                                                  // The OTHER credential-less shape, and until now it had no voice at all. Above is
-                                                  // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
-                                                  // the published image now boots with, since `docker/aether-node/aether.toml` no longer
-                                                  // bakes a key. The node is fail-closed and that is intended, so this is not a
-                                                  // misconfiguration warning; it states WHICH credential is the only way in, because the
-                                                  // alternative is an operator reading 401s with nothing in the log explaining them.
-                                                  //
-                                                  // Deliberately not silent-because-intended: a default applied when nothing was
-                                                  // configured has to be loud, or it becomes the fail-open nobody notices. The precedent
-                                                  // is this repo's own log-and-drop-plus-caller-default, which turned a fail-closed
-                                                  // encryption refusal into a green boot with plaintext.
-                                                  if (mgmtSecurityEnabled && config.appHttp()
-                                                                                   .apiKeys()
-                                                                                   .isEmpty()) {
-                                                  LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
-                                                          + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
-                                                          + " The cluster bootstrap admin key (printed once at formation, derived from the"
-                                                          + " cluster secret) is the only credential this node will accept; it is enumerable and"
-                                                          + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
-                                                          + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
-                                                           config.managementPort());
-                                              }
+                                                      if (!mgmtSecurityEnabled) {
+                                                          LOG.warn("Management API on port {} is FULLY OPEN: its security mode is \"none\" ([management] security_mode, or inherited from"
+                                                                  + " [app-http] security_mode when that is absent), which disables authentication and"
+                                                                  + " authorization on the management plane, so ANY caller that can reach the port can run every"
+                                                                  + " operation, including cluster changes and artifact pushes. Use it only on a loopback or"
+                                                                  + " otherwise isolated listener; set [management] security_mode = \"api-key\" to protect this plane (#1121).",
+                                                                   config.managementPort());
+                                                      }
+                                                      // The OTHER credential-less shape, and until now it had no voice at all. Above is
+                                                      // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
+                                                      // the published image now boots with, since `docker/aether-node/aether.toml` no longer
+                                                      // bakes a key. The node is fail-closed and that is intended, so this is not a
+                                                      // misconfiguration warning; it states WHICH credential is the only way in, because the
+                                                      // alternative is an operator reading 401s with nothing in the log explaining them.
+                                                      //
+                                                      // Deliberately not silent-because-intended: a default applied when nothing was
+                                                      // configured has to be loud, or it becomes the fail-open nobody notices. The precedent
+                                                      // is this repo's own log-and-drop-plus-caller-default, which turned a fail-closed
+                                                      // encryption refusal into a green boot with plaintext.
+                                                      if (mgmtSecurityEnabled && config.appHttp()
+                                                                                       .apiKeys()
+                                                                                       .isEmpty()) {
+                                                          LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
+                                                                  + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
+                                                                  + " The cluster bootstrap admin key (printed once at formation, derived from the"
+                                                                  + " cluster secret) is the only credential this node will accept; it is enumerable and"
+                                                                  + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
+                                                                  + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
+                                                                   config.managementPort());
+                                                      }
 
-                                                  var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
-                                                                                                                      () -> node.kvStore());
-                                                  var managementServer = ManagementServer.managementServer(config.managementPort(),
-                                                                                                           () -> node,
-                                                                                                           entityCheckpointDriver,
-                                                                                                           alertManager,
-                                                                                                           configRegistry,
-                                                                                                           traceStore,
-                                                                                                           logLevelRegistry,
-                                                                                                           dynamicConfigManager,
-                                                                                                           scheduledTaskRegistry,
-                                                                                                           scheduledTaskManager,
-                                                                                                           sliceInvoker,
-                                                                                                           scheduledTaskStateRegistry,
-                                                                                                           config.tls(),
-                                                                                                           mgmtSecurityValidator,
-                                                                                                           mgmtSecurityEnabled,
-                                                                                                           () -> config.appHttp()
-                                                                                                                       .apiKeys(),
-                                                                                                           serverBossGroup,
-                                                                                                           serverWorkerGroup,
-                                                                                                           config.managementHttpProtocol(),
-                                                                                                           config.timeouts()
-                                                                                                                 .forwarding(),
-                                                                                                           Option.some(clusterNode.network()),
-                                                                                                           Option.some(serializer),
-                                                                                                           Option.some(deserializer),
-                                                                                                           target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                                                            membershipFsmRef,
-                                                                                                                                            target),
-                                                                                                           drainCommandRegistry::drainTargets,
+                                                      var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
+                                                                                                                          () -> node.kvStore());
+                                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
+                                                                                                               () -> node,
+                                                                                                               entityCheckpointDriver,
+                                                                                                               alertManager,
+                                                                                                               configRegistry,
+                                                                                                               traceStore,
+                                                                                                               logLevelRegistry,
+                                                                                                               dynamicConfigManager,
+                                                                                                               scheduledTaskRegistry,
+                                                                                                               scheduledTaskManager,
+                                                                                                               sliceInvoker,
+                                                                                                               scheduledTaskStateRegistry,
+                                                                                                               config.tls(),
+                                                                                                               mgmtSecurityValidator,
+                                                                                                               mgmtSecurityEnabled,
+                                                                                                               () -> config.appHttp()
+                                                                                                                           .apiKeys(),
+                                                                                                               serverBossGroup,
+                                                                                                               serverWorkerGroup,
+                                                                                                               config.managementHttpProtocol(),
+                                                                                                               config.timeouts()
+                                                                                                                     .forwarding(),
+                                                                                                               Option.some(clusterNode.network()),
+                                                                                                               Option.some(serializer),
+                                                                                                               Option.some(deserializer),
+                                                                                                               target -> requestDrainThroughFsm(drainCommandRegistry,
+                                                                                                                                                membershipFsmRef,
+                                                                                                                                                target),
+                                                                                                               drainCommandRegistry::drainTargets,
 
-                                                  // #1720: operator drain and shutdown honour the slice minAvailable floor,
-                                                  // as the automatic drain does (same KV-backed guard, same counting rules).
-                                                  NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
-                                                                                            operatorWarningSink));
+                                                      // #1720: operator drain and shutdown honour the slice minAvailable floor,
+                                                      // as the automatic drain does (same KV-backed guard, same counting rules).
+                                                      NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                                                                operatorWarningSink));
 
-                                                  managementServer.setOperatorWarningSink(operatorWarningSink);
-                                                  managementServerRef.set(Option.some(managementServer));
-                                                  // #278: expose the node's real MeterRegistry to slice-facing resource
-                                                  // provisioning so MetricsInterceptorFactory records into the SAME
-                                                  // registry the Management API scrapes, instead of each interceptor
-                                                  // fabricating its own disconnected one.
-                                                  resourceProviderSetup.spiProvider()
-                                                                       .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
-                                                                                                               managementServer.meterRegistry()));
+                                                      managementServer.setOperatorWarningSink(operatorWarningSink);
+                                                      managementServerRef.set(Option.some(managementServer));
+                                                      // #278: expose the node's real MeterRegistry to slice-facing resource
+                                                      // provisioning so MetricsInterceptorFactory records into the SAME
+                                                      // registry the Management API scrapes, instead of each interceptor
+                                                      // fabricating its own disconnected one.
+                                                      resourceProviderSetup.spiProvider()
+                                                                           .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
+                                                                                                                   managementServer.meterRegistry()));
 
-                                                  return new aetherNode(workerMetadataChannel,
-                                                                        config,
-                                                                        delegateRouter,
-                                                                        kvStore,
-                                                                        ownershipEpochHighWater,
-                                                                        sliceRegistry,
-                                                                        sliceStore,
-                                                                        clusterNode,
-                                                                        taskGroupOwnerResolver,
-                                                                        switchableCluster,
-                                                                        nodeDeploymentManager,
-                                                                        clusterDeploymentManager,
-                                                                        endpointRegistry,
-                                                                        httpRouteRegistry,
-                                                                        metricsCollector,
-                                                                        metricsScheduler,
-                                                                        deploymentMetricsCollector,
-                                                                        deploymentMetricsScheduler,
-                                                                        controlLoop,
-                                                                        workerMetricsAggregator,
-                                                                        sliceInvoker,
-                                                                        invocationHandler,
-                                                                        blueprintService,
-                                                                        mavenProtocolHandler,
-                                                                        artifactStore,
-                                                                        invocationMetrics,
-                                                                        controller,
-                                                                        deploymentManager,
-                                                                        abTestManager,
-                                                                        alertManager,
-                                                                        traceStore,
-                                                                        logLevelRegistry,
-                                                                        dynamicConfigManager,
-                                                                        appHttpServer,
-                                                                        ttmManager,
-                                                                        rollbackManager,
-                                                                        scheduledTaskManager,
-                                                                        snapshotCollector,
-                                                                        artifactMetricsCollector,
-                                                                        deploymentMap,
-                                                                        eventAggregator,
-                                                                        streamPartitionManager,
-                                                                        streamSegmentIndex,
-                                                                        streamReadRouter,
-                                                                        streamWriteRouter,
-                                                                        consumerGroupCoordinator,
-                                                                        consumerGroupRegistry,
-                                                                        streamConsumerManager,
-                                                                        Option.some(projectionNodeSupport),
-                                                                        streamNamespacesService,
-                                                                        storageSetups,
-                                                                        clusterTopologyManager,
-                                                                        eventLoopMetricsCollector,
-                                                                        swimHealthDetector,
-                                                                        presenceSampler,
-                                                                        leaderReconciler,
-                                                                        membershipFsm,
-                                                                        quorumLossDetector,
-                                                                        coreAbsenceDetector,
-                                                                        transitionJournal,
-                                                                        startSwimTrigger,
-                                                                        Option.some(managementServer),
-                                                                        discoveryProvider,
-                                                                        certRenewalScheduler,
-                                                                        inFlightTrackerForDrain,
-                                                                        nodeLifecycle,
-                                                                        hlcClock,
-                                                                        dhtClientOption,
-                                                                        Option.some(dhtNode),
-                                                                        effectivePhaseSupplier,
-                                                                        currentGenerationEpochSupplier,
-                                                                        observabilityBaseline,
-                                                                        spokesmanPingLoop,
-                                                                        governorAnnouncerHolder,
-                                                                        streamRetentionEnforcer,
-                                                                        streamConsumerRuntime,
-                                                                        startTimeMs,
-                                                                        swimBootAtMs,
-                                                                        periodicTasks,
-                                                                        kvBackupService,
-                                                                        leaderTerm,
-                                                                        streamReplicationShutdown,
-                                                                        backupRestoreCoordinator::onNodeStopping,
-                                                                        resourceProviderSetup.spiProvider(),
-                                                                        replacementWiring.service(),
-                                                                        upgradeWiring.service());
-                                              }
+                                                      return new aetherNode(workerMetadataChannel,
+                                                                            config,
+                                                                            delegateRouter,
+                                                                            kvStore,
+                                                                            ownershipEpochHighWater,
+                                                                            sliceRegistry,
+                                                                            sliceStore,
+                                                                            clusterNode,
+                                                                            taskGroupOwnerResolver,
+                                                                            switchableCluster,
+                                                                            nodeDeploymentManager,
+                                                                            clusterDeploymentManager,
+                                                                            endpointRegistry,
+                                                                            httpRouteRegistry,
+                                                                            metricsCollector,
+                                                                            metricsScheduler,
+                                                                            deploymentMetricsCollector,
+                                                                            deploymentMetricsScheduler,
+                                                                            controlLoop,
+                                                                            workerMetricsAggregator,
+                                                                            sliceInvoker,
+                                                                            invocationHandler,
+                                                                            blueprintService,
+                                                                            mavenProtocolHandler,
+                                                                            artifactStore,
+                                                                            invocationMetrics,
+                                                                            controller,
+                                                                            deploymentManager,
+                                                                            abTestManager,
+                                                                            alertManager,
+                                                                            traceStore,
+                                                                            logLevelRegistry,
+                                                                            dynamicConfigManager,
+                                                                            appHttpServer,
+                                                                            ttmManager,
+                                                                            rollbackManager,
+                                                                            scheduledTaskManager,
+                                                                            snapshotCollector,
+                                                                            artifactMetricsCollector,
+                                                                            deploymentMap,
+                                                                            eventAggregator,
+                                                                            streamPartitionManager,
+                                                                            streamSegmentIndex,
+                                                                            streamReadRouter,
+                                                                            streamWriteRouter,
+                                                                            consumerGroupCoordinator,
+                                                                            consumerGroupRegistry,
+                                                                            streamConsumerManager,
+                                                                            Option.some(projectionNodeSupport),
+                                                                            streamNamespacesService,
+                                                                            storageSetups,
+                                                                            clusterTopologyManager,
+                                                                            eventLoopMetricsCollector,
+                                                                            swimHealthDetector,
+                                                                            presenceSampler,
+                                                                            leaderReconciler,
+                                                                            membershipFsm,
+                                                                            quorumLossDetector,
+                                                                            coreAbsenceDetector,
+                                                                            transitionJournal,
+                                                                            startSwimTrigger,
+                                                                            Option.some(managementServer),
+                                                                            discoveryProvider,
+                                                                            certRenewalScheduler,
+                                                                            inFlightTrackerForDrain,
+                                                                            nodeLifecycle,
+                                                                            hlcClock,
+                                                                            dhtClientOption,
+                                                                            Option.some(dhtNode),
+                                                                            effectivePhaseSupplier,
+                                                                            currentGenerationEpochSupplier,
+                                                                            observabilityBaseline,
+                                                                            spokesmanPingLoop,
+                                                                            governorAnnouncerHolder,
+                                                                            streamRetentionEnforcer,
+                                                                            streamConsumerRuntime,
+                                                                            startTimeMs,
+                                                                            swimBootAtMs,
+                                                                            periodicTasks,
+                                                                            kvBackupService,
+                                                                            leaderTerm,
+                                                                            streamReplicationShutdown,
+                                                                            backupRestoreCoordinator::onNodeStopping,
+                                                                            resourceProviderSetup.spiProvider(),
+                                                                            replacementWiring.service(),
+                                                                            upgradeWiring.service(),
+                                                                            prefetchChannel);
+                                                  }
 
                                                   return node;
                                               });
@@ -7336,12 +7329,56 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// The node reports ready: lifecycle first, then cross-node block prefetching wakes (it gossips hints and acts on
+    /// them only from here on). Run from the same self-ready signal as the readiness state, so a node that is not ready
+    /// neither tells peers what to fetch nor starts fetching for them. A node that has begun draining stays asleep: the
+    /// ready signal can fire again after the drain began, and a leaving node must not start fetching for its peers.
+    @Contract
+    static void signalReadyAndWakePrefetch(Runnable signalReady,
+                                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                                           BooleanSupplier draining) {
+        signalReady.run();
+        if (!draining.getAsBoolean()) {
+            StorageFactory.activatePrefetch(storageSetups);
+        }
+    }
+
     /// B1 (membership v2 §7.5): the node's self-ready signal also marks subsystems ready for the
     /// node-reported readiness state (READY requires a live consensus-active level AND subsystems-ready).
     @Contract
     private static void markSubsystemsReady(Runnable signalReady, NodeReportedStateHolder holder) {
         signalReady.run();
         holder.onSubsystemsReady();
+    }
+
+    /// Per-node storage maintenance starts with the node's readiness: promotion and demotion of `artifacts` and
+    /// `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
+    /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. FER (degrade forward):
+    /// a manager that cannot start is logged and the node still becomes ready, with that instance's tiers unmaintained;
+    /// promotion is an optimization, not a dependency.
+    @Contract
+    static void signalReadyActivatingStorage(Runnable signalReady,
+                                             Map<String, StorageFactory.StorageSetup> storageSetups,
+                                             BooleanSupplier draining) {
+        activateStorageUnlessDraining(storageSetups, draining);
+        signalReady.run();
+    }
+
+    /// The ready signal fires on EVERY entry of the node-deployment state machine to Active, so it can fire again after
+    /// the node began draining (a quorum-loss drain, then quorum comes back before the process exits). Drain is one-way and
+    /// single-shot (`DrainProcedure`: INACTIVE -> DRAINING -> EXITED, nothing leads back), so a draining node's maintenance
+    /// must stay off: re-activating it would resume promotion and demotion on a node that is leaving.
+    @Contract
+    private static void activateStorageUnlessDraining(Map<String, StorageFactory.StorageSetup> storageSetups,
+                                                      BooleanSupplier draining) {
+        if (draining.getAsBoolean()) {
+            LOG.info("Node is draining: storage maintenance stays off");
+
+            return;
+        }
+
+        StorageFactory.activateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}",
+                                                                                          cause.message()));
     }
 
     /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed
@@ -7353,7 +7390,7 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReadyOnceDhtAdmitted(Promise<Unit> dhtAdmission,
                                                            Runnable signalReady,
                                                            NodeReportedStateHolder holder) {
-        dhtAdmission.onSuccess(_ -> markSubsystemsReady(signalReady, holder));
+        dhtAdmission.withSuccess(_ -> markSubsystemsReady(signalReady, holder));
     }
 
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
@@ -7454,6 +7491,27 @@ public interface AetherNode extends ManageableNode {
     /// carries no source TOML), is the built-in default (ON). The section was validated at apply, so a failure here means a document committed
     /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
     /// that cannot be read — and the failure is logged.
+    /// The SINGLE-mode scheduled-task claims live in committed cluster state (#1155): read from this node's applied store, written
+    /// through consensus. A write resolves once applied; one the applier refused (VersionFenced) resolves too, so the scheduler
+    /// confirms every claim write by reading the row back.
+    private static ScheduledClaimStore scheduledClaimStore(KVStore<AetherKey, AetherValue> kvStore,
+                                                           SwitchableClusterNode<KVCommand<AetherKey>> cluster) {
+        return new ScheduledClaimStore() {
+            @Override
+            public Option<AetherValue.ScheduledTaskClaimValue> read(AetherKey.ScheduledTaskClaimKey key) {
+                return kvStore.get(key)
+                              .filter(AetherValue.ScheduledTaskClaimValue.class::isInstance)
+                              .map(AetherValue.ScheduledTaskClaimValue.class::cast);
+            }
+
+            @Override
+            public Promise<Unit> write(KVCommand<AetherKey> command) {
+                return cluster.apply(List.of(command))
+                              .mapToUnit();
+            }
+        };
+    }
+
     private static RollbackConfig committedRollbackPolicy(Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader) {
         return clusterConfigReader.get()
                                   .map(AetherValue.ClusterConfigValue::tomlContent)
@@ -7495,7 +7553,14 @@ public interface AetherNode extends ManageableNode {
                    .collect(Collectors.toUnmodifiableSet());
     }
 
-    private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
+    /// #2306: a node counts as a voter unless an installed configuration excludes it. No configuration yet (genesis pending)
+    /// keeps the strict reading, so a cluster that never formed still reports its quorum loss.
+    static boolean isInstalledVoterOrUnknown(Option<VoterConfiguration> installed, NodeId self) {
+        return installed.map(configuration -> configuration.contains(self))
+                        .or(true);
+    }
+
+    static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
                    .or(Set.of());
@@ -7905,77 +7970,15 @@ public interface AetherNode extends ManageableNode {
                             .or(topologyCoreNodes);
     }
 
+    /// Promotion and demotion of this node's storage stop when the node starts draining, not only when it stops: a
+    /// draining node is leaving, and a cycle that copies blocks into tiers about to be torn down gains nothing. FER: a
+    /// manager that will not deactivate is logged and the drain goes on. Also run first thing in `shutdownStorage()`.
+    /// Cross-node prefetching sleeps with them: a draining node neither gossips hints nor fetches for its peers.
     @Contract
-    private static void commandedDrain(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
-        initiateDrain(drainProcedure, holder, DrainReason.COMMANDED);
-    }
-
-    private static void initiateDrain(DrainProcedure drainProcedure,
-                                      NodeReportedStateHolder holder,
-                                      DrainReason reason) {
-        holder.onDrainStarted();
-        drainProcedure.initiate(reason);
-    }
-
-    /// `DrainProcedure`'s single-shot `drainInitiatedEmitter`, invoked once inside the INACTIVE->DRAINING
-    /// CAS and therefore the node's one drain edge, shared by all three triggers (QUORUM_LOSS,
-    /// CORE_ABSENCE, COMMANDED). Two consumers, in falling order of consequence:
-    ///
-    ///   1. #273 item 1 — stop this node's ALL-mode scheduled fires. A correctness action.
-    ///   2. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
-    ///
-    /// The scheduled-task hook runs FIRST but inside its own no-throw guard, so it can neither delay nor
-    /// suppress (2). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
-    /// outer guard would let a throw from (1) swallow (2) — the exact loss #565 was filed for.
-    ///
-    /// Package-private and named rather than an inline lambda so the composition itself is testable:
-    /// `ScheduledTaskDrainWiringBootTest` drives a real drain through it. Both arguments are
-    /// forward-declared refs — the manager and the event aggregator are both constructed after
-    /// `DrainProcedure`.
-    static Consumer<DrainReason> drainInitiatedEmitter(AtomicReference<Runnable> scheduledTaskDrainHookRef,
-                                                       AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef) {
-        return reason -> {
-            runScheduledTaskDrainHookSafely(scheduledTaskDrainHookRef.get());
-            clusterEventDrainEmitterRef.get()
-                                       .accept(reason);
-        };
-    }
-
-    private static void runScheduledTaskDrainHookSafely(Runnable hook) {
-        try {
-            hook.run();
-        } catch (Throwable t) {
-            LOG.warn("Scheduled-task drain hook failed: {} — drain proceeds", t.getMessage());
-        }
-    }
-
-    /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
-    /// node is the leader. Package-private so the gate and the feed are pinned without booting a node.
-    static Runnable leaderOnlyDrainRecordTick(BooleanSupplier isLeader,
-                                              Supplier<Set<NodeId>> registryTargets,
-                                              Consumer<Set<NodeId>> record) {
-        return () -> {
-            if (isLeader.getAsBoolean()) {
-                record.accept(registryTargets.get());
-            }
-        };
-    }
-
-    /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
-    /// (never self) as an announced departure on this observer. `nodeReadyAgain` is the only thing that ends a mark
-    /// early. Package-private so the composition is pinned without booting a node.
-    static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager,
-                                                  NodeId self,
-                                                  java.util.function.Predicate<NodeId> nodeReadyAgain) {
-        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), nodeReadyAgain);
-    }
-
-    /// The node reports itself READY in the readiness view this observer holds (the leader's pong fan, or a
-    /// follower's cache of it): alive, responsive and not draining. The only evidence that ends a planned-departure
-    /// mark short of the DEAD edge (#2014). Absence from the view is NOT evidence. Package-private for the pin.
-    static java.util.function.Predicate<NodeId> nodeReadyAgain(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates) {
-        return id -> reportedStates.get()
-                                   .get(id) == NodeReportedState.READY;
+    static void stopStorageMaintenance(Map<String, StorageFactory.StorageSetup> storageSetups) {
+        StorageFactory.deactivatePrefetch(storageSetups);
+        StorageFactory.deactivateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be deactivated: {}",
+                                                                                            cause.message()));
     }
 
     /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`
@@ -7990,18 +7993,6 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
-    /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
-    /// (#1054) and the leader-side eviction loop. The CDM's `MembershipDecision.NodeDraining` arm is
-    /// never emitted (membership-v2 finale), so this listener is the ONLY production entry to
-    /// `startDrainEviction`. Package-private so the composition is pinned without booting a node.
-    static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm,
-                                                ClusterDeploymentManager clusterDeploymentManager) {
-        return drainingNode -> {
-            membershipFsm.onDrainAcknowledged(drainingNode);
-            clusterDeploymentManager.onNodeDraining(drainingNode);
-        };
-    }
-
     @Contract
     private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                                       AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
@@ -8648,21 +8639,53 @@ public interface AetherNode extends ManageableNode {
                                    Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
-
+        // `startOutcome::fail` and the announcement are dependent steps (`withFailure`/`withSuccess`), so they have run
+        // when `start` resolves for whoever awaits it. `failNode` may block (Ember awaits the node's own stop), so it stays
+        // a detached handler, registered on the DERIVED promise: it can run only after `startOutcome` was failed.
         return swimHealthDetector.start(workerGroup, guarded)
-                                 .onFailure(startOutcome::fail)
-                                 .onSuccessRun(() -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
+                                 .withFailure(startOutcome::fail)
+                                 .withSuccess(_ -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
                                  .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
                                                                             cause,
                                                                             failNode));
     }
 
+    /// The join announcement SWIM runs at transport-ready. A worker holds its ANNOUNCE to the seeds until its
+    /// activation directive is committed ([#handleActivationDirective] releases it): before that it has no
+    /// community, and the cores' membership scope admits no worker that is not a governor, so every round
+    /// was traffic they dropped (#1840). A core announces at once, as it must to be dialed by survivors.
+    static Runnable joinAnnouncement(AetherNodeConfig config,
+                                     CoreSwimHealthDetector swimHealthDetector,
+                                     NodeInfo self,
+                                     String clusterName,
+                                     long incarnation,
+                                     long bootToken,
+                                     List<InetSocketAddress> seeds) {
+        return configuredWorker(config)
+               ? () -> swimHealthDetector.announceJoinWhenAssigned(self,
+                                                                   clusterName,
+                                                                   incarnation,
+                                                                   bootToken,
+                                                                   seeds,
+                                                                   config.timeouts().cluster().communityAbsence())
+               : () -> swimHealthDetector.announceJoin(self, clusterName, incarnation, bootToken, seeds);
+    }
+
     /// A start refused because `stop()` already closed the detector resolves as a no-op success (it must
     /// not run `failNode`: in a single-JVM host a stale one could stop a same-id relaunch). There is no
     /// protocol to announce for, so the announcement is skipped.
+    ///
+    /// A dependent step of the start: a trigger that throws must not fail the start it follows (that would run `failNode`),
+    /// so a throw is logged instead.
+    ///
+    /// FER (degrade forward): SWIM is up, so a failed announcement is absorbed with a WARN rather than halting a node whose
+    /// failure detector runs. Guarantee earned: a lost announcement does not stop the node. Mechanism: a single attempt, no retry
+    /// here; the WARN is the only record of it.
+    @Contract
     private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
         if (!swimHealthDetector.isClosed()) {
-            announceJoinTrigger.run();
+            Result.lift(announceJoinTrigger::run).onFailure(cause -> LOG.warn("SWIM join announcement failed: {}",
+                                                                              cause.message()));
         }
     }
 
@@ -8688,22 +8711,22 @@ public interface AetherNode extends ManageableNode {
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
-    private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
-                                                  NodeId selfId,
-                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                  SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
-                                                  ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                                  AetherNodeConfig config,
-                                                  MessageRouter.DelegateRouter delegateRouter,
-                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                  SliceStore sliceStore,
-                                                  SliceInvoker sliceInvoker,
-                                                  Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
-                                                  org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
-                                                  AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
-                                                  GovernorAuthorityClient governorAuthorityClient,
-                                                  java.util.function.BooleanSupplier ready,
-                                                  Logger growthLog) {
+    static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
+                                          NodeId selfId,
+                                          RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                          SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                          ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                          AetherNodeConfig config,
+                                          MessageRouter.DelegateRouter delegateRouter,
+                                          KVStore<AetherKey, AetherValue> kvStore,
+                                          SliceStore sliceStore,
+                                          SliceInvoker sliceInvoker,
+                                          Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
+                                          org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
+                                          AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                                          GovernorAuthorityClient governorAuthorityClient,
+                                          java.util.function.BooleanSupplier ready,
+                                          Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
@@ -8722,6 +8745,7 @@ public interface AetherNode extends ManageableNode {
             clusterNode.authorizeActivation();
         } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
+            swimHealthDetectorSupplier.get().markAssigned();
             activateWorkerMode(selfId,
                                clusterNode,
                                switchableCluster,
@@ -8896,6 +8920,23 @@ public interface AetherNode extends ManageableNode {
                                      .toList());
     }
 
+    /// The committed core allocations that still stand for capacity: those not yet in the installed electorate (an installed voter is
+    /// counted as a member, departed or not), each as how the ledger stands behind it.
+    static Map<NodeId, LeaderReconciler.DurableAllocation> pendingCoreAllocations(Map<NodeId, AetherValue.CapacityReservationPhase> allocated,
+                                                                                  Set<NodeId> installed) {
+        return allocated.entrySet()
+                        .stream()
+                        .filter(entry -> !installed.contains(entry.getKey()))
+                        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                              entry -> durableAllocation(entry.getValue())));
+    }
+
+    private static LeaderReconciler.DurableAllocation durableAllocation(AetherValue.CapacityReservationPhase phase) {
+        return phase == AetherValue.CapacityReservationPhase.OBSERVED
+               ? LeaderReconciler.DurableAllocation.CONFIRMED
+               : LeaderReconciler.DurableAllocation.UNCERTAIN;
+    }
+
     private static Set<NodeId> readyCoreCandidates(Set<NodeId> ready, Supplier<MembershipFsm> membership) {
         return Option.option(membership.get())
                      .map(fsm -> ready.stream()
@@ -8982,8 +9023,8 @@ public interface AetherNode extends ManageableNode {
                : "never a verified voter and the installed voter roster is not fully ready";
     }
 
-    private static Option<AetherValue.CommunityPlacementOperationValue> selfPlacementOperation(KVStore<AetherKey, AetherValue> store,
-                                                                                               NodeId self) {
+    static Option<AetherValue.CommunityPlacementOperationValue> selfPlacementOperation(KVStore<AetherKey, AetherValue> store,
+                                                                                       NodeId self) {
         return store.getTyped(AetherKey.ActivationDirectiveKey.activationDirectiveKey(self),
                               AetherValue.ActivationDirectiveValue.class)
                     .flatMap(directive -> store.getTyped(new AetherKey.CommunityPlacementOperationKey(directive.communityId()),
@@ -9268,7 +9309,7 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static boolean configuredWorker(AetherNodeConfig config) {
+    static boolean configuredWorker(AetherNodeConfig config) {
         return config.workerConfig()
                      .isPresent() || config.topology()
                                            .coreNodes()
@@ -9711,6 +9752,9 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               eventAggregator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, eventAggregator::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(ObserverResumedNotification.class, eventAggregator::onObserverResumed));
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
+                                              eventAggregator::onSelfShutdown));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
@@ -9769,14 +9813,7 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onDhtWriterStaleResolved));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
-        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
-                                              request -> demuxHttpForwardRequest(request,
-                                                                                 appHttpServer,
-                                                                                 managementServerRef.get())));
-        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardResponse.class,
-                                              response -> demuxHttpForwardResponse(response,
-                                                                                   appHttpServer,
-                                                                                   managementServerRef.get())));
+        entries.addAll(httpForwardRouteEntries(appHttpServer, managementServerRef));
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
@@ -9810,6 +9847,23 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// The HTTP forward messages, each demuxed by its pipeline (#964). Public only so a test can pin this wiring
+    /// without booting a node: a missing entry, or a demux that drops the app pipeline, fails no other test, it only
+    /// makes forwards wait out their hop timeout (#2244 F1).
+    static List<MessageRouter.Entry<?>> httpForwardRouteEntries(AppHttpServer appHttpServer,
+                                                                AtomicReference<Option<ManagementServer>> managementServerRef) {
+        return List.of(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
+                                                 request -> demuxHttpForwardRequest(request,
+                                                                                    appHttpServer,
+                                                                                    managementServerRef.get())),
+                       MessageRouter.Entry.route(HttpForwardMessage.HttpForwardResponse.class,
+                                                 response -> demuxHttpForwardResponse(response,
+                                                                                      appHttpServer,
+                                                                                      managementServerRef.get())),
+                       MessageRouter.Entry.route(HttpForwardMessage.HttpForwardNotApplied.class,
+                                                 notApplied -> demuxHttpForwardNotApplied(notApplied, appHttpServer)));
+    }
+
     @SuppressWarnings("JBCT-PAT-01")
     private static void demuxHttpForwardResponse(HttpForwardMessage.HttpForwardResponse response,
                                                  AppHttpServer appHttpServer,
@@ -9820,6 +9874,18 @@ public interface AetherNode extends ManageableNode {
             case APP -> appHttpServer.onHttpForwardResponse(response);
             case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP response for {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
                                                                            response.correlationId());
+        }
+    }
+
+    /// #2244 F1: only the app pipeline's receiver sends a not-applied answer; any other pipeline's is dropped, and
+    /// that pending forward waits out its hop timeout as "may have been applied" (the conservative side).
+    private static void demuxHttpForwardNotApplied(HttpForwardMessage.HttpForwardNotApplied notApplied,
+                                                   AppHttpServer appHttpServer) {
+        switch (notApplied.pipeline()) {
+            case APP -> appHttpServer.onHttpForwardNotApplied(notApplied);
+            case MANAGEMENT, UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forward not-applied answer for {} on pipeline {}: only the app pipeline sends it",
+                                                                                       notApplied.correlationId(),
+                                                                                       notApplied.pipeline());
         }
     }
 

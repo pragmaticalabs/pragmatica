@@ -62,6 +62,10 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.SliceCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.slice.SliceCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
+        // #1155: tag 1634 keeps decoding the shape ScheduledTaskStateValue had before `boundHolder`; the current shape is 2168.
+        all.add(org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue.CODEC);
+        // #1337: tag 1655 keeps decoding the shape TopicSubscriptionValue had before `tier`; the current shape is 2169.
+        all.add(org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue.CODEC);
         all.addAll(org.pragmatica.aether.api.ApiCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
@@ -74,6 +78,8 @@ public sealed interface NodeCodecs {
         // write when the harness happens to hit the owner directly. Aggregation is manual, so a new
         // @Codec package is INERT until this line exists — check here FIRST for any new wire type.
         all.addAll(org.pragmatica.aether.node.entityforward.EntityforwardCodecsNode.CODECS);
+        // Storage prefetch hints: the payload SWIM's application gossip carries between nodes (StoragePrefetchChannel).
+        all.addAll(org.pragmatica.aether.node.prefetch.PrefetchCodecsNode.CODECS);
         // aether-stream wire types (replication, read-forward, stream-consensus) — without these the
         // active replication / catch-up / forward sends throw "No codec registered" over the cluster network.
         all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);

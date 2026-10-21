@@ -87,6 +87,18 @@ class EntityCommittedReadTest {
     }
 
     @Test
+    void get_whenTheCommitLandsBetweenTheCheckAndTheWaiterRegistration_stillAnswers() {
+        append("k", 9);
+        substrate.commitThrough(-1L);
+        append("k", 10);
+        substrate.betweenCheckAndRegistration = () -> substrate.commitThrough(1L);
+
+        var read = entity.get("k").await();
+
+        assertThat(read.unwrap()).as("answered at once, not after the commit wait expires").isEqualTo(Option.some(10));
+    }
+
+    @Test
     void ownerSequencing_seesThePendingState_whileTheReadDoesNot() {
         substrate.commitThrough(-1L);
         append("k", 3);
@@ -385,6 +397,8 @@ class EntityCommittedReadTest {
         private final List<byte[]> log = new CopyOnWriteArrayList<>();
         private final List<Waiter> waiters = new CopyOnWriteArrayList<>();
         private volatile long committed = Long.MAX_VALUE;
+        /// Runs inside `awaitCommitted` after the first position check: lets a test land a commit in that window.
+        private volatile Runnable betweenCheckAndRegistration = () -> {};
 
         private record Waiter(long offset, Promise<Unit> promise) {}
 
@@ -436,9 +450,17 @@ class EntityCommittedReadTest {
                 return Promise.unitPromise();
             }
 
-            var promise = Promise.<Unit> promise();
+            betweenCheckAndRegistration.run();
 
-            waiters.add(new Waiter(offset, promise));
+            var promise = Promise.<Unit> promise();
+            var waiter = new Waiter(offset, promise);
+
+            waiters.add(waiter);
+            // Registered BEFORE the position is re-read, as the ring's awaitVisible does: a commit landing between the first check and the
+            // registration must not be missed (the read runs on its own thread, so the test's commitThrough can interleave there).
+            if (committedOffset(keyspace, partition) >= offset && waiters.remove(waiter)) {
+                promise.resolve(Result.unitResult());
+            }
 
             return promise.timeout(timeout);
         }

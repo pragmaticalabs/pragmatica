@@ -48,6 +48,35 @@ class HierarchyPeerPolicyTest {
         assertThat(policy.forwardsPeerMetrics()).isTrue();
     }
 
+    /// #241: a worker's connection set is its two core uplinks, the leader, and its governor, whatever its community's size. A joiner
+    /// placed by the growth policy therefore dials the same handful of peers a worker of a small community does.
+    @Test
+    void workerDialsItsTwoUplinksTheLeaderAndItsGovernorOnly() {
+        var self = new NodeId("worker-self");
+        var governor = new NodeId("governor");
+        var uplinks = HierarchyPeerPolicy.coreUplinks(self, CORES);
+        var leader = CORES.stream().filter(core -> !uplinks.contains(core)).min(java.util.Comparator.comparing(NodeId::id)).orElseThrow();
+        var policy = HierarchyPeerPolicy.hierarchyPeerPolicy(self, true);
+
+        policy.refresh(CORES, Set.of(governor), ids("member-", 100), Option.some(governor), Option.some(leader), CORES);
+
+        var expected = new java.util.HashSet<>(uplinks);
+
+        expected.add(leader);
+        expected.add(governor);
+        assertThat(policy.current().get().directPeers()).containsExactlyInAnyOrderElementsOf(expected).hasSize(4);
+    }
+
+    @Test
+    void workerDoesNotDialALeaderThatIsNotACore() {
+        var self = new NodeId("worker-self");
+        var policy = HierarchyPeerPolicy.hierarchyPeerPolicy(self, true);
+
+        policy.refresh(CORES, Set.of(), Set.of(), Option.none(), Option.some(new NodeId("stray")), CORES);
+
+        assertThat(policy.current().get().directPeers()).hasSize(2).doesNotContain(new NodeId("stray"));
+    }
+
     @Test
     void coreObservesGovernorsRatherThanEveryWorker() {
         var self = new NodeId("core-0");
