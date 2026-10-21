@@ -250,6 +250,144 @@ class QuicLoserDrainTest {
         verify(stream, never()).writeAndFlush(any());
     }
 
+    /// The bound the documentation and the changelog state.
+    @Test
+    void drainBound_isTwoSeconds() {
+        assertThat(QuicPeerConnection.DRAIN_BOUND_MS).isEqualTo(2_000L);
+    }
+
+    /// A duplicate whose incumbent was dialed by the SAME end (a re-dial), or whose direction is unknown, is not the
+    /// dual-dial race: it closes at once instead of burning the bound.
+    @Test
+    void duplicate_sameDialerOrUnknownDirection_closesAtOnce() {
+        for (var loserOf : List.<java.util.function.Supplier<QuicPeerConnection>>of(() -> connectionFrom(LOW), QuicLoserDrainTest::connectionWithoutDirection)) {
+            var network = startedNetwork(new TripwireTopology(LOW, false, TimeSpan.timeSpan(30).seconds()),
+                                         MessageRouter.mutable(),
+                                         networks);
+            var state = PeerState.peerState(HIGH, 1L);
+
+            state.beginConnecting(2L);
+            state.attach(connectionFrom(LOW), System.nanoTime());
+            network.seedPeerForTests(HIGH, state);
+
+            var loser = spy(loserOf.get());
+
+            network.onPeerConnectedForTests(loser, new NodeAddress("127.0.0.1", 1), Map.of());
+
+            verify(loser).close();
+            verify(loser, never()).closeAfterDrain(anyLong(), any());
+        }
+    }
+
+    @Test
+    void isDualDialLoser_unknownDirectionOnEitherSide_isNotTheRace() {
+        assertThat(QuicClusterNetwork.isDualDialLoser(connectionWithoutDirection(), connectionFrom(LOW))).isFalse();
+        assertThat(QuicClusterNetwork.isDualDialLoser(connectionFrom(LOW), connectionWithoutDirection())).isFalse();
+        assertThat(QuicClusterNetwork.isDualDialLoser(connectionFrom(LOW), connectionFrom(LOW))).isFalse();
+        assertThat(QuicClusterNetwork.isDualDialLoser(connectionFrom(LOW), connectionFrom(HIGH))).isTrue();
+    }
+
+    /// Each guard of closeAfterDrain closes at once, finishing no lane: no event loop, no live lane stream, a dead
+    /// connection.
+    @Test
+    void closeAfterDrain_noLoop_closesAtOnce() {
+        var channel = activeChannel();
+        var stream = liveStream();
+        var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
+        var _ = connection.registerStream(StreamType.KV, stream);
+
+        connection.closeAfterDrain(60_000, end -> fail("no drain ran"));
+
+        verify(channel).close();
+        verify(stream, never()).writeAndFlush(any());
+    }
+
+    @Test
+    void closeAfterDrain_noLiveLaneStream_closesAtOnce() {
+        var loop = new DefaultEventLoop();
+
+        try {
+            var channel = activeChannel();
+
+            when(channel.eventLoop()).thenReturn(loop);
+
+            QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel).closeAfterDrain(60_000, end -> fail("no drain ran"));
+
+            verify(channel).close();
+        } finally {
+            loop.shutdownGracefully();
+        }
+    }
+
+    @Test
+    void closeAfterDrain_deadConnection_closesAtOnceWithoutFinishingLanes() {
+        var loop = new DefaultEventLoop();
+
+        try {
+            var channel = mock(QuicChannel.class);
+            var stream = liveStream();
+
+            when(channel.isActive()).thenReturn(false);
+            when(channel.eventLoop()).thenReturn(loop);
+
+            var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
+            var _ = connection.registerStream(StreamType.KV, stream);
+
+            connection.closeAfterDrain(60_000, end -> fail("no drain ran"));
+
+            verify(channel).close();
+            verify(stream, never()).writeAndFlush(any());
+        } finally {
+            loop.shutdownGracefully();
+        }
+    }
+
+    /// The activity kick is stopped when the drain starts, not only when the connection finally closes: it would
+    /// otherwise write a KeepAlive behind the end marker of the control lane.
+    @Test
+    void closeAfterDrain_stopsTheActivityKickAtOnce() {
+        var loop = new DefaultEventLoop();
+        var channel = activeChannel();
+        var stream = liveStream();
+
+        try {
+            when(channel.eventLoop()).thenReturn(loop);
+            when(stream.closeFuture()).thenReturn(new DefaultChannelPromise(stream, loop));
+
+            var connection = QuicPeerConnection.quicPeerConnection(HIGH, LOW, channel);
+            var _ = connection.registerStream(StreamType.CONTROL, stream);
+
+            connection.activityKick(new byte[]{1}, () -> false);
+            assertThat(connection.activityKickStopped()).isFalse();
+
+            connection.closeAfterDrain(60_000, end -> {});
+
+            assertThat(connection.activityKickStopped()).isTrue();
+        } finally {
+            loop.shutdownGracefully();
+        }
+    }
+
+    private static QuicChannel activeChannel() {
+        var channel = mock(QuicChannel.class);
+
+        when(channel.isActive()).thenReturn(true);
+
+        return channel;
+    }
+
+    private static QuicStreamChannel liveStream() {
+        var stream = mock(QuicStreamChannel.class);
+
+        when(stream.isActive()).thenReturn(true);
+
+        return stream;
+    }
+
+    private static QuicPeerConnection connectionWithoutDirection() {
+        return QuicPeerConnection.quicPeerConnection(HIGH, activeChannel());
+    }
+
     private static QuicPeerConnection connectionFrom(NodeId dialer) {
         var channel = mock(QuicChannel.class);
 
