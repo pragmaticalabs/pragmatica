@@ -1,3 +1,0 @@
-### Fixed (2026-10-21 — #2138: evicting the loser of a simultaneous QUIC dial closed the socket of the winning link)
-- **When two nodes dialed each other at the same moment and the losing connection was evicted (for example because its dialer closed it before this node's own dial was decided), the eviction closed the UDP socket of this node's own dial, which carries the surviving link. The winner was then evicted a second time and the pair re-dialed, losing the frames in flight.**
-- Evicting a connection the peer dialed no longer closes the socket of this node's own dial; only the eviction of a connection this node dialed releases it [verified: `QuicEvictKeepsDialSocketTest`].
