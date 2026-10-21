@@ -132,6 +132,8 @@ SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntitySchedu
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityScheduleTimerForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,token:java.lang.String,failureType:java.lang.String,errorMessage:java.lang.String)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityUpdateForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,keyspace:java.lang.String,key:byte[],command:byte[],remainingMillis:long)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityUpdateForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,state:byte[],failureType:java.lang.String,errorMessage:java.lang.String)
+SHAPE org.pragmatica.aether.node.prefetch.StoragePrefetchGossip (instance:java.lang.String,hints:java.util.List<org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint>)
+SHAPE org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint (blockIdHex:java.lang.String,accessCount:int)
 SHAPE org.pragmatica.aether.slice.MethodName (name:java.lang.String)
 SHAPE org.pragmatica.aether.slice.RetentionPolicy (maxCount:long,maxBytes:long,maxAgeMs:long,mode:org.pragmatica.aether.slice.RetentionMode,tierAwareRetention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TierAwareRetention>)
 SHAPE org.pragmatica.aether.slice.StreamConfig (name:java.lang.String,partitions:int,retention:org.pragmatica.aether.slice.RetentionPolicy,autoOffsetReset:java.lang.String,maxEventSizeBytes:long,consistencyMode:org.pragmatica.aether.slice.ConsistencyMode,replicationFactor:int,confirmationFactor:int,compression:org.pragmatica.aether.slice.StreamCompression,encryptionKeyId:org.pragmatica.lang.Option<java.lang.String>,incarnation:long)
@@ -410,6 +412,7 @@ SHAPE org.pragmatica.swim.SwimConfig (period:org.pragmatica.lang.io.TimeSpan,pro
 SHAPE org.pragmatica.swim.SwimMember (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,labels:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.swim.SwimMessage$Ack (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
 SHAPE org.pragmatica.swim.SwimMessage$Announce (nodeInfo:org.pragmatica.consensus.net.NodeInfo,clusterName:java.lang.String,incarnation:long,bootToken:long)
+SHAPE org.pragmatica.swim.SwimMessage$AppGossip (from:org.pragmatica.consensus.NodeId,channel:int,payload:byte[])
 SHAPE org.pragmatica.swim.SwimMessage$IdentityRefused (from:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
 SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,bootToken:long,labels:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
@@ -514,6 +517,8 @@ TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntitySchedul
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityScheduleTimerForwardResponse 1669
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityUpdateForward 1660
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityUpdateForwardResponse 1663
+TAG  org.pragmatica.aether.node.prefetch.StoragePrefetchGossip 2172
+TAG  org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint 2173
 TAG  org.pragmatica.aether.slice.ConsistencyMode 704
 TAG  org.pragmatica.aether.slice.ExecutionMode 705
 TAG  org.pragmatica.aether.slice.MethodName 103
@@ -830,6 +835,7 @@ TAG  org.pragmatica.swim.SwimMember 45
 TAG  org.pragmatica.swim.SwimMember$MemberState 46
 TAG  org.pragmatica.swim.SwimMessage$Ack 47
 TAG  org.pragmatica.swim.SwimMessage$Announce 48
+TAG  org.pragmatica.swim.SwimMessage$AppGossip 2171
 TAG  org.pragmatica.swim.SwimMessage$IdentityRefused 1706
 TAG  org.pragmatica.swim.SwimMessage$MembershipUpdate 49
 TAG  org.pragmatica.swim.SwimMessage$Ping 50

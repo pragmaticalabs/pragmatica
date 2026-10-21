@@ -22,6 +22,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
@@ -1002,6 +1003,9 @@ public final class ConfigLoader {
         // Kill switch for background tier promotion on this instance (default on). Read into StorageConfig.promotion,
         // which StorageFactory.assembleSetup consults to build the real PromotionManager or the inert one.
         var promotion = doc.getBoolean(sectionName, "promotion").or(true);
+        // Cross-node block prefetching: on unless an operator switches it off for the instance.
+        var prefetch = doc.getBoolean(sectionName, "prefetch").or(true);
+        var prefetchMaxInFlight = prefetchMaxInFlight(doc, sectionName);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -1012,7 +1016,23 @@ public final class ConfigLoader {
                                            retentionCount,
                                            walPath,
                                            encrypted,
-                                           promotion);
+                                           promotion,
+                                           prefetch,
+                                           prefetchMaxInFlight);
+    }
+
+    /// The most prefetches running at once. A value that is not a positive integer is refused like any wrong-typed
+    /// value (#1455), never defaulted: 0 would starve prefetching without switching it off, and `prefetch = false`
+    /// is the off switch.
+    private static int prefetchMaxInFlight(TomlDocument doc, String sectionName) {
+        return doc.getParsed(sectionName, "prefetch_max_in_flight", "a positive integer", ConfigLoader::positiveInt)
+                  .or(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+    }
+
+    private static Option<Integer> positiveInt(String text) {
+        return Number.parseInt(text)
+                     .option()
+                     .filter(Verify.Is::positive);
     }
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {

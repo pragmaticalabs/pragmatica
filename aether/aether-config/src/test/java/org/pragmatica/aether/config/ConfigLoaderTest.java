@@ -960,6 +960,115 @@ class ConfigLoaderTest {
             .onFailure(cause -> assertThat(cause.message()).contains("promotion"));
     }
 
+    // Cross-node block prefetching is ON for every instance unless an operator switches it off per instance.
+    @Test
+    void loadFromString_prefetchAbsent_isOn() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            disk_path = "/data/aether/artifacts"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.storage().get("artifacts").prefetch()).isTrue());
+    }
+
+    @Test
+    void loadFromString_prefetchFalse_switchesItOffForThatInstanceOnly() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch = false
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").prefetch()).isFalse();
+                assertThat(config.storage().get("content").prefetch()).isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_prefetchWrongType_isRefused() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch = "sometimes"
+            """;
+
+        assertThat(ConfigLoader.loadFromString(toml).isFailure()).as("a wrong-typed value is refused, never defaulted (#1455)").isTrue();
+    }
+
+    @Test
+    void loadFromString_prefetchMaxInFlightAbsent_isTheDefaultFour() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            disk_path = "/data/aether/artifacts"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.storage().get("artifacts").prefetchMaxInFlight()).isEqualTo(4));
+    }
+
+    @Test
+    void loadFromString_prefetchMaxInFlight_isReadPerInstance() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch_max_in_flight = 9
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").prefetchMaxInFlight()).isEqualTo(9);
+                assertThat(config.storage().get("content").prefetchMaxInFlight()).isEqualTo(4);
+            });
+    }
+
+    @Test
+    void loadFromString_prefetchMaxInFlightNotAPositiveInteger_isRefused() {
+        for (var bad : new String[]{"0", "-3", "\"many\"", "2.5", "true"}) {
+            var toml = """
+                [cluster]
+                environment = "docker"
+                nodes = 5
+
+                [storage.artifacts]
+                prefetch_max_in_flight = %s
+                """.formatted(bad);
+
+            assertThat(ConfigLoader.loadFromString(toml).isFailure())
+                .as("prefetch_max_in_flight = %s is refused, never defaulted (#1455)", bad)
+                .isTrue();
+        }
+    }
+
     private static void assertWalPath(AetherConfig config, String expected, boolean explicit) {
         var storage = config.storage().get("streams");
 
