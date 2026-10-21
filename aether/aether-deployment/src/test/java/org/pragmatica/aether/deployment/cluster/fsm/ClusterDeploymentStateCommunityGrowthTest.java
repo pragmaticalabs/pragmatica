@@ -373,9 +373,10 @@ class ClusterDeploymentStateCommunityGrowthTest {
         fixture.holdCommits();
         fixture.joinAll(1);
         fixture.leave(1);
+        var afterTheLeave = fixture.cluster().applies.get();
         fixture.rejoin(1);
 
-        assertThat(fixture.cluster().applies.get()).as("the departure ended the flight, so the new join is a decision of its own").isEqualTo(2);
+        assertThat(fixture.cluster().applies.get()).as("the departure ended the flight, so the new join is a decision of its own").isEqualTo(afterTheLeave + 1);
     }
 
     @Test
