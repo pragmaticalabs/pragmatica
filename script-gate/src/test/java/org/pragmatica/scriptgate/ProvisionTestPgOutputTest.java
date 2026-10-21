@@ -107,7 +107,7 @@ class ProvisionTestPgOutputTest {
         assertThat(execution.output()).doesNotContain(SECRET)
                   .contains("export PG_USER=aether")
                   .contains("export PG_HOST=192.0.2.10")
-                  .contains("export PG_DB=aether_forge");
+                  .doesNotContain("PG_DB=");
     }
 
     @Test
