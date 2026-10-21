@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.ManagementRouteError;
@@ -820,6 +821,36 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.dht.strays.purged.partitions", dhtGauge(DHTNode::purgedStrayPartitionCount));
         observability.gauge("aether.dht.gc.unagreed.partitions",
                             dhtGauge(node -> node.unagreedPartitions(agreementWindow)));
+        registerDhtRepairMetrics();
+    }
+
+    /// A6, the DHT repair plane: the repair deficit — partitions this node replicates that are catching up or
+    /// diverged and not yet repaired, where a further loss can lose entries; the repair pages and bytes sent; and
+    /// the verified single-replica reads that moved past a replica, found a corrupt copy, or fell back to the
+    /// quorum. Legacy peers and exchanges are non-zero only during a rolling upgrade.
+    private void registerDhtRepairMetrics() {
+        observability.gauge("aether.dht.repair.deficit.partitions", dhtGauge(DHTNode::repairDeficitPartitions));
+        observability.gauge("aether.dht.repair.pages.sent",
+                            dhtGauge(node -> node.repair()
+                                                 .pagesSent()));
+        observability.gauge("aether.dht.repair.bytes.sent",
+                            dhtGauge(node -> node.repair()
+                                                 .pageBytesSent()));
+        observability.gauge("aether.dht.repair.legacy.peers",
+                            dhtGauge(node -> node.repair()
+                                                 .legacyPeerCount()));
+        observability.gauge("aether.dht.repair.legacy.exchanges",
+                            dhtGauge(node -> node.repair()
+                                                 .legacyExchanges()));
+        observability.gauge("aether.dht.read.verified.fallbacks",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadFallbacks()));
+        observability.gauge("aether.dht.read.verified.mismatches",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadMismatches()));
+        observability.gauge("aether.dht.read.verified.quorum.fallbacks",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadQuorumFallbacks()));
     }
 
     private Supplier<Number> dhtGauge(org.pragmatica.lang.Functions.Fn1<Number, DHTNode> reading) {
@@ -1515,10 +1546,18 @@ class ManagementServerImpl implements ManagementServer {
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
         log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
+                                      managementForwardFailureStatus(cause),
                                       "Management forward failed: " + HttpError.clientMessage(cause),
                                       path,
                                       requestId);
+    }
+
+    /// A [ForwardError] names its own status (503 per the 2026-10-07 ruling, know 14a3606152, or 413 for a request
+    /// no cluster frame can carry); every other management forward failure stays a 503.
+    private static HttpStatus managementForwardFailureStatus(Cause cause) {
+        return cause instanceof ForwardError forwardError
+               ? forwardError.status()
+               : HttpStatus.SERVICE_UNAVAILABLE;
     }
 
     private Unit sendForwardUnavailable(InstrumentedResponseWriter response,

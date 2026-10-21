@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
@@ -482,6 +483,51 @@ class StorageFactoryEncryptionTest {
               .onFailure(cause -> assertThat(cause).as("the upgrade hazard must surface as a typed, fail-closed "
                                                        + "encryption error, not a miss and not a pass-through")
                                                    .isInstanceOf(EncryptionError.LegacyPlaintextBlock.class));
+    }
+
+    /// A6: a plaintext DHT tier stores the block content itself, so its reads take the verified single-replica
+    /// path. Red when the factory builds plaintext DHT tiers as opaque.
+    @Test
+    void createAll_plaintextDhtTier_readsThroughTheContentAddressedPath() {
+        var dhtClient = new InMemoryDHTClient();
+        var blockId = BlockId.blockId(PLAINTEXT).unwrap();
+
+        dhtClient.put(CONTENT + "-blocks/" + blockId.hexString(), PLAINTEXT).await();
+        requireDefaultDiskRootUnwritable();
+
+        var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
+
+        admitDhtMarker(setups.get(CONTENT), dhtClient);
+
+        var read = setups.get(CONTENT).instance().get(blockId).await().unwrap();
+
+        assertThat(read.unwrap()).isEqualTo(PLAINTEXT);
+        assertThat(dhtClient.contentAddressedReads.get()).isEqualTo(1);
+    }
+
+    /// A6: an encrypted DHT tier stores ciphertext, whose hash is not the block id, so its reads must keep the
+    /// quorum path — a content-addressed read would reject every copy. The block is written through one setup and
+    /// read through a second one sharing only the DHT, so the read cannot be served from memory. Red when the
+    /// factory builds encrypted DHT tiers as content-addressed.
+    @Test
+    void createAll_encryptedDhtTier_readsThroughTheQuorumPath_andDecrypts() {
+        var dhtClient = new InMemoryDHTClient();
+        var keyring = singleKeyRing("key-1");
+        requireDefaultDiskRootUnwritable();
+
+        var writer = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(keyring));
+
+        admitDhtMarker(writer.get(CONTENT), dhtClient);
+
+        var blockId = writeThrough(writer.get(CONTENT));
+        var reader = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(keyring));
+
+        admitDhtMarker(reader.get(CONTENT), dhtClient);
+
+        var read = reader.get(CONTENT).instance().get(blockId).await().unwrap();
+
+        assertThat(read.unwrap()).as("the ciphertext came back through the DHT and decrypted").isEqualTo(PLAINTEXT);
+        assertThat(dhtClient.contentAddressedReads.get()).isZero();
     }
 
     /// #783 C4 (2026-09-04 ruling): `content`'s synthesized default must be covered by the SAME
@@ -1750,10 +1796,19 @@ class StorageFactoryEncryptionTest {
     /// there: package-private test doubles are not reusable across files.
     private static final class InMemoryDHTClient implements DHTClient {
         private final ConcurrentHashMap<String, byte[]> store = new ConcurrentHashMap<>();
+        private final AtomicInteger contentAddressedReads = new AtomicInteger();
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
             return Promise.success(option(store.get(keyString(key))).map(v -> copyOf(v, v.length)));
+        }
+
+        /// A6: counted, so a test can tell which read path the DHT tier took.
+        @Override
+        public Promise<Option<byte[]>> getContentAddressed(byte[] key, byte[] sha256) {
+            contentAddressedReads.incrementAndGet();
+
+            return get(key);
         }
 
         @Override

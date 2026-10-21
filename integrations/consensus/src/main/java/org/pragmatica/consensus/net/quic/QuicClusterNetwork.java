@@ -1148,6 +1148,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
+    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId,
+                                                                         M message,
+                                                                         TimeSpan offlineTtl) {
+        if (blackholed) {
+            return Promise.success(new WriteOutcome.Sent(peerId));
+        }
+
+        return Promise.success(dispatchPayloadWithOutcome(peerId, message, expiryWithin(offlineTtl)));
+    }
+
+    @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {
         if (blackholed) {
             return unit();
@@ -2047,6 +2058,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// dispatch flow as `dispatchPayload` but surfaces the synchronous local-transport
     /// verdict so the caller can fail-fast against unreachable replicas.
     private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message) {
+        return dispatchPayloadWithOutcome(peerId, message, capExpiry());
+    }
+
+    /// As [#dispatchPayloadWithOutcome(NodeId, Message.Wired)], for a request frame whose caller stops waiting at
+    /// `expiry` (#1996), as [#dispatchPayload(NodeId, Message.Wired, PeerState.Expiry)] does for the untracked send.
+    private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
         if (peerId.equals(self.id())) {
             return loopbackToSelf(message);
         }
@@ -2054,10 +2071,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
-            return dispatchToAbsentPeer(peerId, message);
+            return dispatchToAbsentPeer(peerId, message, expiry);
         }
 
-        return dispatchToPeer(state, message);
+        return dispatchToPeer(state, message, expiry);
     }
 
     /// #491: a unicast to a peer with NO PeerState. An authoritative MEMBER ([#swimMembershipAllows]) gets an

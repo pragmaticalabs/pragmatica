@@ -1,0 +1,90 @@
+name: S3 tests
+
+# The @Tag("S3") tests (#2256): the S3-compatible shared storage tier (#249) against MinIO in a Testcontainer.
+# The root pom's `exclude-tagged-tests` profile excludes the S3 group from every module's surefire run, so ci.yml
+# never ran them, and `-Dgroups=S3` alone selected nothing (S3 AND NOT S3). This job clears the exclusion with
+# -Dsurefire.excludedGroups= and selects the group with -Dgroups=S3, so a newly tagged test is picked up with no
+# edit here, as heavy-forge.yml does for Heavy.
+#
+# MinIO's own images left the public registries in 2025; the tests default to Chainguard's MinIO build
+# (cgr.dev/chainguard/minio), pinned by digest in the test classes (supply chain: CI must not run whatever was last
+# pushed to a moving tag), overridable with -Daether.s3.image, or pointed at any S3-compatible endpoint with
+# -Daether.s3.endpoint (and .region/.bucket/.accessKey/.secretKey/.pathStyle).
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, release-*, feature/*, 'overhaul/**', 'rewrite/**']
+  pull_request:
+    # Same branch filters as ci.yml (#2255), so the S3 gate never drifts from the main gate
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
+  workflow_dispatch:
+
+jobs:
+  s3-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: s3-tests-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    env:
+      # Same mirror as ci.yml for Docker Hub images (testcontainers/ryuk); the MinIO image is on cgr.dev, not Hub.
+      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+
+      - name: Install the S3 test modules and their dependencies
+        run: mvn install -B -DskipTests -pl integrations/storage,aether/node -am
+        timeout-minutes: 25
+
+      - name: Run the S3 group
+        run: >
+          mvn test -B -pl integrations/storage,aether/node
+          -Dgroups=S3 -Dsurefire.excludedGroups=
+        timeout-minutes: 15
+
+      # Counts <testcase> elements, never the <testsuite tests="N"> attribute (it reads 0 for @Nested classes).
+      # A module whose S3 group examined nothing fails the job: a run that tested nothing is never green.
+      - name: Count S3 testcases (fail on zero)
+        if: always()
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, sys, xml.etree.ElementTree as ET
+          modules = ["integrations/storage", "aether/node"]
+          bad = False
+          for module in modules:
+              cases = failed = 0
+              for report in glob.glob(f"{module}/target/surefire-reports/TEST-*.xml"):
+                  for case in ET.parse(report).getroot().iter("testcase"):
+                      cases += 1
+                      failed += any(child.tag in ("failure", "error") for child in case)
+              print(f"{module}: {cases} S3 testcase(s), {failed} failed or errored")
+              if cases == 0:
+                  print(f"::error::{module}: the S3 group selected zero tests")
+                  bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Upload S3 test results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: s3-test-results
+          if-no-files-found: error
+          path: |
+            integrations/storage/target/surefire-reports/*
+            aether/node/target/surefire-reports/*
+          retention-days: 14

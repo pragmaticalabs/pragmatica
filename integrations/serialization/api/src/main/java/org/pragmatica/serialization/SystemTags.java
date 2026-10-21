@@ -310,6 +310,9 @@ public interface SystemTags {
         pin(table, 518, "org.pragmatica.aether.http.handler.security.Principal");
         pin(table, 519, "org.pragmatica.aether.http.handler.security.Role");
         pin(table, 520, "org.pragmatica.aether.http.handler.security.SecurityContext");
+        // #2244 F1: the out-of-band not-applied answer to a forwarded request, appended.
+        pin(table, 521, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied");
+        pin(table, 522, "org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason");
         // slice invocation  [base 640]
         // RETIRED 2026-08-27 (#571): `DHTNotification` was deleted — it had zero senders and zero
         // receivers. These two pins STAY, and deleting them would be the bug: the table is what makes
@@ -644,6 +647,11 @@ public interface SystemTags {
         // #2087: the owner's visible position, announced to its replicas. 2140 and 2141 went to #2118, so this takes the
         // next free slot (scanned across every open PR head and every origin branch on 2026-10-11).
         pin(table, 2142, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
+        // A6, the DHT repair plane: stamp digests and paged migration. 2143..2162 are taken on open branches
+        // (scanned across every origin branch on 2026-10-18), so these take the next free slots.
+        pin(table, 2163, "org.pragmatica.dht.DHTMessage.StampDigestRequest");
+        pin(table, 2164, "org.pragmatica.dht.DHTMessage.MigrationPageRequest");
+        pin(table, 2165, "org.pragmatica.dht.DHTMessage.MigrationPageResponse");
         // #1155: the durable in-flight claim of a SINGLE-mode scheduled task. 2143..2162 are taken by origin branches and 2163..2165 by
         // #2265 (scanned across all refs on 2026-10-18), so this takes the next free slots.
         pin(table, 2166, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskClaimKey");
@@ -658,7 +666,10 @@ public interface SystemTags {
         // which also found them free on every open PR head), so these two start at 2174.
         pin(table, 2174, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey");
         pin(table, 2175, "org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue");
-        // ---- 2143..16383 RESERVED ----
+        // A6 fix round: the gated verified read. 2166..2170 and 2174..2175 are pinned on rc5 and 2171..2173 on an open PR, so this
+        // takes 2176 (scanned against the rc5 tip and every open PR head on 2026-10-20).
+        pin(table, 2176, "org.pragmatica.dht.DHTMessage.VerifiedReadRequest");
+        // ---- 2177..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
