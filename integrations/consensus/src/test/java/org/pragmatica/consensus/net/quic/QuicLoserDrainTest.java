@@ -164,8 +164,17 @@ class QuicLoserDrainTest {
 
         network.onPeerConnectedForTests(loser, new NodeAddress("127.0.0.1", 1), Map.of());
 
-        verify(loser).closeAfterDrain(eq(QuicPeerConnection.DRAIN_BOUND_MS), any());
+        var ended = org.mockito.ArgumentCaptor.<java.util.function.Consumer<QuicPeerConnection.DrainEnd>>captor();
+
+        verify(loser).closeAfterDrain(eq(QuicPeerConnection.DRAIN_BOUND_MS), ended.capture());
         verify(loser, never()).close();
+        assertThat(network.quicMetrics().supersededCloseCount()).as("the duplicate loser is observed like a superseded one")
+                                                                 .isEqualTo(1);
+        ended.getValue().accept(QuicPeerConnection.DrainEnd.FLUSHED);
+        ended.getValue().accept(QuicPeerConnection.DrainEnd.BOUND_HIT);
+        ended.getValue().accept(QuicPeerConnection.DrainEnd.BOUND_HIT);
+        assertThat(network.quicMetrics().loserDrainsFlushedCount()).isEqualTo(1);
+        assertThat(network.quicMetrics().loserDrainsBoundHitCount()).isEqualTo(2);
     }
 
     /// The drain is bounded: a peer that never finishes its half cannot keep the loser open past the bound, and the
