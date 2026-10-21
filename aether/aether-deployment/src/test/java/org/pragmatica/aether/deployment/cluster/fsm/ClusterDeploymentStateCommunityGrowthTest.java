@@ -369,6 +369,21 @@ class ClusterDeploymentStateCommunityGrowthTest {
     }
 
     @Test
+    void join_growthOn_aDuplicateJoinIsSkippedFor30Seconds_thenTheWorkerDecidesAfresh() {
+        var fixture = fixture(config(true, 2, 5));
+
+        fixture.holdCommits();
+        fixture.joinAll(1);
+        fixture.passMillis(30_000L);
+        fixture.rejoin(1);
+        assertThat(fixture.cluster().applies.get()).as("30 s after the decision the assignment is still in flight").isEqualTo(1);
+        fixture.passMillis(1L);
+        fixture.rejoin(1);
+
+        assertThat(fixture.cluster().applies.get()).as("a lost commit costs the flight 30 s, never for good").isEqualTo(2);
+    }
+
+    @Test
     void join_growthOn_aCommitThatNeverReachedConsensus_endsTheFlight_soTheWorkersNextJoinDecides() {
         var fixture = fixture(config(true, 2, 5));
 
