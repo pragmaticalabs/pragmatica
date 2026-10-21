@@ -10,6 +10,7 @@ import java.util.Set;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -24,6 +25,8 @@ public record AppHttpConfig(boolean enabled,
                             ApiVersioningDetection apiVersioningDetection,
                             String apiVersionHeaderName,
                             Option<AppTls> tls,
+                            TimeSpan readTimeout,
+                            int minBodyRate,
                             Option<SecurityMode> managementSecurityMode) {
     /// Operator-supplied TLS identity for the USER-facing app-HTTP listener.
     ///
@@ -38,7 +41,8 @@ public record AppHttpConfig(boolean enabled,
     /// (service-to-service), and is NOT suitable for public traffic.
     public record AppTls(String certPath, String keyPath) {}
 
-    /// The shape before `[management] security_mode` existed: the management plane inherits [#securityMode].
+    /// The shape before `read_timeout`, `min_body_rate` and `[management] security_mode` existed: the listener takes
+    /// the default request-body bounds, and the management plane inherits [#securityMode].
     public AppHttpConfig(boolean enabled,
                          int port,
                          Map<String, ApiKeyEntry> apiKeys,
@@ -59,12 +63,23 @@ public record AppHttpConfig(boolean enabled,
              apiVersioningDetection,
              apiVersionHeaderName,
              tls,
+             DEFAULT_READ_TIMEOUT,
+             DEFAULT_MIN_BODY_RATE,
              Option.empty());
     }
 
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;
     public static final String DEFAULT_API_VERSION_HEADER = "API-Version";
+    /// `[app-http] read_timeout`: how long the listener waits on a client's request bytes before giving up on the
+    /// connection (HTTP/1.1: no byte while no response is pending; HTTP/3: no body frame). 60 s mirrors
+    /// nginx's `client_body_timeout` default and the http-server default; it is a guess, not a measurement. A
+    /// zero or negative value disables the bound.
+    public static final TimeSpan DEFAULT_READ_TIMEOUT = TimeSpan.timeSpan(60).seconds();
+    /// `[app-http] min_body_rate`: the minimum rate, in bytes per second, a request body must arrive at once its 10 s
+    /// grace has passed, averaged over 10 s windows (http-server `BodyRateLimit`), on HTTP/1.1 and HTTP/3 alike. 1 KiB/s
+    /// is a guess in the spirit of Apache's mod_reqtimeout `MinRate=500`. A zero or negative value disables the bound.
+    public static final int DEFAULT_MIN_BODY_RATE = 1024;
 
     public AppHttpConfig {
         apiKeys = Map.copyOf(apiKeys);
@@ -90,6 +105,9 @@ public record AppHttpConfig(boolean enabled,
                                          httpProtocol,
                                          apiVersioningDetection,
                                          apiVersionHeaderName,
+                                         Option.empty(),
+                                         DEFAULT_READ_TIMEOUT,
+                                         DEFAULT_MIN_BODY_RATE,
                                          Option.empty()));
     }
 
@@ -105,6 +123,42 @@ public record AppHttpConfig(boolean enabled,
                                  apiVersioningDetection,
                                  apiVersionHeaderName,
                                  Option.some(appTls),
+                                 readTimeout,
+                                 minBodyRate,
+                                 managementSecurityMode);
+    }
+
+    /// Replace the read timeout. See [#DEFAULT_READ_TIMEOUT].
+    public AppHttpConfig withReadTimeout(TimeSpan readTimeout) {
+        return new AppHttpConfig(enabled,
+                                 port,
+                                 apiKeys,
+                                 maxRequestSize,
+                                 securityMode,
+                                 jwtConfig,
+                                 httpProtocol,
+                                 apiVersioningDetection,
+                                 apiVersionHeaderName,
+                                 tls,
+                                 readTimeout,
+                                 minBodyRate,
+                                 managementSecurityMode);
+    }
+
+    /// Replace the minimum body rate. See [#DEFAULT_MIN_BODY_RATE].
+    public AppHttpConfig withMinBodyRate(int minBodyRate) {
+        return new AppHttpConfig(enabled,
+                                 port,
+                                 apiKeys,
+                                 maxRequestSize,
+                                 securityMode,
+                                 jwtConfig,
+                                 httpProtocol,
+                                 apiVersioningDetection,
+                                 apiVersionHeaderName,
+                                 tls,
+                                 readTimeout,
+                                 minBodyRate,
                                  managementSecurityMode);
     }
 
@@ -120,6 +174,8 @@ public record AppHttpConfig(boolean enabled,
                                  apiVersioningDetection,
                                  apiVersionHeaderName,
                                  tls,
+                                 readTimeout,
+                                 minBodyRate,
                                  mode);
     }
 

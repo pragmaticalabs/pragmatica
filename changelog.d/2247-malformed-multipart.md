@@ -1,0 +1,5 @@
+### Fixed (2026-10-18 — #2247: malformed multipart parsed as success)
+- **A multipart body that was truncated, garbage, used the wrong boundary or had no `boundary=` parsed as success**, without the cut-off parts. Such a body now fails with a typed `MultipartError` (400). [verified: integrations/http-routing/src/test/java/org/pragmatica/http/routing/MultipartParserTest.java]
+- The Content-Type is matched case-insensitively and Netty is given a normalised type, so `Multipart/Form-Data` parses as multipart instead of urlencoded. [verified: MultipartParserTest]
+- The part limit is explicit: `MultipartParser.DEFAULT_MAX_PARTS` (128, Netty's default) can be overridden through `parse(body, contentType, uri, maxParts)`. Part 129 now fails as `MultipartError.TooManyParts` instead of "null". [verified: MultipartParserTest]
+- A part with a Content-Type but no filename is delivered as a file with an empty filename instead of being decoded as text. `text/plain` stays a field (RFC 7578 §4.4). A part that cannot be read now fails the parse instead of being dropped silently. [verified: MultipartParserTest]
