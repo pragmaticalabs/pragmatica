@@ -18,6 +18,7 @@ package org.pragmatica.http.server;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -91,6 +92,30 @@ class Http1ResponseFailureTest {
 
         assertThat(exchange().status()).isEqualTo(200);
         assertThat(succeeded.get(5, TimeUnit.SECONDS)).as("the write promise succeeded").isTrue();
+    }
+
+    /// The 500 that replaces an unbuildable response is a response write like any other: it ends the request's pending
+    /// state, so the keep-alive connection is idle again and the read timeout closes it. A 500 that left the request
+    /// pending would keep the connection open for ever.
+    @Test
+    void keepAliveConnection_afterA500_isClosedByTheReadTimeout() throws IOException {
+        server = HttpServer.httpServer(HttpServerConfig.httpServerConfig("h1-failure-idle", 0)
+                                                       .withReadTimeout(timeSpan(300).millis()),
+                                       (_, writer) -> writer.write(HttpStatus.OK, BODY, THROWING_CONTENT_TYPE))
+                           .await(timeSpan(10).seconds())
+                           .unwrap();
+
+        try (var socket = new Socket("127.0.0.1", server.port())) {
+            socket.setSoTimeout(READ_TIMEOUT_MS);
+            socket.getOutputStream().write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+
+            var response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+
+            assertThat(response).startsWith("HTTP/1.1 500");
+        } catch (SocketTimeoutException e) {
+            throw new AssertionError("the connection was still open after the 500 and the read timeout", e);
+        }
     }
 
     private static final ContentType THROWING_CONTENT_TYPE = new ContentType() {

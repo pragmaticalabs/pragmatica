@@ -140,6 +140,28 @@ class Http3RequestHandlerTest {
         assertThat(request.path()).isEqualTo("/upload");
         assertThat(request.headers().get("x-original")).isEqualTo(Option.some("request"));
         assertThat(request.body()).hasSize(10);
+        assertThat(request.trailers().get("x-trailer")).isEqualTo(Option.some("checksum"));
+        channel.finishAndReleaseAll();
+    }
+
+    /// #2310 with I1: a trailer section that arrives after the body was refused (413) is read as trailers, not as a
+    /// new request: the request stays undispatched and is answered once.
+    @Test
+    void trailersAfterARejectedBody_neverDispatchTheRequest() {
+        var channel = channel();
+        var trailers = new DefaultHttp3Headers();
+
+        trailers.set("x-trailer", "checksum");
+        channel.writeInbound(requestHeaders());
+        for (int i = 0; i < 4; i++) {
+            channel.writeInbound(data(1000));
+        }
+        channel.writeInbound(new DefaultHttp3HeadersFrame(trailers));
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+
+        assertThat(dispatched).isEmpty();
+        assertThat(responseStatus(channel)).isEqualTo("413");
+        assertThat(((Http3Server.Http3RequestHandler) channel.pipeline().first()).holdsBodyBuffer()).isFalse();
         channel.finishAndReleaseAll();
     }
 
