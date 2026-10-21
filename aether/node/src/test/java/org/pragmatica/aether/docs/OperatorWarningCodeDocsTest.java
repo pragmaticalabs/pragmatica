@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -24,6 +25,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// double-append from a corrupted merge, so this test pins the shape a corrupted one breaks: a single list,
 /// nothing in it but bullets, every bullet naming a code of the catalogue, no code listed twice.
 ///
+/// Two further shapes a hand edit can produce and union cannot: two bullets joined on one line, and a code bullet
+/// outside the list (before the intro or after the end marker). The first is rejected per line; the second by
+/// scanning the whole page for bullet lines whose code is in the catalogue or is kebab-shaped with a hyphen (the page
+/// has other bullets, such as `method`, whose single-word names are not codes).
+///
 /// Completeness is NOT asserted: most codes are not documented on this page yet, and a frozen exemption list
 /// would itself be a conflict magnet. The count of bullets is asserted non-zero, so a parser that stopped
 /// matching cannot turn this green over an empty list.
@@ -32,6 +38,8 @@ class OperatorWarningCodeDocsTest {
     private static final String LIST_INTRO = "Current codes:";
     private static final String LIST_END = "Best-effort like every per-node event";
     private static final Pattern BULLET = Pattern.compile("^- `([a-z0-9-]+)` \\(.*\\)$");
+    private static final Pattern BULLET_START = Pattern.compile("- `([a-z0-9-]+)` \\(");
+    private static final Pattern CODE_SHAPED = Pattern.compile("[a-z0-9]+(-[a-z0-9]+)+");
 
     @Test
     void codeList_isOneListOfKnownCodes_eachListedOnce() throws IOException {
@@ -45,6 +53,31 @@ class OperatorWarningCodeDocsTest {
     }
 
     @Test
+    void codeList_hasOneBulletPerLine() throws IOException {
+        var joined = listBody(Files.readAllLines(pageFile())).stream()
+                                                              .filter(l -> BULLET_START.matcher(l).results().count() > 1)
+                                                              .map(OperatorWarningCodeDocsTest::abbreviate)
+                                                              .toList();
+
+        assertEquals(List.of(), joined, "list lines holding more than one bullet");
+    }
+
+    @Test
+    void page_hasNoCodeBulletOutsideTheList() throws IOException {
+        var lines = Files.readAllLines(pageFile());
+        var start = indexOf(lines, l -> l.contains(LIST_INTRO));
+        var end = indexOf(lines, l -> l.startsWith(LIST_END));
+        var stray = new ArrayList<String>();
+
+        for (int i = 0; i < lines.size(); i++) {
+            if ((i <= start || i >= end) && isCodeBullet(lines.get(i))) {
+                stray.add((i + 1) + ": " + abbreviate(lines.get(i)));
+            }
+        }
+        assertEquals(List.of(), stray, "code-shaped bullets outside the list in " + PAGE);
+    }
+
+    @Test
     void codeList_hasExactlyOneIntroAndOneEnd() throws IOException {
         var lines = Files.readAllLines(pageFile());
 
@@ -55,11 +88,8 @@ class OperatorWarningCodeDocsTest {
     private static List<String> listBody(List<String> lines) {
         var start = indexOf(lines, l -> l.contains(LIST_INTRO)) + 1;
         var end = indexOf(lines, l -> l.startsWith(LIST_END));
-        var body = lines.subList(start, end).stream().filter(l -> !l.isBlank()).toList();
-        var notBullets = body.stream().filter(l -> !BULLET.matcher(l).matches()).map(l -> abbreviate(l)).toList();
 
-        assertEquals(List.of(), notBullets, "lines inside the code list that are not one-code bullets");
-        return body;
+        return lines.subList(start, end).stream().filter(l -> !l.isBlank()).toList();
     }
 
     private static int indexOf(List<String> lines, java.util.function.Predicate<String> match) {
@@ -74,8 +104,18 @@ class OperatorWarningCodeDocsTest {
     private static String codeOf(String bullet) {
         var m = BULLET.matcher(bullet);
 
-        assertTrue(m.matches(), bullet);
+        assertTrue(m.matches(), "line inside the code list that is not a one-code bullet: " + abbreviate(bullet));
         return m.group(1);
+    }
+
+    private static boolean isCodeBullet(String line) {
+        var m = BULLET_START.matcher(line);
+
+        return m.find() && m.start() == 0 && (CODE_SHAPED.matcher(m.group(1)).matches() || isCatalogueCode(m.group(1)));
+    }
+
+    private static boolean isCatalogueCode(String code) {
+        return Arrays.stream(OperatorWarningCode.values()).anyMatch(c -> c.code().equals(code));
     }
 
     private static List<String> unknown(List<String> codes) {
