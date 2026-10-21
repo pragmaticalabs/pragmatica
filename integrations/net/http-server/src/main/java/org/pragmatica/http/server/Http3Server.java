@@ -579,10 +579,13 @@ final class Http3Server {
         }
 
         /// #2310: a response that fails never leaves the stream to the idle timeout. Until the HEADERS frame is handed
-        /// to the channel nothing is committed: a failure building it (a header the codec refuses, a content type that
-        /// throws) is answered `500` with the server's own headers only. From the HEADERS write on, the response is
-        /// committed: a failed frame write resets the stream with `H3_INTERNAL_ERROR`. Each failure is logged once,
-        /// and the returned promise fails with it, as [NettyHttpServer]'s writer fails its flush promise.
+        /// to the channel nothing is committed: a failure building it (a content type that throws, a header the codec
+        /// refuses when the headers are built, such as a null value) is answered `500` with the server's own headers
+        /// only. From the HEADERS write on, the response is committed: a failed frame write resets the stream with
+        /// `H3_INTERNAL_ERROR`. Each failure is logged once, and the returned promise fails with it, as
+        /// [NettyHttpServer]'s writer fails its flush promise. Not covered: a field the headers container accepts but
+        /// HTTP/3 forbids (a connection-specific field such as `connection`, RFC 9114 §4.2, or a name starting with
+        /// `:`) is written as given, and the client refuses the response; the writer does not filter fields.
         @Override
         public Promise<Unit> writeAsync(HttpStatus status, byte[] body, ContentType contentType) {
             if (!written.compareAndSet(false, true)) {
