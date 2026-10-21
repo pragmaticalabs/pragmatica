@@ -29,7 +29,11 @@ import org.pragmatica.lang.Option;
 /// condition under different severities. `OperatorWarningCodeTest` refuses duplicate or non-kebab
 /// codes.
 ///
-/// To add a code, append a constant here. Never rename the string of a shipped code, because anything
+/// To add a code, insert a constant ABOVE the last constant, never after it: the last constant carries the terminating
+/// `;`, and the formatter rewrites a trailing comma away, so a constant appended after it would edit that line and
+/// conflict with any other PR adding a code (this file merges with `merge=union`, see `.gitattributes`).
+///
+/// Never rename the string of a shipped code, because anything
 /// that matches on it (alert rules, scripts, a future server-side filter) depends on it.
 public enum OperatorWarningCode {
     /// SWIM's #336 co-confirmation kill-gate is holding the death of a long-healthy peer. This node

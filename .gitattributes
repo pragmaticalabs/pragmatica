@@ -19,3 +19,8 @@
 *.xcf    binary
 *.zip    binary
 
+
+# Append-only code lists: two PRs each adding a code insert at the same spot; union keeps both sides' lines.
+integrations/utility/src/main/java/org/pragmatica/utility/warning/OperatorWarningCode.java merge=union
+aether/node/src/test/java/org/pragmatica/aether/api/ClusterEventAggregatorTest.java merge=union
+aether/docs/reference/management-api.md merge=union
