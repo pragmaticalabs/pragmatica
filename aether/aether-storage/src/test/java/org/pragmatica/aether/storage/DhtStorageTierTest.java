@@ -21,6 +21,8 @@ import org.pragmatica.storage.TierLevel;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static java.util.Arrays.copyOf;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,6 +68,64 @@ class DhtStorageTierTest {
                 .await()
                 .onFailure(_ -> fail("get should succeed"))
                 .onSuccess(opt -> assertThat(opt.isPresent()).isFalse());
+        }
+    }
+
+    /// A6: how a read reaches the DHT follows the tier's addressing.
+    @Nested
+    class Addressing {
+        /// Plaintext blocks are the content, keyed by its SHA-256: a read takes the verified single-replica path and
+        /// hands it the block id's digest to check against.
+        @Test
+        void contentTier_readsThroughTheVerifiedPath_withTheBlockDigest() {
+            var contentTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", Promise.UNIT,
+                                                            DhtStorageTier.Addressing.CONTENT);
+            var blockId = blockIdOf(SAMPLE_CONTENT);
+
+            contentTier.put(blockId, SAMPLE_CONTENT).await();
+
+            var read = contentTier.get(blockId).await().unwrap();
+
+            assertThat(read.unwrap()).isEqualTo(SAMPLE_CONTENT);
+            assertThat(dhtClient.contentAddressedReads.get()).isEqualTo(1);
+            assertThat(dhtClient.quorumReads.get()).isZero();
+            assertThat(dhtClient.lastDigest.get()).isEqualTo(blockId.hash());
+        }
+
+        /// D5: the exists of a content-addressed block takes the same verified path as its get, so the two agree. Red when
+        /// exists stays on the quorum.
+        @Test
+        void contentTier_existsThroughTheVerifiedPath_likeItsGet() {
+            var contentTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", Promise.UNIT,
+                                                            DhtStorageTier.Addressing.CONTENT);
+            var blockId = blockIdOf(SAMPLE_CONTENT);
+
+            contentTier.put(blockId, SAMPLE_CONTENT).await();
+
+            assertThat(contentTier.exists(blockId).await().unwrap()).isTrue();
+            assertThat(dhtClient.contentAddressedExists.get()).isEqualTo(1);
+            assertThat(dhtClient.quorumExists.get()).isZero();
+            assertThat(dhtClient.lastDigest.get()).isEqualTo(blockId.hash());
+            assertThat(tier.exists(blockId).await().unwrap()).as("control: an opaque tier keeps the quorum exists").isTrue();
+            assertThat(dhtClient.quorumExists.get()).isEqualTo(1);
+        }
+
+        /// Opaque values (ciphertext under a keyring) and every tier built without a choice keep the quorum read.
+        /// Red when the content-addressed path is applied to them.
+        @Test
+        void opaqueTier_andTheDefaultFactories_keepTheQuorumRead() {
+            var opaque = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "opaque", Promise.UNIT,
+                                                       DhtStorageTier.Addressing.OPAQUE);
+            var gatedDefault = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "gated", Promise.UNIT);
+            var blockId = blockIdOf(SAMPLE_CONTENT);
+
+            tier.put(blockId, SAMPLE_CONTENT).await();
+            opaque.get(blockId).await();
+            gatedDefault.get(blockId).await();
+            tier.get(blockId).await();
+
+            assertThat(dhtClient.quorumReads.get()).isEqualTo(3);
+            assertThat(dhtClient.contentAddressedReads.get()).isZero();
         }
     }
 
@@ -277,9 +337,32 @@ class DhtStorageTierTest {
     /// In-memory DHTClient stub backed by ConcurrentHashMap.
     static final class InMemoryDHTClient implements DHTClient {
         private final ConcurrentHashMap<String, byte[]> store = new ConcurrentHashMap<>();
+        private final AtomicInteger quorumReads = new AtomicInteger();
+        private final AtomicInteger contentAddressedReads = new AtomicInteger();
+        private final AtomicReference<byte[]> lastDigest = new AtomicReference<>();
+        private final AtomicInteger quorumExists = new AtomicInteger();
+        private final AtomicInteger contentAddressedExists = new AtomicInteger();
+
+        @Override
+        public Promise<Boolean> existsContentAddressed(byte[] key, byte[] sha256) {
+            contentAddressedExists.incrementAndGet();
+            lastDigest.set(sha256);
+
+            return Promise.success(store.containsKey(keyString(key)));
+        }
 
         @Override
         public Promise<Option<byte[]>> get(byte[] key) {
+            quorumReads.incrementAndGet();
+
+            return Promise.success(option(store.get(keyString(key))).map(v -> copyOf(v, v.length)));
+        }
+
+        @Override
+        public Promise<Option<byte[]>> getContentAddressed(byte[] key, byte[] sha256) {
+            contentAddressedReads.incrementAndGet();
+            lastDigest.set(sha256);
+
             return Promise.success(option(store.get(keyString(key))).map(v -> copyOf(v, v.length)));
         }
 
@@ -296,6 +379,8 @@ class DhtStorageTierTest {
 
         @Override
         public Promise<Boolean> exists(byte[] key) {
+            quorumExists.incrementAndGet();
+
             return Promise.success(store.containsKey(keyString(key)));
         }
 

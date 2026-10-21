@@ -58,6 +58,22 @@ public sealed interface AwsError extends Cause {
                                                                                                     PaginationFailed::new);
     }
 
+    /// Credentials could not be obtained from `provider` (environment, a credentials file, the instance
+    /// metadata service). `detail` names what was missing or failed and never carries a secret value; `cause`
+    /// is the exception that failed the read, when one did.
+    record CredentialsUnavailable(String provider, String detail, Option<Throwable> cause) implements AwsError {
+        public CredentialsUnavailable(String provider, String detail) {
+            this(provider, detail, Option.none());
+        }
+
+        @Override
+        public String message() {
+            return "AWS credentials unavailable from " + provider
+                 + ": " + detail + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                        .or("");
+        }
+    }
+
     /// Maps an HTTP status code and response body to an AwsError.
     /// Handles both XML error responses (EC2) and JSON error responses (ELBv2/SecretsManager).
     static AwsError fromResponse(int statusCode, String body) {

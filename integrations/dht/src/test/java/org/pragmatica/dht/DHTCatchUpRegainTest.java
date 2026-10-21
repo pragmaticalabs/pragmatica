@@ -483,7 +483,7 @@ class DHTCatchUpRegainTest {
         }
 
         private void deliver(NodeId target, ProtocolMessage message) {
-            if (holdingPullAnswers && message instanceof DHTMessage.MigrationDataResponse) {
+            if (holdingPullAnswers && (message instanceof DHTMessage.MigrationDataResponse || message instanceof DHTMessage.MigrationPageResponse)) {
                 heldPullAnswers.add(Map.entry(target, message));
 
                 return;
@@ -501,7 +501,8 @@ class DHTCatchUpRegainTest {
         }
 
         private void countCatchUp(ProtocolMessage message) {
-            if (message instanceof DHTMessage.DigestRequest || message instanceof DHTMessage.MigrationDataRequest) {
+            if (message instanceof DHTMessage.DigestRequest || message instanceof DHTMessage.MigrationDataRequest
+                || message instanceof DHTMessage.StampDigestRequest || message instanceof DHTMessage.MigrationPageRequest) {
                 catchUpTraffic++;
             }
         }
@@ -516,10 +517,15 @@ class DHTCatchUpRegainTest {
                 case DHTMessage.ExistsResponse response -> member.client().onExistsResponse(response);
                 case DHTMessage.DigestRequest request ->
                     member.node().handleDigestRequest(request, response -> reply(request.sender(), response));
+                case DHTMessage.StampDigestRequest request ->
+                    member.node().handleStampDigestRequest(request, response -> reply(request.sender(), response));
                 case DHTMessage.DigestResponse response -> member.antiEntropy().onDigestResponse(response);
                 case DHTMessage.MigrationDataRequest request ->
                     member.node().handleMigrationDataRequest(request, response -> reply(request.sender(), response));
+                case DHTMessage.MigrationPageRequest request ->
+                    member.node().handleMigrationPageRequest(request, response -> reply(request.sender(), response));
                 case DHTMessage.MigrationDataResponse response -> member.antiEntropy().onMigrationDataResponse(response);
+                case DHTMessage.MigrationPageResponse response -> member.antiEntropy().onMigrationPageResponse(response);
                 default -> { }
             }
         }

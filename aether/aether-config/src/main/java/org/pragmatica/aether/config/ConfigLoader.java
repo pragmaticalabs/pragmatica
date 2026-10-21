@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.lang.Functions.Fn1;
@@ -21,6 +22,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
@@ -35,6 +37,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 public final class ConfigLoader {
     private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
+    /// The instances a node always has, placed on the default paths whether or not their section names any.
+    private static final Set<String> SYNTHESIZED_INSTANCES = Set.of("artifacts", "content");
     /// The only key a `[storage.streams]` section carries (#634-3); the `streams` instance is built from the
     /// node's stream settings, not from this section.
     private static final Set<String> STREAMS_SECTION_KEYS = Set.of("wal_path");
@@ -106,7 +110,10 @@ public final class ConfigLoader {
             return refuseRemovedTargetRf(doc).flatMap(_ -> refuseUnsupportedSecurityModes(doc))
                                         .flatMap(_ -> parseReadLinearization(doc))
                                         .map(mode -> applyReadLinearization(builder.build(),
-                                                                            mode));
+                                                                            mode))
+                                        .flatMap(config -> refuseUnknownStorageSubSections(doc).flatMap(_ -> refuseBlankStoragePaths(doc))
+                                                                                          .flatMap(_ -> attachSharedTiers(doc,
+                                                                                                                          config)));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
@@ -455,9 +462,12 @@ public final class ConfigLoader {
                                                   httpProtocol,
                                                   apiVersioningDetection,
                                                   apiVersionHeaderName).unwrap();
+        var readTimeout = parseTimeSpan(doc, "app-http", "read_timeout", AppHttpConfig.DEFAULT_READ_TIMEOUT);
+        var minBodyRate = parseDataSize(doc, "app-http", "min_body_rate", AppHttpConfig.DEFAULT_MIN_BODY_RATE);
+        var withReadTimeout = appHttp.withReadTimeout(readTimeout).withMinBodyRate(minBodyRate);
 
-        builder.appHttp(parseAppTls(doc).map(appHttp::withTls)
-                                   .or(appHttp)
+        builder.appHttp(parseAppTls(doc).map(withReadTimeout::withTls)
+                                   .or(withReadTimeout)
                                    .withManagementSecurityMode(parseManagementSecurityMode(doc)));
     }
 
@@ -715,9 +725,11 @@ public final class ConfigLoader {
                 // global keyring section, not a per-instance `[storage.<name>]` one -- excluded here so
                 // it is never misread as a storage instance literally named "encryption". Parsed
                 // separately by `populateStorageEncryptionConfig`.
-                if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.startsWith("encryption.")) {
+                // #249: a dotted name is a sub-section of an instance (`[storage.<name>.shared]`), not an instance.
+                if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.contains(".")) {
                     warnIgnoredStreamsKeys(doc, instanceName, sectionName);
-                    instances.put(instanceName, storageFromSection(doc, sectionName));
+                    instances.put(instanceName,
+                                  markedIfPathless(doc, instanceName, sectionName, storageFromSection(doc, sectionName)));
                 }
             }
         }
@@ -725,6 +737,122 @@ public final class ConfigLoader {
         if (!instances.isEmpty()) {
             builder.storage(Map.copyOf(instances));
         }
+    }
+
+    /// #249: every `[storage.<name>.shared]` section, parsed into its instance's [StorageConfig#shared]. An instance
+    /// that has only the sub-section gets [StorageConfig#sharedOnly], so the node places it as if `[storage.<name>]`
+    /// were absent. A malformed section fails the load with a typed [SharedTierConfig.SharedTierConfigError].
+    /// `streams` keeps the DHT (anything else is refused) and `encryption` is reserved: both in [SharedTierConfig].
+    private static Result<AetherConfig> attachSharedTiers(TomlDocument doc, AetherConfig config) {
+        return Result.allOf(sharedSectionInstances(doc).stream().map(name -> sharedTierEntry(doc, name)).toList()).map(entries -> config.withStorage(withSharedTiers(config.storage(),
+                                                                                                                                                                     entries)));
+    }
+
+    private static Result<Map.Entry<String, SharedTierConfig>> sharedTierEntry(TomlDocument doc, String name) {
+        return SharedTierConfig.sharedTierConfig(doc, name).map(shared -> Map.entry(name, shared));
+    }
+
+    /// Instances with a `[storage.<name>.shared]` section or anything nested under it (a sub-table, or a dotted key,
+    /// which the TOML parser stores as one), so a sub-table alone still reaches the shared-tier refusals.
+    private static List<String> sharedSectionInstances(TomlDocument doc) {
+        return doc.sectionNames()
+                  .stream()
+                  .map(section -> section.split("\\."))
+                  .filter(ConfigLoader::isUnderSharedSection)
+                  .map(parts -> parts[1])
+                  .distinct()
+                  .sorted()
+                  .toList();
+    }
+
+    private static boolean isUnderSharedSection(String[] parts) {
+        return parts.length >= 3
+               && "storage".equals(parts[0])
+               && "shared".equals(parts[2]);
+    }
+
+    /// #249: a `[storage.<name>.<sub>]` section that is neither the keyring's key table (`[storage.encryption.keys]`)
+    /// nor a shared tier (`[storage.<name>.shared...]`) is refused, naming every such section. Before #249 it was read
+    /// as an instance literally named `<name>.<sub>`; ignoring it instead would let a typo such as
+    /// `[storage.content.shard]` boot without the tier the operator meant to configure, or `[storage.encryption.kyes]`
+    /// boot with no keys. A section nested under `.shared` is left to the shared tier's own refusals
+    /// ([SharedTierConfig]), which name the offending key.
+    private static Result<Unit> refuseUnknownStorageSubSections(TomlDocument doc) {
+        var unknown = doc.sectionNames()
+                         .stream()
+                         .filter(section -> section.startsWith("storage."))
+                         .map(section -> section.split("\\."))
+                         .filter(ConfigLoader::isUnknownSubSection)
+                         .map(parts -> "[" + String.join(".", parts) + "]")
+                         .sorted()
+                         .toList();
+
+        return unknown.isEmpty()
+               ? Result.unitResult()
+               : ConfigError.invalidConfig("Unknown storage sub-sections " + String.join(", ", unknown)
+                                          + ": only [storage.<name>.shared] and [storage.encryption.keys] sub-sections are accepted").result();
+    }
+
+    private static boolean isUnknownSubSection(String[] parts) {
+        return parts.length >= 3
+               && !"shared".equals(parts[2])
+               && !isKeyringKeys(parts);
+    }
+
+    /// `[storage.encryption.keys]`, the one keyring sub-section [#populateStorageEncryptionConfig] reads.
+    private static boolean isKeyringKeys(String[] parts) {
+        return parts.length == 3
+               && "encryption".equals(parts[1])
+               && "keys".equals(parts[2]);
+    }
+
+    /// #249: an explicit blank `disk_path` or `snapshot_path` is refused. It names no directory, and the node places a
+    /// written section exactly as written ([StorageConfig#derivesPaths] is set only for a shared-only instance), so a
+    /// blank path would resolve against the node's working directory instead of the default the operator most
+    /// likely meant by it. Omitting the key is how the default is selected.
+    private static Result<Unit> refuseBlankStoragePaths(TomlDocument doc) {
+        return Option.from(doc.sectionNames()
+                              .stream()
+                              .filter(ConfigLoader::isStorageInstanceSection)
+                              .sorted()
+                              .flatMap(section -> blankPathKeys(doc, section))
+                              .findFirst()).fold(Result::unitResult,
+                                                 blank -> ConfigError.invalidConfig("[" + blank
+                                                                                   + " must not be blank: omit the key to use the default").result());
+    }
+
+    private static boolean isStorageInstanceSection(String section) {
+        var name = section.startsWith("storage.")
+                   ? section.substring("storage.".length())
+                   : "";
+
+        return ! name.isEmpty()
+               && !name.contains(".")
+               && !"encryption".equals(name);
+    }
+
+    private static Stream<String> blankPathKeys(TomlDocument doc, String section) {
+        return Stream.of("disk_path", "snapshot_path")
+                     .filter(key -> doc.getString(section, key)
+                                       .filter(String::isBlank)
+                                       .isPresent())
+                     .map(key -> section + "] " + key);
+    }
+
+    private static Map<String, StorageConfig> withSharedTiers(Map<String, StorageConfig> storage,
+                                                              List<Map.Entry<String, SharedTierConfig>> shared) {
+        var merged = new HashMap<>(storage);
+
+        shared.forEach(entry -> merged.put(entry.getKey(), withShared(storage, entry)));
+
+        return Map.copyOf(merged);
+    }
+
+    private static StorageConfig withShared(Map<String, StorageConfig> storage,
+                                            Map.Entry<String, SharedTierConfig> entry) {
+        return Option.option(storage.get(entry.getKey()))
+                     .map(existing -> existing.withShared(entry.getValue()))
+                     .or(() -> StorageConfig.sharedOnly(entry.getValue()));
     }
 
     /// #253: the global `[storage.encryption]` keyring -- `active_key_id` + `streams_encrypted`, plus
@@ -839,6 +967,23 @@ public final class ConfigLoader {
         }
     }
 
+    /// #249 N3: a section of a name other than `artifacts`/`content` that sets neither `disk_path` nor `snapshot_path`
+    /// gives no paths of its own, so the node derives the instance's own directories (`StorageFactory.derivedStorage`).
+    /// `artifacts` and `content` keep the default paths their section resolves to, as before.
+    private static StorageConfig markedIfPathless(TomlDocument doc,
+                                                  String instanceName,
+                                                  String sectionName,
+                                                  StorageConfig config) {
+        return placesItself(doc, instanceName, sectionName)
+               ? config
+               : config.derivingPaths();
+    }
+
+    private static boolean placesItself(TomlDocument doc, String instanceName, String sectionName) {
+        return SYNTHESIZED_INSTANCES.contains(instanceName) || doc.hasKey(sectionName, "disk_path") || doc.hasKey(sectionName,
+                                                                                                                  "snapshot_path");
+    }
+
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
         var memoryMaxBytes = parseLong(doc, sectionName, "memory_max_bytes", 256 * 1024 * 1024);
         var diskMaxBytes = parseLong(doc, sectionName, "disk_max_bytes", 10L * 1024 * 1024 * 1024);
@@ -858,6 +1003,9 @@ public final class ConfigLoader {
         // Kill switch for background tier promotion on this instance (default on). Read into StorageConfig.promotion,
         // which StorageFactory.assembleSetup consults to build the real PromotionManager or the inert one.
         var promotion = doc.getBoolean(sectionName, "promotion").or(true);
+        // Cross-node block prefetching: on unless an operator switches it off for the instance.
+        var prefetch = doc.getBoolean(sectionName, "prefetch").or(true);
+        var prefetchMaxInFlight = prefetchMaxInFlight(doc, sectionName);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -868,7 +1016,23 @@ public final class ConfigLoader {
                                            retentionCount,
                                            walPath,
                                            encrypted,
-                                           promotion);
+                                           promotion,
+                                           prefetch,
+                                           prefetchMaxInFlight);
+    }
+
+    /// The most prefetches running at once. A value that is not a positive integer is refused like any wrong-typed
+    /// value (#1455), never defaulted: 0 would starve prefetching without switching it off, and `prefetch = false`
+    /// is the off switch.
+    private static int prefetchMaxInFlight(TomlDocument doc, String sectionName) {
+        return doc.getParsed(sectionName, "prefetch_max_in_flight", "a positive integer", ConfigLoader::positiveInt)
+                  .or(StorageConfig.DEFAULT_PREFETCH_MAX_IN_FLIGHT);
+    }
+
+    private static Option<Integer> positiveInt(String text) {
+        return Number.parseInt(text)
+                     .option()
+                     .filter(Verify.Is::positive);
     }
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {

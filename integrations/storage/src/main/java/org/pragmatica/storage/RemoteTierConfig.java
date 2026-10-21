@@ -14,7 +14,8 @@ public record RemoteTierConfig(S3Config s3Config, String prefix, long maxBytes) 
     enum ConfigError implements Cause {
         S3_CONFIG_REQUIRED("s3Config must not be null"),
         PREFIX_REQUIRED("prefix must not be null or blank"),
-        MAX_BYTES_NOT_POSITIVE("maxBytes must be positive");
+        MAX_BYTES_NOT_POSITIVE("maxBytes must be positive"),
+        MAX_INFLIGHT_NOT_POSITIVE("maxInflight must be positive");
         private final String message;
         ConfigError(String message) {
             this.message = message;

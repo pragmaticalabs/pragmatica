@@ -157,9 +157,12 @@ class DHTDepartureConcurrentJoinTest {
         private void route(Member m, ProtocolMessage message) {
             switch (message) {
                 case DHTMessage.DigestRequest r -> m.node().handleDigestRequest(r, resp -> deliver(r.sender(), resp));
+                case DHTMessage.StampDigestRequest r -> m.node().handleStampDigestRequest(r, resp -> deliver(r.sender(), resp));
                 case DHTMessage.DigestResponse r -> m.antiEntropy().onDigestResponse(r);
                 case DHTMessage.MigrationDataRequest r -> m.node().handleMigrationDataRequest(r, resp -> deliver(r.sender(), resp));
+                case DHTMessage.MigrationPageRequest r -> m.node().handleMigrationPageRequest(r, resp -> deliver(r.sender(), resp));
                 case DHTMessage.MigrationDataResponse r -> m.antiEntropy().onMigrationDataResponse(r);
+                case DHTMessage.MigrationPageResponse r -> m.antiEntropy().onMigrationPageResponse(r);
                 case DHTMessage.MigrationDataAck a -> m.rebalancer().onMigrationDataAck(a);
                 default -> {}
             }

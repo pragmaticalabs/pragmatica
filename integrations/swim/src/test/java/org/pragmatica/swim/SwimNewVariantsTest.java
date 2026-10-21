@@ -172,6 +172,7 @@ class SwimNewVariantsTest {
                 case WhoAmI _ -> handled.add("whoami");
                 case WhoAmIReply _ -> handled.add("whoamireply");
                 case SwimMessage.IdentityRefused _ -> handled.add("identityrefused");
+                case SwimMessage.AppGossip _ -> handled.add("appgossip");
             }
 
             assertThat(handled).containsExactly("announce:" + CLUSTER);
@@ -225,6 +226,7 @@ class SwimNewVariantsTest {
                 case WhoAmI w -> handled.add("whoami:" + w.from().id());
                 case WhoAmIReply _ -> handled.add("whoamireply");
                 case SwimMessage.IdentityRefused _ -> handled.add("identityrefused");
+                case SwimMessage.AppGossip _ -> handled.add("appgossip");
             }
 
             assertThat(handled).containsExactly("whoami:" + NODE_ID.id());
@@ -280,6 +282,7 @@ class SwimNewVariantsTest {
                 case WhoAmI _ -> handled.add("whoami");
                 case WhoAmIReply r -> handled.add("whoamireply:" + r.observedAddress());
                 case SwimMessage.IdentityRefused _ -> handled.add("identityrefused");
+                case SwimMessage.AppGossip _ -> handled.add("appgossip");
             }
 
             assertThat(handled).containsExactly("whoamireply:" + OBSERVED);

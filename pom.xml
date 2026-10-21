@@ -81,6 +81,10 @@
         <maven.deploy.skip>true</maven.deploy.skip>
         <!-- The phase the Central plugin's publish goal runs in; `none` outside the release profile (see its <pluginManagement> entry). -->
         <central.publish.phase>none</central.publish.phase>
+        <!-- The surefire tag exclusion of the `exclude-tagged-tests` profile. A property, not a literal, so a job that runs one
+             of these groups can clear it: `-Dgroups=S3 -Dsurefire.excludedGroups=` (#2256). A literal in the plugin
+             configuration wins over -DexcludedGroups, so `-Dgroups=S3` alone selected S3 AND NOT S3: zero tests. -->
+        <surefire.excludedGroups>Infinite, Slow, Benchmark, S3</surefire.excludedGroups>
 
         <!-- Dependencies -->
         <netty.version>4.2.18.Final</netty.version>
@@ -1097,7 +1101,7 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
-                            <excludedGroups>Infinite, Slow, Benchmark, S3</excludedGroups>
+                            <excludedGroups>${surefire.excludedGroups}</excludedGroups>
                         </configuration>
                     </plugin>
                 </plugins>

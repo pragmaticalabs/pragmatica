@@ -20,6 +20,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.journal.TransitionJournal;
+import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
 import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -197,6 +198,12 @@ public interface ManageableNode {
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
+
+    /// The node's prefetch gossip counters; none before SWIM runs, and on a node with no prefetch gossip at all.
+    default Option<PrefetchGossipStats> prefetchGossipStats() {
+        return Option.none();
+    }
+
     Option<ClusterTopologyManager> clusterTopologyManager();
     /// Diagnostic/test observable — the leader `PresenceSampler` peak (monotonic high-water mark
     /// of the debounced stable member-set size ever observed). The NTT `LeaderReconciler` latches

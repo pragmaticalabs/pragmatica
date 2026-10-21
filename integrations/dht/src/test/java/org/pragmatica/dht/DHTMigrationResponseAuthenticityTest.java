@@ -60,7 +60,7 @@ class DHTMigrationResponseAuthenticityTest {
     void pullAnswer_fromANodeOtherThanTheOneAsked_isNotStored() {
         var cluster = new Cluster();
         var shape = cluster.shape("spoofed");
-        var requestId = cluster.pullFromHolder(shape);
+        var requestId = cluster.legacyPullFromHolder(shape);
 
         cluster.receiver().antiEntropy()
                .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.stranger(), List.of(shape.entry()), false, List.of()));
@@ -78,7 +78,7 @@ class DHTMigrationResponseAuthenticityTest {
     void pullAnswer_carryingAnEntryOutsideTheRequestedPartition_isNotStored() {
         var cluster = new Cluster();
         var shape = cluster.shape("smuggled");
-        var requestId = cluster.pullFromHolder(shape);
+        var requestId = cluster.legacyPullFromHolder(shape);
         var smuggled = cluster.entryOutside(shape.partition(), "smuggled-extra");
 
         cluster.receiver().antiEntropy()
@@ -178,13 +178,76 @@ class DHTMigrationResponseAuthenticityTest {
     void pullAnswer_fromTheNodeAsked_isStored() {
         var cluster = new Cluster();
         var shape = cluster.shape("legit");
-        var requestId = cluster.pullFromHolder(shape);
+        var requestId = cluster.legacyPullFromHolder(shape);
 
         cluster.receiver().antiEntropy()
                .onMigrationDataResponse(new DHTMessage.MigrationDataResponse(requestId, shape.holder(), List.of(shape.entry()), false, List.of()));
 
         assertThat(cluster.receiverHolds(shape.key())).as("control: a matching answer is applied").isTrue();
         assertThat(cluster.rejected()).isZero();
+    }
+
+    /// A6: a page answer is held to the same authenticity rules as a whole-partition pull answer.
+    @Test
+    void pageAnswer_fromANodeOtherThanTheOneAsked_isNotStored() {
+        var cluster = new Cluster();
+        var shape = cluster.shape("spoofed-page");
+        var requestId = cluster.pagedPullFromHolder(shape);
+
+        cluster.receiver().antiEntropy()
+               .onMigrationPageResponse(lastPage(requestId, shape.stranger(), List.of(shape.entry())));
+
+        assertThat(cluster.receiverHolds(shape.key())).as("a page whose sender was not asked is dropped").isFalse();
+        assertThat(cluster.rejected()).isEqualTo(1);
+
+        cluster.receiver().antiEntropy()
+               .onMigrationPageResponse(lastPage(requestId, shape.holder(), List.of(shape.entry())));
+
+        assertThat(cluster.receiverHolds(shape.key())).as("the forged page did not consume the real one's slot").isTrue();
+    }
+
+    @Test
+    void pageAnswer_carryingAnEntryOutsideTheRequestedPartition_isNotStored() {
+        var cluster = new Cluster();
+        var shape = cluster.shape("smuggled-page");
+        var requestId = cluster.pagedPullFromHolder(shape);
+        var smuggled = cluster.entryOutside(shape.partition(), "smuggled-page-extra");
+
+        cluster.receiver().antiEntropy()
+               .onMigrationPageResponse(lastPage(requestId, shape.holder(), List.of(shape.entry(), smuggled)));
+
+        assertThat(cluster.receiverHolds(smuggled.key())).as("an entry outside the requested partition is dropped").isFalse();
+        assertThat(cluster.rejected()).isEqualTo(1);
+    }
+
+    @Test
+    void pageAnswer_fromTheNodeAsked_isStored() {
+        var cluster = new Cluster();
+        var shape = cluster.shape("legit-page");
+        var requestId = cluster.pagedPullFromHolder(shape);
+
+        cluster.receiver().antiEntropy()
+               .onMigrationPageResponse(lastPage(requestId, shape.holder(), List.of(shape.entry())));
+
+        assertThat(cluster.receiverHolds(shape.key())).as("control: a matching page is applied").isTrue();
+        assertThat(cluster.rejected()).isZero();
+    }
+
+    @Test
+    void pageAnswer_toNoPageRequest_isNotStored() {
+        var cluster = new Cluster();
+        var shape = cluster.shape("unasked-page");
+
+        cluster.receiver().antiEntropy()
+               .onMigrationPageResponse(lastPage("never-sent", shape.holder(), List.of(shape.entry())));
+
+        assertThat(cluster.receiverHolds(shape.key())).as("a page answering nothing this node asked is dropped").isFalse();
+        assertThat(cluster.rejected()).isEqualTo(1);
+    }
+
+    private static DHTMessage.MigrationPageResponse lastPage(String requestId, NodeId sender, List<DHTMessage.KeyValue> entries) {
+        return new DHTMessage.MigrationPageResponse(requestId, sender, entries, false, Option.none(),
+                                                    DHTMessage.Readiness.SERVING);
     }
 
     // --- harness: five nodes, every message to the receiver's peers is captured, never delivered ---
@@ -319,9 +382,16 @@ class DHTMigrationResponseAuthenticityTest {
             throw new AssertionError("no key outside " + partition);
         }
 
-        /// Make the receiver pull the shape's partition from the holder, as anti-entropy does when their
-        /// digests differ, and return the pull's correlation id.
-        String pullFromHolder(Shape shape) {
+        /// Make the receiver pull the shape's partition from a holder on the LEGACY repair protocol (A6), as
+        /// anti-entropy does when their digests differ, and return the pull's correlation id. The holder first
+        /// announces itself as legacy the way an older node does: by asking the receiver a legacy digest question.
+        String legacyPullFromHolder(Shape shape) {
+            receiver().node()
+                      .handleDigestRequest(new DHTMessage.DigestRequest("legacy-hello",
+                                                                        shape.holder(),
+                                                                        shape.partition().value(),
+                                                                        shape.partition().value()),
+                                           _ -> {});
             members.get(shape.holder()).node().putLocal(shape.key(), VALUE).await();
             receiver().antiEntropy().synchronizeNow();
 
@@ -331,6 +401,20 @@ class DHTMigrationResponseAuthenticityTest {
                    .handleDigestRequest(digestRequest, response -> receiver().antiEntropy().onDigestResponse(response));
 
             return sentTo(shape.holder(), DHTMessage.MigrationDataRequest.class, shape.partition()).requestId();
+        }
+
+        /// Make the receiver pull the shape's partition from a holder on the current protocol (A6) — stamp digest,
+        /// then the first page request — and return that page request's correlation id.
+        String pagedPullFromHolder(Shape shape) {
+            members.get(shape.holder()).node().putLocal(shape.key(), VALUE).await();
+            receiver().antiEntropy().synchronizeNow();
+
+            var digestRequest = sentTo(shape.holder(), DHTMessage.StampDigestRequest.class, shape.partition());
+
+            members.get(shape.holder()).node()
+                   .handleStampDigestRequest(digestRequest, response -> receiver().antiEntropy().onDigestResponse(response));
+
+            return sentTo(shape.holder(), DHTMessage.MigrationPageRequest.class, shape.partition()).requestId();
         }
 
         private <M extends ProtocolMessage> M sentTo(NodeId target, Class<M> type, Partition partition) {
@@ -348,6 +432,8 @@ class DHTMigrationResponseAuthenticityTest {
             return switch (message) {
                 case DHTMessage.DigestRequest request -> request.partitionStart();
                 case DHTMessage.MigrationDataRequest request -> request.partitionStart();
+                case DHTMessage.StampDigestRequest request -> request.partition();
+                case DHTMessage.MigrationPageRequest request -> request.partition();
                 default -> -1;
             };
         }

@@ -40,7 +40,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 /// after the backoff gate lets an attempt through; the stub returns no address so no socket is opened).
 ///
 /// The real assertion states the single-dialer contract. If the overhaul instead keeps dual dial and makes the
-/// arbitration safe, delete this pair and rely on the link-arbitration pair (`PeerStateArbitrationTripwireTest`);
+/// arbitration safe, delete this pair and rely on the link-arbitration pair (`PeerStateArbitrationAgreementTest`);
 /// that fork is a design decision (`[guess]` which way the overhaul goes).
 @Timeout(60)
 class DualDialTripwireTest {

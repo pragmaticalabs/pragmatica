@@ -10,17 +10,25 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
+import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
+import org.pragmatica.lang.Option;
+import org.pragmatica.swim.SwimProtocol.AppGossipStats;
+import org.pragmatica.aether.node.prefetch.StoragePrefetchChannel.ChannelStats;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.PrefetchConfig;
+import org.pragmatica.storage.PrefetchManager;
 import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -93,6 +101,98 @@ class StorageRoutesTest {
         @Test
         void instanceDetail_notFound_returnsError() {
             assertThat(setups.containsKey("nonexistent")).isFalse();
+        }
+    }
+
+    @Nested
+    class Prefetch {
+
+        @Test
+        void prefetchStatsOf_aSetupWithAPrefetchManager_reportsItsCounters() {
+            var instance = setups.get("artifacts").instance();
+            var manager = PrefetchManager.prefetchManager(instance, PrefetchConfig.prefetchConfig());
+            var setup = withPrefetch(setups.get("artifacts"), manager);
+
+            manager.activate();
+            manager.recordAccess(BlockId.blockId("read".getBytes(StandardCharsets.UTF_8)).unwrap());
+
+            var stats = StorageRoutes.prefetchStatsOf(setup);
+
+            assertThat(stats.isPresent()).isTrue();
+            stats.onPresent(reported -> {
+                assertThat(reported.active()).isTrue();
+                assertThat(reported.tracked()).isEqualTo(1);
+            });
+        }
+
+        @Test
+        void prefetchStatsOf_aSetupWithoutPrefetch_reportsNothingRatherThanZeros() {
+            assertThat(StorageRoutes.prefetchStatsOf(setups.get("streams")).isEmpty()).isTrue();
+        }
+
+        @Test
+        void instanceDetail_ofAnInstanceThatPrefetches_carriesTheGossipCountersTheNodeReports() {
+            var manager = PrefetchManager.prefetchManager(setups.get("artifacts").instance(), PrefetchConfig.prefetchConfig());
+            var prefetching = Map.of("artifacts", withPrefetch(setups.get("artifacts"), manager));
+            var gossip = PrefetchGossipStats.prefetchGossipStats(AppGossipStats.appGossipStats(10, 7, 3),
+                                                                 ChannelStats.channelStats(2, 1, 4));
+            var detail = storageRoutes(() -> nodeReporting(prefetching, Option.some(gossip))).instanceDetail("artifacts").unwrap();
+
+            assertThat(detail.prefetch().isPresent()).isTrue();
+            assertThat(detail.gossip().unwrap()).as("each counter under its own name, none swapped")
+                                                .isEqualTo(new StorageRoutes.GossipDetail(10, 7, 3, 2, 1, 4));
+        }
+
+        @Test
+        void instanceDetail_ofAnInstanceThatDoesNotPrefetch_hasNoGossip_andNeverAsksTheNode() {
+            var detail = storageRoutes(() -> nodeReporting(setups, null)).instanceDetail("artifacts").unwrap();
+
+            assertThat(detail.prefetch().isEmpty()).isTrue();
+            assertThat(detail.gossip().isEmpty()).isTrue();
+        }
+
+        @Test
+        void instanceDetail_whileSwimIsNotRunning_hasNoGossip_butStillHasTheManagersCounters() {
+            var manager = PrefetchManager.prefetchManager(setups.get("artifacts").instance(), PrefetchConfig.prefetchConfig());
+            var prefetching = Map.of("artifacts", withPrefetch(setups.get("artifacts"), manager));
+            var detail = storageRoutes(() -> nodeReporting(prefetching, Option.none())).instanceDetail("artifacts").unwrap();
+
+            assertThat(detail.prefetch().isPresent()).isTrue();
+            assertThat(detail.gossip().isEmpty()).isTrue();
+        }
+
+        /// A node that answers `storageSetups` and `prefetchGossipStats` and nothing else; `null` stats means the test
+        /// expects the node never to be asked for them.
+        private AetherNode nodeReporting(Map<String, StorageSetup> reported, Option<PrefetchGossipStats> gossip) {
+            return (AetherNode) Proxy.newProxyInstance(AetherNode.class.getClassLoader(),
+                                                       new Class[]{AetherNode.class},
+                                                       (_, method, _) -> answer(method.getName(), reported, gossip));
+        }
+
+        private Object answer(String method, Map<String, StorageSetup> reported, Option<PrefetchGossipStats> gossip) {
+            if ("storageSetups".equals(method)) {
+                return reported;
+            }
+
+            if ("prefetchGossipStats".equals(method) && gossip != null) {
+                return gossip;
+            }
+
+            throw new UnsupportedOperationException("Not implemented in test proxy: " + method);
+        }
+
+        private StorageSetup withPrefetch(StorageSetup setup, PrefetchManager manager) {
+            return new StorageSetup(setup.name(),
+                                    setup.instance(),
+                                    setup.snapshotManager(),
+                                    setup.readinessGate(),
+                                    setup.metadataStore(),
+                                    setup.demotionManager(),
+                                    setup.garbageCollector(),
+                                    setup.dhtMarkerCheck(),
+                                    setup.committedDiskMarker(),
+                                    setup.promotionManager(),
+                                    manager);
         }
     }
 

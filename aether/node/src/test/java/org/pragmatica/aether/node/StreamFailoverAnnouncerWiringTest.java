@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.stream.Collectors;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,74 +20,44 @@ class StreamFailoverAnnouncerWiringTest {
     void everyNodeFeedsCommittedOwnershipPutsToTheAnnouncer_andTheEventsReachTheAggregator() {
         var code = assemblyCode();
 
-        assertThat(code).contains("StreamFailoverAnnouncer.streamFailoverAnnouncer(()->streamIsrInputs(clusterEventsControllerRef).liveMembers(),delegateRouter::route);");
-        assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamFailoverAnnouncer::onOwnershipPut)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamFailoverRefused.class,eventAggregator::onStreamFailoverRefused)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,eventAggregator::onStreamFailoverResolved)");
+        assertThat(code).containsOnlyOnce("StreamFailoverAnnouncer.streamFailoverAnnouncer(()->streamIsrInputs(clusterEventsControllerRef).liveMembers(),delegateRouter::route);");
+        assertThat(code).containsOnlyOnce(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamFailoverAnnouncer::onOwnershipPut)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamFailoverRefused.class,eventAggregator::onStreamFailoverRefused)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,eventAggregator::onStreamFailoverResolved)");
         // #1883: the in-sync-set announcer is fed by the same committed Puts, takes the factor from the stream's committed
         // config, and its events reach the aggregator.
-        assertThat(code).contains("StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,streamPartitionManager::confirmationFactorAfter,streamPartitionManager::enforcedConfig,");
+        assertThat(code).containsOnlyOnce("StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,streamPartitionManager::confirmationFactorAfter,streamPartitionManager::enforcedConfig,");
         // A committed config Put that moves the factor is announced too, and it is announced BEFORE the manager installs
         // that config: the factor it enforces before the Put is the baseline.
-        assertThat(code).contains(".onPut(AetherKey.StreamConfigKey.class,streamIsrAnnouncer::onConfigPut).onPut(AetherKey.StreamConfigKey.class,streamPartitionManager::onStreamConfigPut)");
-        assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamIsrAnnouncer::onOwnershipPut)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,eventAggregator::onStreamIsrBelowMinimum)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,eventAggregator::onStreamIsrRestored)");
+        assertThat(code).containsOnlyOnce(".onPut(AetherKey.StreamConfigKey.class,streamIsrAnnouncer::onConfigPut).onPut(AetherKey.StreamConfigKey.class,streamPartitionManager::onStreamConfigPut)");
+        assertThat(code).containsOnlyOnce(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamIsrAnnouncer::onOwnershipPut)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,eventAggregator::onStreamIsrBelowMinimum)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,eventAggregator::onStreamIsrRestored)");
         // #1873: and the lineage-restart announcer, fed by the same Puts.
-        assertThat(code).contains("StreamLineageAnnouncer.streamLineageAnnouncer(delegateRouter::route);");
-        assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamLineageAnnouncer::onOwnershipPut)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,eventAggregator::onStreamLineageRestarted)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
+        assertThat(code).containsOnlyOnce("StreamLineageAnnouncer.streamLineageAnnouncer(delegateRouter::route);");
+        assertThat(code).containsOnlyOnce(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamLineageAnnouncer::onOwnershipPut)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,eventAggregator::onStreamLineageRestarted)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
         // #1723: a scheduled task's unknown fire outcome and its late resolution are derived from the committed task state
         // on every node and reach the aggregator.
-        assertThat(code).contains("ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);");
-        assertThat(code).contains(".onPut(AetherKey.ScheduledTaskStateKey.class,scheduledTaskOutcomeAnnouncer::onStatePut)");
-        assertThat(code).contains("MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,scheduledTaskManager::onNodeRemoved)");
-        assertThat(code).contains("MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,scheduledTaskManager::onNodeDecommissioned)");
+        assertThat(code).containsOnlyOnce("ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);");
+        assertThat(code).containsOnlyOnce(".onPut(AetherKey.ScheduledTaskStateKey.class,scheduledTaskOutcomeAnnouncer::onStatePut)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,scheduledTaskManager::onNodeRemoved)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,scheduledTaskManager::onNodeDecommissioned)");
         // #1206: two artifacts serving one route, derived from the committed route table on every node.
-        assertThat(code).contains("RouteCollisionAnnouncer.routeCollisionAnnouncer(delegateRouter::route);");
-        assertThat(code).contains(".onPut(AetherKey.NodeRoutesKey.class,routeCollisionAnnouncer::onRoutesPut).onRemove(AetherKey.NodeRoutesKey.class,routeCollisionAnnouncer::onRoutesRemove)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollision.class,eventAggregator::onRoutePrefixCollision)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollisionCleared.class,eventAggregator::onRoutePrefixCollisionCleared)");
+        assertThat(code).containsOnlyOnce("RouteCollisionAnnouncer.routeCollisionAnnouncer(delegateRouter::route);");
+        assertThat(code).containsOnlyOnce(".onPut(AetherKey.NodeRoutesKey.class,routeCollisionAnnouncer::onRoutesPut).onRemove(AetherKey.NodeRoutesKey.class,routeCollisionAnnouncer::onRoutesRemove)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollision.class,eventAggregator::onRoutePrefixCollision)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollisionCleared.class,eventAggregator::onRoutePrefixCollisionCleared)");
         // #1930: the scheduler's in-flight observer feeds the aggregator through the operational-event path.
-        assertThat(code).contains("ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),delegateRouter::route)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireHeld.class,eventAggregator::onScheduledTaskFireHeld)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireReleased.class,eventAggregator::onScheduledTaskFireReleased)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeUnknown.class,eventAggregator::onScheduledTaskOutcomeUnknown)");
-        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,eventAggregator::onScheduledTaskOutcomeRestored)");
+        assertThat(code).containsOnlyOnce("ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),delegateRouter::route)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireHeld.class,eventAggregator::onScheduledTaskFireHeld)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireReleased.class,eventAggregator::onScheduledTaskFireReleased)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeUnknown.class,eventAggregator::onScheduledTaskOutcomeUnknown)");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,eventAggregator::onScheduledTaskOutcomeRestored)");
     }
 
     private static String assemblyCode() {
-        var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
-
-        assertThat(file).exists();
-
-        return readFile(file).lines()
-                             .map(line -> line.replaceFirst("//.*$", ""))
-                             .collect(Collectors.joining())
-                             .replaceAll("\\s+", "");
-    }
-
-    private static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + path, e);
-        }
-    }
-
-    private static Path sourceRoot() {
-        try {
-            var testClasses = Path.of(StreamFailoverAnnouncerWiringTest.class.getProtectionDomain()
-                                                                             .getCodeSource()
-                                                                             .getLocation()
-                                                                             .toURI());
-
-            return testClasses.getParent()
-                              .getParent()
-                              .resolve("src/main/java");
-        } catch (URISyntaxException e) {
-            throw new AssertionError("Cannot locate module source root", e);
-        }
+        return AssemblySource.stripped();
     }
 }

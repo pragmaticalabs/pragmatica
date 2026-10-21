@@ -139,7 +139,7 @@ class ContentStoreTest {
                  .onFailure(c -> fail("put failed: " + c.message()));
 
             // Verify by resolving the ref and reading the manifest
-            var refOpt = storage.resolveRef("five-chunks");
+            var refOpt = storage.resolveRef(ContentEnvelope.trustedRef("five-chunks"));
             assertThat(refOpt.isPresent()).isTrue();
 
             refOpt.onPresent(blockId ->

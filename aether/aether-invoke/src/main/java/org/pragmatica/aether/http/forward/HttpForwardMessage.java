@@ -45,4 +45,31 @@ public sealed interface HttpForwardMessage extends ProtocolMessage {
                                boolean success,
                                byte[] payload,
                                Pipeline pipeline) implements HttpForwardMessage {}
+
+    /// Why a target refused a forwarded request BEFORE dispatching it. Every reason proves the request was not
+    /// applied on that node: the refusal happens before any router or slice code runs.
+    @Codec
+    enum NotAppliedReason {
+        /// The target serves no local route for the request (a stale route entry on the sender, a slice mid-undeploy).
+        ROUTE_NOT_FOUND,
+        /// The sender's wire budget had run out on arrival, so the target refused without dispatching.
+        BUDGET_EXHAUSTED,
+        /// The target could not decode the forwarded request.
+        UNDECODABLE_REQUEST,
+        /// Wire sentinel, as [Pipeline#UNKNOWN]: a reason this node cannot name. The message type itself still
+        /// asserts "not applied". Must stay LAST.
+        UNKNOWN
+    }
+
+    /// F1 (#2244): a target's answer that the request was NOT applied there, out of band from [HttpForwardResponse]
+    /// so no failure text, which a slice controls, can claim it. It makes re-sending safe for every method, including
+    /// POST/PATCH/CONNECT, and an exhausted hunt then answers "nothing was applied; safe to retry".
+    ///
+    /// Mixed versions: a node built before this type drops it as an unknown tag, so its pending forward waits out
+    /// the hop timeout and is treated as "may have been applied". That is the conservative side, and only slower.
+    record HttpForwardNotApplied(NodeId sender,
+                                 String correlationId,
+                                 String requestId,
+                                 NotAppliedReason reason,
+                                 Pipeline pipeline) implements HttpForwardMessage {}
 }
