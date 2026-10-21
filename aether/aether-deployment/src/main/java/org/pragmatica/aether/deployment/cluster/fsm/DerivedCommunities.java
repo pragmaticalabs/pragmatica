@@ -32,7 +32,7 @@ sealed interface DerivedCommunities {
     /// The directives of one snapshot of the KV: the live load per community, and every node that snapshot holds a directive for.
     /// The nodes are the "already visible" test for in-flight assignments, so a directive that lands after the snapshot is counted as in
     /// flight and never as nothing: reading it from the live store a moment later would drop it from both counts.
-    private record Directives(Map<String, Integer> loads, Set<NodeId> visible) {}
+    record Directives(Map<String, Integer> loads, Set<NodeId> visible) {}
 
     static List<Candidate> candidates(ClusterDeploymentContext ctx, String source, long nowMs) {
         var directives = directives(ctx, nowMs);
