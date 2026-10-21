@@ -22,6 +22,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
@@ -40,6 +41,7 @@ import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
 import io.netty.handler.codec.http3.Http3DataFrame;
 import io.netty.handler.codec.http3.Http3ErrorCode;
+import io.netty.handler.codec.http3.Http3Frame;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
 import io.netty.handler.codec.quic.QuicChannel;
@@ -48,6 +50,7 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamResetException;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.ReferenceCountUtil;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,6 +61,7 @@ import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -132,6 +136,99 @@ class Http3ResponseFailureTest {
         assertThat(outcome.elapsedMs()).isLessThan(PROMPT_MS);
     }
 
+    /// The promise `writeAsync` returns tells the handler what the client saw: a response replaced by the 500 fails it
+    /// with the build failure, while the client still gets the 500.
+    @Test
+    void writeAsyncPromise_failsWhenTheResponseIsAnswered500() throws Exception {
+        var failed = new CompletableFuture<Boolean>();
+
+        start((_, writer) -> writer.writeAsync(HttpStatus.OK, BODY, THROWING_CONTENT_TYPE)
+                                   .onResult(result -> failed.complete(result.isFailure())),
+              Option.none());
+
+        var outcome = exchange();
+
+        assertThat(outcome.status()).isEqualTo("500");
+        assertThat(failed.get(5, TimeUnit.SECONDS)).as("the write promise failed").isTrue();
+    }
+
+    /// Control for the two promise tests: a clean response resolves the promise successfully, once the `FIN` is sent.
+    @Test
+    void writeAsyncPromise_succeeds_whenTheResponseIsSentCleanly() throws Exception {
+        var succeeded = new CompletableFuture<Boolean>();
+
+        start((_, writer) -> writer.writeAsync(HttpStatus.OK, BODY, CommonContentType.TEXT_PLAIN)
+                                   .onResult(result -> succeeded.complete(result.isSuccess())),
+              Option.none());
+
+        var outcome = exchange();
+
+        assertThat(outcome.end()).isEqualTo("fin");
+        assertThat(succeeded.get(5, TimeUnit.SECONDS)).as("the write promise succeeded").isTrue();
+    }
+
+    @Test
+    void writeAsyncPromise_fails_whenTheStreamIsReset() throws Exception {
+        var failed = new CompletableFuture<Boolean>();
+
+        start((_, writer) -> writer.writeAsync(HttpStatus.OK, BODY, CommonContentType.TEXT_PLAIN)
+                                   .onResult(result -> failed.complete(result.isFailure())),
+              Option.some(() -> new FailingWrites(Http3DataFrame.class)));
+
+        var outcome = exchange();
+
+        assertThat(outcome.end()).isEqualTo("reset:" + Http3ErrorCode.H3_INTERNAL_ERROR.code());
+        assertThat(failed.get(5, TimeUnit.SECONDS)).as("the write promise failed").isTrue();
+    }
+
+    /// One response per request: a second write, and an error thrown after the handler has responded, add no frames.
+    @Test
+    void secondWriteAndALateHandlerError_sendNoSecondResponse() throws Exception {
+        start((_, writer) -> respondTwiceThenFail(writer), Option.none());
+
+        var outcome = exchange();
+
+        assertThat(outcome.status()).isEqualTo("200");
+        assertThat(outcome.headersFrames()).as("exactly one HEADERS frame").isEqualTo(1);
+        assertThat(outcome.end()).isEqualTo("fin");
+    }
+
+    private static void respondTwiceThenFail(ResponseWriter writer) {
+        writer.write(HttpStatus.OK, BODY, CommonContentType.TEXT_PLAIN);
+        writer.write(HttpStatus.CREATED, BODY, CommonContentType.TEXT_PLAIN);
+        throw new IllegalStateException("handler fails after responding");
+    }
+
+    /// The 500 that replaces an unbuildable response carries the server's own headers only: a handler header the codec
+    /// refuses (a null value) would fail the 500's own build too, and the stream would be left unanswered.
+    @Test
+    void failureBuildingAHandlerHeader_isAnswered500WithoutThatHeader() throws Exception {
+        start((_, writer) -> writer.header("x-null-valued", null)
+                                   .write(HttpStatus.OK, BODY, CommonContentType.TEXT_PLAIN),
+              Option.none());
+
+        var outcome = exchange();
+
+        assertThat(outcome.status()).isEqualTo("500");
+        assertThat(outcome.end()).isEqualTo("fin");
+        assertThat(outcome.elapsedMs()).isLessThan(PROMPT_MS);
+    }
+
+    /// When the HEADERS write and the DATA write both fail, the stream is reset, and the reset is logged, once.
+    @Test
+    void resetOfAStreamWhoseEveryWriteFailed_isLoggedOnce() throws Exception {
+        try (var capture = LogCapture.capture(Http3Server.class, Level.WARN, false)) {
+            start((_, writer) -> writer.write(HttpStatus.OK, BODY, CommonContentType.TEXT_PLAIN),
+                  Option.some(() -> new FailingWrites(Http3Frame.class)));
+
+            var outcome = exchange();
+
+            assertThat(outcome.end()).isEqualTo("reset:" + Http3ErrorCode.H3_INTERNAL_ERROR.code());
+            assertThat(capture.messages(Level.WARN)).filteredOn(message -> message.contains("resetting the stream"))
+                                                    .hasSize(1);
+        }
+    }
+
     private static final ContentType THROWING_CONTENT_TYPE = new ContentType() {
         @Override
         public String headerText() {
@@ -179,7 +276,7 @@ class Http3ResponseFailureTest {
                             .unwrap();
     }
 
-    private record Outcome(String status, String end, long elapsedMs) {}
+    private record Outcome(String status, String end, long elapsedMs, int headersFrames) {}
 
     private Outcome exchange() throws Exception {
         var ssl = QuicSslContextBuilder.forClient()
@@ -220,20 +317,23 @@ class Http3ResponseFailureTest {
 
             quic.close().sync();
 
-            return new Outcome(reader.status.get(), end, elapsedMs);
+            return new Outcome(reader.status.get(), end, elapsedMs, reader.headersFrames.get());
         } finally {
             channel.close().sync();
         }
     }
 
-    /// Records the response status and how the stream ended: `fin`, `reset:<code>`, or `inactive`.
+    /// Records the first response status, the number of HEADERS frames and how the stream ended: `fin`, `reset:<code>`,
+    /// or `inactive`.
     private static final class OutcomeReader extends Http3RequestStreamInboundHandler {
         private final AtomicReference<String> status = new AtomicReference<>("none");
+        private final AtomicInteger headersFrames = new AtomicInteger();
         private final CompletableFuture<String> end = new CompletableFuture<>();
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
-            status.set(String.valueOf(frame.headers().status()));
+            headersFrames.incrementAndGet();
+            status.compareAndSet("none", String.valueOf(frame.headers().status()));
         }
 
         @Override

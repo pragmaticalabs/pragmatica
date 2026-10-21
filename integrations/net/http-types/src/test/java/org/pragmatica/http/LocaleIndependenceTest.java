@@ -50,6 +50,13 @@ class LocaleIndependenceTest {
     }
 
     @Test
+    void headerValues_lookedUpByAnUppercaseI_arriveInOrder() {
+        var headers = Headers.headers(Map.of("x-id", List.of("1", "2")));
+
+        assertThat(headers.getAll("X-ID")).containsExactly("1", "2");
+    }
+
+    @Test
     void methodName_withALowercaseI_parses() {
         assertThat(HttpMethod.httpMethod("options").isSuccess()).isTrue();
     }

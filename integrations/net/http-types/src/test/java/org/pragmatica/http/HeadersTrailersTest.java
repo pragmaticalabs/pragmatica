@@ -125,6 +125,15 @@ class HeadersTrailersTest {
         assertThat(Headers.headers(raw).getAll("accept")).containsExactly("a", "b");
     }
 
+    /// `fromSingleValueMap` no longer folds before the merge: single values of names that differ only in case are one
+    /// field with every value, where the unmerged fold kept the `HashMap`-order winner.
+    @Test
+    void fromSingleValueMap_namesDifferingOnlyInCase_keepEveryValue() {
+        var headers = Headers.fromSingleValueMap(Map.of("X-B", "1", "x-b", "2"));
+
+        assertThat(headers.getAll("x-b")).containsExactlyInAnyOrder("1", "2");
+    }
+
     @Test
     void trailers_keepsEveryValueOfAPermittedField_inOrder() {
         var trailers = Headers.trailers(Map.of("x-multi", List.of("one", "two")));

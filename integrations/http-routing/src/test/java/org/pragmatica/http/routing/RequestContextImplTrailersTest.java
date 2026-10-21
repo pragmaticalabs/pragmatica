@@ -1,5 +1,7 @@
 package org.pragmatica.http.routing;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -48,6 +50,32 @@ class RequestContextImplTrailersTest {
         var context = RequestContext.RequestContextImpl.requestContext(request, ROUTE, JsonCodecAdapter.defaultCodec(), "req-3");
 
         assertThat(context.trailers().getAll("x-a")).containsExactly("1", "2", "3");
+    }
+
+    /// Under `tr-TR` the default-locale lower case of `AUTHORIZATION` is `authorızatıon`, which the forbidden-field set
+    /// does not contain; this wrapper folds names with `Locale.ROOT` like the transports.
+    @Test
+    void trailers_forbiddenNamesInUpperCase_areDiscarded_underATurkishDefaultLocale() {
+        var saved = Locale.getDefault();
+
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+            var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/upload", Unpooled.EMPTY_BUFFER);
+
+            request.trailingHeaders()
+                   .add("AUTHORIZATION", "Bearer forged")
+                   .add("X-OK", "yes");
+
+            var context = RequestContext.RequestContextImpl.requestContext(request,
+                                                                            ROUTE,
+                                                                            JsonCodecAdapter.defaultCodec(),
+                                                                            "req-4");
+
+            assertThat(context.trailers().asMap()).containsOnlyKeys("x-ok");
+        } finally {
+            Locale.setDefault(saved);
+        }
     }
 
     @Test

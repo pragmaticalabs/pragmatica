@@ -19,6 +19,8 @@ package org.pragmatica.http.server;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
 import org.junit.jupiter.api.AfterEach;
@@ -64,6 +66,31 @@ class Http1ResponseFailureTest {
 
         assertThat(outcome.status()).as("the unsent response is replaced by a 500").isEqualTo(500);
         assertThat(outcome.elapsedMs()).as("answered promptly, not at the client's timeout").isLessThan(PROMPT_MS);
+    }
+
+    /// The promise `writeAsync` returns tells the handler what the client saw: a response replaced by the 500 fails it
+    /// with the build failure.
+    @Test
+    void writeAsyncPromise_failsWhenTheResponseIsAnswered500() throws Exception {
+        var failed = new CompletableFuture<Boolean>();
+
+        start((_, writer) -> writer.writeAsync(HttpStatus.OK, BODY, THROWING_CONTENT_TYPE)
+                                   .onResult(result -> failed.complete(result.isFailure())));
+
+        assertThat(exchange().status()).isEqualTo(500);
+        assertThat(failed.get(5, TimeUnit.SECONDS)).as("the write promise failed").isTrue();
+    }
+
+    /// Control: a response that is sent resolves the promise successfully.
+    @Test
+    void writeAsyncPromise_succeeds_whenTheResponseIsSent() throws Exception {
+        var succeeded = new CompletableFuture<Boolean>();
+
+        start((_, writer) -> writer.writeAsync(HttpStatus.OK, BODY, CommonContentType.TEXT_PLAIN)
+                                   .onResult(result -> succeeded.complete(result.isSuccess())));
+
+        assertThat(exchange().status()).isEqualTo(200);
+        assertThat(succeeded.get(5, TimeUnit.SECONDS)).as("the write promise succeeded").isTrue();
     }
 
     private static final ContentType THROWING_CONTENT_TYPE = new ContentType() {
