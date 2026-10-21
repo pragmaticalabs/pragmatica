@@ -1759,7 +1759,7 @@ class LeaderReconcilerTest {
             wireKvSliceSources();
         }
 
-        /// What production does with every reconciler DRAIN: `AetherNode.requestDrainThroughFsm`, the
+        /// What production does with every reconciler DRAIN: `DrainAssembly.requestDrainThroughFsm`, the
         /// CTM drain sink, routes it into `MembershipFsm.onDrainRequested`, which moves the target to
         /// DEPARTING. The fixture's `RecordingCtm` only records the call, so the test replays that edge.
         @Contract

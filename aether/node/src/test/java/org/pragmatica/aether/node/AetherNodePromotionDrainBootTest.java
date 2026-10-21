@@ -28,7 +28,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// A node that starts draining stops promoting and demoting its storage, not only when it later stops. The drain is a
 /// real one: the leader's `ClusterSyncPing` naming this node reaches `DrainProcedure.initiate`, whose single drain edge
-/// (`AetherNode.drainInitiatedEmitter`) is where the storage hook is bound -- the same route as
+/// (`DrainAssembly.drainInitiatedEmitter`) is where the storage hook is bound -- the same route as
 /// `ScheduledTaskDrainWiringBootTest`. Cycles stop counting afterwards: a tick that still ran a cycle would show.
 class AetherNodePromotionDrainBootTest {
     @TempDir

@@ -65,8 +65,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///   ClusterSyncPing(drainNodes=[self])          the leader's heartbeat, injected at the router
 ///     -> MessageRouter entry ClusterSyncPing -> ClusterSyncCollector.onClusterSyncPing
 ///     -> handleDrainCommand  (logs "includes self", the CONTROL below)
-///     -> AetherNode.commandedDrain -> DrainProcedure.initiate(COMMANDED)
-///     -> emitDrainInitiatedSafely -> AetherNode.drainInitiatedEmitter   <- the hunk under test
+///     -> DrainAssembly.commandedDrain -> DrainProcedure.initiate(COMMANDED)
+///     -> emitDrainInitiatedSafely -> DrainAssembly.drainInitiatedEmitter   <- the hunk under test
 ///     -> ScheduledTaskManager.onDrainInitiated -> TaskOps.cancelAllModeTimers  (the ASSERTION)
 /// ```
 ///
@@ -148,7 +148,7 @@ class ScheduledTaskDrainWiringBootTest {
         await().atMost(LINE_BOUND)
                .untilAsserted(() -> assertThat(capture.messages())
                    .as("a real DrainProcedure.initiate must reach ScheduledTaskManager.onDrainInitiated "
-                       + "through AetherNode.drainInitiatedEmitter — round 1 keyed this on an event with "
+                       + "through DrainAssembly.drainInitiatedEmitter — round 1 keyed this on an event with "
                        + "no producer, so nothing got here")
                    .anyMatch(line -> line.contains(TIMERS_CANCELLED)));
     }

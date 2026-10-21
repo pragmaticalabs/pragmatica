@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.node.assembly.DrainAssembly;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,7 +43,7 @@ class AetherNodeDrainSetObserverTest {
     void drainSet_marksTheCommandedNodeOnAnObserverThatNeverSawDrainRequested() {
         var alerts = alerts();
 
-        AetherNode.drainSetObserver(alerts, SELF, NOT_READY).accept(Set.of(DRAINED));
+        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY).accept(Set.of(DRAINED));
 
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
         assertThat(alerts.hasAnnouncedDeparture(OTHER)).as("an uncommanded node stays unmarked: an unplanned kill must alert").isFalse();
@@ -52,7 +53,7 @@ class AetherNodeDrainSetObserverTest {
     void drainSet_neverMarksSelf() {
         var alerts = alerts();
 
-        AetherNode.drainSetObserver(alerts, SELF, NOT_READY).accept(Set.of(SELF, DRAINED));
+        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY).accept(Set.of(SELF, DRAINED));
 
         assertThat(alerts.hasAnnouncedDeparture(SELF)).isFalse();
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
@@ -117,7 +118,7 @@ class AetherNodeDrainSetObserverTest {
     @Test
     void leaderTick_restoresAConsumedMarkWhileTheDrainIsStillCommanded() {
         var alerts = alerts();
-        var tick = AetherNode.drainSetObserver(alerts, SELF, NOT_READY);
+        var tick = DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY);
 
         tick.accept(Set.of(DRAINED));
         alerts.onNodeFailed(DRAINED, SELF);
@@ -143,9 +144,9 @@ class AetherNodeDrainSetObserverTest {
 
     @Test
     void nodeReadyAgain_isTrueOnlyForAReportedReady_absenceAndDrainingAreNot() {
-        var ready = AetherNode.nodeReadyAgain(() -> Map.of(DRAINED, NodeReportedState.READY));
-        var draining = AetherNode.nodeReadyAgain(() -> Map.of(DRAINED, NodeReportedState.DRAINING));
-        var absent = AetherNode.nodeReadyAgain(Map::of);
+        var ready = DrainAssembly.nodeReadyAgain(() -> Map.of(DRAINED, NodeReportedState.READY));
+        var draining = DrainAssembly.nodeReadyAgain(() -> Map.of(DRAINED, NodeReportedState.DRAINING));
+        var absent = DrainAssembly.nodeReadyAgain(Map::of);
 
         assertThat(ready.test(DRAINED)).isTrue();
         assertThat(draining.test(DRAINED)).isFalse();
@@ -158,7 +159,7 @@ class AetherNodeDrainSetObserverTest {
     void ownRegistryTick_notLeader_feedsNothing() {
         var fed = new java.util.concurrent.atomic.AtomicInteger();
 
-        AetherNode.leaderOnlyDrainRecordTick(() -> false, () -> Set.of(DRAINED), _ -> fed.incrementAndGet()).run();
+        DrainAssembly.leaderOnlyDrainRecordTick(() -> false, () -> Set.of(DRAINED), _ -> fed.incrementAndGet()).run();
 
         assertThat(fed.get()).as("a non-leader's registry is not a drain record").isZero();
     }
@@ -169,7 +170,7 @@ class AetherNodeDrainSetObserverTest {
     void ownRegistryTick_leader_feedsTheRegistryTargets() {
         var seen = new java.util.concurrent.atomic.AtomicReference<Set<NodeId>>(null);
 
-        AetherNode.leaderOnlyDrainRecordTick(() -> true, () -> Set.of(DRAINED), seen::set).run();
+        DrainAssembly.leaderOnlyDrainRecordTick(() -> true, () -> Set.of(DRAINED), seen::set).run();
 
         assertThat(seen.get()).containsExactly(DRAINED);
     }
@@ -179,9 +180,9 @@ class AetherNodeDrainSetObserverTest {
     @Test
     void formerLeader_withStaleRegistry_staysUnmarked_soTheNextCrashAlerts() {
         var alerts = alerts();
-        var tick = AetherNode.leaderOnlyDrainRecordTick(() -> false,
+        var tick = DrainAssembly.leaderOnlyDrainRecordTick(() -> false,
                                                         () -> Set.of(DRAINED),
-                                                        AetherNode.drainSetObserver(alerts, SELF, NOT_READY));
+                                                        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY));
 
         tick.run();
         alerts.onNodeFailed(DRAINED, SELF);
