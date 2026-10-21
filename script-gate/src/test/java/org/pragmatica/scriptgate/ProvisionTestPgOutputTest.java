@@ -62,6 +62,10 @@ class ProvisionTestPgOutputTest {
                                                              SECRET,
                                                              SECRET);
 
+    /// A prefix before an otherwise allowed key: only the `^` anchor keeps these out. PG_PORT is not emitted by
+    /// the writer, so the allow-list entry is pinned here by a canonical line instead.
+    private static final String PREFIXED_BODY = "x=" + SECRET + "; export PG_HOST=h2\nfoo export PG_DB=d\nexport PG_PORT=5432\n";
+    private static final String NO_ALLOWED_LINES = "# only a comment\nexport PG_PASSWORD=" + SECRET + "\n";
     private static final String INERT = "#!/bin/bash\nexit 0\n";
 
     private Path state;
@@ -111,14 +115,25 @@ class ProvisionTestPgOutputTest {
 
     @Test
     void printOnly_printsOnlyCanonicalAllowListedLines_forForeignEnvFile() {
-        given(Result.lift(() -> Files.writeString(envFile, FOREIGN_BODY)).mapToUnit());
+        given(Result.lift(() -> Files.writeString(envFile, FOREIGN_BODY + PREFIXED_BODY)).mapToUnit());
         var execution = executed(runScript("--print-only"));
 
         assertThat(execution.exitCode()).as(execution.output()).isZero();
         assertThat(execution.output()).doesNotContain(SECRET)
                   .contains("export PG_USER=aether")
                   .contains("export PG_HOST=192.0.2.10")
-                  .doesNotContain("PG_DB=");
+                  .contains("export PG_PORT=5432")
+                  .doesNotContain("PG_DB=")
+                  .doesNotContain("PG_HOST=h2");
+    }
+
+    @Test
+    void printOnly_exitsZeroAndPrintsPointer_whenNoLineIsAllowListed() {
+        given(Result.lift(() -> Files.writeString(envFile, NO_ALLOWED_LINES)).mapToUnit());
+        var execution = executed(runScript("--print-only"));
+
+        assertThat(execution.exitCode()).as(execution.output()).isZero();
+        assertThat(execution.output()).doesNotContain(SECRET).contains("are in " + envFile);
     }
 
     @Test
