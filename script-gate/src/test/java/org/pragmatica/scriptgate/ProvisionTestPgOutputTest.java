@@ -144,9 +144,7 @@ class ProvisionTestPgOutputTest {
     }
 
     private static void assertNoCredentials(String output) {
-        assertThat(output).doesNotContain(SECRET)
-                  .doesNotContain("PG_PASSWORD=")
-                  .doesNotContain("PG_URL=");
+        assertThat(output).doesNotContain(SECRET).doesNotContain("PG_PASSWORD=").doesNotContain("PG_URL=");
     }
 
     private String fileContent() {
