@@ -113,7 +113,7 @@ class ProvisionTestPgOutputTest {
     @Test
     void freshProvision_writeEnvFile_omitsPasswordAndUrl_butFileCarriesThem() {
         given(Result.lift(() -> Files.writeString(functions, functionsBeforeMainFlow())).mapToUnit());
-        var execution = executed(runCommand("source \"$1\"; write_env_file 42 192.0.2.10 \"$2\"", functions.toString(), SECRET));
+        var execution = executed(runCommand("f=$1; s=$2; set --; source \"$f\"; write_env_file 42 192.0.2.10 \"$s\"", functions.toString(), SECRET));
 
         assertThat(execution.exitCode()).as(execution.output()).isZero();
         assertThat(execution.output()).doesNotContain(SECRET)
