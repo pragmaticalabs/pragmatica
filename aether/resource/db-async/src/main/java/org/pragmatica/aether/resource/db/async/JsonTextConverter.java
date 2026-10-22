@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.db.async;
 import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.aether.resource.db.JsonText;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.postgres.net.Converter;
 import org.pragmatica.postgres.net.PgValue;
 import org.pragmatica.postgres.net.PgWriter;
@@ -28,7 +29,9 @@ final class JsonTextConverter implements Converter<JsonText> {
         return JsonText.class;
     }
 
+    /// The driver's bind callback: writes into the driver-owned sink.
     @Override
+    @Contract
     public void from(JsonText value, PgWriter writer) {
         writer.writeText(value.value());
     }

@@ -8,6 +8,9 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Result.success;
+
 
 /// Typed failure raised when a row value cannot be decoded into its target value object.
 ///
@@ -37,8 +40,11 @@ public sealed interface RowDecodeError extends Cause {
     /// value goes through `lift`, whose failure fails the decode. Used by generated row mappers for an
     /// `Option<T>` component that needs a `lift` (a value object or a `@Jsonb` document).
     static <P, T> Result<Option<T>> liftOptional(Option<P> raw, Fn1<Result<T>, P> lift) {
-        return raw.fold(() -> Result.success(Option.none()),
-                        present -> lift.apply(present)
-                                       .map(Option::some));
+        return raw.map(lift)
+                  .fold(() -> success(none()), RowDecodeError::present);
+    }
+
+    private static <T> Result<Option<T>> present(Result<T> decoded) {
+        return decoded.map(Option::some);
     }
 }
