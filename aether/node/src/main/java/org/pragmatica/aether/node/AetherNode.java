@@ -112,9 +112,7 @@ import org.pragmatica.aether.deployment.generation.SwimHintsRegistry;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.ClusterSyncScheduler;
-import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.metrics.MinuteAggregator;
-import org.pragmatica.aether.metrics.PeriodicObservationConfig;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
@@ -228,6 +226,7 @@ import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.node.assembly.EntityAssembly;
 import org.pragmatica.aether.node.assembly.DhtAssembly;
+import org.pragmatica.aether.node.assembly.ClusterSyncAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.Server;
@@ -2402,139 +2401,31 @@ public interface AetherNode extends ManageableNode {
         var streamConsumerRegistry = registriesOut.streamConsumerRegistry();
         var scheduledTaskStateRegistry = registriesOut.scheduledTaskStateRegistry();
         var httpRouteRegistry = registriesOut.httpRouteRegistry();
-        var metricsCollector = ClusterSyncCollector.clusterSyncCollector(config.self(),
-                                                                         clusterNode.network(),
-                                                                         config.timeouts()
-                                                                               .observability()
-                                                                               .metricsSlidingWindow()
-                                                                               .millis());
-        // Publish the collector into the deferred holder captured by the leader-election FSM's
-        // leader-acting lease predicate (built in createNode, before this collector existed). From
-        // now on the FSM's Led-tenure lease reads real leader-ping freshness via
-        // `metricsCollector.hasAuthoritativeReadiness()` instead of the lease-neutral default.
-        metricsCollectorRef.set(metricsCollector);
-        metricsCollector.setInvocationMetricsProvider(invocationMetrics);
-        metricsCollector.recordCustom("mgmt.port", config.managementPort());
-        var peerObservationStore = org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore();
-        // Step 1: periodic-observation config (5s emission cadence, 15s aggregator
-        // TTL, cap floor 64). The store's cap supplier is wired by ClusterSyncContext
-        // and computes `max(capFloor, peers × 4)` per push — sized to handle one
-        // full emission cycle (N-1 observations per node per period) plus per-peer
-        // transition burst.
-        var periodicConfig = PeriodicObservationConfig.defaultConfig();
-        BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
-        // Membership is presence-derived (SWIM/QUIC via NTT); node readiness/drain is
-        // heartbeat-reported and leader-cached — never stored in or committed to the KV-Store.
-        // (The former leader-side reachability aggregator that folded a separate peer set is
-        // deleted; see the P3 note immediately below.)
-        // P3 (membership unification): the leader-side ReachabilityAggregator is deleted —
-        // SWIM (fed by QUIC hints) is the single liveness signal, so the pong-derived
-        // reachability fold (and the KV-tracked-peers quorum-N it used) is redundant. The
-        // metricsCollector local-snapshot supplier is left unset (defaults to none()).
-        // Membership v2 — the leader-side `ClusterSyncPongSignalFan` no longer drives a
-        // readyCandidate→ForceOnDuty path (the FSM is gone); readiness is node-reported on the
-        // control-heartbeat pong and consumed by the CDM allocatable gate (B4).
-        ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) -> {};
-        // B1 (membership v2 §7.5): node-reported readiness reads a LIVE consensus-active LEVEL on
-        // every pong via `clusterNode::isActive` — the SAME `RabiaEngine::isActive` accessor leader
-        // election wires as its `consensusReadySupplier` (RabiaNode.isActive -> consensus().isActive()).
-        // Sampling the level each pong self-heals: the former edge-cached flag could stick SYNCING
-        // when a PASSIVE edge was not followed by a fresh ACTIVE edge.
-        var workerProjectionFreshRef = new AtomicReference<java.util.function.BooleanSupplier>(() -> !configuredWorker(config));
-        var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder(() -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
-                                                                                                                                                 .getAsBoolean());
-        var drainCommandRegistry = DrainCommandRegistry.drainCommandRegistry();
-
-        metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
-        // Incarnation supplier is wired to the SWIM self-incarnation below, once
-        // `swimHealthDetector` is constructed (single `(NodeId, incarnation)` authority).
-        var pongSignalFan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(clusterNode.leaderManager(),
-                                                                              readyCandidateSink);
-
-        metricsCollector.setPongSignalFan(pongSignalFan);
-        // Readiness-broadcast (failover-readability): wire the leader manager + clock + ping interval
-        // so the collector serves the authoritative fan view on the leader and the cached leader view
-        // on followers (and so `/api/nodes/lifecycle` returns 503 + leader hint on a cold follower
-        // instead of a misleading `200 []`).
-        metricsCollector.setReadinessViewContext(clusterNode.leaderManager(),
-                                                 System::nanoTime,
-                                                 config.timeouts().cluster().pingInterval());
-        // B3 (membership v2 §7.5.5): the leader readiness view self-cleans via a periodic stale-sweep
-        // (catches the QUIC-open-but-silent black-hole case, where no disconnect event fires). Clean
-        // departures are evicted faster by the routed TransportObservation.PeerDisconnected route below.
-        // The map is leader-only (fanIfLeader-gated), so the sweep is a no-op on followers.
-        var readinessSweepMaxAgeNanos = config.timeouts().cluster().pingInterval().nanos() * 3;
-
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> pongSignalFan.sweepStale(readinessSweepMaxAgeNanos),
-                                                                      config.timeouts().cluster().pingInterval(),
-                                                                      config.timeouts().cluster().pingInterval()));
-        Supplier<Long> rabiaTermSupplier = leaderTerm::current;
-        // #114 W1: the cluster-sync ping carries a monotonic generation counter. Each node bumps its
-        // OWN counter only while it is leader — ONCE PER pingInterval (1s default), so the counter is
-        // a LEADERSHIP-TENURE TICK, not an event count: "1:4254" means rabiaTerm 1 with ~71 minutes of
-        // uninterrupted leadership, which is ordinary (#634 follow-up — this exact value was once
-        // investigated as an anomaly because the per-interval semantics were written down nowhere).
-        // The supplier merely READS it (it is consumed in four contexts; incrementing inside would
-        // over-count). No reset is needed: Epoch ordering is term-dominant, and the term is the
-        // committed LeaderValue.viewSequence of this node's election (S28, see LeaderTerm) — strictly
-        // above every prior committed leadership cluster-wide — so a new leader's lower local counter
-        // still orders strictly after the prior leader's epoch via the term.
-        var generationCounter = epochSources.generationCounter();
-        Supplier<Epoch> leaderEpochSupplier = epochSources.leaderEpoch();
-
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier,
-                                                                                                   generationCounter),
-                                                                      config.timeouts().cluster().pingInterval(),
-                                                                      config.timeouts().cluster().pingInterval()));
-        // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
-        // holder exist (READY peers from the leader view + self when locally READY).
-        cdmReadyNodesRef.set(() -> nodesReporting(pongSignalFan,
-                                                  nodeReportedStateHolder,
-                                                  config.self(),
-                                                  NodeReportedState.READY));
-        cdmDrainingNodesRef.set(() -> nodesReporting(pongSignalFan,
-                                                     nodeReportedStateHolder,
-                                                     config.self(),
-                                                     NodeReportedState.DRAINING));
-        var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
-                                                                         clusterNode.network(),
-                                                                         metricsCollector,
-                                                                         config.timeouts().cluster().pingInterval(),
-                                                                         rabiaTermSupplier,
-                                                                         ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
-                                                                         leaderEpochSupplier,
-                                                                         peerObservationStore,
-                                                                         periodicConfig,
-                                                                         isLeaderSupplier);
-        // Step 1 (Periodic Observation Mode): cap supplier honored externally so
-        // the buffer absorbs one full emission cycle (N-1 observations per 5s tick)
-        // plus per-peer transition burst. Floor of 64 from periodicConfig accommodates
-        // small clusters; topology × 4 scales with peer count. Set AFTER the scheduler
-        // is constructed because ClusterSyncContext's own constructor pre-wires the
-        // store's cap supplier to its internal `bufferCap()` formula — this call wins
-        // and gives AetherNode the canonical sizing surface.
-        peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
-                                                           clusterNode.topologyManager().topology().size() * 4));
-        metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        metricsScheduler.setDrainTargets(drainCommandRegistry::drainTargets);
-        // #114 — the leader never pings itself, so metricsCollector.observedEpoch() (follower-style,
-        // updated only by RECEIVED pings) stays at 0:0 on the leader forever. The CURRENT generation
-        // epoch is therefore the leader-minted epoch on the leader and the observed ping epoch elsewhere.
-        // gen-route + await-quiesced + NDM read this supplier so deploy barriers see current+1.
-        Supplier<Epoch> currentGenerationEpochSupplier = () -> isLeaderSupplier.getAsBoolean()
-                                                               ? leaderEpochSupplier.get()
-                                                               : metricsCollector.observedEpoch();
-        // E2 Phase 2a (2026-05-28): leader-side φ-accrual (#231) is removed. SWIM owns the
-        // liveness decision directly; the v2 NTT path is the replacement debounce.
-        // P3 (membership unification): the leader/spokesman-gated ReachabilityAggregator
-        // pong ingest is removed with the aggregator. SWIM owns liveness; pongs no longer
-        // feed a reachability fold.
-        metricsCollector.setPeerObservationBuffer(peerObservationStore);
-        Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
-                                                                                            .filter(v -> v instanceof AetherValue.ClusterConfigValue)
-                                                                                            .map(v -> (AetherValue.ClusterConfigValue) v);
-        java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
-        var leaderAwareSnapshotSource = snapshotSource;
+        var clusterSyncOut = ClusterSyncAssembly.clusterSync(new ClusterSyncAssembly.ClusterSyncInputs(config,
+                                                                                                       kvStore,
+                                                                                                       clusterNode,
+                                                                                                       leaderTerm,
+                                                                                                       epochSources,
+                                                                                                       snapshotSource,
+                                                                                                       metricsCollectorRef,
+                                                                                                       invocationMetrics,
+                                                                                                       cdmReadyNodesRef,
+                                                                                                       cdmDrainingNodesRef,
+                                                                                                       periodicTasks::defer));
+        var metricsCollector = clusterSyncOut.metricsCollector();
+        var peerObservationStore = clusterSyncOut.peerObservationStore();
+        var isLeaderSupplier = clusterSyncOut.isLeaderSupplier();
+        var workerProjectionFreshRef = clusterSyncOut.workerProjectionFreshRef();
+        var nodeReportedStateHolder = clusterSyncOut.nodeReportedStateHolder();
+        var drainCommandRegistry = clusterSyncOut.drainCommandRegistry();
+        var pongSignalFan = clusterSyncOut.pongSignalFan();
+        var rabiaTermSupplier = clusterSyncOut.rabiaTermSupplier();
+        var leaderEpochSupplier = clusterSyncOut.leaderEpochSupplier();
+        var metricsScheduler = clusterSyncOut.metricsScheduler();
+        var currentGenerationEpochSupplier = clusterSyncOut.currentGenerationEpochSupplier();
+        var clusterConfigReader = clusterSyncOut.clusterConfigReader();
+        var clusterCommandApplier = clusterSyncOut.clusterCommandApplier();
+        var leaderAwareSnapshotSource = clusterSyncOut.leaderAwareSnapshotSource();
         var drain = DrainAssembly.drainInfrastructure(new DrainAssembly.InfrastructureInputs(config,
                                                                                              kvStore,
                                                                                              clusterNode,
@@ -3861,16 +3752,6 @@ public interface AetherNode extends ManageableNode {
                                       NodeReportedState target) {
         if (state == target) {
             matching.add(nodeId);
-        }
-    }
-
-    /// One LEADERSHIP-TENURE TICK: fired once per `pingInterval` (1s default), so the counter's value
-    /// is elapsed leadership time in ping intervals — never an event count. Deliberately unlogged
-    /// (1 Hz per leader forever, for a value readable on demand from `/api/cluster/generation`).
-    @Contract
-    private static void bumpGenerationIfLeader(BooleanSupplier isLeader, AtomicLong generationCounter) {
-        if (isLeader.getAsBoolean()) {
-            generationCounter.incrementAndGet();
         }
     }
 
