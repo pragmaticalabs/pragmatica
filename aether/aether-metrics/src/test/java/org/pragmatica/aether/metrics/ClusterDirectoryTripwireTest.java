@@ -15,6 +15,7 @@ import java.util.function.Function;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
+import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -43,17 +44,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// are meant to ride the existing `ClusterSync` ping and pong as one `ClusterDirectory` payload, and a plain member must install the
 /// leader's directory from a responder's pong (NT-O44).
 ///
-/// Today (enabled half): the leader's ping reaches only the recipients the node's ping-target predicate admits (cores and governors,
-/// `AetherNode`'s `setPingTargetEligibility`), so a plain member is sent nothing; a recipient that is not a core gets only the
-/// non-core ping; and neither `ClusterSyncPing` nor `ClusterSyncPong` has a directory slot.
+/// This class holds the part that lives in `aether-metrics`: ping dispatch is leader-only (`ClusterSyncState.handlePingTick`) and neither
+/// `ClusterSyncPing` nor `ClusterSyncPong` has a directory slot. The part that needs the node's assembly (a plain member is not a ping
+/// recipient, `AetherNode`'s `setPingTargetEligibility`) is `MemberPingRecipientTripwireTest` in `aether/node`.
 class ClusterDirectoryTripwireTest {
     private static final NodeId SELF = NodeId.nodeId("leader").unwrap();
     private static final NodeId CORE = NodeId.nodeId("core").unwrap();
-    private static final NodeId GOVERNOR = NodeId.nodeId("governor").unwrap();
-    private static final NodeId MEMBER = NodeId.nodeId("member").unwrap();
     private static final NodeId DRAINED = NodeId.nodeId("drained").unwrap();
 
-    private static ClusterSyncContext leaderContext(RecordingNetwork network) {
+    private record Harness(ClusterSyncContext context, Fsm<ClusterSyncState, ClusterFsmEvent> fsm) {}
+
+    private static Harness harness(RecordingNetwork network, boolean leader) {
         var ctxRef = new AtomicReference<ClusterSyncContext>();
         Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory = fsm -> {
             var ctx = new ClusterSyncContext(fsm,
@@ -66,7 +67,7 @@ class ClusterDirectoryTripwireTest {
                                              () -> Epoch.epoch(0L, 1L, 0L),
                                              PeerObservationStore.peerObservationStore(),
                                              PeriodicObservationConfig.defaultConfig(),
-                                             () -> true,
+                                             () -> leader,
                                              () -> Set.of(DRAINED));
 
             ctxRef.set(ctx);
@@ -74,32 +75,32 @@ class ClusterDirectoryTripwireTest {
             return ctx.dormant();
         };
 
-        Fsm.fsm("cluster-directory-tripwire", factory);
+        var fsm = Fsm.fsm("cluster-directory-tripwire", factory);
 
-        return ctxRef.get();
+        return new Harness(ctxRef.get(), fsm);
     }
 
     private static List<String> componentNames(Class<? extends Record> type) {
         return Arrays.stream(type.getRecordComponents()).map(RecordComponent::getName).toList();
     }
 
+    private static RecordingNetwork pingTick(boolean leader) {
+        var network = new RecordingNetwork(Set.of(CORE));
+        var harness = harness(network, leader);
+
+        harness.context().setTopology(List.of(SELF, CORE));
+        harness.context().setPingTargetEligibility(_ -> true);
+        harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
+        harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(0L, 1L, 0L)));
+        harness.fsm().dispatch(new ClusterFsmEvent.Shutdown());
+
+        return network;
+    }
+
     @Test
-    void leaderPing_isSentOnlyToCoresAndGovernors_andNeverToAPlainMember_today() {
-        var network = new RecordingNetwork(Set.of(CORE, GOVERNOR, MEMBER));
-        var ctx = leaderContext(network);
-
-        ctx.setPingTargetEligibility(peer -> peer.equals(CORE) || peer.equals(GOVERNOR));
-        ctx.setMetricsRecipient(CORE::equals);
-        ctx.broadcastPing(Epoch.epoch(0L, 1L, 0L), 1L);
-
-        assertThat(network.sent.keySet()).as("control: the leader does ping its recipients (the drain set rides the authority ping)").containsExactlyInAnyOrder(CORE, GOVERNOR);
-        assertThat(network.sent.get(CORE)).allSatisfy(ping -> assertThat(ping.drainNodes()).containsExactly(DRAINED));
-        assertThat(network.sent).as("TW-O17: a plain member is sent nothing, so there is no path for leader-authored content to a member").doesNotContainKey(MEMBER);
-        assertThat(network.sent.get(GOVERNOR)).as("a recipient that is not a core gets only the non-core ping: no readiness view, no dispatched set")
-                                              .allSatisfy(ping -> {
-                                                  assertThat(ping.readinessView()).isEmpty();
-                                                  assertThat(ping.dispatchedNodes()).isEmpty();
-                                              });
+    void pingDispatch_isLeaderOnly_today() {
+        assertThat(pingTick(true).sent.keySet()).as("control: the leader's ping tick pings its recipient").containsExactly(CORE);
+        assertThat(pingTick(false).sent).as("TW-O17: a non-leader's ping tick dispatches nothing, so leader-authored ping content has no path other than the leader's own dispatch").isEmpty();
     }
 
     @Test
