@@ -24,7 +24,7 @@ describe nothing**, and duration does not correlate with severity. Therefore:
 - Aether publishes **per-failure-mode recovery budgets** (e.g. self-drain ≤ 45 s, harness
   restart of the same five containers ≤ 60 s, owner failover catch-up ≤ 20 s bounded-wait) — asserted per scenario in the
   chaos suite, documented per scenario for operators.
-- Aether **does not ship an MTTR gauge** — on the dashboard, in the management API, anywhere.
+- Aether **does not ship an MTTR gauge** — in the management API, on the CLI, anywhere.
   An aggregate recovery metric is noise presented as signal (cf. #303's fabricated percentiles:
   same defect class). Budgets, event counts, and lag/gap trends are the honest surfaces.
 

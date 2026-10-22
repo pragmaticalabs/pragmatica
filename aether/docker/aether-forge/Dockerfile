@@ -1,10 +1,10 @@
 # Aether Forge Container Image
-# Cluster testing simulator with visual dashboard
+# Cluster testing simulator (load and chaos REST API)
 
 FROM eclipse-temurin:25-alpine
 
 LABEL org.opencontainers.image.title="Aether Forge"
-LABEL org.opencontainers.image.description="Aether cluster testing simulator with visual dashboard"
+LABEL org.opencontainers.image.description="Aether cluster testing simulator with load and chaos REST API"
 ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
@@ -28,12 +28,12 @@ ENV CLUSTER_SIZE="5"
 ENV LOAD_RATE="1000"
 ENV JAVA_OPTS="-Xmx1g -XX:+UseZGC"
 
-# Dashboard port
+# Forge API port
 EXPOSE 8888
 
 # Health check against Forge API. /api/forge/status is Forge's constant-time readiness route
-# (answers {"forge":true} once the HTTP server is up). Do NOT probe /api/metrics: Forge serves only
-# /api/metrics/history (and that one proxies to the cluster leader), so /api/metrics is a 404 (#960).
+# (answers {"forge":true} once the HTTP server is up). Do NOT probe /api/metrics: Forge does not serve
+# it, so it is a 404 (#960).
 # /health is registered in StatusRoutes but is shadowed -- ForgeRequestHandler sends only /api/* to the API handler.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:${FORGE_PORT}/api/forge/status || exit 1

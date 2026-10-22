@@ -133,12 +133,12 @@ downstream failures (one under-load reconciler bug has dragged multiple unrelate
 
 ## Project-specific invariants
 
-### 1. REST API → CLI → Docs → Dashboard quad
-Adding a Management API endpoint requires updating ALL four layers or the feature is incomplete:
+### 1. REST API → CLI → Docs triad
+Adding a Management API endpoint requires updating ALL three layers or the feature is incomplete:
 1. **REST routes** in `aether/node` (`*Routes.java` + `ManagementServer` wiring + `ManagementRoute` enum entry)
 2. **CLI command** in `aether/cli/AetherCli.java` (subcommand + registration)
 3. **Docs** in `aether/docs/reference/management-api.md` + `aether/docs/reference/cli.md`
-4. **Dashboard surface** — a panel/field per the #495 spec, or an explicit dormant-slot decision recorded on #494 (owner ruling 2026-07-20: dashboard is ontology-shaped and functionally complete; dormant dimensions show true degenerate values, never fabricated ones)
+The old dashboard is removed (owner rulings 2026-10-21, know commits 862059d1fa and ce446c0e0d), so the quad is this triad until the new, spec-first dashboard lands (not a 1.0 gate); until then the CLI and the Management API are the supported operator surfaces and an endpoint needs no dashboard surface or dormant-slot decision.
 
 ### 2. Feature Catalog + Changelog
 - [`aether/docs/reference/feature-catalog.md`](aether/docs/reference/feature-catalog.md) — Aether capability inventory with Complete/Partial/Planned status. Update when features are added, completed, or a gap is discovered.

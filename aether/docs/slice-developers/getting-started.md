@@ -968,7 +968,7 @@ The `instances = 3` comes from `src/main/resources/slices/MyFirstSlice.toml`.
 ./run-forge.sh
 ```
 
-This starts the Aether Forge development server. The dashboard is available at `http://localhost:8888`.
+This starts the Aether Forge development server. Its REST API is available at `http://localhost:8888`.
 
 If Forge is running with `repositories=["local"]`, it automatically picks up the slice.
 Your slice is now live and can be called through the Forge API.
@@ -1075,7 +1075,7 @@ Here's where to go next:
   resource provisioning and configuration
 - **[Slice Patterns](slice-patterns.md)** — advanced patterns for real-world slices
 - **[Testing Slices](testing-slices.md)** — unit testing, integration testing, mocking dependencies
-- **[Forge Guide](forge-guide.md)** — running Forge, dashboard, load testing
+- **[Forge Guide](forge-guide.md)** — running Forge, load testing
 - **[Troubleshooting](troubleshooting.md)** — common errors and their solutions
 - **Add more slices** — use `jbct add-slice Analytics` to scaffold a new slice into this project
 - **Add pub-sub events** — use `jbct add-event order-placed` to generate event annotations and config

@@ -1200,7 +1200,7 @@ Run each command in a separate terminal:
 
 ## aether-forge: Testing Simulator
 
-Standalone cluster simulator with visual dashboard for load and chaos testing.
+Standalone cluster simulator with a REST API for load and chaos testing.
 
 ### Usage
 
@@ -1212,7 +1212,7 @@ Standalone cluster simulator with visual dashboard for load and chaos testing.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FORGE_PORT` | Dashboard HTTP port | 8888 |
+| `FORGE_PORT` | Forge REST API port | 8888 |
 | `CLUSTER_SIZE` | Number of simulated nodes | 5 |
 | `LOAD_RATE` | Initial requests per second | 1000 |
 
@@ -1235,33 +1235,20 @@ FORGE_PORT=9999 ./script/aether-forge.sh
 FORGE_PORT=9999 CLUSTER_SIZE=10 LOAD_RATE=5000 ./script/aether-forge.sh
 ```
 
-### Dashboard
-
-After starting, open the dashboard in your browser:
-
-```
-http://localhost:8888
-```
-
-The dashboard provides:
-- Real-time cluster visualization
-- Load generation controls
-- Chaos injection (kill nodes, network partitions)
-- Metrics monitoring
-
 ### REST API
 
-Forge exposes a REST API for automation:
+Forge exposes a REST API on its port for load generation, chaos injection and status (there is no
+web UI; the dashboard was removed in 1.0.0-rc5):
 
 ```bash
 # Get cluster status
-curl http://localhost:8888/api/cluster
+curl http://localhost:8888/api/nodes/status
 
-# Get metrics
-curl http://localhost:8888/api/metrics
+# Get per-node metrics
+curl http://localhost:8888/api/nodes/metrics
 
 # Kill a node
-curl -X POST http://localhost:8888/api/chaos/kill-node/node-3
+curl -X POST http://localhost:8888/api/chaos/kill/node-3
 
 # Set load rate
 curl -X POST http://localhost:8888/api/load/rate/500
@@ -1953,7 +1940,7 @@ reserved for framework topics.
 Unlike streams, pub/sub is an in-process, declaration-driven delivery mechanism: there is **no
 `aether topic` CLI command group** and **no topic management HTTP route**. Operators inspect topic
 wiring (publishers, subscribers, and their resolved `namespace:topic:version` addresses) through the
-topology graph — `GET /api/v1/slices/topology` and the dashboard topology view — where pub→sub edges
+topology graph — `GET /api/v1/slices/topology` — where pub→sub edges
 are matched on the resolved canonical address.
 
 ---

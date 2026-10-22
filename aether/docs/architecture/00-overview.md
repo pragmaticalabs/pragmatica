@@ -16,7 +16,7 @@ Aether occupies the space between a monolith and microservices. You write code a
 graph TB
     subgraph External["External Access"]
         CLI["aether CLI<br/>37 commands"]
-        Agent["AI Agent / Dashboard"]
+        Agent["AI Agent"]
         Client["HTTP Clients"]
     end
 
@@ -110,7 +110,7 @@ Each node exposes three ports:
 | Port | Purpose | Protocol |
 |------|---------|----------|
 | `:8081` | Application HTTP | HTTP/1.1 - serves slice endpoints, forwards to remote nodes |
-| `:8080` | Management API | HTTP/1.1 - 30+ REST endpoints, WebSocket dashboard |
+| `:8080` | Management API | HTTP/1.1 - 30+ REST endpoints, WebSocket feeds |
 | `:8090` | Cluster | TCP (Netty) - consensus, gossip, DHT, invocation forwarding |
 
 ## Key Design Principles
@@ -184,7 +184,7 @@ See [05-worker-pools.md](05-worker-pools.md) for details.
 | [09-storage.md](09-storage.md) | DHT, artifact repository, consistent hashing, anti-entropy |
 | [10-security.md](10-security.md) | mTLS, gossip encryption, RBAC, API keys |
 | [11-slice-container.md](11-slice-container.md) | ClassLoader isolation, dependency materialization, lifecycle hooks |
-| [12-management.md](12-management.md) | CLI, Management API, Forge simulator, dashboard |
+| [12-management.md](12-management.md) | CLI, Management API, Forge simulator |
 | [13-cloud-integration.md](13-cloud-integration.md) | Cloud providers, SPI facets, NodeLifecycleManager, auto-heal |
 | [14-consistency-and-partitions.md](14-consistency-and-partitions.md) | Consistency & partition-behavior contract, per-tier dissolve, per-operation guarantees |
 | [15-resource-and-isolation-model.md](15-resource-and-isolation-model.md) | Single-JVM resource model, soft (in-JVM) vs hard (by-placement) isolation, operator decision rule |

@@ -411,7 +411,7 @@ print_success() {
     echo "Installed tools:"
     echo "  aether        - Cluster management CLI"
     echo "  aether-node   - Run a cluster node"
-    echo "  aether-forge  - Testing simulator with dashboard"
+    echo "  aether-forge  - Cluster simulator with load and chaos API"
     echo ""
 
     if [ "$PATH_CONFIGURED" = "0" ]; then

@@ -7,7 +7,7 @@ import java.util.List;
 
 import org.pragmatica.aether.api.AlertForwarder;
 import org.pragmatica.aether.api.AlertManager;
-import org.pragmatica.aether.api.DashboardMetricsPublisher;
+import org.pragmatica.aether.api.AlertThresholdEvaluator;
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.node.EntityCheckpointLagMetric;
@@ -115,21 +115,21 @@ class AlertingWiringLivenessTest {
                    + "without it the lag has no committed baseline");
     }
 
-    /// Pinned call site: `ManagementServer.onServerStarted` -> `metricsPublisher.start()`.
+    /// Pinned call site: `ManagementServer.onServerStarted` -> `thresholdEvaluator.start()`.
     ///
     /// Pre-existing and not introduced by the alerting fix, but the fix HANGS OFF IT: `start()` is
-    /// what schedules `publishMetrics`, which is the only production caller of `checkThreshold`.
+    /// what schedules `evaluateThresholds`, which is the only production caller of `checkThreshold`.
     /// Delete that one line and threshold evaluation silently stops for the whole cluster while every
     /// test stays green — and the change would look unrelated to whoever made it.
     @Test
-    void dashboardMetricsPublisherIsStartedByProductionCode() throws Exception {
+    void alertThresholdEvaluatorIsStartedByProductionCode() throws Exception {
         assertCorpusIsComplete();
 
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
 
-        assertTrue(reachability.isReachable(MethodRef.of(DashboardMetricsPublisher.class.getDeclaredMethod("start"))),
-                   "DashboardMetricsPublisher.start() must be called by production code "
-                   + "(ManagementServer.onServerStarted). It schedules publishMetrics, the only production "
+        assertTrue(reachability.isReachable(MethodRef.of(AlertThresholdEvaluator.class.getDeclaredMethod("start"))),
+                   "AlertThresholdEvaluator.start() must be called by production code "
+                   + "(ManagementServer.onServerStarted). It schedules evaluateThresholds, the only production "
                    + "caller of AlertManager.checkThreshold; unreachable here means no threshold is ever "
                    + "evaluated on any node");
     }

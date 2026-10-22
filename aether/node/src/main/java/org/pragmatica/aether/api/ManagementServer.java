@@ -47,7 +47,6 @@ import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
 import org.pragmatica.aether.api.routes.DeployRoutes;
 import org.pragmatica.aether.api.routes.DhtRoutes;
-import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
@@ -248,7 +247,7 @@ class ManagementServerImpl implements ManagementServer {
     private final ObservabilityConfigRegistry configRegistry;
     private final InvocationTraceStore traceStore;
     private final LogLevelRegistry logLevelRegistry;
-    private final DashboardMetricsPublisher metricsPublisher;
+    private final AlertThresholdEvaluator thresholdEvaluator;
     private final StatusWebSocketHandler statusWsHandler;
     private final StatusWebSocketPublisher statusWsPublisher;
     private final EventWebSocketHandler eventWsHandler;
@@ -298,7 +297,6 @@ class ManagementServerImpl implements ManagementServer {
     /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
     /// scheduler.
     private final AtomicReference<ApiKeyRoutes> apiKeyRoutesRef = new AtomicReference<>();
-    private final StaticFileHandler staticFileHandler;
     private final ManagementRouter router;
     private final StatusRoutes statusRoutes;
     private final JsonMapper probeJsonMapper;
@@ -354,7 +352,7 @@ class ManagementServerImpl implements ManagementServer {
                                      ? Set::of
                                      : pendingDrainsSupplier;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
-        this.metricsPublisher = DashboardMetricsPublisher.dashboardMetricsPublisher(nodeSupplier, alertManager);
+        this.thresholdEvaluator = AlertThresholdEvaluator.alertThresholdEvaluator(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(statusWsHandler,
                                                                                    () -> buildStatusJson(nodeSupplier));
@@ -363,7 +361,6 @@ class ManagementServerImpl implements ManagementServer {
                                                                                 () -> nodeSupplier.get()
                                                                                                   .eventAggregator(),
                                                                                 ManagementServerImpl::buildEventsJson);
-        this.staticFileHandler = StaticFileHandler.staticFileHandler();
         this.observability = ObservabilityRegistry.prometheus();
         this.requestObserver = HttpRequestObserver.httpRequestObserver(observability);
         this.tls = tls;
@@ -545,13 +542,10 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private HttpServerConfig buildServerConfig() {
-        var wsHandler = new DashboardWebSocketHandler(metricsPublisher, wsAuthenticator);
-        var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("management", port)
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
-                                     .withWebSocket(wsEndpoint)
                                      .withWebSocket(statusWsEndpoint)
                                      .withWebSocket(eventWsEndpoint);
         // #967: the node's cluster TlsConfig is Mutual, which makes every listener built from it
@@ -617,7 +611,7 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> stop() {
-        metricsPublisher.stop();
+        thresholdEvaluator.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
         Option.option(apiKeyRoutesRef.get()).onPresent(ApiKeyRoutes::stop);
@@ -682,13 +676,10 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> restartH1WithTls(Option<TlsConfig> newTls) {
-        var wsHandler = new DashboardWebSocketHandler(metricsPublisher, wsAuthenticator);
-        var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("management", port)
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
-                                     .withWebSocket(wsEndpoint)
                                      .withWebSocket(statusWsEndpoint)
                                      .withWebSocket(eventWsEndpoint);
         var serverConfig = newTls.map(config::withTls).or(config);
@@ -736,7 +727,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private void onServerStarted(HttpServer server) {
-        metricsPublisher.start();
+        thresholdEvaluator.start();
         statusWsPublisher.start();
         eventWsPublisher.start();
         observability.registerTransportMetrics(() -> nodeSupplier.get()
@@ -762,7 +753,7 @@ class ManagementServerImpl implements ManagementServer {
                         ? "HTTPS"
                         : "HTTP";
 
-        log.info("{} management server started on port {} (protocol: {}, dashboard at /)", transport, port, httpProtocol);
+        log.info("{} management server started on port {} (protocol: {})", transport, port, httpProtocol);
     }
 
     private void registerStreamMemoryMetrics() {
@@ -1014,7 +1005,7 @@ class ManagementServerImpl implements ManagementServer {
 
     @SuppressWarnings("JBCT-PAT-01")
     private static void appendEventJson(StringBuilder sb, ClusterEvent event) {
-        // Preserve the legacy `timestamp` JSON field name for dashboard / WS read-compat, but
+        // Preserve the legacy `timestamp` JSON field name for WS read-compat, but
         // source it from the HLC's physical-millis half (the sealed ClusterEvent carries `at()`,
         // an HlcTimestamp, instead of the old wall-clock Instant). `type` is the record variant
         // simple name (e.g. "NodeJoined") now that EventType is a sealed hierarchy, not an enum.
@@ -1053,13 +1044,6 @@ class ManagementServerImpl implements ManagementServer {
         var instrumented = InstrumentedResponseWriter.instrumentedResponseWriter(response);
 
         if (handleProbeRequest(path, instrumented)) {
-            recordRequestMetrics(methodName, path, instrumented, startTime);
-
-            return;
-        }
-
-        if (isDashboardPath(path)) {
-            staticFileHandler.handle(ctx, instrumented);
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
@@ -1134,8 +1118,17 @@ class ManagementServerImpl implements ManagementServer {
             }
         }
 
-        staticFileHandler.handle(ctx, instrumented);
+        writeNotFound(instrumented, path);
         recordRequestMetrics(methodName, path, instrumented, startTime);
+    }
+
+    /// The body shape (`File not found: <path>`, text/plain) is what the retired static-file fallback
+    /// answered for every unmatched path, and operator runbooks quote it; kept so a mistyped or
+    /// unversioned path reads the same as before.
+    private static void writeNotFound(ResponseWriter response, String path) {
+        response.write(HttpStatus.NOT_FOUND,
+                       ("File not found: " + path).getBytes(StandardCharsets.UTF_8),
+                       CommonContentType.TEXT_PLAIN);
     }
 
     private boolean tryForwardToRouteOwner(HttpRequest ctx,
@@ -1901,10 +1894,6 @@ class ManagementServerImpl implements ManagementServer {
                                                       Pipeline.MANAGEMENT);
 
         network.send(request.sender(), forwardResponse);
-    }
-
-    private static boolean isDashboardPath(String path) {
-        return "/".equals(path) || "/index.html".equals(path) || path.startsWith("/css/") || path.startsWith("/js/") || path.startsWith("/vendor/") || path.endsWith(".ico");
     }
 
     @SuppressWarnings("JBCT-PAT-01")

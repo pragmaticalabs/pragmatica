@@ -259,7 +259,7 @@ Automatically collected:
 - Error rate
 - Active requests
 
-Access via Forge dashboard or metrics endpoint:
+Access via the metrics endpoint:
 ```bash
 curl http://localhost:8080/metrics
 ```

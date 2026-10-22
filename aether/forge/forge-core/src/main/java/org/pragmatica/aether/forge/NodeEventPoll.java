@@ -17,9 +17,9 @@ import org.pragmatica.lang.io.TimeSpan;
 
 /// Forge's own poll of the cluster event timeline (`ForgeServer.pollNodeEvents`, every 2 s).
 ///
-/// #1105 follow-up (v1533 F1): the poll carries the operator key like every proxied call ([NodeHttp]).
-/// `/api/v1/events` has no auth exemption, so under `API_KEY` a keyless poll was refused on every tick and the
-/// dashboard's event timeline stayed silently empty.
+/// #1105 follow-up (v1533 F1): the poll carries the operator key like every Forge call to a node ([NodeHttp]).
+/// `/api/v1/events` has no auth exemption, so under `API_KEY` a keyless poll was refused on every tick and
+/// Forge's event timeline stayed silently empty.
 ///
 /// v1533 C1: the [NodeHttp], and with it one `HttpClient`, is built ONCE per poll instance, not per fetch. A client
 /// per fetch left a live selector thread per 2 s tick until a GC reclaimed it (140 after 150 polls).

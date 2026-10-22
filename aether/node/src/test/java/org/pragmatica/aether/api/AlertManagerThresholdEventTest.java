@@ -326,7 +326,7 @@ class AlertManagerThresholdEventTest {
             assertThat(history.getFirst().status()).isEqualTo("TRIGGERED");
         }
 
-        /// The dashboard polls this every 2 seconds, so an unbounded projection would scan the full
+        /// Clients poll this (the removed dashboard did, every 2 seconds), so an unbounded projection would scan the full
         /// retained window on every poll. Keeps the NEWEST entries.
         @Test
         void history_isBoundedAndKeepsTheNewest() {

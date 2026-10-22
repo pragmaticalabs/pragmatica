@@ -33,13 +33,9 @@ public final class ForgeRouter {
                                             Consumer<EventLogEntry> eventLogger,
                                             OperatorKey operatorKey) {
         return RequestRouter.with(StatusRoutes.statusRoutes(cluster, metrics, events, startTime, loadRunner),
-                                  TopologyRoutes.topologyRoutes(cluster),
                                   ChaosRoutes.chaosRoutes(cluster, chaosController, events, inventoryState, eventLogger),
                                   LoadRoutes.loadRoutes(loadRunner),
                                   SimulatorRoutes.simulatorRoutes(configSupplier, inventoryState, eventLogger),
-                                  DeploymentRoutes.deploymentRoutes(cluster, eventLogger, operatorKey),
-                                  AlertProxyRoutes.alertProxyRoutes(cluster, operatorKey),
-                                  ObservabilityProxyRoutes.observabilityProxyRoutes(cluster, operatorKey),
-                                  MetricsProxyRoutes.metricsProxyRoutes(cluster, operatorKey));
+                                  DeploymentRoutes.deploymentRoutes(cluster, eventLogger, operatorKey));
     }
 }

@@ -167,6 +167,24 @@ class ManagementServerSecurityCouplingTest {
         assertThat(writer.status()).isEqualTo(401);
     }
 
+    /// The management port serves no static assets any more (the dashboard was removed): `/`, `/index.html` and the
+    /// old asset directories fall through to the same unmatched-path answer as any unknown route, `404` with the body
+    /// `File not found: <path>` that operator runbooks quote. Mutation: answering 200, or a different body, turns
+    /// every iteration red.
+    @Test
+    void unmatchedPath_isAnswered404FileNotFound_andFormerDashboardPathsServeNoAsset() {
+        var server = server(validatorReturning(SecurityError.NO_VALIDATOR_CONFIGURED.result()), false);
+
+        for (var path : List.of("/api/v1/no-such-route", "/", "/index.html", "/js/app.js", "/css/tokens.css", "/dashboard")) {
+            var writer = new RecordingResponseWriter();
+
+            server.handleRequest(new StubHttpRequest(path), writer);
+
+            assertThat(writer.status()).as("status for %s", path).isEqualTo(404);
+            assertThat(writer.bodyText()).as("body for %s", path).isEqualTo("File not found: " + path);
+        }
+    }
+
     private record StubHttpRequest(String path) implements HttpRequest {
         @Override public String requestId() {return "req-962-local";}
         @Override public HttpMethod method() {return HttpMethod.GET;}
@@ -177,6 +195,11 @@ class ManagementServerSecurityCouplingTest {
 
     private static final class RecordingResponseWriter implements ResponseWriter {
         private volatile HttpStatus status;
+        private volatile String body = "";
+
+        String bodyText() {
+            return body;
+        }
 
         int status() {
             assertThat(status).as("the server answered").isNotNull();
@@ -184,7 +207,10 @@ class ManagementServerSecurityCouplingTest {
             return status.code();
         }
 
-        @Override public void write(HttpStatus status, byte[] body, ContentType contentType) {this.status = status;}
+        @Override public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            this.status = status;
+            this.body = new String(body, java.nio.charset.StandardCharsets.UTF_8);
+        }
 
         @Override public ResponseWriter header(String name, String value) {return this;}
     }

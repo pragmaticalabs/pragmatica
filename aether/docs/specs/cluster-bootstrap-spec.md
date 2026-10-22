@@ -403,7 +403,7 @@ runtime = "ember"
 
 #### 5.1.5 Forge Source (`type = "forge"`)
 
-Forge runs all nodes in a single JVM via Ember — a lightweight in-process cluster simulator with built-in dashboard, chaos testing, and load generation. No container provisioning occurs. No `zone` field (local machine). The default load balancer mode is `"elected"` backed by a NOOP floating-IP provider (localhost is always attached).
+Forge runs all nodes in a single JVM via Ember — a lightweight in-process cluster simulator with built-in chaos testing and load generation. No container provisioning occurs. No `zone` field (local machine). The default load balancer mode is `"elected"` backed by a NOOP floating-IP provider (localhost is always attached).
 
 | Field            | Type | Required | Default      | Description                    |
 |------------------|------|----------|--------------|--------------------------------|

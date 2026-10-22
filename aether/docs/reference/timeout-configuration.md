@@ -124,7 +124,6 @@ cluster TOML under `[rollback] cooldown` (see the deploy guide).
 
 | TOML Key | Default | Description |
 |----------|---------|-------------|
-| `dashboard_broadcast` | `1s` | Interval for broadcasting dashboard metrics via WebSocket |
 | `metrics_sliding_window` | `2h` | Retention window for metrics history |
 | `event_loop_probe` | `100ms` | Interval for event loop lag probing |
 | `sampler_recalculation` | `5s` | Interval for recalculating adaptive sampling rates |
@@ -335,7 +334,6 @@ Anti-entropy runs periodically: each node compares partition digests with its re
 
 | Timeout | Purpose |
 |---------|---------|
-| `dashboard_broadcast` (1s) | WebSocket push frequency for dashboard metrics |
 | `metrics_sliding_window` (2h) | How long historical metrics are retained |
 | `event_loop_probe` (100ms) | Frequency of event loop lag measurement |
 | `sampler_recalculation` (5s) | How often adaptive sampling rates are adjusted |
@@ -392,7 +390,6 @@ warmup_period = "15s"
 slice_cooldown = "5s"
 
 [timeouts.observability]
-dashboard_broadcast = "500ms"
 event_loop_probe = "50ms"
 
 [timeouts.forwarding]

@@ -10,7 +10,7 @@ services:
       dockerfile: Dockerfile
     container_name: aether-forge
     ports:
-      - "8888:8888"      # Dashboard
+      - "8888:8888"      # Forge API
       - "5050-5054:5050-5054"  # Cluster nodes (for monitoring)
     environment:
       - FORGE_PORT=8888
@@ -95,21 +95,6 @@ services:
 #       - "8085:8080"
 #     networks:
 #       - aether-net
-#
-#   dashboard:
-#     image: aether-forge-dashboard
-#     ports:
-#       - "8888:8888"
-#     environment:
-#       NODES: node-1:8080,node-2:8080,node-3:8080,node-4:8080,node-5:8080
-#     networks:
-#       - aether-net
-#     depends_on:
-#       - node-1
-#       - node-2
-#       - node-3
-#       - node-4
-#       - node-5
 #
 # networks:
 #   aether-net:
