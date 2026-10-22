@@ -56,7 +56,7 @@ public class AlertThresholdEvaluator {
         }
 
         scheduledTask.set(some(SharedScheduler.scheduleAtFixedRate(this::evaluateThresholds,
-                                                                          TimeSpan.timeSpan(EVALUATION_INTERVAL_MS).millis())));
+                                                                   TimeSpan.timeSpan(EVALUATION_INTERVAL_MS).millis())));
         log.info("Alert threshold evaluator started");
     }
 
