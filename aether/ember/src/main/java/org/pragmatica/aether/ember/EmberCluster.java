@@ -187,7 +187,7 @@ public final class EmberCluster {
 
     /// Cluster-level app-HTTP security applied to every node's [AppHttpConfig]. Defaults to
     /// [SecurityMode#NONE] with no keys, which is what an in-JVM harness wants: `securityEnabled()` is
-    /// false, so the node installs `denyUnlessPublicValidator` and only Public routes answer.
+    /// false, so the app-HTTP plane installs `denyUnlessPublicValidator` and only Public routes answer there; the management plane is fully open (#1121).
     ///
     /// This is the harness's EXPLICIT opt-out (#665): the bare `AppHttpConfig` builders default to
     /// `API_KEY`, so an Ember node that should answer unauthenticated must say NONE here, and the mode
@@ -200,6 +200,8 @@ public final class EmberCluster {
     /// could reach the node. That made Aether's own local simulator unable to demonstrate the
     /// access-control model applications are expected to declare.
     private final AtomicReference<SecurityMode> appHttpSecurityMode = new AtomicReference<>(SecurityMode.NONE);
+
+    private final AtomicReference<Option<SecurityMode>> managementSecurityMode = new AtomicReference<>(Option.empty());
 
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());
 
@@ -237,6 +239,10 @@ public final class EmberCluster {
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
     private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
+
+    /// The `communityAbsence` window every node created FROM NOW ON is configured with, in place of the default (#1840).
+    /// [Option#none] keeps the default. Nodes already started keep theirs.
+    private final AtomicReference<Option<TimeSpan>> communityAbsence = new AtomicReference<>(Option.none());
 
     /// The `[streaming]` section every node is created with. Defaults to [StreamingConfig#streamingConfig()];
     /// [#withStreamingConfig] overrides it (e.g. `reshuffle_concurrency = 1` to make a partition's
@@ -431,6 +437,29 @@ public final class EmberCluster {
         appHttpApiKeys.set(Map.copyOf(apiKeys));
     }
 
+    /// Give the Management API of EVERY node in this cluster its own security mode (#962), as `[management]
+    /// security_mode` does on a production node. `Option.empty()` (the default) inherits the app-HTTP mode. MUST be
+    /// called before [#start]. Forge feeds it from the sibling `aether.toml`.
+    @Contract
+    public void withManagementSecurityMode(Option<SecurityMode> mode) {
+        managementSecurityMode.set(mode);
+    }
+
+    /// The `[app-http]` section every node of this cluster gets, with the management plane's own mode (#962).
+    public AppHttpConfig appHttpConfigFor(int appHttpPort) {
+        return AppHttpConfig.appHttpConfig(true,
+                                           appHttpPort,
+                                           appHttpApiKeys.get(),
+                                           AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                           appHttpSecurityMode.get(),
+                                           Option.empty(),
+                                           HttpProtocol.H1,
+                                           apiVersioningDetection.get(),
+                                           apiVersionHeaderName.get())
+                            .unwrap()
+                            .withManagementSecurityMode(managementSecurityMode.get());
+    }
+
     /// TEST SEAM (streaming A-WAL) — set the writable, restart-stable base data dir for EVERY node in
     /// this cluster (opt-in). MUST be called before [#start]. Each node then gets a `storageConfig`
     /// `artifacts` [StorageConfig] keyed by its STABLE node id, so a `stop()`→`start()` restart reuses
@@ -479,6 +508,14 @@ public final class EmberCluster {
     @Contract
     public void withRaisedSwimTimeouts() {
         raisedSwimTimeouts.set(true);
+    }
+
+    /// TEST SEAM (#1840) — the `communityAbsence` window of every node created after this call, so a test can make a
+    /// worker's held-announce overdue bound shorter than its normal assignment time. Nodes already started keep
+    /// their window. Harness-scoped; production paths never call this.
+    @Contract
+    public void withCommunityAbsenceForNewNodes(TimeSpan window) {
+        communityAbsence.set(Option.some(window));
     }
 
     /// TEST SEAM (#1777) — the DHT replication EVERY node is created with, in place of FULL. MUST be called before
@@ -1485,6 +1522,32 @@ public final class EmberCluster {
                                   defaults.storageMaintenance());
     }
 
+    private static TimeoutsConfig withCommunityAbsence(TimeoutsConfig base, TimeSpan window) {
+        var cluster = base.cluster();
+
+        return new TimeoutsConfig(base.invocation(),
+                                  base.forwarding(),
+                                  base.deployment(),
+                                  base.rollingUpdate(),
+                                  new TimeoutsConfig.ClusterTimeouts(cluster.hello(),
+                                                                     cluster.reconciliationInterval(),
+                                                                     cluster.pingInterval(),
+                                                                     cluster.channelProtection(),
+                                                                     cluster.coreAbsence(),
+                                                                     window,
+                                                                     cluster.offlineBufferCap()),
+                                  base.consensus(),
+                                  base.election(),
+                                  base.swim(),
+                                  base.observability(),
+                                  base.dht(),
+                                  base.worker(),
+                                  base.security(),
+                                  base.repository(),
+                                  base.scaling(),
+                                  base.storageMaintenance());
+    }
+
     private AetherNode createNode(NodeId nodeId,
                                   int port,
                                   int mgmtPort,
@@ -1495,9 +1558,14 @@ public final class EmberCluster {
         var helloTimeout = raised
                            ? RAISED_HELLO_TIMEOUT
                            : TopologyConfig.DEFAULT_HELLO_TIMEOUT;
-        var nodeTimeouts = raised
-                           ? RAISED_TIMEOUTS
-                           : TimeoutsConfig.timeoutsConfig();
+        var nodeTimeouts = communityAbsence.get()
+                                           .map(window -> withCommunityAbsence(raised
+                                                                               ? RAISED_TIMEOUTS
+                                                                               : TimeoutsConfig.timeoutsConfig(),
+                                                                               window))
+                                           .or(raised
+                                               ? RAISED_TIMEOUTS
+                                               : TimeoutsConfig.timeoutsConfig());
         Option<MembershipConfig> membership = raised
                                               ? RAISED_MEMBERSHIP
                                               : Option.empty();
@@ -1523,16 +1591,7 @@ public final class EmberCluster {
                                           Option.empty(),
                                           quicTls,
                                           TtmConfig.ttmConfig(),
-                                          AppHttpConfig.appHttpConfig(true,
-                                                                      appHttpPort,
-                                                                      appHttpApiKeys.get(),
-                                                                      AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
-                                                                      appHttpSecurityMode.get(),
-                                                                      Option.empty(),
-                                                                      HttpProtocol.H1,
-                                                                      apiVersioningDetection.get(),
-                                                                      apiVersionHeaderName.get())
-                                                       .unwrap(),
+                                          appHttpConfigFor(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           Option.some(nodeConfiguration(nodeId)),
                                           Option.some(emberEnvironment()),

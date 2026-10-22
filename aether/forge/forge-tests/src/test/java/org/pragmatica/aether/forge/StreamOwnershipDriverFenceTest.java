@@ -285,7 +285,7 @@ class StreamOwnershipDriverFenceTest {
 
     /// Fire the writer for one `(stream, partition)` and apply the emitted command through REAL consensus
     /// on the leader. The writer itself mints the ownership value (epoch + ownershipTerm) — the test only
-    /// forwards the command it produces, exactly as `AetherNode.driveStreamOwnership` does in production.
+    /// forwards the command it produces, exactly as `StreamAssembly.driveStreamOwnership` does in production.
     @TerminalOperation
     private void commitOwnershipVia(StreamPartitionOwnershipWriter writer, String stream, int partition) {
         writer.writeOwnershipChange(stream, partition)

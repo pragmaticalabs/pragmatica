@@ -9,12 +9,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +16,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,28 +28,16 @@ class NodeStopSequenceTest {
     private static final Cause STOP_TIMED_OUT = Causes.cause("listener termination timed out");
 
     private final List<String> ran = new CopyOnWriteArrayList<>();
-    private final List<LogEvent> logged = new CopyOnWriteArrayList<>();
-    private LoggerContext context;
-    private CapturingAppender appender;
+    private LogCapture capture;
 
     @BeforeEach
     void captureLog() {
-        context = (LoggerContext) LogManager.getContext(false);
-        appender = new CapturingAppender(logged);
-        appender.start();
-
-        var loggerConfig = new LoggerConfig(LOGGER_NAME, Level.TRACE, false);
-
-        loggerConfig.addAppender(appender, Level.TRACE, null);
-        context.getConfiguration().addLogger(LOGGER_NAME, loggerConfig);
-        context.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.TRACE, false);
     }
 
     @AfterEach
     void releaseLog() {
-        context.getConfiguration().removeLogger(LOGGER_NAME);
-        context.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     @Test
@@ -64,11 +47,10 @@ class NodeStopSequenceTest {
 
         assertThat(outcome.isSuccess()).as("the node stop completes").isTrue();
         assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "sharedResources", "storage", "clusterNode");
-        assertThat(logged).anyMatch(event -> event.getLevel() == Level.WARN
-                                             && event.getMessage()
-                                                     .getFormattedMessage()
-                                                     .equals("Management server did not stop cleanly; continuing node shutdown: "
-                                                             + STOP_TIMED_OUT.message()));
+        assertThat(capture.entries()).anyMatch(entry -> entry.level() == Level.WARN
+                                                       && entry.message()
+                                                               .equals("Management server did not stop cleanly; continuing node shutdown: "
+                                                                       + STOP_TIMED_OUT.message()));
     }
 
     @Test
@@ -78,9 +60,7 @@ class NodeStopSequenceTest {
 
         assertThat(outcome.isSuccess()).isTrue();
         assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "sharedResources", "storage", "clusterNode");
-        assertThat(logged).anyMatch(event -> event.getMessage()
-                                                  .getFormattedMessage()
-                                                  .startsWith("App HTTP server did not stop cleanly"));
+        assertThat(capture.messages()).anyMatch(message -> message.startsWith("App HTTP server did not stop cleanly"));
     }
 
     /// A failure after the listeners (here the cluster node) is still the node stop's outcome: only listener
@@ -112,9 +92,7 @@ class NodeStopSequenceTest {
 
         assertThat(NodeStopSequence.run(steps).await().isSuccess()).isTrue();
         assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "sharedResources", "storage", "clusterNode");
-        assertThat(logged).anyMatch(event -> event.getMessage()
-                                                  .getFormattedMessage()
-                                                  .startsWith("Shared resource scope did not stop cleanly"));
+        assertThat(capture.messages()).anyMatch(message -> message.startsWith("Shared resource scope did not stop cleanly"));
     }
 
     private NodeStopSequence.Steps steps(Promise<Unit> managementStop, Promise<Unit> appHttpStop) {
@@ -139,19 +117,5 @@ class NodeStopSequenceTest {
             ran.add("storage");
             return Unit.unit();
         };
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<LogEvent> events;
-
-        private CapturingAppender(List<LogEvent> events) {
-            super("NodeStopSequenceCapture", null, null, true, Property.EMPTY_ARRAY);
-            this.events = events;
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(event.toImmutable());
-        }
     }
 }

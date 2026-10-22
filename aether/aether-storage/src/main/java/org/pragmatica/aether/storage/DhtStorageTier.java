@@ -29,26 +29,46 @@ public final class DhtStorageTier implements StorageTier {
     /// bound, never admitted.
     private static final TimeSpan DEFAULT_ADMISSION_TIMEOUT = timeSpan(30).seconds();
 
+    /// How the values this tier stores relate to their keys (A6), which decides how a read reaches the DHT.
+    public enum Addressing {
+        /// The stored value IS the block's content, so its SHA-256 is the [BlockId]: a read takes the verified
+        /// single-replica path ([DHTClient#getContentAddressed]) — one replica, hash-checked, the next on a miss or
+        /// a mismatch.
+        CONTENT,
+        /// The stored value is not the content — ciphertext under an `EncryptingStorageTier`, whose authentication is
+        /// checked above this tier — so its hash proves nothing here: a read takes the quorum [DHTClient#get].
+        OPAQUE
+    }
+
     private final DHTClient dhtClient;
     private final byte[] keyPrefixBytes;
     private final String instanceName;
     private final Promise<Unit> readGate;
     private final TimeSpan admissionTimeout;
+    private final Addressing addressing;
 
     private DhtStorageTier(DHTClient dhtClient,
                            String keyPrefix,
                            String instanceName,
                            Promise<Unit> readGate,
-                           TimeSpan admissionTimeout) {
+                           TimeSpan admissionTimeout,
+                           Addressing addressing) {
         this.dhtClient = dhtClient;
         this.keyPrefixBytes = (keyPrefix + "/").getBytes(StandardCharsets.UTF_8);
         this.instanceName = instanceName;
         this.readGate = readGate;
         this.admissionTimeout = admissionTimeout;
+        this.addressing = addressing;
     }
 
+    /// An ungated tier whose reads take the quorum ([Addressing#OPAQUE]).
     public static DhtStorageTier dhtStorageTier(DHTClient dhtClient, String keyPrefix) {
-        return new DhtStorageTier(dhtClient, keyPrefix, keyPrefix, Promise.UNIT, DEFAULT_ADMISSION_TIMEOUT);
+        return new DhtStorageTier(dhtClient,
+                                  keyPrefix,
+                                  keyPrefix,
+                                  Promise.UNIT,
+                                  DEFAULT_ADMISSION_TIMEOUT,
+                                  Addressing.OPAQUE);
     }
 
     /// #858: the post-formation DHT-marker check (`StorageFactory.verifyDhtMarker`) resolves
@@ -68,11 +88,24 @@ public final class DhtStorageTier implements StorageTier {
     /// `buildKey(id)`, never a local, gate-free check. `instanceName` is the operator-facing identity
     /// used in [StorageError.TierNotAdmitted]'s cause text -- distinct from `keyPrefix`, which is the
     /// DHT key namespace.
+    ///
+    /// Reads take the quorum ([Addressing#OPAQUE]); [#dhtStorageTier(DHTClient, String, String, Promise, Addressing)]
+    /// chooses.
     public static DhtStorageTier dhtStorageTier(DHTClient dhtClient,
                                                 String keyPrefix,
                                                 String instanceName,
                                                 Promise<Unit> readGate) {
-        return new DhtStorageTier(dhtClient, keyPrefix, instanceName, readGate, DEFAULT_ADMISSION_TIMEOUT);
+        return dhtStorageTier(dhtClient, keyPrefix, instanceName, readGate, Addressing.OPAQUE);
+    }
+
+    /// The gated tier of [#dhtStorageTier(DHTClient, String, String, Promise)], with its reads chosen by
+    /// `addressing` (A6): [Addressing#CONTENT] only when the value stored is the block's content.
+    public static DhtStorageTier dhtStorageTier(DHTClient dhtClient,
+                                                String keyPrefix,
+                                                String instanceName,
+                                                Promise<Unit> readGate,
+                                                Addressing addressing) {
+        return new DhtStorageTier(dhtClient, keyPrefix, instanceName, readGate, DEFAULT_ADMISSION_TIMEOUT, addressing);
     }
 
     /// #858 C1 test seam: lets tests bound the admission wait far below the 30s production default so
@@ -83,12 +116,20 @@ public final class DhtStorageTier implements StorageTier {
                                          String instanceName,
                                          Promise<Unit> readGate,
                                          TimeSpan admissionTimeout) {
-        return new DhtStorageTier(dhtClient, keyPrefix, instanceName, readGate, admissionTimeout);
+        return new DhtStorageTier(dhtClient, keyPrefix, instanceName, readGate, admissionTimeout, Addressing.OPAQUE);
     }
 
     @Override
     public Promise<Option<byte[]>> get(BlockId id) {
-        return admission().flatMap(_ -> dhtClient.get(buildKey(id)));
+        return admission().flatMap(_ -> read(id));
+    }
+
+    /// A content-addressed value is read from one replica and hash-checked against the id; any other value takes
+    /// the quorum (A6).
+    private Promise<Option<byte[]>> read(BlockId id) {
+        return addressing == Addressing.CONTENT
+               ? dhtClient.getContentAddressed(buildKey(id), id.hash())
+               : dhtClient.get(buildKey(id));
     }
 
     /// #858 C1/#874: an operation (`get`/`put`/`delete`/`exists`) arriving while `readGate` is still
@@ -134,7 +175,15 @@ public final class DhtStorageTier implements StorageTier {
 
     @Override
     public Promise<Boolean> exists(BlockId id) {
-        return admission().flatMap(_ -> dhtClient.exists(buildKey(id)));
+        return admission().flatMap(_ -> probe(id));
+    }
+
+    /// The exists of a content-addressed value takes the same verified path as its get, so the two agree (A6, D5): it is
+    /// positive exactly when a read would return the block. Any other value takes the quorum exists.
+    private Promise<Boolean> probe(BlockId id) {
+        return addressing == Addressing.CONTENT
+               ? dhtClient.existsContentAddressed(buildKey(id), id.hash())
+               : dhtClient.exists(buildKey(id));
     }
 
     @Override

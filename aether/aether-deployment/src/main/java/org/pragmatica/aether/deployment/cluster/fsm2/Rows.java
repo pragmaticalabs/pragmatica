@@ -234,9 +234,9 @@ public sealed interface Rows {
         return m.directives.get(node)
                            .flatMap(directive -> m.communities.get(directive.communityId()))
                            .map(community -> switch (community.state()) {
-            case DISSOLVING, DISSOLVED -> false;
-            default -> true;
-        })
+                                    case DISSOLVING, DISSOLVED -> false;
+                                    default -> true;
+                                })
                            .or(true);
     }
 

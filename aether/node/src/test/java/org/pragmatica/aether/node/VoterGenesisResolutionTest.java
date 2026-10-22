@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.ClusterConfig;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -42,8 +43,8 @@ class VoterGenesisResolutionTest {
 
     /// A configured core outside a fresh genesis roster keeps core admission intent, so it can be voted in.
     @Test void bootstrapIdentities_includeConfiguredCoresOutsideTheVoterHistory() {
-        assertThat(AetherNode.bootstrapIdentities(Set.of(A, B, C), Set.of(A, B))).containsExactlyInAnyOrder(A, B, C);
-        assertThat(AetherNode.bootstrapIdentities(Set.of(A), Set.of(A, B))).containsExactlyInAnyOrder(A, B);
+        assertThat(TopologyAssembly.bootstrapIdentities(Set.of(A, B, C), Set.of(A, B))).containsExactlyInAnyOrder(A, B, C);
+        assertThat(TopologyAssembly.bootstrapIdentities(Set.of(A), Set.of(A, B))).containsExactlyInAnyOrder(A, B);
     }
 
     @Test void retryGenesis_workerWithALateCore_completesOnceItIsDiscovered() {
@@ -56,12 +57,12 @@ class VoterGenesisResolutionTest {
             return Result.success(Unit.unit());
         };
 
-        AetherNode.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
+        TopologyAssembly.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
         assertThat(installed).as("two of three cores discovered: keep waiting").isEmpty();
 
         discovered.add(C);
-        AetherNode.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
-        AetherNode.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
+        TopologyAssembly.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
+        TopologyAssembly.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
 
         assertThat(installed).containsExactly(GENESIS);
         assertThat(pending.get()).isFalse();

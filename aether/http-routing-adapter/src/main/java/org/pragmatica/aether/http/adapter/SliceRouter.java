@@ -6,6 +6,7 @@ package org.pragmatica.aether.http.adapter;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -18,6 +19,7 @@ import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
+import org.pragmatica.http.ProblemDetailJson;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.ResponseSerializer;
 import org.pragmatica.http.routing.JsonCodecAdapter;
@@ -80,6 +82,17 @@ public interface SliceRouter {
                                    ErrorMapper errorMapper,
                                    JsonMapper jsonMapper,
                                    RouteMountMode mountMode) {
+        return sliceRouter(routes, errorMapper, jsonMapper, mountMode, JsonCodecAdapter.forMapper(jsonMapper));
+    }
+
+    /// As [#sliceRouter(RouteSource, ErrorMapper, JsonMapper, RouteMountMode)], with the JSON codec request
+    /// bodies and responses go through: a slice's generated routes pass [GeneratedJsonCodec] here, with
+    /// `jsonMapper` as its fallback.
+    static SliceRouter sliceRouter(RouteSource routes,
+                                   ErrorMapper errorMapper,
+                                   JsonMapper jsonMapper,
+                                   RouteMountMode mountMode,
+                                   JsonCodec jsonCodec) {
         var composed = RouteMounting.compose(routes, mountMode);
 
         record sliceRouter(RequestRouter requestRouter,
@@ -217,9 +230,8 @@ public interface SliceRouter {
             }
 
             private Option<String> headerValue(HttpRequestContext request) {
-                return Option.option(request.headers().get(mountMode.headerName().toLowerCase()))
-                             .filter(values -> !values.isEmpty())
-                             .map(List::getFirst);
+                return Option.option(request.headers().get(mountMode.headerName().toLowerCase(Locale.ROOT))).flatMap(values -> Option.from(values.stream()
+                                                                                                                                                 .findFirst()));
             }
 
             private HttpResponseData versionError(Cause cause, HttpRequestContext request) {
@@ -282,7 +294,7 @@ public interface SliceRouter {
             }
 
             private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
-                var context = SliceRequestContext.sliceRequestContext(request, route, jsonMapper);
+                var context = SliceRequestContext.sliceRequestContext(request, route, jsonCodec);
 
                 return invokeHandler(route, context).map(result -> resultToResponse(result,
                                                                                     route.contentType(),
@@ -333,12 +345,9 @@ public interface SliceRouter {
                          HttpError.causeChain(cause));
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
 
-                return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(httpError.status(),
-                                                               httpError.status().message()),
-                                       body -> HttpResponseData.httpResponseData(httpError.status().code(),
-                                                                                 JSON_HEADERS,
-                                                                                 body));
+                return HttpResponseData.httpResponseData(httpError.status().code(),
+                                                         JSON_HEADERS,
+                                                         encodeProblem(problemDetail));
             }
 
             /// Resolve the HTTP error for a failure. A boundary parse failure — e.g. a value-object
@@ -400,12 +409,13 @@ public interface SliceRouter {
             private HttpResponseData problemResponse(HttpStatus status, String detail, HttpRequestContext request) {
                 var problemDetail = ProblemDetail.problemDetail(status, detail, request.path(), request.requestId());
 
-                return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(status,
-                                                               status.reasonPhrase()),
-                                       body -> HttpResponseData.httpResponseData(status.code(),
-                                                                                 JSON_HEADERS,
-                                                                                 body));
+                return HttpResponseData.httpResponseData(status.code(), JSON_HEADERS, encodeProblem(problemDetail));
+            }
+
+            // Generated, reflection-free; byte-identical to what Jackson wrote here before (pinned by
+            // SliceRouterGeneratedCodecTest). Generated encoding cannot fail, so no plain-text fallback.
+            private static byte[] encodeProblem(ProblemDetail problemDetail) {
+                return ProblemDetailJson.CODEC.encode(problemDetail);
             }
 
             private HttpResponseData plainErrorResponse(HttpStatus status, String message) {
@@ -434,7 +444,7 @@ public interface SliceRouter {
                                mountMode,
                                errorMapper,
                                jsonMapper,
-                               JsonCodecAdapter.forMapper(jsonMapper),
+                               jsonCodec,
                                "",
                                VersioningMetricsSink.noop(),
                                composedRoutes);

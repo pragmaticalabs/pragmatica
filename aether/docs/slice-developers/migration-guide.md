@@ -817,7 +817,7 @@ Start Forge for local testing with simulated cluster conditions. Forge requires 
 ./script/aether-forge.sh
 
 # Generate load, kill nodes, watch recovery, verify no data loss
-# Forge dashboard is available at http://localhost:8888
+# Forge REST API is available at http://localhost:8888
 ```
 
 ## Rollback Strategy

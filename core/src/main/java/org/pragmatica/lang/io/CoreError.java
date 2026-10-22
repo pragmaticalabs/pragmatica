@@ -41,7 +41,8 @@ public sealed interface CoreError extends Cause {
     }
 
     enum CoreErrors implements CoreError {
-        EMPTY_OPTION("The instance of Option is empty");
+        EMPTY_OPTION("The instance of Option is empty"),
+        EMPTY_ANY("any() of no promises");
         private final String message;
         CoreErrors(String message) {
             this.message = message;
@@ -53,6 +54,10 @@ public sealed interface CoreError extends Cause {
 
     static CoreError emptyOption() {
         return CoreErrors.EMPTY_OPTION;
+    }
+
+    static CoreError emptyAny() {
+        return CoreErrors.EMPTY_ANY;
     }
 
     static CoreError exception(Throwable cause) {

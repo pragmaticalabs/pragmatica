@@ -29,6 +29,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -54,6 +55,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
+import org.pragmatica.swim.SwimMessage.AppGossip;
 import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.IdentityRefused;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
@@ -113,6 +115,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Most datagrams one ANNOUNCE reply may take (about 7 members each at the default budget); a larger
     /// view is covered by the ANNOUNCE retries, which reshuffle.
     private static final int SYNC_MAX_DATAGRAMS = 4;
+    /// Application gossip is accepted at most this many datagrams per window, whatever the senders do. Each node
+    /// sends one per probe round to one random peer, so a node expects about one per round; the margin absorbs
+    /// the unevenness of random choice, and the excess is dropped and counted rather than queued.
+    private static final long APP_GOSSIP_WINDOW_MS = 1_000L;
+    private static final int APP_GOSSIP_MAX_PER_WINDOW = 8;
 
     private final SwimConfig config;
     private final SwimTransport transport;
@@ -373,7 +380,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is expired ([#PiggybackBuffer.expireFaultyUpdates]) so a rejoining isolated node does
     /// NOT inject stale death verdicts into the healed cluster (the S06 partition-heal
     /// collapse root). Volatile: written/read across the probe (scheduler) and message threads.
+    /// Every write goes through [#isolationLatchGuard] (#1990), so the all-FAULTY check and the
+    /// latch write cannot straddle a peer's revival.
     private volatile boolean selfIsolated = false;
+    /// Makes "all peers FAULTY, so latch" ([#latchSelfIsolation]) and "reconnection evidence, so
+    /// clear" ([#unlatchSelfIsolation]) mutually atomic. Leaf lock: nothing is acquired while it is
+    /// held (the check reads the lock-free `members` map; the dissemination-backlog expiry and the
+    /// logging run after release), so it joins no lock cycle with [#lifecycleLock],
+    /// [#membershipScopeGuard] or the [PiggybackBuffer] monitor.
+    private final Object isolationLatchGuard = new Object();
     /// Incarnation-aware, TTL-bounded tombstones for ids that died and got cleaned up.
     /// Refuses third-party re-introduction of a dead id (gossip dissemination + bare
     /// channel re-seed) that would otherwise re-create it as SUSPECT and restart the
@@ -439,6 +454,13 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// peer toward ALIVE. FAULTY still requires the window to expire WITHOUT refutation.
     private final Map<NodeId, TransportHintState> transportHints = new ConcurrentHashMap<>();
     private final List<Consumer<SwimObservation>> observationListeners = new CopyOnWriteArrayList<>();
+    /// Application gossip channels by id ([GossipChannel]); consulted once per probe round and on arrival.
+    private final Map<Integer, GossipChannel> gossipChannels = new ConcurrentHashMap<>();
+    private final AtomicLong appGossipWindowStartMs = new AtomicLong();
+    private final AtomicInteger appGossipInWindow = new AtomicInteger();
+    private final AtomicLong appGossipSent = new AtomicLong();
+    private final AtomicLong appGossipReceived = new AtomicLong();
+    private final AtomicLong appGossipDropped = new AtomicLong();
     /// Cluster-wide `TransportObservation` emitters. SWIM-internal `SwimObservation`
     /// (see [#observationListeners]) is consumed by `SwimHealthDetector` and its
     /// listeners; the cluster-wide stream defined by
@@ -879,7 +901,56 @@ public final class SwimProtocol implements SwimMessageHandler {
             case WhoAmI w -> handleWhoAmI(sender, w);
             case WhoAmIReply r -> handleWhoAmIReply(r);
             case IdentityRefused refused -> handleIdentityRefused(refused);
+            case AppGossip gossip -> handleAppGossip(gossip);
         }
+    }
+
+    /// Registers `handler` on `channel`, replacing whatever was there. Takes effect from the next probe round.
+    public Unit registerGossipChannel(int channel, GossipChannel handler) {
+        gossipChannels.put(channel, handler);
+
+        return Unit.unit();
+    }
+
+    /// What application gossip has done since this protocol was created: datagrams sent, delivered to a
+    /// channel, and dropped (oversize payload, unknown sender or channel, over the rate).
+    public AppGossipStats appGossipStats() {
+        return AppGossipStats.appGossipStats(appGossipSent.get(), appGossipReceived.get(), appGossipDropped.get());
+    }
+
+    public record AppGossipStats(long sent, long received, long dropped) {
+        public static AppGossipStats appGossipStats(long sent, long received, long dropped) {
+            return new AppGossipStats(sent, received, dropped);
+        }
+    }
+
+    private void handleAppGossip(AppGossip gossip) {
+        if (isAcceptableAppGossip(gossip)) {
+            appGossipReceived.incrementAndGet();
+            gossipChannels.get(gossip.channel()).incoming(gossip.from(), gossip.payload());
+        } else {
+            appGossipDropped.incrementAndGet();
+        }
+    }
+
+    /// `members` holds only in-scope nodes ([#storeScopedMember]), so membership is the whole sender check. The
+    /// rate budget is spent last, so a datagram that would be dropped anyway -- unknown channel, a sender that is
+    /// not a member -- cannot use it up.
+    private boolean isAcceptableAppGossip(AppGossip gossip) {
+        return gossipChannels.containsKey(gossip.channel())
+               && members.containsKey(gossip.from())
+               && withinAppGossipRate();
+    }
+
+    private boolean withinAppGossipRate() {
+        var now = System.currentTimeMillis();
+        var windowStart = appGossipWindowStartMs.get();
+
+        if (now - windowStart >= APP_GOSSIP_WINDOW_MS && appGossipWindowStartMs.compareAndSet(windowStart, now)) {
+            appGossipInWindow.set(0);
+        }
+
+        return appGossipInWindow.incrementAndGet() <= APP_GOSSIP_MAX_PER_WINDOW;
     }
 
     /// A peer refused THIS process's ANNOUNCE: our NodeId belongs to a retired or different process
@@ -907,6 +978,51 @@ public final class SwimProtocol implements SwimMessageHandler {
         reevaluateTransportVetoedFaulty();
         cleanupFaultyMembers();
         selectNextProbeTarget().onPresent(this::probeTarget);
+        sendAppGossip();
+    }
+
+    /// Once per probe round: each registered channel's payload goes to ONE random ALIVE member, in a datagram of its own.
+    /// Not the probe target, which is chosen by least-recently-probed order: the choice here must not follow that
+    /// order, or the same pair of nodes would keep exchanging payloads.
+    @Contract
+    void sendAppGossip() {
+        randomAliveMember().onPresent(peer -> gossipChannels.forEach((channel, handler) -> offerAppGossip(peer,
+                                                                                                          channel,
+                                                                                                          handler)));
+    }
+
+    private Option<SwimMember> randomAliveMember() {
+        var alive = members.values().stream().filter(member -> member.state() == MemberState.ALIVE).toList();
+
+        return alive.isEmpty()
+               ? none()
+               : option(alive.get(ThreadLocalRandom.current().nextInt(alive.size())));
+    }
+
+    private void offerAppGossip(SwimMember peer, int channel, GossipChannel handler) {
+        handler.outgoing(piggybackBudgetBytes).onPresent(payload -> sendAppGossip(peer, channel, payload));
+    }
+
+    /// A payload longer than the budget it was offered is a channel defect, not a reason to send a datagram that
+    /// may not fit: it is dropped and counted. FER: a datagram that fails to send is absorbed (logged at debug) --
+    /// application gossip is best effort, and the next probe round sends a fresh payload.
+    private void sendAppGossip(SwimMember peer, int channel, byte[] payload) {
+        if (payload.length > piggybackBudgetBytes) {
+            appGossipDropped.incrementAndGet();
+            LOG.debug("SWIM app gossip on channel {} dropped: {} bytes exceed the {} byte budget",
+                      channel,
+                      payload.length,
+                      piggybackBudgetBytes);
+
+            return;
+        }
+
+        appGossipSent.incrementAndGet();
+        transport.send(peer.address(),
+                       AppGossip.appGossip(selfId, channel, payload))
+                 .onFailure(cause -> LOG.debug("SWIM app gossip to {} failed: {}",
+                                               peer.nodeId().id(),
+                                               cause.message()));
     }
 
     /// Proactively disseminate this node's own latest `Alive(selfId, selfIncarnation)`
@@ -1489,16 +1605,35 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// verdicts accumulated here are isolation-era and must not be gossiped into the cluster
     /// on rejoin (expired in [#acceptAliveEvidence] on the first reconnection evidence).
     private void detectSelfIsolation() {
-        if (selfIsolated || members.isEmpty()) {
-            return;
-        }
-
-        if (members.values().stream().allMatch(m -> m.state() == MemberState.FAULTY)) {
-            selfIsolated = true;
+        if (latchSelfIsolation(this::allPeersFaulty)) {
             LOG.warn("SWIM self-isolation detected: all {} tracked peers FAULTY simultaneously — "
                     + "treating as local isolation; isolation-era FAULTY verdicts will be expired on rejoin",
                      members.size());
         }
+    }
+
+    /// Check and latch under [#isolationLatchGuard] (#1990). A revival stores ALIVE and THEN runs
+    /// [#unlatchSelfIsolation]; if this section runs first the later unlatch clears the latch, if the
+    /// unlatch runs first this check, run later, sees the ALIVE — a stale latch (latch set while a peer is
+    /// ALIVE) is impossible. Each FAULTY writer stores and THEN checks, so the last writer sees every
+    /// earlier store: a missed latch (all FAULTY, latch clear) is impossible too. The check is a parameter
+    /// so a test can hold the check-to-write window open.
+    boolean latchSelfIsolation(BooleanSupplier allPeersFaulty) {
+        synchronized (isolationLatchGuard) {
+            if (selfIsolated || members.isEmpty() || !allPeersFaulty.getAsBoolean()) {
+                return false;
+            }
+
+            selfIsolated = true;
+
+            return true;
+        }
+    }
+
+    private boolean allPeersFaulty() {
+        return members.values()
+                      .stream()
+                      .allMatch(m -> m.state() == MemberState.FAULTY);
     }
 
     /// Least-recently-probed (LRP) selection: pick the probable member with the
@@ -1709,17 +1844,29 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Clear the self-isolation latch on the first reconnection evidence and expire the
     /// isolation-era FAULTY backlog (P2). A no-op when not isolated.
     private void clearIsolationOnReconnect(NodeId peer) {
-        if (!selfIsolated) {
+        if (!unlatchSelfIsolation()) {
             return;
         }
 
-        selfIsolated = false;
         var dropped = piggybackBuffer.expireFaultyUpdates();
 
         LOG.warn("SWIM rejoin after self-isolation (reconnection evidence from {}): expired {} isolation-era "
                 + "FAULTY dissemination entries — not gossiping stale death verdicts into the healed cluster",
                  peer.id(),
                  dropped);
+    }
+
+    /// Clear the latch under [#isolationLatchGuard]; `true` when it was set. Deliberately no unlocked
+    /// `selfIsolated` fast path: a revival that read `false` and returned could slip between a detector's
+    /// all-FAULTY check and its latch write, leaving the latch set with a live peer (#1990).
+    private boolean unlatchSelfIsolation() {
+        synchronized (isolationLatchGuard) {
+            var wasIsolated = selfIsolated;
+
+            selfIsolated = false;
+
+            return wasIsolated;
+        }
     }
 
     private void forwardRelay(Ack ack) {
@@ -2287,6 +2434,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.
     ///
     /// Runs on the shared scheduler. Stops once this node is acknowledged by a peer (inbound probe) or after 60 attempts (30s).
+    ///
+    /// With no seeds the call only seeds this node's identity (incarnation, boot token, labels) and arms no
+    /// loop: there is nobody to announce to, and a node that holds its announcement back until it is assigned
+    /// (#1840) still answers probes under its real identity meanwhile.
     @Contract
     public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
         announceJoin(self, clusterName, incarnation, 0L, seeds);
@@ -2318,6 +2469,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
             selfLabels = gossipLabels(self.labels());
+            if (seeds.isEmpty()) {
+                return;
+            }
+
             var attempts = new AtomicInteger(0);
             var future = new AtomicReference<ScheduledFuture<?>>();
             var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,

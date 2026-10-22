@@ -190,7 +190,7 @@ The cluster tracks update state through consensus, so even if the node you're ru
 
 Here's something you won't find in most distributed systems: a tool that runs a complete, functional cluster on your development machine with built-in load testing and chaos engineering.
 
-**Aether Forge** is a single executable that spins up multiple Aether nodes in one JVM, generates realistic load, and provides a real-time dashboard to observe system behavior. It's not a mock or a simulation--it runs the same consensus code, the same slice lifecycle, the same metrics collection as production.
+**Aether Forge** is a single executable that spins up multiple Aether nodes in one JVM, generates realistic load, and exposes a REST API to control load and chaos and to observe system behavior. It's not a mock or a simulation--it runs the same consensus code, the same slice lifecycle, the same metrics collection as production.
 
 ```bash
 # Start a 5-node cluster with load generation
@@ -200,7 +200,7 @@ aether-forge
 CLUSTER_SIZE=7 LOAD_RATE=2000 aether-forge
 ```
 
-Open your browser to `http://localhost:8888` and you'll see a live dashboard showing cluster health, request throughput, latency distributions, and node status. The load generator hammers your slices with configurable traffic patterns while you watch metrics respond.
+Forge's REST API listens on `http://localhost:8888`: `GET /api/nodes/status` reports cluster health, request throughput, latency and node status. The load generator hammers your slices with configurable traffic patterns while you watch metrics respond.
 
 ### Why This Matters
 
@@ -224,7 +224,7 @@ You can observe consensus behavior, watch leader election happen, see how your s
 
 ### Built-In Chaos Engineering
 
-Forge includes a chaos controller that lets you inject failures and observe how the system responds. This isn't a separate tool you need to configure--it's built into the dashboard:
+Forge includes a chaos controller that lets you inject failures and observe how the system responds. This isn't a separate tool you need to configure--it's built into Forge's API:
 
 ```bash
 # Kill a specific node for 30 seconds
@@ -244,7 +244,7 @@ curl -X POST localhost:8888/api/chaos/inject \
   -d '{"type":"INVOCATION_FAILURE","failureRate":0.1}'
 ```
 
-The dashboard shows chaos events in real-time alongside metrics, so you can see exactly how the cluster responds when you kill the leader node or partition the network. Does consensus reform? Do requests fail over correctly? How long does recovery take?
+Chaos events appear in Forge's event timeline (`GET /api/events`) alongside the cluster's own events, so you can see exactly how the cluster responds when you kill the leader node or partition the network. Does consensus reform? Do requests fail over correctly? How long does recovery take?
 
 These are questions you should answer *before* production, not during an incident. Forge makes that possible without setting up complex test infrastructure.
 
@@ -294,7 +294,7 @@ The codebase handles edge cases that only emerge in distributed systems--leader 
 
 We've implemented unified deployment strategies with weighted traffic shifting--deploy a new version via canary, blue-green, or rolling strategy, gradually shift traffic from 0% to 100%, roll back with one command if something goes wrong. Zero-downtime deployments are built into the runtime, not bolted on.
 
-We've built observability from the ground up: per-method invocation metrics with latency histograms, Prometheus-compatible endpoints, configurable alert thresholds, and real-time dashboards. You don't need to integrate external monitoring--it's already there.
+We've built observability from the ground up: per-method invocation metrics with latency histograms, Prometheus-compatible endpoints, configurable alert thresholds, and WebSocket live feeds. You don't need to integrate external monitoring--it's already there.
 
 **What we haven't done yet is run Aether in a real production environment with real traffic and real consequences.**
 
@@ -312,7 +312,7 @@ You're building an order processing system. You've written your OrderService sli
 aether-forge
 ```
 
-Within seconds, you have a 5-node cluster running on your laptop. The dashboard opens automatically--you see five green nodes, consensus established, leader elected.
+Within seconds, you have a 5-node cluster running on your laptop. Forge logs the cluster forming--five nodes, consensus established, leader elected.
 
 You deploy your slice:
 
@@ -320,7 +320,7 @@ You deploy your slice:
 aether deploy target/order-service-1.0.0.jar
 ```
 
-The dashboard updates. Your slice appears across the cluster. The load generator starts sending requests--place order, check status, cancel. You watch latency graphs respond.
+`GET /api/nodes/status` now lists your slice across the cluster. The load generator starts sending requests--place order, check status, cancel. You watch the latency figures respond.
 
 Now the interesting part. You want to see what happens when a node fails during high load. You ramp up traffic:
 
@@ -330,7 +330,7 @@ curl -X POST localhost:8888/api/load/rate -d '{"placeOrder": 2000}'
 
 Two thousand orders per second. The cluster handles it. CPU usage climbs. Latency stays flat. Good.
 
-You kill the leader node through the chaos API. The dashboard shows it immediately--one node goes red. Requests briefly spike in latency. Then consensus reforms. A new leader emerges. Traffic continues flowing. Your slice instances on the dead node are redistributed to survivors.
+You kill the leader node through the chaos API. The status shows it immediately--one node goes unhealthy. Requests briefly spike in latency. Then consensus reforms. A new leader emerges. Traffic continues flowing. Your slice instances on the dead node are redistributed to survivors.
 
 Total time to observe this behavior: maybe 30 seconds.
 
@@ -386,7 +386,7 @@ Aether offers a different model:
 
 **No Kubernetes expertise needed.** If you want to run on Kubernetes, we provide manifest generation. But you don't need to understand Kubernetes internals to use Aether effectively.
 
-**Built-in observability.** No Prometheus/Grafana stack to configure and maintain. Metrics, alerts, and dashboards come with the runtime.
+**Built-in observability.** No Prometheus/Grafana stack to configure and maintain. Metrics and alerts come with the runtime.
 
 **Predictable scaling costs.** Pay for the compute you actually use, not the compute you might need. The runtime scales based on actual demand, not worst-case provisioning.
 

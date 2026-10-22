@@ -172,7 +172,7 @@ Next steps:
   1. cd hello
   2. ./run-forge.sh
   3. curl http://localhost:8070/api/hello/World
-  4. Dashboard: http://localhost:8888
+  4. Forge API: http://localhost:8888
 ```
 
 ### Build it
@@ -204,7 +204,7 @@ Forge is Aether's local development simulator: it runs a full cluster
 topology — by default 5 simulated nodes — **inside a single JVM**. That's
 genuinely useful for fast iteration and chaos testing, but it is a simulation
 of distribution, not a distributed deployment; every node shares the same
-process, memory, and failure domain. Don't read "5 nodes" in the dashboard as
+process, memory, and failure domain. Don't read "5 nodes" in Forge's status as
 "5 machines." (Stage 4 gives you real, separate nodes.)
 
 ```bash
@@ -216,7 +216,7 @@ This builds your project (`mvn clean install -DskipTests`), locates the
 
 ```
 Starting Aether Forge...
-  Dashboard:  http://localhost:8888
+  Forge API:  http://localhost:8888
   App HTTP:   http://localhost:8070
   Management: http://localhost:5150
 
@@ -299,13 +299,10 @@ This returns the cluster's live state as clean JSON — node roster, leader,
 generation. It's the same command you'll run against a real cloud cluster in
 Stage 4, just against a different `-c host:port`.
 
-Open the dashboard at `http://localhost:8888` for the cluster header, node
-roster and uptime. **rc4 limitation:** on Forge only the `/ws/status` feed has a
-publisher and Forge serves only a subset of the dashboard's unversioned
-`/api/...` REST calls, so several panels (governors, strategies, streams,
-schema, storage, among others) are empty. See
-[Known Limitations](reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty);
-use the CLI or the `/api/v1` REST API for the rest.
+Forge's own API on `http://localhost:8888` serves the cluster roster, leader and
+uptime (`GET /api/nodes/status`) plus the load and chaos controls. There is no web
+dashboard (it was removed in 1.0.0-rc5): use the CLI or the `/api/v1` REST API for
+everything else.
 
 ### A note on security
 
@@ -490,7 +487,7 @@ label-driven safety net that finds anything a failed teardown left behind.
 
 - **[My First Aether Slice](slice-developers/getting-started.md)** — the code
   deep-dive: JBCT patterns, HTTP routing, resource qualifiers, testing
-- **[Forge Guide](slice-developers/forge-guide.md)** — dashboard, load
+- **[Forge Guide](slice-developers/forge-guide.md)** — load
   testing, chaos injection
 - **[Bootstrap Configuration Reference](reference/bootstrap-config.md)** —
   full TOML schema and provider examples

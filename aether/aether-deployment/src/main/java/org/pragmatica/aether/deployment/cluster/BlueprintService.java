@@ -53,6 +53,7 @@ import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator.SliceJar;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
+import org.pragmatica.aether.deployment.validation.TopicTierPreflight;
 import org.pragmatica.aether.deployment.validation.ReplicationPreflight;
 import org.pragmatica.aether.deployment.validation.StreamValidationWarning;
 import org.pragmatica.aether.slice.ReplicationContext;
@@ -1042,6 +1043,7 @@ class BlueprintServiceInstance implements BlueprintService {
         noteConfigSectionPreflightSkipIfBlind(topologies);
 
         return PubSubValidator.validate(topologies)
+                              .flatMap(_ -> TopicTierPreflight.validate(sliceJars, nodeComposite).mapError(BlueprintRejected.FACTORY))
                               .flatMap(_ -> RoutePrefixCollisionValidator.validate(topologies,
                                                                                    stored,
                                                                                    routeVersionInHeader).mapError(BlueprintServiceInstance::routeRefusal))

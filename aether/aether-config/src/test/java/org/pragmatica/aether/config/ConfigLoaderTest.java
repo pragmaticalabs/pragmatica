@@ -919,6 +919,156 @@ class ConfigLoaderTest {
             .onSuccess(config -> assertWalPath(config, "   ", false));
     }
 
+    // `[storage.<name>] promotion` is the kill switch for background tier promotion on that instance. Absent means ON,
+    // so a deployment that never heard of the key promotes; a wrong-typed value is refused by name (#1455), not
+    // defaulted.
+    @Test
+    void loadFromString_promotionKey_switchesPromotionOffForThatInstanceOnly() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            promotion = false
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").promotion()).isFalse();
+                assertThat(config.storage().get("content").promotion()).as("absent means on").isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_promotionKeyOfTheWrongType_isRefusedByName() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            promotion = "yes"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onSuccess(config -> Assertions.fail("a wrong-typed promotion value must not take the default"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion"));
+    }
+
+    // Cross-node block prefetching is ON for every instance unless an operator switches it off per instance.
+    @Test
+    void loadFromString_prefetchAbsent_isOn() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            disk_path = "/data/aether/artifacts"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.storage().get("artifacts").prefetch()).isTrue());
+    }
+
+    @Test
+    void loadFromString_prefetchFalse_switchesItOffForThatInstanceOnly() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch = false
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").prefetch()).isFalse();
+                assertThat(config.storage().get("content").prefetch()).isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_prefetchWrongType_isRefused() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch = "sometimes"
+            """;
+
+        assertThat(ConfigLoader.loadFromString(toml).isFailure()).as("a wrong-typed value is refused, never defaulted (#1455)").isTrue();
+    }
+
+    @Test
+    void loadFromString_prefetchMaxInFlightAbsent_isTheDefaultFour() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            disk_path = "/data/aether/artifacts"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.storage().get("artifacts").prefetchMaxInFlight()).isEqualTo(4));
+    }
+
+    @Test
+    void loadFromString_prefetchMaxInFlight_isReadPerInstance() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            prefetch_max_in_flight = 9
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").prefetchMaxInFlight()).isEqualTo(9);
+                assertThat(config.storage().get("content").prefetchMaxInFlight()).isEqualTo(4);
+            });
+    }
+
+    @Test
+    void loadFromString_prefetchMaxInFlightNotAPositiveInteger_isRefused() {
+        for (var bad : new String[]{"0", "-3", "\"many\"", "2.5", "true"}) {
+            var toml = """
+                [cluster]
+                environment = "docker"
+                nodes = 5
+
+                [storage.artifacts]
+                prefetch_max_in_flight = %s
+                """.formatted(bad);
+
+            assertThat(ConfigLoader.loadFromString(toml).isFailure())
+                .as("prefetch_max_in_flight = %s is refused, never defaulted (#1455)", bad)
+                .isTrue();
+        }
+    }
+
     private static void assertWalPath(AetherConfig config, String expected, boolean explicit) {
         var storage = config.storage().get("streams");
 
@@ -1020,5 +1170,25 @@ class ConfigLoaderTest {
             """;
 
         assertThat(ConfigLoader.loadFromString(accepted).isSuccess()).isTrue();
+    }
+
+    /// The dashboard's `dashboard_broadcast` timeout was removed with the dashboard. A config file written before that still
+    /// carries it, so the load must not turn that into a refusal; the remaining `[timeouts.observability]` keys in the same
+    /// section must keep applying. Mutation: making the parser refuse unknown keys in the section turns the first block red.
+    @Test
+    void loadFromString_retiredDashboardBroadcastKey_isIgnoredAndTheSectionStillApplies() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [timeouts.observability]
+            dashboard_broadcast = "500ms"
+            event_loop_probe = "50ms"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail("a retired key must not refuse the config: " + cause.message()))
+            .onSuccess(config -> assertThat(config.timeouts().observability().eventLoopProbe().millis()).isEqualTo(50L));
     }
 }

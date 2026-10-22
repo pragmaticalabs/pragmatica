@@ -55,7 +55,7 @@ import static org.pragmatica.lang.Option.some;
 /// ## Managed scale trigger: HTTP `POST /api/v1/cluster/scale` (the REAL ClusterConfigKey path)
 /// Mirrors `ScaleUpFiveToSevenProbeTest` (its `postScale` / `readConfigVersion` /
 /// `observeUntilTargetCounted` counted-core settle helpers). The endpoint commits
-/// `ClusterConfigKey.CURRENT.coreCount`, whose fan-out drives `AetherNode.onClusterConfigPut` →
+/// `ClusterConfigKey.CURRENT.coreCount`, whose fan-out drives `ClusterBootstrapAssembly.onClusterConfigPut` →
 /// `LeaderReconciler.onConfigChange()` (AetherNode.java:3609-3610) → deficit→provision (up-leg) and
 /// surplus-drain→departure-push (down-leg). This is the faithful managed path #427 targets.
 ///

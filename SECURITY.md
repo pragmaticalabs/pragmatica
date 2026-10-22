@@ -151,7 +151,7 @@ it. None of them isolates one slice's data from another slice in the same cluste
 ### Default security posture (management API)
 
 As of a hardening fix tracked under **#290**, a node with no explicit `security_mode` configured
-runs in **`API_KEY`** mode, not open access — the management plane and dashboard require a
+runs in **`API_KEY`** mode, not open access — the management plane requires a
 credential by default [mechanism: `aether/aether-config/src/main/java/org/pragmatica/aether/config/ConfigLoader.java`,
 `populateAppHttpConfig`: `explicitMode.or(SecurityMode.API_KEY)`]. If you provisioned no API key
 yourself, the first elected leader generates one random `ADMIN` key on first startup and prints it
@@ -161,6 +161,10 @@ Capture that key — it is not retrievable afterward except by rotating it via `
 An operator can still explicitly set `security_mode = "none"` in `aether.toml` to disable
 authentication entirely (an explicit setting wins over the default, with the `enabled = false` exception below) — appropriate only for a
 single-node local/dev instance, never for anything reachable over an untrusted network.
+
+The Management API can take its own mode (#962): an optional `[management] security_mode` (`"api-key"` or
+`"none"`) decides whether the management plane authenticates; when it is absent the plane inherits
+`[app-http] security_mode`. A value the plane cannot honour (`jwt`, or any unrecognised value) is refused at load, naming the key, the value and the allowed values; it is never rewritten to another mode.
 
 The same default holds for the in-process config builders (`AppHttpConfig.appHttpConfig()` and
 friends) since #665: with no `SecurityMode` named they yield `API_KEY`, and with no key configured
@@ -177,7 +181,7 @@ with no `[app-http]` section (or `enabled = false`) refuses those requests until
 bootstrap admin key is presented; present that key, or declare `[app-http]` with the mode you
 mean. Note the one case where an explicit setting does NOT win: `[app-http] enabled = false` with an
 explicit `security_mode = "none"` is discarded whole by `Main`'s fallback (one flag governs two
-planes — #573) and the fail-closed default applies. The only way
+planes — #573) and the fail-closed default applies; an explicit `[management] security_mode` is not part of that flag and is kept (#962). The only way
 to `NONE` without naming the mode is
 `AppHttpConfig.insecureAppHttpConfig(port)`, and its name is the opt-in: Ember passes `NONE`
 explicitly (`EmberCluster.withAppHttpSecurity` overrides it, which is how Forge authenticates), and

@@ -62,6 +62,26 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   storageMaintenance);
     }
 
+    /// The storage maintenance cadence replaced, the rest kept; lets a boot test tick demotion and promotion every
+    /// second instead of every five minutes.
+    public TimeoutsConfig withStorageMaintenance(StorageMaintenanceTimeouts storageMaintenance) {
+        return new TimeoutsConfig(invocation,
+                                  forwarding,
+                                  deployment,
+                                  rollingUpdate,
+                                  cluster,
+                                  consensus,
+                                  election,
+                                  swim,
+                                  observability,
+                                  dht,
+                                  worker,
+                                  security,
+                                  repository,
+                                  scaling,
+                                  storageMaintenance);
+    }
+
     public record InvocationTimeouts(TimeSpan timeout,
                                      TimeSpan invokerTimeout,
                                      TimeSpan retryBaseDelay,
@@ -202,16 +222,14 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
-    public record ObservabilityTimeouts(TimeSpan dashboardBroadcast,
-                                        TimeSpan metricsSlidingWindow,
+    public record ObservabilityTimeouts(TimeSpan metricsSlidingWindow,
                                         TimeSpan eventLoopProbe,
                                         TimeSpan samplerRecalculation,
                                         TimeSpan invocationCleanup,
                                         int traceStoreCapacity,
                                         int alertHistorySize) {
         public static ObservabilityTimeouts observabilityTimeouts() {
-            return new ObservabilityTimeouts(timeSpan(1).seconds(),
-                                             timeSpan(2).hours(),
+            return new ObservabilityTimeouts(timeSpan(2).hours(),
                                              timeSpan(100).millis(),
                                              timeSpan(5).seconds(),
                                              timeSpan(60).seconds(),

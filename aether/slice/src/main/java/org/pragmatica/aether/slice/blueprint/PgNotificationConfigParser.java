@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.slice.PgNotificationConfig;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -27,27 +28,36 @@ public interface PgNotificationConfigParser {
 
         return TomlParser.parse(toml)
                          .mapError(err -> cause("PG notification config parse error: " + err.message()))
-                         .map(doc -> {
-                                  var result = new LinkedHashMap<String, PgNotificationConfig>();
+                         .flatMap(PgNotificationConfigParser::checkedSections);
+    }
 
-                                  for (var sectionName : doc.sectionNames()) {
-                                  if (isPgNotificationSection(sectionName)) {
-                                  var name = sectionName.substring(PREFIX.length());
+    // #1455: `channels = "orders"` (a string, not an array) read as no channels and the section was
+    // kept with an empty list; the document records the wrong-typed read and the parse refuses it.
+    private static Result<Map<String, PgNotificationConfig>> checkedSections(TomlDocument doc) {
+        var sections = sections(doc);
 
-                                  if (!name.contains(".")) {
-                                  var datasource = doc.getString(sectionName, "datasource")
-                                                      .or("database");
-                                  var channels = doc.getStringList(sectionName, "channels")
-                                                    .or(List.of());
+        return doc.requireNoTypeMismatches()
+                  .mapError(err -> cause("PG notification config parse error: " + err.message()))
+                  .map(_ -> sections);
+    }
 
-                                  result.put(name,
-                                             PgNotificationConfig.pgNotificationConfig(datasource, channels));
-                              }
-                              }
-                              }
+    private static Map<String, PgNotificationConfig> sections(TomlDocument doc) {
+        var result = new LinkedHashMap<String, PgNotificationConfig>();
 
-                                  return Map.copyOf(result);
-                              });
+        for (var sectionName : doc.sectionNames()) {
+            if (isPgNotificationSection(sectionName)) {
+                var name = sectionName.substring(PREFIX.length());
+
+                if (!name.contains(".")) {
+                    var datasource = doc.getString(sectionName, "datasource").or("database");
+                    var channels = doc.getStringList(sectionName, "channels").or(List.of());
+
+                    result.put(name, PgNotificationConfig.pgNotificationConfig(datasource, channels));
+                }
+            }
+        }
+
+        return Map.copyOf(result);
     }
 
     private static boolean isPgNotificationSection(String sectionName) {

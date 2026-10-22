@@ -562,9 +562,9 @@ public final class ClusterSyncContext {
         // The hint floors SWIM's suspect window and corroborates a lone first-hand FAULTY even while
         // the QUIC link is CONNECTED. So `missed` counts only consecutive misses on the current link
         // since the last pong (#1061 R-a, `Pinging.missesInEpoch`), and a later pong from the peer
-        // retracts the hint (#1061 R-b, `AetherNode.pongResponsiveReporter`). Neither moves SWIM
+        // retracts the hint (#1061 R-b, `SwimAssembly.pongResponsiveReporter`). Neither moves SWIM
         // toward ALIVE: only a SWIM probe-ack or a higher-incarnation ALIVE ends the suspicion. The
-        // reporter is wired in `AetherNode.pingTimeoutReporter`.
+        // reporter is wired in `SwimAssembly.pingTimeoutReporter`.
         collector.reportUnreachable(peer);
     }
 

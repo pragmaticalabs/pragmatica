@@ -5,23 +5,15 @@
 package org.pragmatica.aether.stream.segment;
 
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.SegmentTierPressure;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,12 +34,11 @@ class RetentionPressureWarningTest {
                                                            SegmentReader.segmentReader(storage, index),
                                                            utilization::get,
                                                            reliefs::incrementAndGet);
-        var capture = Capture.attach();
 
-        try {
+        try (var capture = LogCapture.capture(RetentionEnforcer.class, Level.ALL, true)) {
             enforcer.enforceNow().await();
             enforcer.enforceNow().await();
-            assertThat(capture.warns).as("one WARN for the episode").hasSize(1);
+            assertThat(capture.messages(Level.WARN)).as("one WARN for the episode").hasSize(1);
             assertThat(reliefs.get()).as("relieved on each pass under pressure").isEqualTo(2);
 
             utilization.set(0.5);
@@ -56,46 +47,7 @@ class RetentionPressureWarningTest {
 
             utilization.set(0.9);
             enforcer.enforceNow().await();
-            assertThat(capture.warns).as("a new episode warns again").hasSize(2);
-        } finally {
-            capture.detach();
-        }
-    }
-
-    private static final class Capture extends AbstractAppender {
-        private static final String LOGGER = RetentionEnforcer.class.getName();
-        private final List<String> warns = new CopyOnWriteArrayList<>();
-
-        private Capture() {
-            super("RetentionPressureCapture", (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        static Capture attach() {
-            var capture = new Capture();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var loggerConfig = new LoggerConfig(LOGGER, Level.ALL, true);
-
-            capture.start();
-            ctx.getConfiguration().addLogger(LOGGER, loggerConfig);
-            loggerConfig.addAppender(capture, Level.ALL, null);
-            ctx.updateLoggers();
-
-            return capture;
-        }
-
-        void detach() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            ctx.getConfiguration().removeLogger(LOGGER);
-            ctx.updateLoggers();
-            stop();
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel() == Level.WARN) {
-                warns.add(event.getMessage().getFormattedMessage());
-            }
+            assertThat(capture.messages(Level.WARN)).as("a new episode warns again").hasSize(2);
         }
     }
 }

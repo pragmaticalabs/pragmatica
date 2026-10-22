@@ -28,6 +28,10 @@ import org.pragmatica.lang.Result;
 /// from, and not coupled to, the 60-second higher-id grace in `QuicClusterNetwork` (#491): the two
 /// are numerically equal and serve unrelated purposes, and no evidence of a real relationship was
 /// found.
+///
+/// `dashboardPort` is the port of Forge's own HTTP API (load and chaos control). The name, and the
+/// `dashboard_port` TOML key, predate the removal of the web dashboard and are kept so existing
+/// `forge.toml` files keep working; renaming the key is a separate, config-breaking decision.
 public record EmberConfig(int nodes,
                           int basePort,
                           int managementPort,
@@ -253,7 +257,15 @@ public record EmberConfig(int nodes,
         return fromDocument(doc, Option.some(baseDir));
     }
 
+    // #1455: every typed read here answers Option and takes the default for a present-but-wrong-typed
+    // value; the document records those reads and the load refuses naming every one.
     private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
+        return assembleFromDocument(doc, baseDir).flatMap(config -> doc.requireNoTypeMismatches()
+                                                                       .map(_ -> config));
+    }
+
+    private static Result<EmberConfig> assembleFromDocument(org.pragmatica.config.toml.TomlDocument doc,
+                                                            Option<Path> baseDir) {
         int nodes = doc.getInt("cluster", "nodes").or(DEFAULT_NODES);
         int basePort = doc.getInt("cluster", "base_port").or(DEFAULT_BASE_PORT);
         int managementPort = doc.getInt("cluster", "management_port").or(DEFAULT_MANAGEMENT_PORT);

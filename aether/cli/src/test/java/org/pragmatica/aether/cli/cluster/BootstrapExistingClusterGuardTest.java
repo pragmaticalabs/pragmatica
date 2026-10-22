@@ -18,7 +18,6 @@ import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.aether.config.cluster.CoreTopology;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
@@ -453,8 +452,7 @@ class BootstrapExistingClusterGuardTest {
                                                  Option.empty(),
                                                  Map.of(),
                                                  Map.of(NodeRole.CORE,
-                                                        RoleSubTable.roleSubTable(NodeRole.CORE,
-                                                                                  Option.some(3),
+                                                        RoleSubTable.roleSubTable(Option.some(3),
                                                                                   Option.empty(),
                                                                                   Option.empty(),
                                                                                   "default")),
@@ -462,12 +460,11 @@ class BootstrapExistingClusterGuardTest {
     }
 
     private static ClusterBootstrapConfig config(ClusterName cluster, Map<String, SourceProfile> sources) {
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity(cluster.value(), "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity(cluster.value(), "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              sources,
                                                              Map.of(),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              OperationsConfig.defaultOperationsConfig(),
                                                              Map.of());
     }

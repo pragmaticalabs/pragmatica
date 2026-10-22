@@ -31,6 +31,8 @@ import org.pragmatica.cluster.state.kvstore.CommunityFenced;
 import org.pragmatica.cluster.state.kvstore.IncarnationFenced;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
+import org.pragmatica.cluster.state.kvstore.HolderBound;
+import org.pragmatica.cluster.state.kvstore.HolderFenced;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
@@ -687,9 +689,63 @@ public sealed interface AetherValue {
         }
     }
 
-    record TopicSubscriptionValue(NodeId nodeId) implements AetherValue {
+    /// The row one instance of a topic subscriber writes (#1448 made it node-scoped).
+    ///
+    /// `tier` is the delivery tier the subscriber's handler REQUIRES (#1337), read by the publisher before it delivers and by
+    /// the operator. It was added under a NEW wire tag (2169): tag 1655 still decodes the previous shape
+    /// ([LegacyTopicSubscriptionValue]) as a row whose tier is [TopicTier#UNDECLARED].
+    record TopicSubscriptionValue(NodeId nodeId, TopicTier tier) implements AetherValue {
+        /// A row that states no requirement; what a row written before the tier existed means, and what a writer that does
+        /// not know the handler's shape writes.
         public static TopicSubscriptionValue topicSubscriptionValue(NodeId nodeId) {
-            return new TopicSubscriptionValue(nodeId);
+            return new TopicSubscriptionValue(nodeId, TopicTier.UNDECLARED);
+        }
+
+        public static TopicSubscriptionValue topicSubscriptionValue(NodeId nodeId, TopicTier tier) {
+            return new TopicSubscriptionValue(nodeId, tier);
+        }
+    }
+
+    /// The delivery tier recorded on a topic row (#1337): on a [TopicSubscriptionValue] what the subscriber's handler REQUIRES, on a
+    /// [TopicPublisherValue] what the publisher DELIVERS on.
+    ///
+    /// Only [#DURABLE] constrains anything: it is a handler that takes the delivery context
+    /// ([org.pragmatica.aether.slice.topic.ContextualEvent]), which an ephemeral delivery cannot build because it carries no
+    /// envelope. A bare handler works on either tier and records [#ANY]; a row that predates the field, or whose writer could not
+    /// tell, records [#UNDECLARED]. Readers treat [#UNDECLARED], [#ANY] and [#UNKNOWN] alike: no requirement.
+    @Codec
+    enum TopicTier {
+        /// No tier recorded: a row written before the field existed, or by a writer that could not tell.
+        UNDECLARED,
+        /// A bare handler: works on either tier.
+        ANY,
+        /// A context-carrying handler: needs the envelope only durable delivery carries. For a PUBLISHER row: a durable topic.
+        DURABLE,
+        /// PUBLISHER rows only: the topic is delivered on the ephemeral tier (RPC fan-out, no envelope).
+        EPHEMERAL,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing. Imposes no requirement.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as UNKNOWN by an older node either way.
+        UNKNOWN;
+        /// Whether a subscriber recording this tier cannot be served by an ephemeral publisher.
+        public boolean requiresDurable() {
+            return this == DURABLE;
+        }
+        /// Whether a publisher recording this tier delivers on the ephemeral tier.
+        public boolean deliversEphemeral() {
+            return this == EPHEMERAL;
+        }
+    }
+
+    /// The row one instance of a topic PUBLISHER writes while its slice is deployed (#1337): the topic it publishes (the key's
+    /// address) and the tier it delivers on. It is what lets a durable-needing subscriber that arrives AFTER an ephemeral publisher be
+    /// refused at activation, and a publisher that arrives after such a subscriber be refused too.
+    ///
+    /// It lives exactly as long as the publishing slice instance: written when the slice activates, removed when it unloads
+    /// ([org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey] is node-scoped, like the subscription row, so one instance's
+    /// unload removes only its own row), and removed for a node that is gone with the rest of its per-deployment rows.
+    record TopicPublisherValue(NodeId nodeId, TopicTier tier) implements AetherValue {
+        public static TopicPublisherValue topicPublisherValue(NodeId nodeId, TopicTier tier) {
+            return new TopicPublisherValue(nodeId, tier);
         }
     }
 
@@ -740,6 +796,11 @@ public sealed interface AetherValue {
     /// `fireSeq` numbers the fires recorded in this row, newest highest, and never goes backwards; `newestFireAt` is when
     /// that newest fire started. A late resolution resolves ITS OWN fire (counts) but changes `lastOutcome` only if its
     /// fire is still the newest.
+    ///
+    /// `boundHolder` is the claim token of the SINGLE-mode fire this row was written for, none for a row written under no
+    /// claim. It is not state: it is what the applier checks the write against ([HolderBound], [AetherKey.ScheduledTaskStateKey]).
+    /// It was added under a NEW wire tag (2168): tag 1634 still decodes the previous shape ([LegacyScheduledTaskStateValue]) as a row with no
+    /// bound holder.
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,
@@ -751,12 +812,41 @@ public sealed interface AetherValue {
                                    int fireSeq,
                                    long newestFireAt,
                                    int completionTimeouts,
-                                   int lateResolutions) implements AetherValue {
+                                   int lateResolutions,
+                                   Option<String> boundHolder) implements AetherValue, HolderBound {
         public static final String OUTCOME_SUCCESS = "SUCCESS";
         public static final String OUTCOME_FAILURE = "FAILURE";
         public static final String OUTCOME_UNKNOWN = "UNKNOWN";
         /// The row of a per-node (ALL-mode) task whose node left the cluster for good while its newest fire was unknown.
         public static final String OUTCOME_NODE_DEPARTED = "NODE_DEPARTED";
+
+        /// A row written under no claim: the 12 components that predate `boundHolder`.
+        public ScheduledTaskStateValue(long lastExecutionAt,
+                                       long nextFireAt,
+                                       int consecutiveFailures,
+                                       int totalExecutions,
+                                       String lastFailureMessage,
+                                       long updatedAt,
+                                       int skippedOverlaps,
+                                       String lastOutcome,
+                                       int fireSeq,
+                                       long newestFireAt,
+                                       int completionTimeouts,
+                                       int lateResolutions) {
+            this(lastExecutionAt,
+                 nextFireAt,
+                 consecutiveFailures,
+                 totalExecutions,
+                 lastFailureMessage,
+                 updatedAt,
+                 skippedOverlaps,
+                 lastOutcome,
+                 fireSeq,
+                 newestFireAt,
+                 completionTimeouts,
+                 lateResolutions,
+                 Option.none());
+        }
 
         /// A row with no recorded outcome (the shape every row had before outcomes were recorded).
         public ScheduledTaskStateValue(long lastExecutionAt,
@@ -778,6 +868,26 @@ public sealed interface AetherValue {
                  0,
                  0,
                  0);
+        }
+
+        /// This row as written on behalf of the SINGLE-mode fire that took the claim named by `holder` (see
+        /// [ScheduledTaskClaimValue]): the applier refuses it once a newer acquisition is committed under the task's claim key,
+        /// so a superseded fire's late write cannot overwrite the row of the fire that replaced it. A fire that holds no
+        /// claim (ALL-mode, a manual inject) leaves the row unbound.
+        public ScheduledTaskStateValue boundTo(Option<String> holder) {
+            return new ScheduledTaskStateValue(lastExecutionAt,
+                                               nextFireAt,
+                                               consecutiveFailures,
+                                               totalExecutions,
+                                               lastFailureMessage,
+                                               updatedAt,
+                                               skippedOverlaps,
+                                               lastOutcome,
+                                               fireSeq,
+                                               newestFireAt,
+                                               completionTimeouts,
+                                               lateResolutions,
+                                               holder);
         }
 
         /// Whether the newest fire's outcome is unknown: the condition operators are told about.
@@ -984,6 +1094,79 @@ public sealed interface AetherValue {
                                                               p.completionTimeouts(),
                                                               p.lateResolutions()))
                         .or(new ScheduledTaskStateValue(0, 0, 0, 0, "", skippedAt, 1));
+        }
+    }
+
+    /// The durable in-flight claim of one SINGLE-mode scheduled task, stored under [AetherKey.ScheduledTaskClaimKey] (#1155).
+    ///
+    /// A fire is claimed before it runs and the claim is given up when the fire settles. `held` is true from the claim to
+    /// the release; a released row stays (it is the chain the fence runs on) until its task is removed. `token` names ONE
+    /// claim: a node that restarts, or is elected again, never owns the claim its predecessor took, whatever `holder` says.
+    /// `term` is the leader epoch the claimant held and `claimedAt` its wall clock; both are for the operator and for the
+    /// stale test, neither is compared for ownership.
+    ///
+    /// **Fence.** The row is [HolderFenced]. Every write is the immediate successor of the committed one, so of two writers
+    /// that read the same row, one commits and the other is refused by the applier. A release is also the holder's own:
+    /// the applier applies it only over a row carrying the releaser's `token`. The version alone would not do, because a
+    /// chain restarts at 1 when the row is removed with its task and written again: an old fire's release can then be the
+    /// immediate successor of a new holder's row. A leader that overrides a stale claim writes the successor, and the old
+    /// holder's release is refused either way. The only write not gated on the token is the takeover itself (it displaces
+    /// the holder, by design, and staleness reads a wall clock the applier must not). A refused write mutates nothing and
+    /// emits no notification, so each writer confirms by re-reading the committed row ([VersionFenced]'s own protocol).
+    ///
+    /// **Stale test.** A held claim is stale once `now - claimedAt` reaches the caller's bound ([#isStale]); the bound is the
+    /// caller's, because the claim cannot know the task's interval. The comparison mixes the claimant's clock with the
+    /// evaluator's: clock skew between nodes moves the moment a claim reads as stale by the skew, nothing more.
+    record ScheduledTaskClaimValue(NodeId holder, long term, String token, long claimedAt, boolean held, long version) implements AetherValue, HolderFenced {
+        /// A new claim over `prior` (a released claim, a stale one, or none): the immediate successor of `prior`.
+        public static ScheduledTaskClaimValue claimed(Option<ScheduledTaskClaimValue> prior,
+                                                      NodeId holder,
+                                                      long term,
+                                                      String token,
+                                                      long now) {
+            return new ScheduledTaskClaimValue(holder, term, token, now, true, nextVersion(prior));
+        }
+
+        /// The version a write over `prior` takes: the first write is 1, every later one the successor.
+        public static long nextVersion(Option<ScheduledTaskClaimValue> prior) {
+            return prior.map(ScheduledTaskClaimValue::version)
+                        .or(0L) + 1;
+        }
+
+        @Override
+        public long fenceVersion() {
+            return version;
+        }
+
+        @Override
+        public String fenceHolder() {
+            return token;
+        }
+
+        @Override
+        public boolean fenceReleases() {
+            return ! held;
+        }
+
+        /// This claim given up: the immediate successor, the same claimant, no longer held.
+        public ScheduledTaskClaimValue released() {
+            return new ScheduledTaskClaimValue(holder, term, token, claimedAt, false, version + 1);
+        }
+
+        /// Whether this row is the claim named by `claimToken`, held.
+        public boolean heldBy(String claimToken) {
+            return held && token.equals(claimToken);
+        }
+
+        /// Whether this row is the claim named by `claimToken`, given up.
+        public boolean releasedBy(String claimToken) {
+            return ! held && token.equals(claimToken);
+        }
+
+        /// Whether a held claim is older than `staleAfterMillis` at `now`: its holder has not given it up in that time and
+        /// is taken to be gone. A released claim is never stale, it is free.
+        public boolean isStale(long now, long staleAfterMillis) {
+            return held && now - claimedAt >= staleAfterMillis;
         }
     }
 
@@ -3324,6 +3507,15 @@ public sealed interface AetherValue {
         public CommunityPlacementOperationValue withPhase(PlacementOperationPhase next,
                                                           org.pragmatica.cluster.state.kvstore.LeaderValue leader,
                                                           String reason) {
+            return withPhase(next, leader, reason, System.currentTimeMillis());
+        }
+
+        /// As above, stamping `phaseChangedAt` with the caller's clock (epoch milliseconds, #1535) so the
+        /// deadlines that compare against it read the same clock that wrote it.
+        public CommunityPlacementOperationValue withPhase(PlacementOperationPhase next,
+                                                          org.pragmatica.cluster.state.kvstore.LeaderValue leader,
+                                                          String reason,
+                                                          long changedAt) {
             return new CommunityPlacementOperationValue(operationId,
                                                         communityId,
                                                         targetNode,
@@ -3335,7 +3527,7 @@ public sealed interface AetherValue {
                                                         next,
                                                         leader,
                                                         startedAt,
-                                                        System.currentTimeMillis(),
+                                                        changedAt,
                                                         reason);
         }
 
@@ -3372,6 +3564,7 @@ public sealed interface AetherValue {
         CREATE_UNCERTAIN,
         DRAIN_UNCERTAIN,
         BLOCKED,
+        READINESS_DELAYED,
         UNKNOWN
     }
 
@@ -3426,6 +3619,11 @@ public sealed interface AetherValue {
         /// [NodeArtifactValue#withState] — a copy via the canonical constructor.
         public CommunityValue withState(CommunityState newState) {
             return new CommunityValue(sourceName, role, targetSize, newState, createdAt, dissolvedAt);
+        }
+
+        /// The placement pass re-stamps only the `targetSize` when the committed policy changes it (#241), preserving every other field.
+        public CommunityValue withTargetSize(int newTargetSize) {
+            return new CommunityValue(sourceName, role, newTargetSize, state, createdAt, dissolvedAt);
         }
     }
 

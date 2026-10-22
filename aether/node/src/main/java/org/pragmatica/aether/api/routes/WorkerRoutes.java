@@ -23,7 +23,7 @@ import org.pragmatica.http.routing.RouteSource;
 
 /// #525: the worker roster, served from committed consensus state.
 ///
-/// Worker mode is live — `AetherNode.activateWorkerMode` switches a node to observation-only
+/// Worker mode is live — `WorkerHierarchyAssembly.activateWorkerMode` switches a node to observation-only
 /// forwarding, and its `GovernorAnnouncer` writes the community roster into the replicated
 /// KV-Store under [GovernorAnnouncementKey]. That announcement is the ONLY authoritative,
 /// cluster-visible statement of which nodes are workers, which is why this route reads it rather

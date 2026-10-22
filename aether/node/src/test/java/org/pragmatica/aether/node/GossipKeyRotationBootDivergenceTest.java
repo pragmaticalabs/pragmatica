@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// [SwimGossipEncryptors]' class doc states the invariant: the running node's SWIM transport and
 /// the boot-time self-address reflection probe ([org.pragmatica.aether.SelfAddressResolver]) MUST
 /// encrypt gossip with IDENTICAL key material. Both production construction sites
-/// (`Main.createGossipEncryptor`, `AetherNode.createGossipEncryptor`) build from the
+/// (`Main.createGossipEncryptor`, `SwimAssembly.createGossipEncryptor`) build from the
 /// `cluster_secret`-derived keys, but only the second is reachable by
 /// [org.pragmatica.swim.RotatingGossipEncryptor#rotate], and `rotate` REPLACES the delegate — the
 /// replacement's accept set is exactly the KV record's `{currentKeyId, previousKeyId}`, so the
@@ -108,7 +108,7 @@ class GossipKeyRotationBootDivergenceTest {
         return encryptor;
     }
 
-    /// Exactly what `Main.createGossipEncryptor` and `AetherNode.createGossipEncryptor` build.
+    /// Exactly what `Main.createGossipEncryptor` and `SwimAssembly.createGossipEncryptor` build.
     private static org.pragmatica.swim.RotatingGossipEncryptor bootEncryptor() {
         return SwimGossipEncryptors.fromCertificateProvider(Option.some(derivedKeyProvider()));
     }

@@ -28,6 +28,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.ObserverResumedNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
@@ -714,6 +715,151 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
     }
 
+    /// #2306 — an observer (a node outside the voter roster) that goes passive, for example on a catch-up resync after
+    /// `triggerResync`, is not a quorum loss: QUORUM_LOST is a statement about voters. It gets a distinct WARNING
+    /// instead. Counting observers (dropping the `selfIsVoter` branch) turns this red.
+    @Test
+    void observerPassive_emitsNoQuorumLost_butAWarningObserverLagEvent() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events).noneMatch(e -> e instanceof ClusterEvent.QuorumLost);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().details()).containsEntry("code", "observer-consensus-lagging");
+    }
+
+    /// #2306 — the counterpart: a voter that goes passive still raises CRITICAL `QuorumLost` and no observer-lag event.
+    /// Suppressing quorum loss for every node turns this red.
+    @Test
+    void voterPassive_stillEmitsCriticalQuorumLost_andNoObserverLagEvent() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> true);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.QuorumLost.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+    }
+
+    /// #2306 — the roster probe is read at the time of the notification, not once at bind time.
+    @Test
+    void passive_readsRosterMembershipAtNotificationTime() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        var voter = new java.util.concurrent.atomic.AtomicBoolean(true);
+        h.aggregator().bindSelfIsVoter(voter::get);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        voter.set(false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.active());
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events.stream().filter(e -> e instanceof ClusterEvent.QuorumLost).count()).isEqualTo(1);
+        assertThat(events.stream().filter(e -> e instanceof ClusterEvent.OperatorWarning).count()).isEqualTo(1);
+    }
+
+    /// #2306 — a voter removed by reconfiguration is already out of the roster when its demoted PASSIVE arrives (the roster
+    /// is installed before the engine publishes the demotion). That is planned work and publishes nothing: gating the
+    /// `demoted()` branch on voter status would let it fall through to the lag warning.
+    @Test
+    void demotedPassive_onANodeAlreadyOutOfTheRoster_publishesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.demotion());
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// #2306 — same for the commanded-drain branch: a drained node that has already left the roster publishes no lag warning.
+    @Test
+    void commandedDrainPassive_onANodeAlreadyOutOfTheRoster_publishesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().bindSelfCommandedDrain(() -> true);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// #2306 — the recovery of the lag warning: an observer that lagged and is observing again publishes an INFO
+    /// `observer-consensus-resumed`. Without it the operator sees the warning enter and never leave.
+    @Test
+    void observerResumed_afterALagWarning_publishesTheInfoRecovery() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onObserverResumed(ObserverResumedNotification.observerResumed(SELF));
+
+        var events = h.events();
+        assertThat(events).hasSize(2);
+        assertThat(events.getLast()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getLast().severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.getLast().details()).containsEntry("code", "observer-consensus-resumed");
+    }
+
+    /// #2306 — the lag warning also closes when the lagging observer is PROMOTED to a voter (Passive -> ACTIVE): the ACTIVE
+    /// branch only reported QuorumEstablished before, leaving the warning open until restart. Removing the close from the
+    /// ACTIVE branch turns this red.
+    @Test
+    void lagWarning_isClosed_whenTheObserverIsPromotedAndPublishesActive() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.active());
+
+        assertThat(codes(h)).containsExactly("observer-consensus-lagging", "observer-consensus-resumed", null);
+        assertThat(h.events().getLast()).isInstanceOf(ClusterEvent.QuorumEstablished.class);
+    }
+
+    /// #2306 — an ACTIVE on a node that never lagged publishes QuorumEstablished only, no recovery.
+    @Test
+    void activeWithoutALagWarning_publishesNoObserverRecovery() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.active());
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.events().getFirst()).isInstanceOf(ClusterEvent.QuorumEstablished.class);
+    }
+
+    /// #2306 — the lag warning closes when the lagging node shuts down.
+    @Test
+    void lagWarning_isClosed_whenTheNodeShutsDown() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onSelfShutdown(TransportObservation.selfShutdown(SELF, TransportObservation.ObservationSource.SWIM));
+
+        assertThat(codes(h)).containsExactly("observer-consensus-lagging", "observer-consensus-resumed");
+    }
+
+    /// #2306 — the lag warning closes when the lagging node is removed from the cluster; the removal of ANOTHER node does not close it.
+    @Test
+    void lagWarning_isClosed_whenTheNodeItselfIsRemoved_notWhenAnotherIs() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(new NodeId("another"), List.of(), 1L, h.hlc().now()));
+        assertThat(codes(h)).as("control: another node's removal leaves the warning open").containsExactly("observer-consensus-lagging");
+
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(SELF, List.of(), 2L, h.hlc().now()));
+
+        assertThat(codes(h)).containsExactly("observer-consensus-lagging", "observer-consensus-resumed");
+    }
+
+    /// #2306 — a cold-start observer adopts state without ever lagging: the engine still signals `Observing`, and the
+    /// recovery layer drops it because no warning is open.
+    @Test
+    void observerResumed_withoutALagWarning_publishesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onObserverResumed(ObserverResumedNotification.observerResumed(SELF));
+
+        assertThat(h.events()).isEmpty();
+    }
+
     /// #926 — the recovery half. Quorum forms BEFORE a leader is elected, so the old gate dropped this
     /// notice at the one moment it was guaranteed false. Un-gating the loss while leaving the recovery
     /// gated would be worse than fixing neither: an operator would watch the cluster enter "quorum lost"
@@ -1334,6 +1480,22 @@ class ClusterEventAggregatorTest {
         return OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED, subject, "repaired " + subject);
     }
 
+    /// #2306 -- the NodeDecommissioned arm of the self-leaves close; removing it leaves the lag warning open when the lagging node is
+    /// decommissioned. Another node's decommission does not close it.
+    @Test
+    void lagWarning_isClosed_whenTheNodeItselfIsDecommissioned_notWhenAnotherIs() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(new NodeId("another"), List.of(), 1L, h.hlc().now()));
+        assertThat(codes(h).stream().filter(code -> code != null).toList()).as("control: another node's decommission leaves the warning open")
+            .containsExactly("observer-consensus-lagging");
+
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(SELF, List.of(), 2L, h.hlc().now()));
+
+        assertThat(codes(h).stream().filter(code -> code != null).toList()).containsExactly("observer-consensus-lagging", "observer-consensus-resumed");
+    }
+
     private List<String> codes(Harness h) {
         return h.events().stream().map(event -> event.details().get("code")).toList();
     }
@@ -1535,8 +1697,25 @@ class ClusterEventAggregatorTest {
 
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED);
+            .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+            });
+    }
+
+    /// #241: a parked placement operation is kept by the next leader, so either of its recoveries may come from a node that never raised the
+    /// warning, and each is its own event.
+    @Test
+    void onOperatorWarning_theParkedPlacementRecoveries_arePublishedByANodeThatDidNotRaiseTheWarning() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED, "stable", "cleared by alice"));
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED, "other", "left DRAIN_UNCERTAIN"));
+
+        assertThat(codes(successor)).containsExactly("community-placement-cleared", "community-placement-resumed");
     }
 
     /// Amendment B: the rejoin resolution closes the previous leader's warning the same way, and is a different event from a confirmation.
@@ -2217,6 +2396,22 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
+    /// #1337: the tier-mismatch refusal is paired like the other conditions: its recovery is published after it, once, and a
+    /// recovery for a subject that was never refused publishes nothing.
+    @Test
+    void onOperatorWarning_topicTierMismatch_isFollowedByItsRecoveryOnce_andAStrayRecoveryIsDropped() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+        var subject = "default:orders:1.0.0/org.example:sub:1.0.0:onOrder";
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, "never-refused", "stray"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH, subject, "refused"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, subject, "reached again"));
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED, subject, "reached again"));
+
+        assertThat(codes(h)).containsExactly("topic-tier-mismatch", "topic-tier-mismatch-resolved");
+    }
+
     /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
     @Test
     void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
@@ -2233,60 +2428,83 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal and the storage promotion stall); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
-                             OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
-                             OperatorWarningCode.NODE_REPLACEMENT_JOINED,
-                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
-                             OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
-                             OperatorWarningCode.UPGRADE_COMPLETED,
-                             OperatorWarningCode.UPGRADE_ABORTED,
-                             OperatorWarningCode.UPGRADE_RESUMED,
-                             OperatorWarningCode.UPGRADE_PAUSE_ENDED,
-                             OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
-                             OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
-                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
-                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
-                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
-                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
-                             OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
-                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
-                             OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
-                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
-                             OperatorWarningCode.BACKUP_CONFIG_RESTORED,
-                             OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
-                             OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
-                             OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED);
+            .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
+                OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
+                OperatorWarningCode.NODE_REPLACEMENT_JOINED,
+                OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
+                OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
+                OperatorWarningCode.UPGRADE_COMPLETED,
+                OperatorWarningCode.UPGRADE_ABORTED,
+                OperatorWarningCode.UPGRADE_RESUMED,
+                OperatorWarningCode.UPGRADE_PAUSE_ENDED,
+                OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
+                OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
+                OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
+                OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
+                OperatorWarningCode.BACKUP_CONFIG_RESTORED,
+                OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
+                OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
+                OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
+                OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
+                OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+                OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
+                OperatorWarningCode.STORAGE_PROMOTION_RESUMED,
+                OperatorWarningCode.WORKER_ASSIGNED,
+                OperatorWarningCode.TOPIC_TIER_MISMATCH_RESOLVED,
+                OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED,
+            });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
-                             OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
-                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
-                             OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
-                             OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
-                             OperatorWarningCode.UPGRADE_STARTED,
-                             OperatorWarningCode.UPGRADE_PAUSED,
-                             OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
-                             OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
-                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
-                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
-                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
-                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
-                             OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
-                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
-                             OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
-                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
-                             OperatorWarningCode.BACKUP_CONFIG_MISSING,
-                             OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
-                             OperatorWarningCode.SLICE_START_AWAITING_TARGET,
-                             OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG);
+            .containsExactlyInAnyOrder(new OperatorWarningCode[]{
+                OperatorWarningCode.NODE_REPLACEMENT_STARTED,
+                OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
+                OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
+                OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
+                OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
+                OperatorWarningCode.UPGRADE_STARTED,
+                OperatorWarningCode.UPGRADE_PAUSED,
+                OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
+                OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
+                OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
+                OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
+                OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
+                OperatorWarningCode.BACKUP_CONFIG_MISSING,
+                OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
+                OperatorWarningCode.SLICE_START_AWAITING_TARGET,
+                OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
+                OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
+                OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
+                OperatorWarningCode.STORAGE_PROMOTION_STALLED,
+                OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
+                OperatorWarningCode.TOPIC_TIER_MISMATCH,
+                OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG,
+            });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);

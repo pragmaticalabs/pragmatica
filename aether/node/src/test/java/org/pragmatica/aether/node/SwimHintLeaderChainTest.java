@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
+import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.cluster.metrics.MetricObservation;
 
 import java.net.InetSocketAddress;
@@ -57,9 +59,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1061 round 2 — the chain the review's B1 found, driven through the REAL pieces and the REAL
 /// wiring: `SwimProtocol`, `ClusterSyncScheduler` + `ClusterSyncCollector` wired exactly as
-/// `AetherNode.assembleNode` wires them (pong listener → scheduler, `AetherNode.pingTimeoutReporter`,
-/// `AetherNode.pongResponsiveReporter`), and the QUIC peer-state listener from
-/// `AetherNode.quicPeerStateListener`. Only the QUIC link itself is modelled: a connected-peers set
+/// `AetherNode.assembleNode` wires them (pong listener → scheduler, `SwimAssembly.pingTimeoutReporter`,
+/// `SwimAssembly.pongResponsiveReporter`), and the QUIC peer-state listener from
+/// `MembershipAssembly.quicPeerStateListener`. Only the QUIC link itself is modelled: a connected-peers set
 /// plus the listener callbacks a `QuicClusterNetwork` view change fires. Every assertion states the
 /// SAFE outcome. Adapted from the review's `Verify1065ChainProbeTest`.
 class SwimHintLeaderChainTest {
@@ -216,11 +218,11 @@ class SwimHintLeaderChainTest {
                                                                   () -> 7L, PING_TIMEOUT_THRESHOLD, () -> Epoch.epoch(0L, 7L, 0L));
         collector.setPeerLocallyAlive(swimTrusts);
         collector.addPongListener(pong -> scheduler.onPongReceived(pong.sender()));
-        collector.setUnreachableReporter(AetherNode.pingTimeoutReporter(this::deliver));
-        collector.addPongListener(AetherNode.pongResponsiveReporter(SELF, this::deliver));
+        collector.setUnreachableReporter(SwimAssembly.pingTimeoutReporter(this::deliver));
+        collector.addPongListener(SwimAssembly.pongResponsiveReporter(SELF, this::deliver));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(VICTIM, List.of(SELF, VICTIM)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
-        return new Wiring(collector, scheduler, AetherNode.quicPeerStateListener(this::deliver, scheduler::onLinkEstablished));
+        return new Wiring(collector, scheduler, MembershipAssembly.quicPeerStateListener(this::deliver, scheduler::onLinkEstablished));
     }
 
     private void deliver(TransportObservation hint) {

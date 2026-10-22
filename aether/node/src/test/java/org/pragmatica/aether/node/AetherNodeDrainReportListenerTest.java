@@ -12,6 +12,7 @@ import org.mockito.Mockito;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.node.assembly.DrainAssembly;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -20,7 +21,7 @@ import static org.mockito.Mockito.doAnswer;
 /// #688: the DRAINING pong is the only production signal that a node is draining, and before this
 /// pin it reached only the membership FSM (#1054's acknowledgement). The leader-side eviction loop
 /// (`ClusterDeploymentState.startDrainEviction`) had no production entry — its `NodeDraining`
-/// decision arm is never emitted. `AetherNode.drainReportListener` is what the pong fan is wired
+/// decision arm is never emitted. `DrainAssembly.drainReportListener` is what the pong fan is wired
 /// with; this pins that it forwards the report to the CDM (the new half) as well as the FSM.
 class AetherNodeDrainReportListenerTest {
     @Test
@@ -32,7 +33,7 @@ class AetherNodeDrainReportListenerTest {
 
         doAnswer(invocation -> reportedToCdm.add(invocation.getArgument(0))).when(cdm).onNodeDraining(any());
 
-        AetherNode.drainReportListener(fsm, cdm).accept(draining);
+        DrainAssembly.drainReportListener(fsm, cdm).accept(draining);
 
         assertThat(reportedToCdm).as("#688: the report must start the leader-side eviction through the CDM")
                                  .containsExactly(draining);

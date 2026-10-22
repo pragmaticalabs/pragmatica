@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.stream.Collectors;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,7 +19,7 @@ class ClusterEventRedeliveryWiringTest {
     /// at once when it is the cluster-events partition (`ClusterEventAggregator.onStreamPartitionOwnershipPut`).
     @Test
     void assembly_routesStreamPartitionOwnershipPutsToTheEventAggregator() {
-        assertThat(assemblyCode()).contains("kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,eventAggregator::onStreamPartitionOwnershipPut);");
+        assertThat(assemblyCode()).containsOnlyOnce("kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,eventAggregator::onStreamPartitionOwnershipPut);");
     }
 
     /// Held events are re-sent on a 1 s tick when no ownership change arrives.
@@ -33,44 +27,13 @@ class ClusterEventRedeliveryWiringTest {
     void assembly_schedulesTheRedeliveryTickEverySecond() {
         var code = assemblyCode();
 
-        assertThat(code).contains("periodicTasks.defer(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,CLUSTER_EVENT_REDELIVERY_INTERVAL,CLUSTER_EVENT_REDELIVERY_INTERVAL));");
-        assertThat(code).contains("TimeSpanCLUSTER_EVENT_REDELIVERY_INTERVAL=TimeSpan.timeSpan(1).seconds();");
+        assertThat(code).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,CLUSTER_EVENT_REDELIVERY_INTERVAL,CLUSTER_EVENT_REDELIVERY_INTERVAL));");
+        assertThat(code).containsOnlyOnce("TimeSpanCLUSTER_EVENT_REDELIVERY_INTERVAL=TimeSpan.timeSpan(1).seconds();");
     }
 
-    /// `AetherNode.java` with line comments removed and all whitespace stripped, so a pin matches the wiring
-    /// expression regardless of formatter line breaks. An unreadable file fails loudly, because a pin that scans
-    /// nothing always passes.
+    /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
+    /// stripped; each pin must match exactly once across that set. See [AssemblySource].
     private static String assemblyCode() {
-        var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
-
-        assertThat(file).exists();
-
-        return readFile(file).lines()
-                             .map(line -> line.replaceFirst("//.*$", ""))
-                             .collect(Collectors.joining())
-                             .replaceAll("\\s+", "");
-    }
-
-    private static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + path, e);
-        }
-    }
-
-    private static Path sourceRoot() {
-        try {
-            var testClasses = Path.of(ClusterEventRedeliveryWiringTest.class.getProtectionDomain()
-                                                                             .getCodeSource()
-                                                                             .getLocation()
-                                                                             .toURI());
-
-            return testClasses.getParent()
-                              .getParent()
-                              .resolve("src/main/java");
-        } catch (URISyntaxException e) {
-            throw new AssertionError("Cannot locate module source root", e);
-        }
+        return AssemblySource.stripped();
     }
 }

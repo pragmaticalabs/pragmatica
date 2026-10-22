@@ -7,7 +7,7 @@
 1|AetherNode.java|an import of a type the node constructs and hands to DeploymentWiring|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 1|AetherNode.java|an import of a type the node constructs and hands to DeploymentWiring|import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 1|AetherNode.java|a comment: names the legacy manager, binds nothing|/// Cadence for the NodeDeploymentManager activation level-heal. On a cold-start
-1|AetherNode.java|a parameter carrying the manager to its LEGACY binding sites|NodeDeploymentManager nodeDeploymentManager) {
+1|AetherNode.java|a parameter carrying the manager to its LEGACY binding sites|static void reconcileNodeActivation(BooleanSupplier consensusActive, NodeDeploymentManager nodeDeploymentManager) {
 1|AetherNode.java|the LEGACY level-heal body, reached only through DeploymentWiring.legacyGated / activationDriver (B3, B4)|nodeDeploymentManager.reconcileActivation();
 2|AetherNode.java|a parameter carrying the manager to its LEGACY binding sites|NodeDeploymentManager nodeDeploymentManager,
 2|AetherNode.java|a parameter carrying the manager to its LEGACY binding sites|ClusterDeploymentManager clusterDeploymentManager,
@@ -15,7 +15,6 @@
 1|AetherNode.java|an engine-neutral read for the management API; the manager is inert under FSM2|return clusterDeploymentManager.communityLiveMembers(communityId);
 1|AetherNode.java|an engine-neutral read for the management API; the manager is inert under FSM2|return clusterDeploymentManager.schemaOrchestrator();
 1|AetherNode.java|construction: both managers are constructed under either engine and unbound under FSM2 (B15, design 8.3)|var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
-1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setOperatorWarningSink(operatorWarningSink);
 1|AetherNode.java|construction: both managers are constructed under either engine and unbound under FSM2 (B15, design 8.3)|var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
 1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
 2|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|nodeDeploymentManager));
@@ -23,13 +22,9 @@
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onNodePlacementPut);
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it under LEGACY and replaces it with the cluster FSM2 drain report under FSM2 (B12)|var drainReportTarget = deploymentWiring.drainReport(clusterDeploymentManager::onNodeDraining);
 3|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|nodeDeploymentManager,
-3|AetherNode.java|the manager passed along to its LEGACY binding sites and to the node record|clusterDeploymentManager,
-1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setCommunityLiveness(node -> communityDirectory.assignment(node)
-1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setLocalAliveMembersSupplier(() -> communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers()));
+5|AetherNode.java|the manager passed along to its LEGACY binding sites, to the node record, and to the assembly phases that run its engine-neutral setters|clusterDeploymentManager,
 1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|nodeDeploymentManager.setShutdownCallback(node::stop);
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it only under LEGACY and drops it, counted, under FSM2 (B1..B12)|deploymentWiring.legacyBinding("B6.SelfReady", () -> nodeDeploymentManager.setSelfReadySignal(selfReadySignal));
-1|AetherNode.java|a parameter carrying the manager to its LEGACY binding sites|ClusterDeploymentManager clusterDeploymentManager) {
-1|AetherNode.java|the LEGACY eviction half of the drain report listener (B12), bound through DeploymentWiring.legacy|return drainReportListener(membershipFsm, clusterDeploymentManager::onNodeDraining);
 1|AetherNode.java|the LEGACY leader toggle, reached only through DeploymentWiring.legacyGated (B7)|private static void toggleCdmOnLeaderChange(LeaderNotification.LeaderChange change, ClusterDeploymentManager cdm) {
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onAppBlueprintPut))
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onSliceTargetPut))
@@ -58,4 +53,19 @@
 1|AetherNode.java|a comment: names the legacy manager, binds nothing|// RC1 Step 2: NodeDeploymentManager consumes MembershipDecision.NodeShuttingDown
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|nodeDeploymentManager::onMembershipDecision)));
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onSelfShutdown)));
+# The AetherNode split (#2379) moved assembly code into node/assembly units. The references below are the ones the list carried for AetherNode.java,
+# re-attributed to the unit that now holds the same line, plus that unit's phase glue (the import, the input component and its unpack) carrying
+# the manager to the moved line. No reference here is a new binding: each moved line keeps its reason; the glue only transports the manager.
+1|ClusterEventsAssembly.java|an import of the manager type the phase carries to its engine-neutral setter|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+1|ClusterEventsAssembly.java|a phase input carrying the manager to its engine-neutral setter|ClusterDeploymentManager clusterDeploymentManager,
+1|ClusterEventsAssembly.java|the phase's unpack of that input|var clusterDeploymentManager = in.clusterDeploymentManager();
+1|ClusterEventsAssembly.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setOperatorWarningSink(operatorWarningSink);
+1|WorkerHierarchyAssembly.java|an import of the manager type the phase carries to its engine-neutral setters|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+1|WorkerHierarchyAssembly.java|a phase input carrying the manager to its engine-neutral setters|ClusterDeploymentManager clusterDeploymentManager,
+1|WorkerHierarchyAssembly.java|the phase's unpack of that input|var clusterDeploymentManager = in.clusterDeploymentManager();
+1|WorkerHierarchyAssembly.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setCommunityLiveness(node -> communityDirectory.assignment(node)
+1|WorkerHierarchyAssembly.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setLocalAliveMembersSupplier(() -> communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers()));
+1|DrainAssembly.java|an import of the manager type of the drain report listener's LEGACY overload|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+1|DrainAssembly.java|a parameter carrying the manager to its LEGACY binding sites|ClusterDeploymentManager clusterDeploymentManager) {
+1|DrainAssembly.java|the LEGACY eviction half of the drain report listener (B12), bound through DeploymentWiring.legacy|return drainReportListener(membershipFsm, clusterDeploymentManager::onNodeDraining);
 1|AetherNodeConfig.java|an import of a type the node constructs and hands to DeploymentWiring|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;

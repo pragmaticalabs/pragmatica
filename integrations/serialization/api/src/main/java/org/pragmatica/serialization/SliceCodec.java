@@ -164,6 +164,31 @@ public interface SliceCodec extends Serializer, Deserializer {
         return value;
     }
 
+    // --- Field tag checks for generated record readers ---
+    /// Consumes the single-byte type tag a generated record writer put in front of a primitive or string field and
+    /// refuses a frame whose tag is not the one the reader's shape expects (#1459).
+    ///
+    /// @throws TagMismatchException naming `subject` (`Type.field`), the expected tag and the tag found
+    static void expectTag(ByteBuf buf, int expected, String subject) {
+        var actual = buf.readByte();
+
+        if (actual != expected) {
+            throw new TagMismatchException(subject, expected, actual);
+        }
+    }
+
+    /// Consumes the varint codec tag a generated record writer put in front of a codec-typed field and refuses a
+    /// frame carrying any other codec's tag (#1459).
+    ///
+    /// @throws TagMismatchException naming `subject` (`Type.field`), the expected tag and the tag found
+    static void expectCompactTag(ByteBuf buf, int expected, String subject) {
+        var actual = readCompact(buf);
+
+        if (actual != expected) {
+            throw new TagMismatchException(subject, expected, actual);
+        }
+    }
+
     // --- Tag computation ---
     /// The wire tag for `className`: its hand-assigned [SystemTags] entry when it has one, otherwise a
     /// hash-derived tag in the USER range.
@@ -200,11 +225,16 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     // --- String helpers ---
+    /// The JDK's UTF-8 encoder is vectorized; measured about 2x faster than a `ByteBufUtil.utf8Bytes` length
+    /// pass followed by `ByteBufUtil.writeUtf8`. The bytes equal Netty's for all well-formed text. They differ
+    /// only after an unpaired high surrogate followed by a non-ASCII char other than its low surrogate: Netty
+    /// 4.2.9 writes `?` and then just the low byte of that next char (invalid UTF-8, and a following pair is
+    /// destroyed); the JDK writes `?` and encodes the next char correctly. [SliceCodecTest] pins both facts.
     static void writeString(ByteBuf buf, String value) {
-        int utf8Bytes = ByteBufUtil.utf8Bytes(value);
+        var bytes = value.getBytes(StandardCharsets.UTF_8);
 
-        writeCompact(buf, utf8Bytes);
-        ByteBufUtil.writeUtf8(buf, value);
+        writeCompact(buf, bytes.length);
+        buf.writeBytes(bytes);
     }
 
     static String readString(ByteBuf buf) {

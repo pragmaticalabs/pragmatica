@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.stream.Collectors;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,43 +21,13 @@ class CommitWitnessWiringTest {
     void everyCommittedPutReachesTheWitness_andTheSameWitnessReachesTheReplayCursor() {
         var code = assemblyCode();
 
-        assertThat(code).contains("varrewindWitness=CommitWitness.commitWitness();");
-        assertThat(code).contains("allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,rewindWitness::onPut));");
+        assertThat(code).containsOnlyOnce("varrewindWitness=CommitWitness.commitWitness();");
+        assertThat(code).containsOnlyOnce("allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,rewindWitness::onPut));");
         assertThat(code).as("the witness the router feeds is the one the projection support's cursor consults")
-                        .contains("epochSources.incarnation()::current,rewindWitness);");
+                        .containsOnlyOnce("epochSources.incarnation()::current,rewindWitness);");
     }
 
     private static String assemblyCode() {
-        var file = sourceRoot().resolve("org/pragmatica/aether/node/AetherNode.java");
-
-        assertThat(file).exists();
-
-        return readFile(file).lines()
-                             .map(line -> line.replaceFirst("//.*$", ""))
-                             .collect(Collectors.joining())
-                             .replaceAll("\\s+", "");
-    }
-
-    private static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + path, e);
-        }
-    }
-
-    private static Path sourceRoot() {
-        try {
-            var testClasses = Path.of(CommitWitnessWiringTest.class.getProtectionDomain()
-                                                                   .getCodeSource()
-                                                                   .getLocation()
-                                                                   .toURI());
-
-            return testClasses.getParent()
-                              .getParent()
-                              .resolve("src/main/java");
-        } catch (URISyntaxException e) {
-            throw new AssertionError("Cannot locate module source root", e);
-        }
+        return AssemblySource.stripped();
     }
 }

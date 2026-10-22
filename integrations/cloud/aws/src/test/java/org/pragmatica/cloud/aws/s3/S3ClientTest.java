@@ -20,6 +20,9 @@ package org.pragmatica.cloud.aws.s3;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.cloud.aws.AwsCredentials;
+import org.pragmatica.cloud.aws.AwsCredentialsProvider;
+import org.pragmatica.cloud.aws.AwsError;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Cause;
@@ -31,7 +34,9 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -134,6 +139,38 @@ class S3ClientTest {
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(opt -> assertThat(opt).isEqualTo(Option.none()));
         }
+
+        /// #249: an unavailable provider is a failure, never "absent". Mutation that reddens it: map every
+        /// non-2xx answer of GET to `none` again (the pre-#249 `toOptionalBody`).
+        @Test
+        void getObject_serviceUnavailable_failsInsteadOfNone() {
+            testHttp.respondWithBytes(503, SLOW_DOWN_RESPONSE.getBytes(StandardCharsets.UTF_8));
+
+            awsClient.getObject("test-key")
+                     .await()
+                     .onSuccess(opt -> fail("A 503 must fail, but read as " + opt))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.ApiError.class));
+        }
+
+        @Test
+        void getObject_noSuchBucket_failsInsteadOfNone() {
+            testHttp.respondWithBytes(404, NO_SUCH_BUCKET_RESPONSE.getBytes(StandardCharsets.UTF_8));
+
+            awsClient.getObject("test-key")
+                     .await()
+                     .onSuccess(opt -> fail("A missing bucket must fail, but read as " + opt))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.BucketNotFound.class));
+        }
+
+        @Test
+        void getObject_forbidden_failsInsteadOfNone() {
+            testHttp.respondWithBytes(403, ACCESS_DENIED_RESPONSE.getBytes(StandardCharsets.UTF_8));
+
+            awsClient.getObject("test-key")
+                     .await()
+                     .onSuccess(opt -> fail("A 403 must fail, but read as " + opt))
+                     .onFailure(S3ClientTest::assertAccessDenied);
+        }
     }
 
     @Nested
@@ -159,6 +196,93 @@ class S3ClientTest {
                      .await()
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(exists -> assertThat(exists).isFalse());
+        }
+
+        /// #249: mutation that reddens it: answer `isSuccess()` for HEAD again (any non-2xx read as absent).
+        @Test
+        void headObject_serviceUnavailable_failsInsteadOfFalse() {
+            testHttp.respondWithUnit(503);
+
+            awsClient.headObject("test-key")
+                     .await()
+                     .onSuccess(exists -> fail("A 503 must fail, but read as " + exists))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.ApiError.class));
+        }
+    }
+
+    @Nested
+    class Credentials {
+
+        /// #249: temporary credentials carry a session token, which must be signed and sent. Mutation that
+        /// reddens it: drop the token from the signed or the sent headers in `RestS3Client#sign`.
+        @Test
+        void sessionToken_isSignedAndSent() {
+            var credentials = AwsCredentials.awsCredentials("ASIATEST", "secret", Option.some("session-token-1"), Option.none());
+            var client = S3Client.s3Client(MINIO_CONFIG, testHttp, AwsCredentialsProvider.staticCredentials(credentials), Option.none());
+            testHttp.respondWithUnit(200);
+
+            client.headObject("test-key")
+                  .await()
+                  .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var headers = capturedRequest.get().headers();
+            assertThat(headers.firstValue("x-amz-security-token")).contains("session-token-1");
+            assertThat(headers.firstValue("Authorization").orElseThrow()).contains("x-amz-security-token")
+                                                                         .contains("Credential=ASIATEST/");
+        }
+
+        @Test
+        void provider_isAskedPerRequest() {
+            var calls = new AtomicInteger();
+            AwsCredentialsProvider provider = () -> Promise.success(AwsCredentials.awsCredentials("AKID" + calls.incrementAndGet(),
+                                                                                                  "secret"));
+            var client = S3Client.s3Client(MINIO_CONFIG, testHttp, provider, Option.none());
+            testHttp.respondWithUnit(200);
+
+            client.headObject("a").await();
+            client.headObject("b").await();
+
+            assertThat(calls.get()).isEqualTo(2);
+            assertThat(capturedRequest.get().headers().firstValue("Authorization").orElseThrow()).contains("Credential=AKID2/");
+        }
+
+        @Test
+        void requestTimeout_isSetOnEveryRequest() {
+            var client = S3Client.s3Client(MINIO_CONFIG,
+                                           testHttp,
+                                           AwsCredentialsProvider.staticCredentials(AwsCredentials.awsCredentials("AKID", "s")),
+                                           Option.some(Duration.ofSeconds(7)));
+            testHttp.respondWithUnit(200);
+
+            client.headObject("a").await();
+
+            assertThat(capturedRequest.get().timeout()).contains(Duration.ofSeconds(7));
+        }
+
+        @Test
+        void providerFailure_failsTheRequestWithoutSending() {
+            capturedRequest.set(null);
+            AwsCredentialsProvider provider = () -> new AwsError.CredentialsUnavailable("test", "nothing configured").promise();
+            var client = S3Client.s3Client(MINIO_CONFIG, testHttp, provider, Option.none());
+
+            client.headObject("a")
+                  .await()
+                  .onSuccess(_ -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(AwsError.CredentialsUnavailable.class));
+
+            assertThat(capturedRequest.get()).isNull();
+        }
+    }
+
+    @Nested
+    class VirtualHostedEndpoint {
+
+        @Test
+        void virtualHosted_customEndpoint_prefixesBucketToEndpointHost() {
+            var config = S3Config.s3Endpoint("https://objects.example.com:9443", "b1", "eu-1", false);
+
+            assertThat(config.objectUrl("k")).isEqualTo("https://b1.objects.example.com:9443/k");
+            assertThat(config.bucketUrl()).isEqualTo("https://b1.objects.example.com:9443");
         }
     }
 
@@ -403,6 +527,22 @@ class S3ClientTest {
         <Error>
             <Code>AccessDenied</Code>
             <Message>Access Denied</Message>
+        </Error>
+        """;
+
+    private static final String SLOW_DOWN_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Error>
+            <Code>SlowDown</Code>
+            <Message>Please reduce your request rate.</Message>
+        </Error>
+        """;
+
+    private static final String NO_SUCH_BUCKET_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Error>
+            <Code>NoSuchBucket</Code>
+            <Message>The specified bucket does not exist</Message>
         </Error>
         """;
 

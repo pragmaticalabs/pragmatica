@@ -85,13 +85,6 @@ public interface ConsensusMetrics {
     /// @param ageMs  Age of the oldest pending batch in milliseconds, 0 when nothing is pending
     default void registerOldestPendingBatchAgeProbe(NodeId nodeId, java.util.function.LongSupplier ageMs) {}
 
-    /// Records when fast path optimization is used.
-    ///
-    /// @param nodeId The node using fast path
-    /// @param phase  The phase number
-    /// @param value  The decided value (V0 or V1)
-    void recordFastPath(NodeId nodeId, Phase phase, StateValue value);
-
     /// Returns a no-op implementation that does nothing.
     static ConsensusMetrics noop() {
         return NoopMetrics.INSTANCE;
@@ -113,7 +106,5 @@ public interface ConsensusMetrics {
         public void recordSyncAttempt(NodeId nodeId, boolean success) {}
         @Override
         public void updatePendingBatches(NodeId nodeId, int count) {}
-        @Override
-        public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
     }
 }

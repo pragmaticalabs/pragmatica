@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #904: an operator configured a resource provider AND the secrets it needs cannot be resolved.
-/// Before this pin `AetherNode.createResourceProviderFacade` logged the failure and booted the node
+/// Before this pin `SliceRuntimeAssembly.createResourceProviderFacade` logged the failure and booted the node
 /// on `noOpResourceProviderFacade()` with an empty `nodeComposite` -- provisioning silently
 /// disabled, every `ConfigurationSection` slice failing later with a cause that blamed the operator
 /// for "not configuring" a provider they had configured. The #830 rule: a configured capability
@@ -52,7 +52,7 @@ class AetherNodeSecretResolutionRefusalBootTest {
                 .onFailure(cause -> {});
         }
 
-        // Process-wide singletons set by AetherNode.createResourceProviderFacade on its populated branch.
+        // Process-wide singletons set by SliceRuntimeAssembly.createResourceProviderFacade on its populated branch.
         ConfigService.clear();
         ResourceProvider.clear();
     }

@@ -1,8 +1,12 @@
 package org.pragmatica.http.routing;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
+import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
@@ -178,6 +182,8 @@ public interface RequestContext extends HttpRequest {
 
         private java.util.function.Supplier<org.pragmatica.http.Headers> headersSupplier = Utils.lazy(() -> headersSupplier = Utils.value(initHeaders()));
 
+        private java.util.function.Supplier<Headers> trailersSupplier = Utils.lazy(() -> trailersSupplier = Utils.value(initTrailers()));
+
         private RequestContextImpl(io.netty.handler.codec.http.FullHttpRequest request,
                                    Route<?> route,
                                    JsonCodec jsonCodec,
@@ -242,6 +248,12 @@ public interface RequestContext extends HttpRequest {
             return headersSupplier.get();
         }
 
+        /// #2310: the aggregated request's chunked trailer section.
+        @Override
+        public Headers trailers() {
+            return trailersSupplier.get();
+        }
+
         @Override
         public io.netty.handler.codec.http.HttpHeaders responseHeaders() {
             return responseHeaders;
@@ -272,14 +284,23 @@ public interface RequestContext extends HttpRequest {
         }
 
         private org.pragmatica.http.Headers initHeaders() {
-            var headers = new java.util.HashMap<String, List<String>>();
+            return org.pragmatica.http.Headers.headers(fieldMap(request.headers()));
+        }
 
-            request.headers()
-                   .forEach(entry -> headers.computeIfAbsent(entry.getKey(),
-                                                             _ -> new java.util.ArrayList<>())
+        private Headers initTrailers() {
+            return Headers.trailers(fieldMap(request.trailingHeaders()));
+        }
+
+        /// #2310: names folded with [java.util.Locale#ROOT]; values of names that differ only in case merge into one
+        /// list, in the order the fields arrived (the list holds the order, not the map type).
+        private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
+            var fieldMap = new LinkedHashMap<String, List<String>>();
+
+            fields.forEach(entry -> fieldMap.computeIfAbsent(entry.getKey().toLowerCase(Locale.ROOT),
+                                                             _ -> new ArrayList<>())
                                             .add(entry.getValue()));
 
-            return org.pragmatica.http.Headers.headers(headers);
+            return fieldMap;
         }
     }
 }

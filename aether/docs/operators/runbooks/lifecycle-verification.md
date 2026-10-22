@@ -4,7 +4,7 @@ This runbook verifies the slice lifecycle implementation matches the design in `
 
 Every management-API path below is versioned (`/api/v1/...`). The prefix is composed at one site —
 `ManagementRoute.API_BASE` — and it is mandatory: an unversioned `/api/...` request on port 5150 does
-not reach the router at all. It falls through to the static file handler, which answers
+not reach the router at all. It falls through to the server's unmatched-path fallback, which answers
 `404 File not found: /api/...`, so a missing `/v1/` looks like a missing page rather than a bad route.
 
 ## Prerequisites
@@ -23,7 +23,7 @@ not reach the router at all. It falls through to the static file handler, which 
 3. **Confirm no other Forge is running on this machine first.** All four of Forge's port settings
    are configurable in `forge.toml` — `base_port` (the cluster's QUIC/consensus UDP range,
    `base_port`–`base_port+nodes-1`, default `6000`), `management_port`, `app_http_port` and
-   `dashboard_port`. Moving all four lets a second instance coexist; moving only the other three
+   `dashboard_port` (the port of Forge's own REST API). Moving all four lets a second instance coexist; moving only the other three
    does not, because the QUIC range collides. Before #1719 that collision was silent (the sockets
    carried `SO_REUSEADDR`, so a duplicate bind succeeded and the datagrams were split); since #1719 the
    QUIC bind is exclusive and a taken port fails the node's start with `BindFailed` naming the port.
@@ -80,7 +80,7 @@ Expected output in `/tmp/forge.log`:
 ============================================================
     AETHER FORGE
 ============================================================
-  Dashboard: http://localhost:8888
+  Forge API: http://localhost:8888
   Cluster size: 5 nodes
 ============================================================
 ```
@@ -392,19 +392,15 @@ reconciliation instead.
 
 ### `404 File not found: /api/...`
 - The path is missing the version prefix. Every management route is under `/api/v1/`
-- An unversioned `/api/...` request is served by the static file handler, not the router, which is
-  why the body is `File not found:` rather than a JSON problem-detail document
+- An unversioned `/api/...` request is answered by the server's unmatched-path fallback, not the
+  router, which is why the body is `File not found:` rather than a JSON problem-detail document
 
 ### CLI cannot connect
 - The CLI defaults to `localhost:8080`; Forge's node-1 management API is on 5150. Pass
   `--connect localhost:5150`
 - The CLI composes `/api/v1` itself from `ManagementRoute` — do not add a prefix to CLI arguments
 
-### Dashboard not loading
-- Dashboard is at http://localhost:8888
+### Forge API not answering
+- Forge's REST API is at http://localhost:8888 (`curl http://localhost:8888/api/forge/status`); there is no web UI
 - Management API is at http://localhost:5150
-
-### Dashboard not showing slice status
-- Fixed in release 0.19.0: Dashboard now queries KV store directly via ForgeCluster.slicesStatus()
-- Slices should appear on both Overview page (node cards) and Cluster page (slices table)
-- Verify slice state by checking KV store entries for `slices/{nodeId}/{artifact}` keys
+- Verify slice state with `GET /api/v1/slices/status` on the management port, or by checking KV store entries for `slices/{nodeId}/{artifact}` keys

@@ -4,10 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.lang.reflect.RecordComponent;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
 
@@ -16,8 +13,6 @@ import org.pragmatica.aether.api.ManagementApiResponses.ClusterEventView;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.json.JsonMapper;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
 
@@ -26,26 +21,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Pins the wire contract behind #304 (node-mode live events never key correctly): the server's
 /// `ClusterEventView` has always carried its HLC time under `at` — never `timestamp` — per its own
-/// doc comment, which predates the `type` discriminator. The client-side bug was an original wrong
-/// assumption, not a later rename: `events.js`/`index.html` read `event.timestamp`, a field this
-/// shape has never sent.
-///
-/// Trace-waterfall wiring (`trace-detail` component, loaded but never connected — `index.html:512-524`)
-/// is explicitly OUT of this PR per the CTO scope ruling; only the event-key fix is pinned here.
+/// doc comment, which predates the `type` discriminator. The bug was a client's wrong assumption (the
+/// removed dashboard read `event.timestamp`, a field this shape has never sent); the shape itself is
+/// what any client, including the next dashboard, depends on, so it stays pinned.
 class ClusterEventKeyContractTest {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
-
-    private static Result<String> resource(String path) {
-        try (InputStream in = ClusterEventKeyContractTest.class.getResourceAsStream(path)) {
-            if (in == null) {
-                return Result.failure(Causes.cause("Dashboard resource not found on classpath: " + path));
-            }
-
-            return Result.success(new String(in.readAllBytes(), StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            return Result.failure(Causes.fromThrowable(e));
-        }
-    }
 
     @Test
     void clusterEventView_serializesAtField_neverTimestamp() {
@@ -76,31 +56,5 @@ class ClusterEventKeyContractTest {
                                    .toList();
 
         assertThat(componentNames).contains("at").doesNotContain("timestamp");
-    }
-
-    /// #304 fix: the dedup/display key must be computed from whichever time field the payload
-    /// actually carries (`at` for node-mode `ClusterEventView`, `timestamp` for Forge-mode
-    /// `ForgeEvent`) — never assume `timestamp` exists.
-    @Test
-    void eventsJs_computesKeyFromAtOrTimestamp_notTimestampAlone() {
-        var eventsJs = resource("/dashboard/js/stores/events.js").unwrap();
-
-        assertThat(eventsJs).as("events.js must expose an eventKey/eventMillis helper reading either time field")
-                  .contains("eventKey")
-                  .contains("eventMillis")
-                  .as("the old timestamp-only dedup check must be gone")
-                  .doesNotContain("e.timestamp === event.timestamp && e.type === event.type");
-    }
-
-    @Test
-    void indexHtml_usesEventKeyHelper_andNeverReadsEventTimestampDirectly() {
-        var indexHtml = resource("/dashboard/index.html").unwrap();
-
-        assertThat(indexHtml).as("the event list key must go through the store's key helper")
-                  .contains(":key=\"$store.events.eventKey(event)\"")
-                  .as("the event time display must go through the store's millis helper")
-                  .contains("formatTime($store.events.eventMillis(event))")
-                  .as("no template binding may read the nonexistent 'event.timestamp' field directly")
-                  .doesNotContain("event.timestamp");
     }
 }

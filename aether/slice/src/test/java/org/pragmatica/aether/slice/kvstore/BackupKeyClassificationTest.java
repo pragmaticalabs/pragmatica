@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.BackupFixtures.Fixture;
@@ -109,6 +110,7 @@ class BackupKeyClassificationTest {
     @Test
     void reclassifiedKeys_areRuntime() {
         assertThat(List.of(TopicSubscriptionKey.class,
+                           TopicPublisherKey.class,
                            EntityKeyspaceRegistrationKey.class,
                            StreamRegistrationKey.class,
                            ConsumerAssignmentKey.class,

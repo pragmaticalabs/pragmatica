@@ -18,6 +18,7 @@ import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
+import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
@@ -81,6 +82,7 @@ class ManagementServerForwardDispatchTest {
 
     private final RecordingClusterNetwork network = new RecordingClusterNetwork();
     private final RecordingResponseWriter writer = new RecordingResponseWriter();
+    private final StubSerializer serializer = new StubSerializer();
     private final StreamPartitionManager partitionManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
 
     @AfterEach
@@ -159,6 +161,24 @@ class ManagementServerForwardDispatchTest {
         assertThat(writer.writes()).containsExactly(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
+    /// #2310: the request a management forward carries keeps the trailers the client sent.
+    @Test
+    void dispatchManagementRequest_forwardCarriesTheRequestsTrailers() {
+        server(Option.some(OWNER)).dispatchManagementRequest(new TrailerRequest(REPLICAS_PATH,
+                                                                                Headers.trailers(Map.of("x-checksum",
+                                                                                                        List.of("abc123")))),
+                                                             InstrumentedResponseWriter.instrumentedResponseWriter(writer),
+                                                             "GET",
+                                                             System.nanoTime());
+
+        assertThat(network.targets()).containsExactly(OWNER);
+        assertThat(serializer.encoded())
+                .filteredOn(HttpRequestContext.class::isInstance)
+                .map(HttpRequestContext.class::cast)
+                .singleElement()
+                .satisfies(forwarded -> assertThat(forwarded.trailers()).containsEntry("x-checksum", List.of("abc123")));
+    }
+
     private void dispatch(ManagementServerImpl server, String path) {
         server.dispatchManagementRequest(new StubHttpRequest(path),
                                          InstrumentedResponseWriter.instrumentedResponseWriter(writer),
@@ -208,7 +228,7 @@ class ManagementServerForwardDispatchTest {
                                         HttpProtocol.H1,
                                         ForwardingTimeouts.forwardingTimeouts(),
                                         Option.some(network),
-                                        Option.some(new StubSerializer()),
+                                        Option.some(serializer),
                                         Option.some(new StubDeserializer()),
                                         _ -> {},
                                         Set::of,
@@ -218,6 +238,14 @@ class ManagementServerForwardDispatchTest {
 
     private record StubHttpRequest(String path) implements HttpRequest {
         @Override public String requestId() {return "req-dispatch";}
+        @Override public HttpMethod method() {return HttpMethod.GET;}
+        @Override public Headers headers() {return Headers.empty();}
+        @Override public QueryParams queryParams() {return QueryParams.empty();}
+        @Override public byte[] body() {return new byte[0];}
+    }
+
+    private record TrailerRequest(String path, Headers trailers) implements HttpRequest {
+        @Override public String requestId() {return "req-dispatch-trailers";}
         @Override public HttpMethod method() {return HttpMethod.GET;}
         @Override public Headers headers() {return Headers.empty();}
         @Override public QueryParams queryParams() {return QueryParams.empty();}
@@ -273,8 +301,19 @@ class ManagementServerForwardDispatchTest {
     }
 
     private static final class StubSerializer implements Serializer {
+        private final List<Object> encoded = new ArrayList<>();
+
+        synchronized List<Object> encoded() {
+            return List.copyOf(encoded);
+        }
+
         @Override public <T> void write(ByteBuf byteBuf, T object) {}
-        @Override public <T> byte[] encode(T value) {return new byte[] {2};}
+
+        @Override public synchronized <T> byte[] encode(T value) {
+            encoded.add(value);
+
+            return new byte[] {2};
+        }
     }
 
     private static final class StubDeserializer implements Deserializer {

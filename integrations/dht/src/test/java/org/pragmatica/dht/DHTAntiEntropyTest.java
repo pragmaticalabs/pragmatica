@@ -139,15 +139,41 @@ class DHTAntiEntropyTest {
             // Respond with different digest
             antiEntropy.onDigestResponse(new DHTMessage.DigestResponse(requestId, PEER, remoteDigest, DHTMessage.Readiness.SERVING));
 
-            // Should send migration data request
+            // Should send the first page request of a paged pull (A6)
             var migrationRequests = network.captured.stream()
-                                                     .filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest)
+                                                     .filter(m -> m.message() instanceof DHTMessage.MigrationPageRequest)
                                                      .toList();
             assertThat(migrationRequests).hasSize(1);
 
-            var req = (DHTMessage.MigrationDataRequest) migrationRequests.getFirst().message();
-            assertThat(req.partitionStart()).isEqualTo(5);
+            var req = (DHTMessage.MigrationPageRequest) migrationRequests.getFirst().message();
+            assertThat(req.partition()).isEqualTo(5);
             assertThat(req.sender()).isEqualTo(LOCAL);
+            assertThat(req.after().isEmpty()).as("a fresh pull starts at the first key").isTrue();
+            assertThat(req.pageBytes()).isEqualTo(PageBudget.DEFAULT_BYTES);
+            assertThat(network.captured.stream().filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest).toList())
+                .as("no legacy whole-partition pull to a peer not recorded as legacy")
+                .isEmpty();
+        }
+
+        /// A6, mixed versions: a peer that asked this node a legacy question is pulled from in the legacy protocol.
+        @Test
+        void onDigestResponse_requestsLegacyMigration_whenThePeerIsRecordedAsLegacy() {
+            node.handleDigestRequest(new DHTMessage.DigestRequest("legacy-hello", PEER, 5, 5), _ -> {});
+            var localDigest = DHTNode.computeDigest(List.of());
+            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L, 0L, 0L, 0L)));
+            injectPendingDigest("test-req-legacy", PEER, 5, localDigest);
+
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("test-req-legacy", PEER, remoteDigest, DHTMessage.Readiness.SERVING));
+
+            var legacy = network.captured.stream()
+                                         .filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest)
+                                         .map(m -> (DHTMessage.MigrationDataRequest) m.message())
+                                         .toList();
+            assertThat(legacy).hasSize(1);
+            assertThat(legacy.getFirst().partitionStart()).isEqualTo(5);
+            assertThat(network.captured.stream().filter(m -> m.message() instanceof DHTMessage.MigrationPageRequest).toList())
+                .as("a legacy peer would drop a page request")
+                .isEmpty();
         }
 
         @Test
@@ -202,7 +228,10 @@ class DHTAntiEntropyTest {
 
             antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("test-req-stale-ring", PEER, remoteDigest, DHTMessage.Readiness.SERVING));
 
-            assertThat(network.captured.stream().filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest).toList())
+            assertThat(network.captured.stream()
+                                       .filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest
+                                                    || m.message() instanceof DHTMessage.MigrationPageRequest)
+                                       .toList())
                 .as("a partition this node no longer replicates is not pulled")
                 .isEmpty();
         }

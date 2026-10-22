@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Modifier;
 import java.net.ServerSocket;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -88,6 +89,35 @@ class ManagementServerDhtCatchUpGaugeTest {
 
         assertThat(gauge).as("the started server registered %s", GAUGE).isNotNull();
         assertThat(gauge.value()).as("it reads the node's DHT").isEqualTo(dhtNode.stuckCatchUpPartitions());
+    }
+
+    /// A6: the repair-plane gauges are registered and read the node's DHT. The repair deficit of a node that has
+    /// just booted counts its catching-up partitions, so it is non-zero here. Red with `registerDhtRepairMetrics()`
+    /// removed.
+    @Test
+    @Timeout(60)
+    void startedServer_exposesTheRepairPlaneGauges_readingTheNodesDht() {
+        var dhtNode = catchingUpDhtNode();
+
+        server = managementServer(dhtNode);
+        assertThat(server.start().await(START_BOUND).isSuccess()).as("control: the server started").isTrue();
+
+        var deficit = server.meterRegistry().find("aether.dht.repair.deficit.partitions").gauge();
+
+        assertThat(deficit).isNotNull();
+        assertThat(deficit.value()).as("a booting node's catching-up partitions are a repair deficit")
+                                   .isEqualTo(dhtNode.repairDeficitPartitions())
+                                   .isPositive();
+
+        for (var name : List.of("aether.dht.repair.pages.sent",
+                                          "aether.dht.repair.bytes.sent",
+                                          "aether.dht.repair.legacy.peers",
+                                          "aether.dht.repair.legacy.exchanges",
+                                          "aether.dht.read.verified.fallbacks",
+                                          "aether.dht.read.verified.mismatches",
+                                          "aether.dht.read.verified.quorum.fallbacks")) {
+            assertThat(server.meterRegistry().find(name).gauge()).as("the started server registered %s", name).isNotNull();
+        }
     }
 
     /// A real DHT node that has just booted, so it holds pending partitions.

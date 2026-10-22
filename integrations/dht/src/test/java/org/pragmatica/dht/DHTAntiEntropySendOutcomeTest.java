@@ -1,16 +1,6 @@
 package org.pragmatica.dht;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,9 +9,8 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,29 +25,16 @@ class DHTAntiEntropySendOutcomeTest {
     private static final String LOGGER_NAME = DHTAntiEntropy.class.getName();
     private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("AntiEntropySendOutcomeCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.WARN, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     @Test
@@ -86,9 +62,9 @@ class DHTAntiEntropySendOutcomeTest {
         dhtAntiEntropy(node, network, CONFIG).synchronizeNow();
 
         assertThat(sends.get()).as("control: the round did send digests").isPositive();
-        assertThat(appender.warns()).as("every refused send is reported")
-                                    .hasSize(sends.get())
-                                    .allMatch(m -> m.contains("node-1") && m.contains("BackpressureRefused") && m.contains("next round"));
+        assertThat(capture.messages()).as("every refused send is reported")
+                                       .hasSize(sends.get())
+                                       .allMatch(m -> m.contains("node-1") && m.contains("BackpressureRefused") && m.contains("next round"));
     }
 
     @Test
@@ -103,7 +79,7 @@ class DHTAntiEntropySendOutcomeTest {
 
         dhtAntiEntropy(node, network, CONFIG).synchronizeNow();
 
-        assertThat(appender.warns()).isEmpty();
+        assertThat(capture.messages()).isEmpty();
     }
 
     /// #420 round 2 — a refused send leaves no correlation behind. The entry is registered before the
@@ -167,38 +143,5 @@ class DHTAntiEntropySendOutcomeTest {
                 return Promise.success(new WriteOutcome.BackpressureRefused(target));
             }
         };
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
-        configuration.addLogger(LOGGER_NAME, fresh);
-        return fresh;
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> warns() {
-            return List.copyOf(messages);
-        }
     }
 }

@@ -146,7 +146,7 @@ public final class ClusterIncarnationRegistrar {
             return;
         }
 
-        genesisLeg.get().onSuccess(_ -> latchSuccess()).onFailure(this::onTransientFailure);
+        genesisLeg.get().withSuccess(_ -> latchSuccess()).withFailure(this::onTransientFailure);
     }
 
     @Contract

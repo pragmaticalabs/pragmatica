@@ -29,7 +29,14 @@ public final class WorkerConfigLoader {
         return TomlParser.parse(content).flatMap(WorkerConfigLoader::fromDocument);
     }
 
+    // #1455: the typed reads below answer Option and take a default for a present-but-wrong-typed
+    // value; the document records those reads and the load refuses here naming every one.
     private static Result<WorkerConfig> fromDocument(TomlDocument doc) {
+        return assembleFromDocument(doc).flatMap(config -> doc.requireNoTypeMismatches()
+                                                              .map(_ -> config));
+    }
+
+    private static Result<WorkerConfig> assembleFromDocument(TomlDocument doc) {
         var coreNodes = parseCoreNodes(doc);
         var clusterPort = doc.getInt("worker", "cluster_port").or(WorkerConfig.DEFAULT_CLUSTER_PORT);
         var swimPort = doc.getInt("worker", "swim_port").or(WorkerConfig.DEFAULT_SWIM_PORT);
@@ -152,9 +159,11 @@ public final class WorkerConfigLoader {
                                               String stringKey,
                                               String msKey,
                                               TimeSpan defaultValue) {
-        var fromString = doc.getString(section, stringKey)
-                            .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                            .option())
+        var fromString = doc.getParsed(section,
+                                       stringKey,
+                                       "a duration such as 30s",
+                                       v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                                                              .option())
                             .map(ts -> TimeSpan.fromDuration(ts.duration()));
 
         if (fromString.isPresent()) {

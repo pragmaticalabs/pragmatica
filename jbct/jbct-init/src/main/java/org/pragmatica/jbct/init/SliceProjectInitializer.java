@@ -437,6 +437,15 @@ public final class SliceProjectInitializer {
                     <scope>provided</scope>
                 </dependency>
 
+                <!-- JBCT-ASYNC-01 check: listed here and in the processor path below (the dependency orders the reactor;
+                     a processor path makes javac ignore provided dependencies) -->
+                <dependency>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>jbct-async-check</artifactId>
+                    <version>${jbct.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+
                 <!-- HTTP Routing Adapter (required for routes.toml) -->
                 <dependency>
                     <groupId>org.pragmatica-lite.aether</groupId>
@@ -491,6 +500,11 @@ public final class SliceProjectInitializer {
                                 <path>
                                     <groupId>org.pragmatica-lite</groupId>
                                     <artifactId>slice-processor</artifactId>
+                                    <version>${jbct.version}</version>
+                                </path>
+                                <path>
+                                    <groupId>org.pragmatica-lite</groupId>
+                                    <artifactId>jbct-async-check</artifactId>
                                     <version>${jbct.version}</version>
                                 </path>
                             </annotationProcessorPaths>
@@ -876,7 +890,7 @@ public final class SliceProjectInitializer {
 
         echo ""
         echo "Starting Aether Forge..."
-        echo "  Dashboard:  http://localhost:8888"
+        echo "  Forge API:  http://localhost:8888"
         echo "  App HTTP:   http://localhost:8070"
         echo "  Management: http://localhost:5150"
         echo ""
@@ -1090,8 +1104,8 @@ public final class SliceProjectInitializer {
             # Test the API
             curl http://localhost:8070/api/hello/World
 
-            # Dashboard
-            open http://localhost:8888
+            # Forge API (load and chaos control)
+            curl http://localhost:8888/api/forge/status
 
         ## Development
 

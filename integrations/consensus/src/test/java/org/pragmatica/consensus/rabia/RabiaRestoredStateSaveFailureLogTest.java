@@ -23,16 +23,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -49,6 +39,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,22 +80,11 @@ class RabiaRestoredStateSaveFailureLogTest {
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
 
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture appender;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("RabiaRestoredStateSaveFailureCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-
-        loggerConfig = getOrCreateLoggerConfig(configuration);
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ERROR, null);
-        loggerConfig.setLevel(Level.ERROR);
-        ctx.updateLoggers();
+        appender = LogCapture.capture(LOGGER_NAME, Level.ERROR, false);
     }
 
     @AfterEach
@@ -112,12 +92,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         engines.forEach(engine -> engine.stop()
                                         .await());
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        appender.close();
     }
 
     /// A restart from disk restores its own snapshot, and the re-persist that should make the restore
@@ -140,7 +115,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         assertThat(started.engine().voterReconfigurationStatus().failure())
             .as("the save failure is recorded as the authority failure that fences activation")
             .contains(DISK_FULL.message());
-        assertThat(appender.capturedErrors()).as("the failed re-persist must be logged at ERROR, naming the consequence and the cause")
+        assertThat(appender.messages(Level.ERROR)).as("the failed re-persist must be logged at ERROR, naming the consequence and the cause")
                   .isNotEmpty()
                   .anyMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT)
                                        && message.contains(ADOPTION_CONSEQUENCE_FRAGMENT)
@@ -160,7 +135,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).as("precondition: the same restore path must have run")
                   .isEqualTo(OWN_SNAPSHOT);
-        assertThat(appender.capturedErrors()).as("a save that succeeded must not report a persist failure")
+        assertThat(appender.messages(Level.ERROR)).as("a save that succeeded must not report a persist failure")
                   .noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
     }
 
@@ -192,6 +167,99 @@ class RabiaRestoredStateSaveFailureLogTest {
             .contains(DISK_FULL.message());
     }
 
+    /// A failed re-persist fences the node through `authorityFailure`. It is not a failure to restore the node's OWN
+    /// history, so `ownRestoreFailure` stays empty and the watchdog's own-restore arm does not fire; the re-persist arm
+    /// is the one the watchdog bounds (`restoredStateSaveFailure`, #1516), asserted here on both restore paths. The
+    /// precondition on each arm shows the failing save was really reached.
+    @Test
+    void syncAdoptionSaveFails_firesTheRepersistArmNotTheOwnRestoreArm() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(3, stateMachine, emptyDisk(true));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> engine.voterReconfigurationStatus().failure().contains(DISK_FULL.message())))
+            .as("precondition: the failed re-persist was recorded as the authority failure")
+            .isTrue();
+        assertThat(engine.ownRestoreFailure()).isEqualTo(Option.none());
+        assertThat(engine.restoredStateSaveFailure()).as("the re-persist fence has its own accessor, which the watchdog bounds (#1516)")
+                                                     .isEqualTo(Option.some(DISK_FULL));
+    }
+
+    @Test
+    void ownRestoreSaveFails_firesTheRepersistArmNotTheOwnRestoreArm() {
+        var stateMachine = new RecordingStateMachine();
+        var started = started(3, stateMachine, failingSaveAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        started.engine().processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> started.engine().voterReconfigurationStatus().failure().contains(DISK_FULL.message())))
+            .as("precondition: the own restore ran and only the re-persist failed")
+            .isTrue();
+        assertThat(stateMachine.lastRestored()).isEqualTo(OWN_SNAPSHOT);
+        assertThat(started.engine().ownRestoreFailure()).isEqualTo(Option.none());
+        assertThat(started.engine().restoredStateSaveFailure()).isEqualTo(Option.some(DISK_FULL));
+    }
+
+    /// CONTROL for the re-persist accessor: a save that succeeds leaves it empty, so it is not a constant.
+    @Test
+    void syncAdoptionSaveSucceeds_leavesRestoredStateSaveFailureEmpty() {
+        var engine = coldStarted(3, new RecordingStateMachine(), emptyDisk(false));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitActive(engine)).isTrue();
+        assertThat(engine.restoredStateSaveFailure()).isEqualTo(Option.none());
+    }
+
+    /// The re-persist fence is permanent like the own-restore one: nothing clears it in-process, so the watchdog's
+    /// clock never restarts on a recovered node. Same entry point as the own-restore pin: a started engine refuses
+    /// `initializeVoters`, which is the only external way to install a genesis.
+    @Test
+    void syncAdoptionSaveFails_noGenesisCanInstallAfterwards_theFailureStays() {
+        var engine = coldStarted(3, new RecordingStateMachine(), emptyDisk(true));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitCondition(() -> engine.restoredStateSaveFailure().isPresent())).as("precondition: the failure was recorded").isTrue();
+
+        var refusal = engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(List.of(NODE_1, NODE_2))));
+
+        assertThat(refusal.isFailure()).as("a started engine refuses a genesis install").isTrue();
+        assertThat(engine.restoredStateSaveFailure()).isEqualTo(Option.some(DISK_FULL));
+    }
+
+    /// E1, #1468/#1516: a cluster that is still forming must never be halted. The watchdog bounds only
+    /// `ownRestoreFailure` and `restoredStateSaveFailure`, and `authorityFailure` is NOT one of its sources because the
+    /// engine constructor sets it and a later genesis clears it. An invalid initial electorate fails the constructor's
+    /// `initializeVoters`: the authority failure is recorded (precondition) and neither watchdog source may be.
+    @Test
+    void constructorFailure_setsTheAuthorityFailure_butNeitherWatchdogSource() {
+        var engine = startedOn(new TestTopologyManager(NODE_1, 0), new RecordingStateMachine(), emptyDisk(false), false).engine();
+
+        assertThat(engine.voterReconfigurationStatus().failure()).as("precondition: the constructor recorded the authority failure")
+                                                                 .contains("at least one member");
+        assertThat(engine.ownRestoreFailure()).isEqualTo(Option.none());
+        assertThat(engine.restoredStateSaveFailure()).as("a forming cluster must not reach the watchdog's re-persist arm")
+                                                     .isEqualTo(Option.none());
+    }
+
+    /// E1, the other half: while genesis is pending the engine neither adopts nor restores, so a persistence whose save
+    /// always fails is never reached, however many cold sync answers arrive. The state is event-driven, so a run of
+    /// answers stands in for the minutes a cluster may spend forming.
+    @Test
+    void genesisPending_repeatedSyncAnswers_withAFailingSave_leaveBothWatchdogSourcesEmpty() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = startedOn(new TestTopologyManager(NODE_1, 3), stateMachine, emptyDisk(true), true).engine();
+
+        for (var round = 0; round < 50; round++) {
+            engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+            assertThat(engine.isGenesisPending()).as("precondition: genesis is still pending at round " + round).isTrue();
+            assertThat(engine.ownRestoreFailure()).isEqualTo(Option.none());
+            assertThat(engine.restoredStateSaveFailure()).isEqualTo(Option.none());
+        }
+        assertThat(stateMachine.lastRestored()).as("nothing was adopted while genesis was pending").isNull();
+    }
+
     /// The #1020 diagnostic on the sync-adoption arm: the failed re-persist is logged at ERROR, naming
     /// the stale-disk consequence and the cause.
     @Test
@@ -201,7 +269,7 @@ class RabiaRestoredStateSaveFailureLogTest {
 
         engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
 
-        assertThat(awaitCondition(() -> appender.capturedErrors()
+        assertThat(awaitCondition(() -> appender.messages(Level.ERROR)
                                                 .stream()
                                                 .anyMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT)
                                                                      && message.contains(ADOPTION_CONSEQUENCE_FRAGMENT)
@@ -222,7 +290,7 @@ class RabiaRestoredStateSaveFailureLogTest {
 
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).isEqualTo(PEER_SNAPSHOT);
-        assertThat(appender.capturedErrors()).noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
+        assertThat(appender.messages(Level.ERROR)).noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
     }
 
     /// Persistence with NO own history — nothing to restore — whose `save` fails
@@ -313,8 +381,15 @@ class RabiaRestoredStateSaveFailureLogTest {
     private Started started(int clusterSize,
                             StateMachine<TestCommand> stateMachine,
                             RabiaPersistence<TestCommand> persistence) {
+        return startedOn(new TestTopologyManager(NODE_1, clusterSize), stateMachine, persistence, false);
+    }
+
+    private Started startedOn(TestTopologyManager topology,
+                              StateMachine<TestCommand> stateMachine,
+                              RabiaPersistence<TestCommand> persistence,
+                              boolean pendingGenesis) {
         var network = new TestClusterNetwork();
-        var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, clusterSize),
+        var engine = new RabiaEngine<>(topology,
                                        network,
                                        stateMachine,
                                        ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
@@ -324,23 +399,12 @@ class RabiaRestoredStateSaveFailureLogTest {
                                        timeSpan(50).millis());
 
         engines.add(engine);
+        if (pendingGenesis) {
+            assertThat(engine.deferGenesis().isSuccess()).isTrue();
+        }
         engine.clusterState(ClusterStateNotification.active());
 
         return new Started(engine, network);
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.ERROR, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
     }
 
     private static final class RecordingStateMachine extends TestStateMachine {
@@ -355,30 +419,6 @@ class RabiaRestoredStateSaveFailureLogTest {
 
         byte[] lastRestored() {
             return lastRestored;
-        }
-    }
-
-    /// In-memory log4j2 appender capturing ERROR-and-above messages for assertions.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.ERROR)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> capturedErrors() {
-            return List.copyOf(messages);
         }
     }
 

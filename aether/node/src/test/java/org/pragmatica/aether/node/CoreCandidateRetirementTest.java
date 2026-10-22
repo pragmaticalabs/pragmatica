@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
+import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,37 +47,37 @@ class CoreCandidateRetirementTest {
     /// (ii): a new leader's activation replay selects nodes it does not track, so the verdict must not require a
     /// descriptor. An untracked node that voted in the past and is no longer a voter is retirable.
     @Test void untrackedFormerVoter_notInElectorate_isRetirable() {
-        assertThat(AetherNode.retirementRefusal(UNTRACKED, ELECTORATE, Set.of(A, B, C, DEAD), ORIGINAL, true, DEAD).isEmpty()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(UNTRACKED, ELECTORATE, Set.of(A, B, C, DEAD), ORIGINAL, true, DEAD).isEmpty()).isTrue();
     }
 
     /// (i): the refusal while a voter carries its reason, and clears once the node is out of the electorate.
     @Test void trackedCoreStillVoting_isRefusedWithReason_thenRetirableOnceVotedOut() {
-        var voting = AetherNode.retirementRefusal(TRACKED_CORE, Option.some(Set.of(A, B, DEAD)), Set.of(A, B, DEAD), Set.of(A, B), true, DEAD);
+        var voting = TopologyAssembly.retirementRefusal(TRACKED_CORE, Option.some(Set.of(A, B, DEAD)), Set.of(A, B, DEAD), Set.of(A, B), true, DEAD);
 
         assertThat(voting.or("")).contains("installed voter");
-        assertThat(AetherNode.retirementRefusal(TRACKED_CORE, Option.some(Set.of(A, B, C)), Set.of(A, B, C, DEAD), Set.of(A, B, C), true, DEAD).isEmpty()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(TRACKED_CORE, Option.some(Set.of(A, B, C)), Set.of(A, B, C, DEAD), Set.of(A, B, C), true, DEAD).isEmpty()).isTrue();
     }
 
     /// Control: being untracked never makes a current voter retirable.
     @Test void untrackedCurrentVoter_isNeverRetirable() {
-        assertThat(AetherNode.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, ORIGINAL, true, A).isPresent()).isTrue();
-        assertThat(AetherNode.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, Set.of(), true, A).isPresent()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, ORIGINAL, true, A).isPresent()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, Set.of(), true, A).isPresent()).isTrue();
     }
 
     @Test void untrackedNeverVoter_isRefusedWhileInstalledRosterIsNotReady() {
-        assertThat(AetherNode.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, Set.of(A, B), true, DEAD).isPresent()).isTrue();
-        assertThat(AetherNode.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, ORIGINAL, true, DEAD).isEmpty()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, Set.of(A, B), true, DEAD).isPresent()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(UNTRACKED, ELECTORATE, ORIGINAL, ORIGINAL, true, DEAD).isEmpty()).isTrue();
     }
 
     @Test void withoutCertifiedElectorateOrWithDeployments_isRefused() {
-        assertThat(AetherNode.retirementRefusal(UNTRACKED, Option.none(), Set.of(DEAD), ORIGINAL, true, DEAD).isPresent()).isTrue();
-        assertThat(AetherNode.retirementRefusal(UNTRACKED, ELECTORATE, Set.of(DEAD), ORIGINAL, false, DEAD).isPresent()).isTrue();
-        assertThat(AetherNode.retirementRefusal(TRACKED_CORE, ELECTORATE, Set.of(DEAD), ORIGINAL, false, DEAD).isPresent()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(UNTRACKED, Option.none(), Set.of(DEAD), ORIGINAL, true, DEAD).isPresent()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(UNTRACKED, ELECTORATE, Set.of(DEAD), ORIGINAL, false, DEAD).isPresent()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(TRACKED_CORE, ELECTORATE, Set.of(DEAD), ORIGINAL, false, DEAD).isPresent()).isTrue();
     }
 
     @Test void trackedWorker_isRetirable_unknownRoleIsNot() {
-        assertThat(AetherNode.retirementRefusal(TRACKED_WORKER, Option.none(), Set.of(), Set.of(), true, DEAD).isEmpty()).isTrue();
-        assertThat(AetherNode.retirementRefusal(Option.some(new MemberDescriptor(Option.none(), "governor", "primary")),
+        assertThat(TopologyAssembly.retirementRefusal(TRACKED_WORKER, Option.none(), Set.of(), Set.of(), true, DEAD).isEmpty()).isTrue();
+        assertThat(TopologyAssembly.retirementRefusal(Option.some(new MemberDescriptor(Option.none(), "governor", "primary")),
                                                 ELECTORATE, Set.of(DEAD), ORIGINAL, true, DEAD).isPresent()).isTrue();
     }
     /// #1543 rule 1: a fresh replacement that is not yet a voter is today's genuine surplus (see

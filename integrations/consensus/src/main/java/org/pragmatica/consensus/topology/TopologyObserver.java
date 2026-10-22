@@ -849,7 +849,7 @@ public interface TopologyObserver extends TopologyManager {
 
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
-                    var healthyOnDuty = view.unwrap().healthyOnDutyCount();
+                    var healthyOnDuty = healthyVoterCount(view.unwrap());
                     var quorum = quorumSize();
 
                     log.debug("Quorum evaluation (membership view): healthyOnDuty={} threshold={}",
@@ -865,6 +865,27 @@ public interface TopologyObserver extends TopologyManager {
                 log.debug("Quorum evaluation (legacy fallback): healthyActivePeers+1={} threshold={}", peers + 1, quorum);
 
                 return (peers + 1) >= quorum;
+            }
+
+            /// #2306, defence in depth: once a voter configuration is installed, the quorum numerator counts INSTALLED VOTERS only,
+            /// so the edge no longer relies on its feed being pre-filtered. In the Aether runtime the feed already is (AetherNode
+            /// filters the view to the installed voters); a feed that listed a member outside the roster, such as a replacement still
+            /// joining, would otherwise make two surviving voters of five look like a quorum while the engine cannot commit. Before
+            /// voters are installed the view count stands. The smaller of the view's healthy count and its on-duty voters is used, so
+            /// neither can inflate.
+            private int healthyVoterCount(MembershipView view) {
+                return installedVoters.get()
+                                      .map(voters -> Math.min(view.healthyOnDutyCount(),
+                                                              onDutyVoterCount(view, voters)))
+                                      .or(view.healthyOnDutyCount());
+            }
+
+            private static int onDutyVoterCount(MembershipView view,
+                                                org.pragmatica.consensus.rabia.VoterConfiguration voters) {
+                return (int) view.onDutyMemberIds()
+                                 .stream()
+                                 .filter(voters::contains)
+                                 .count();
             }
 
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
@@ -971,7 +992,7 @@ public interface TopologyObserver extends TopologyManager {
             /// **One quorum denominator (cluster-topology-overhaul Wave 9 item 1).**
             /// `ClusterConfigKey.coreCount` is the single SOURCE of truth for the cluster's
             /// core-count denominator; this `effectiveClusterSize` atomic is a DERIVED cell. In
-            /// production the aether-side `ClusterConfigKey` subscription (`AetherNode.onClusterConfigPut`)
+            /// production the aether-side `ClusterConfigKey` subscription (`ClusterBootstrapAssembly.onClusterConfigPut`)
             /// drives THIS method with the committed `coreCount` on every config commit — the
             /// observer is consensus-side and cannot read aether KV directly, so this is the
             /// single bridge from KV → the atomic. §3.1: this remains exactly one of

@@ -1,0 +1,2 @@
+### Removed (2026-10-19 — part of #249: unused S3 signing-host accessor)
+- **`S3Config.signingHost()` is removed from `aws-client`.** Nothing called it: requests are signed over the host of the URL they are sent to (`AwsSigV4Signer`), so the accessor could only disagree with what is signed. Code outside this repository that called it should take the host from `objectUrl`/`bucketUrl`. [mechanism: `git grep signingHost` over the repository returns only this fragment after the removal]

@@ -29,6 +29,7 @@ import org.pragmatica.cloud.gcp.api.InsertInstanceRequest.Metadata;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest.MetadataItem;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest.NetworkInterfaceConfig;
 import org.pragmatica.cloud.gcp.api.Instance;
+import org.pragmatica.cloud.gcp.api.Operation;
 import org.pragmatica.cloud.gcp.api.SetLabelsRequest;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -41,6 +42,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 
 public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) implements ComputeProvider {
@@ -86,12 +88,23 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var insert = buildInsertRequest(request.instanceSize(), request.image(), zone, userData, labels);
 
         return client.insertInstance(insert)
+                     .flatMap(GcpComputeProvider::ensureOperationAccepted)
                      .flatMap(_ -> confirmRunning(pendingInstance(insert),
                                                   ReadinessPolicy.cloudDefault()))
                      .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                      .mapError(cause -> toProvisionError(request.instanceSize(),
                                                          zone.or(""),
                                                          cause));
+    }
+
+    /// GCP answers a rejected insert with a 200 whose [Operation] carries an `error` member (quota, invalid
+    /// resource, ...). Only an error already present on the response is read here: the insert is not
+    /// polled to completion, so a failure that GCP reports later still surfaces as a readiness timeout.
+    private static Promise<Operation> ensureOperationAccepted(Operation operation) {
+        return operation.failure()
+                        .fold(() -> Promise.success(operation),
+                              message -> cause("GCP insert operation " + operation.name()
+                                              + " reported an error: " + message).promise());
     }
 
     private InstanceInfo pendingInstance(InsertInstanceRequest request) {
@@ -119,15 +132,15 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                : Option.some(zone);
     }
 
-    /// Rollback acknowledgment for GCP provisions. GCP's `insertInstance` is a single
-    /// atomic operation: either it returns success with an Instance, or it returns
-    /// failure with no resource created. There is no separate "partial" state the
-    /// provider can observe at create-time — but post-create readiness confirmation
-    /// (confirmRunning, infra-readiness only) can now surface a VM that never reached
-    /// RUNNING. That orphan IS a real resource; cleanup is owned at a higher layer
-    /// (CTM auto-heal terminate), so surface a WARN here so operators can correlate.
+    /// Rollback acknowledgment for GCP provisions. `insertInstance` starts a long-running
+    /// [Operation]: the call returning does not mean the VM exists, and the operation may
+    /// still fail after it (only an error already on the response is read, see
+    /// [#ensureOperationAccepted]). Post-create readiness confirmation (confirmRunning,
+    /// infra-readiness only) can also surface a VM that never reached RUNNING. Such an
+    /// orphan IS a real resource and is not deleted here; cleanup is owned at a higher
+    /// layer (CTM auto-heal terminate), so surface a WARN so operators can correlate.
     private static void logProvisionFailureRollbackGap(Cause cause) {
-        log.warn("GCP provision failed ({}); no instance-side rollback issued because insertInstance is atomic — relying on caller to retry or sweep",
+        log.warn("GCP provision failed ({}); no instance-side rollback issued (insertInstance is a long-running operation, a VM may exist) — relying on caller to retry or sweep",
                  cause.message());
     }
 

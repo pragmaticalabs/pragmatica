@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.deployment.generation.BootstrapModule;
+import org.pragmatica.aether.node.assembly.ClusterBootstrapAssembly;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
@@ -31,28 +32,28 @@ class RestoreDecisionHookTest {
     /// One test per re-driven component, so dropping any one re-drive reddens a test that names it.
     @Test
     void onRestoreDecision_reDrivesTheBootstrapConfigSeed_onATerminalDecision() {
-        AetherNode.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
+        ClusterBootstrapAssembly.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
 
         verify(bootstrapModule).retryIfNeeded();
     }
 
     @Test
     void onRestoreDecision_reDrivesTheRolloutManager_onATerminalDecision() {
-        AetherNode.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
+        ClusterBootstrapAssembly.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
 
         verify(deploymentManager).reloadRestoredState();
     }
 
     @Test
     void onRestoreDecision_reDrivesTheAbTestManager_onATerminalDecision() {
-        AetherNode.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
+        ClusterBootstrapAssembly.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
 
         verify(abTestManager).reloadRestoredState();
     }
 
     @Test
     void onRestoreDecision_doesNothing_whileTheRestoreIsInProgress() {
-        AetherNode.onRestoreDecision(decision(BackupRestoreOutcome.IN_PROGRESS), bootstrapModule, deploymentManager, abTestManager);
+        ClusterBootstrapAssembly.onRestoreDecision(decision(BackupRestoreOutcome.IN_PROGRESS), bootstrapModule, deploymentManager, abTestManager);
 
         verify(bootstrapModule, never()).retryIfNeeded();
         verify(deploymentManager, never()).reloadRestoredState();

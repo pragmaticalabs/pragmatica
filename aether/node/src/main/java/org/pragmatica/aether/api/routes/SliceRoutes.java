@@ -813,9 +813,9 @@ public final class SliceRoutes implements RouteSource {
     /// that path — so `/api/routes` (ROUTES_LIST) and `/api/nodes/routes` (NODE_ROUTES) answer from
     /// the same assembly; there is nothing per-node left to aggregate.
     ///
-    /// #525: ROUTES_LIST was declared and consumed by both `aether routes` and the dashboard's
-    /// routes panel (`stores/deployments.js` `refreshRoutes`), but was never registered — so the
-    /// live panel fetched an endpoint that answered 404.
+    /// #525: ROUTES_LIST was declared and consumed by both `aether routes` and the (since removed)
+    /// dashboard's routes panel, but was never registered — so the live panel fetched an endpoint
+    /// that answered 404.
     private RoutesResponse buildRoutesResponse() {
         var node = nodeSupplier.get();
         var routes = node.httpRouteRegistry().allRoutes().stream().map(this::toRouteInfo).toList();

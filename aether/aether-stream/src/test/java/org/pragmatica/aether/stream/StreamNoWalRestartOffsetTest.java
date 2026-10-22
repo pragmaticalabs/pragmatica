@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// #1441: a restart WITHOUT a WAL must not re-assign offsets already sealed into a durable segment.
 ///
 /// No-WAL streams are reachable: every node built outside `Main` (Forge, Ember, embedded) degrades to no WAL
-/// when its WAL directory is unwritable while `segments/` is not (`AetherNode.resolveStreamWalDir`), and `Main`
+/// when its WAL directory is unwritable while `segments/` is not (`StorageAssembly.resolveStreamWalDir`), and `Main`
 /// admits it under `aether.allowNonDurableStreams`. Sealing does not depend on the WAL, so the sealed segments
 /// exist. Recovery used to seed the fresh ring only inside WAL replay, so with no WAL the ring restarted at
 /// head -1 and the next publish was assigned offset 0 — a second record at an offset the durable tier already

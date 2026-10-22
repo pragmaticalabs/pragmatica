@@ -270,7 +270,7 @@ public final class StatusRoutes implements RouteSource {
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
-    /// dashboard observes the derived `ClusterPhaseView` value (post-E.8: always derived)
+    /// status consumers observe the derived `ClusterPhaseView` value (post-E.8: always derived)
     /// is on, and the legacy `ClusterPhaseKey` cache when it's off — a single migration
     /// switch covers all consumers.
     private static String readClusterPhase(ManageableNode node) {
@@ -315,7 +315,7 @@ public final class StatusRoutes implements RouteSource {
     /// includes every core the boot seed promoted from CONFIGURATION at wiring time, so this
     /// surface — and therefore `/health/ready` — reported quorum held before a single peer had
     /// connected. The detector path above is narrowed to the same observed projection at its feed
-    /// (`AetherNode.derivedMemberCount`), so both paths now answer from reachability and the
+    /// (`MembershipAssembly.derivedMemberCount`), so both paths now answer from reachability and the
     /// three surfaces still cannot disagree with each other or with the consensus layer.
     static QuorumStatus quorumStatus(ManageableNode node) {
         return node.quorumLossSnapshot()
@@ -364,10 +364,10 @@ public final class StatusRoutes implements RouteSource {
         return Result.lift(Causes::fromThrowable,
                            () -> {
                                try (var socket = new Socket()) {
-                               socket.connect(new InetSocketAddress(host, port), PROBE_TIMEOUT_MS);
+                                   socket.connect(new InetSocketAddress(host, port), PROBE_TIMEOUT_MS);
 
-                               return Unit.unit();
-                           }
+                                   return Unit.unit();
+                               }
                            });
     }
 

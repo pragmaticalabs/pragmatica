@@ -9,6 +9,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue;
@@ -48,7 +49,7 @@ class NodeReplacementWiringAdmissionTest {
         assertThat(NodeReplacementWiring.admissionMutations(false, "worker", FRESH, "", Option.none())).isEmpty();
     }
 
-    /// v-2042: worker admission is decided by `AetherNode.workerAdmissionAllowed`, which admits a worker only on a committed
+    /// v-2042: worker admission is decided by `WorkerHierarchyAssembly.workerAdmissionAllowed`, which admits a worker only on a committed
     /// capacity reservation for its role (or a local environment authorization). An EXTERNAL worker replacement therefore needs the
     /// reservation committed with its record, exactly like a core; without it the operator-started worker is never admitted.
     @Test
@@ -61,9 +62,9 @@ class NodeReplacementWiringAdmissionTest {
         assertThat(mutation.key()).isEqualTo(new AetherKey.CapacityReservationKey(FRESH));
         var reservation = (CapacityReservationValue) mutation.replacement().unwrap();
 
-        assertThat(AetherNode.workerAdmissionAllowed(FRESH, workerMemberFsm(), storeHolding(Option.some(reservation)), configWithoutEnvironment()))
+        assertThat(WorkerHierarchyAssembly.workerAdmissionAllowed(FRESH, workerMemberFsm(), storeHolding(Option.some(reservation)), configWithoutEnvironment()))
             .as("the committed intent admits the worker").isTrue();
-        assertThat(AetherNode.workerAdmissionAllowed(FRESH, workerMemberFsm(), storeHolding(Option.none()), configWithoutEnvironment()))
+        assertThat(WorkerHierarchyAssembly.workerAdmissionAllowed(FRESH, workerMemberFsm(), storeHolding(Option.none()), configWithoutEnvironment()))
             .as("control: without it the same worker is refused").isFalse();
     }
 

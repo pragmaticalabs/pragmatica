@@ -20,8 +20,8 @@
 source = "org.pragmatica.aether.example.notification-hub-notification-service:notifications:1.0.0"
 partitions = 4
 retention = "time"
-retention-value = "5m"
-max-event-size = "64KB"
+retention_value = "5m"
+max_event_size = "64KB"
 
 # The `delivery-status` topic (#1216) — the CO-DEPLOYED topic this example exists to exercise.
 # Published by the emailer slice, consumed by the analytics slice: two DISTINCT artifacts in one

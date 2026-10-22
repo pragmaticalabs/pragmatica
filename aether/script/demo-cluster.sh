@@ -98,7 +98,7 @@ start_cluster() {
         log_info "Cluster is UP!"
         echo ""
         log_info "Management endpoints:"
-        echo "  - Node 1: http://localhost:8081 (Dashboard: http://localhost:8081/dashboard)"
+        echo "  - Node 1: http://localhost:8081"
         echo "  - Node 2: http://localhost:8082"
         echo "  - Node 3: http://localhost:8083"
         echo "  - Node 4: http://localhost:8084"

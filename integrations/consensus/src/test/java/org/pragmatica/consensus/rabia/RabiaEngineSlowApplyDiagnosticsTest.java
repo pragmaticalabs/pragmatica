@@ -436,7 +436,5 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         @Override public void recordSyncAttempt(NodeId nodeId, boolean success) {}
 
         @Override public void updatePendingBatches(NodeId nodeId, int count) {}
-
-        @Override public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
     }
 }

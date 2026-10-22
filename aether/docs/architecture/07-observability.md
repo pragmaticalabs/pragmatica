@@ -22,7 +22,7 @@ graph TB
 
     subgraph Outputs["Output Channels"]
         Prom["/metrics/prometheus"]
-        WS["/ws/dashboard<br/>(WebSocket)"]
+        WS["/ws/status<br/>(WebSocket)"]
         REST["/api/v1/metrics"]
     end
 
@@ -135,9 +135,8 @@ graph TB
     Check -->|"metric > warning"| Warning["WARNING alert"]
     Check -->|"metric > critical"| Critical["CRITICAL alert"]
 
-    Warning --> WS["/ws/dashboard"]
-    Critical --> WS
-    Critical --> Events["ClusterEventAggregator"]
+    Warning --> Events["ClusterEventAggregator"]
+    Critical --> Events
 ```
 
 ### Alert Thresholds
@@ -173,19 +172,15 @@ Standard scrape-compatible format. Exposes all collected metrics:
 - Cluster topology
 - Active alerts
 
-## Dashboard (WebSocket)
+## Live feeds (WebSocket)
 
 ```
-WS /ws/dashboard
+WS /ws/status    periodic cluster status snapshot (uptime, node metrics, slices)
+WS /ws/events    new cluster events only (delta; no replay on connect)
 ```
 
-Real-time push (no polling):
-- Topology visualization
-- Live metrics graphs
-- Active alerts
-- Cluster events stream
-
-Available in both Forge (local development) and production clusters.
+Push-based, no polling. Available in production clusters; Forge serves its status over REST only.
+The built-in web dashboard that used to consume `/ws/dashboard` was removed in 1.0.0-rc5.
 
 ## Related Documents
 

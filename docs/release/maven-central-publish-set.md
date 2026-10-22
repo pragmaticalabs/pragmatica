@@ -23,7 +23,7 @@ annotation-processor path out of the generated `pom.xml` files.
 
 | Command | Maven artifacts the generated project needs |
 |---|---|
-| `jbct init` (slice) | `core`, `slice-processor`, `http-routing-adapter`, `resource-api`, `slice-annotations`, `slice-api` (all provided), plugin `jbct-maven-plugin`, processor path `slice-processor` |
+| `jbct init` (slice) | `core`, `slice-processor`, `http-routing-adapter`, `resource-api`, `slice-annotations`, `slice-api` (all provided), `jbct-async-check` (provided), plugin `jbct-maven-plugin`, processor paths `slice-processor` and `jbct-async-check` |
 | `jbct init --no-slice` | `core`, plugin `jbct-maven-plugin` |
 | `jbct init --with-persistence`, `jbct add-persistence` | the slice set plus `pg-codegen` as a processor path |
 | `jbct add-slice`, `jbct add-event` | nothing new (source files and resources only) |
@@ -44,7 +44,7 @@ sink on `127.0.0.1`, so the plugin built and sent its own bundle; the bundle was
 | `checksums=required` | 408 | 15.8 MB / 14.5 MB | 2 (816 files; bytes allow 4) |
 
 612 = 102 files built (33 poms, 23 jars, 23 sources jars, 23 javadoc jars) + 102 `.asc` + 408 checksums (the plugin writes md5, sha1,
-sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. The five modules added for rc5 (four jars, one parent pom) add 102 entries, so a release is about 714. Javadoc is built with
+sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. The six modules added for rc5 (five jars, one parent pom) add 126 entries, and the three JSON codec jars of #2226 (`serialization-json`, `serialization-json-codegen`, `serialization-codec-processor`) 72 more, so a release is about 810 (derived at 24 entries per jar, not measured). Javadoc is built with
 `--no-fonts`: a javadoc jar was about 4.1 MB for the web fonts alone and is now about 0.1 MB for a small module, 10.4 MB for all 23.
 The limits are cumulative per month, so a second release in the same month needs `checksums=required` or a smaller set.
 `[unverified: whether Central counts the checksums it asks the plugin for; only Sonatype support can say]`.
@@ -69,7 +69,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/aether-ttm` | `org.pragmatica-lite.aether:aether-ttm` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/aether-ttm-onnx` | `org.pragmatica-lite.aether:aether-ttm-onnx` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/cli` | `org.pragmatica-lite.aether:cli` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
-| `aether/dashboard` | `org.pragmatica-lite.aether:dashboard` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
+| `aether/db-migrations` | `org.pragmatica-lite.aether:db-migrations` | jar | skip | shared runtime implementation bundled with Aether/Terra; not a generated slice-project dependency |
 | `aether/dead-surface-gate` | `org.pragmatica-lite.aether:dead-surface-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `aether/e2e-tests/echo-slice` | `org.pragmatica-lite.aether.test:echo-slice` | jar | skip | end-to-end test slice |
 | `aether/e2e-tests/echo-slice-v2` | `org.pragmatica-lite.aether.test:echo-slice-v2` | jar | skip | end-to-end test slice |
@@ -89,6 +89,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/forge/forge-simulator` | `org.pragmatica-lite.aether:forge-simulator` | jar | skip | Forge dev simulator; ships as its own jar/image |
 | `aether/http-handler-api` | `org.pragmatica-lite.aether:http-handler-api` | jar | publish | compile/runtime dependency of http-routing-adapter |
 | `aether/http-routing-adapter` | `org.pragmatica-lite.aether:http-routing-adapter` | jar | publish | template dependency (`jbct init`, provided) |
+| `aether/http-security` | `org.pragmatica-lite.aether:http-security` | jar | skip | shared runtime implementation bundled with Aether/Terra; not a generated slice-project dependency |
 | `aether/node` | `org.pragmatica-lite.aether:node` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/pg-tools` | `org.pragmatica-lite.aether:aether-pg-tools` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of pg-codegen) |
 | `aether/pg-tools/pg-codegen` | `org.pragmatica-lite.aether:pg-codegen` | jar | publish | added by `jbct add-persistence` (and `jbct init --with-persistence`): annotation-processor path and dependency |
@@ -172,7 +173,6 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/metrics` | `org.pragmatica-lite:metrics` | pom | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/metrics/micrometer` | `org.pragmatica-lite:micrometer` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net` | `org.pragmatica-lite:net` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of http-client) |
-| `integrations/net/dns` | `org.pragmatica-lite:dns` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net/http-client` | `org.pragmatica-lite:http-client` | jar | publish | compile/runtime dependency of jbct-core |
 | `integrations/net/http-server` | `org.pragmatica-lite:http-server` | jar | publish | seed: a library that applications built on Pragmatica consume directly (published rc1-rc3, dropped in rc4 by mistake) |
 | `integrations/net/http-types` | `org.pragmatica-lite:http-types` | jar | publish | compile/runtime dependency of http-routing |
@@ -180,7 +180,10 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/net/tcp` | `org.pragmatica-lite:tcp` | jar | publish | closure: compile dependency of `http-server` |
 | `integrations/serialization` | `org.pragmatica-lite:serialization` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of serialization-api) |
 | `integrations/serialization/api` | `org.pragmatica-lite:serialization-api` | jar | publish | compile/runtime dependency of slice-api |
-| `integrations/serialization/codec-processor` | `org.pragmatica-lite:serialization-codec-processor` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
+| `integrations/serialization/codec-processor` | `org.pragmatica-lite:serialization-codec-processor` | jar | publish | seed: the `annotationProcessorPaths` entry for standalone `@Json` codecs (serialization-json README) |
+| `integrations/serialization/json` | `org.pragmatica-lite:serialization-json` | jar | publish | compile/runtime dependency of http-routing-adapter (generated route codecs) |
+| `integrations/serialization/json-codegen` | `org.pragmatica-lite:serialization-json-codegen` | jar | publish | compile/runtime dependency of slice-processor (shared JSON codec generator) |
+| `integrations/serialization/json-tests` | `org.pragmatica-lite:serialization-json-tests` | jar | skip | test-only module (JSON codec agreement and strictness tests) |
 | `integrations/statemachine` | `org.pragmatica-lite:statemachine` | jar | publish | closure: compile dependency of `tcp` |
 | `integrations/storage` | `org.pragmatica-lite:storage` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/swim` | `org.pragmatica-lite:swim` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
@@ -189,6 +192,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/xml/jackson-xml` | `org.pragmatica-lite:jackson-xml` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `jbct` | `org.pragmatica-lite:jbct-parent` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of jbct-maven-plugin) |
 | `jbct/jbct-cli` | `org.pragmatica-lite:jbct-cli` | jar | skip | the `jbct` CLI and its libraries reach users through the install script and GitHub releases, not as a dependency; `jbct init` and `jbct add-*` reference none of them |
+| `jbct/jbct-async-check` | `org.pragmatica-lite:jbct-async-check` | jar | publish | template dependency (provided) and the compiler `annotationProcessorPaths` entry beside `slice-processor` (JBCT-ASYNC-01, type-attributed `Promise` callback check); no dependencies of its own |
 | `jbct/jbct-core` | `org.pragmatica-lite:jbct-core` | jar | publish | compile/runtime dependency of jbct-maven-plugin |
 | `jbct/jbct-derive` | `org.pragmatica-lite:jbct-derive` | jar | skip | the `jbct` CLI and its libraries reach users through the install script and GitHub releases, not as a dependency; `jbct init` and `jbct add-*` reference none of them |
 | `jbct/jbct-format` | `org.pragmatica-lite:jbct-format` | jar | publish | compile/runtime dependency of jbct-maven-plugin |
@@ -199,8 +203,35 @@ The limits are cumulative per month, so a second release in the same month needs
 | `jbct/slice-processor` | `org.pragmatica-lite:slice-processor` | jar | publish | template dependency (provided) and the compiler `annotationProcessorPaths` entry |
 | `jbct/slice-processor-tests` | `org.pragmatica-lite:slice-processor-tests` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `script-gate` | `org.pragmatica-lite:script-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
+| `terra` | `org.pragmatica-lite:terra` | pom | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/example-apps` | `org.pragmatica-lite:terra-example-apps` | pom | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-account` | `org.pragmatica-lite:terra-banking-account` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-app` | `org.pragmatica-lite:terra-banking-app` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-exchange` | `org.pragmatica-lite:terra-banking-exchange` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-fraud` | `org.pragmatica-lite:terra-banking-fraud` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-shared` | `org.pragmatica-lite:terra-banking-shared` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-transfer` | `org.pragmatica-lite:terra-banking-transfer` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/comprehensive-persistence` | `org.pragmatica-lite:terra-comprehensive-persistence` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-app` | `org.pragmatica-lite:terra-ecommerce-app` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-fulfillment` | `org.pragmatica-lite:terra-ecommerce-fulfillment` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-inventory` | `org.pragmatica-lite:terra-ecommerce-inventory` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-order` | `org.pragmatica-lite:terra-ecommerce-order` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-payment` | `org.pragmatica-lite:terra-ecommerce-payment` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-pricing` | `org.pragmatica-lite:terra-ecommerce-pricing` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-shared` | `org.pragmatica-lite:terra-ecommerce-shared` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/pg-showcase` | `org.pragmatica-lite:terra-pg-showcase` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/pricing-engine` | `org.pragmatica-lite:terra-pricing-engine` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/step-composition` | `org.pragmatica-lite:terra-step-composition` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/tests` | `org.pragmatica-lite:terra-example-app-tests` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/url-shortener` | `org.pragmatica-lite:terra-url-shortener` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/url-shortener-v2` | `org.pragmatica-lite:terra-url-shortener-v2` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/examples` | `org.pragmatica-lite:terra-examples` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/http` | `org.pragmatica-lite:terra-http` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/launcher` | `org.pragmatica-lite:terra-launcher` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/maven-plugin` | `org.pragmatica-lite:terra-maven-plugin` | maven-plugin | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/runtime` | `org.pragmatica-lite:terra-runtime` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
 | `test-logging` | `org.pragmatica-lite:test-logging` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-38 modules publish, 109 skip (147 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+42 modules publish, 137 skip (179 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).

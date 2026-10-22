@@ -77,7 +77,7 @@ class AppHttpServerSecurityGridTest {
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:grid:1.0.0").unwrap();
     private static final String VALID_API_KEY = "sec-grid-test-key-13579";
     private static final String UNREACHABLE_JWKS = "http://127.0.0.1:1/.well-known/jwks.json";
-    private static final int PORT = 19094;
+    private int port;
     private static final String SERVED = "served-locally";
 
     private AppHttpServer server;
@@ -96,7 +96,7 @@ class AppHttpServerSecurityGridTest {
         AppHttpConfig config() {
             return switch (this) {
                 case NONE -> appHttp(SecurityMode.NONE, Option.empty());
-                case API_KEY -> AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY));
+                case API_KEY -> AppHttpConfig.appHttpConfig(0, Set.of(VALID_API_KEY));
                 case API_KEY_WITHOUT_KEYS -> appHttp(SecurityMode.API_KEY, Option.empty());
                 case JWT_WITHOUT_CONFIG -> appHttp(SecurityMode.JWT, Option.empty());
                 case JWT_WITH_CONFIG -> appHttp(SecurityMode.JWT, Option.some(JwtConfig.jwtConfig(UNREACHABLE_JWKS).unwrap()));
@@ -105,7 +105,7 @@ class AppHttpServerSecurityGridTest {
 
         private static AppHttpConfig appHttp(SecurityMode mode, Option<JwtConfig> jwtConfig) {
             return AppHttpConfig.appHttpConfig(true,
-                                               PORT,
+                                               0,
                                                Map.of(),
                                                AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
                                                mode,
@@ -291,7 +291,8 @@ class AppHttpServerSecurityGridTest {
                                              Option.none(),
                                              Option.none(),
                                              Option.none());
-        server.start().await().unwrap();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
     }
 
     private void stopServer() {
@@ -302,7 +303,7 @@ class AppHttpServerSecurityGridTest {
     }
 
     private HttpResponse<String> get(String path, Option<String> authorization) throws Exception {
-        var builder = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + PORT + path)).GET();
+        var builder = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET();
 
         authorization.onPresent(value -> builder.header("Authorization", value));
 

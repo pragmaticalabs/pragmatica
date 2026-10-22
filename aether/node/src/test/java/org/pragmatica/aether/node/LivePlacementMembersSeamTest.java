@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
@@ -21,7 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The #1550 wiring pin, at the REAL seam. `AetherNode.livePlacementMembers` is the member set the stream
+/// The #1550 wiring pin, at the REAL seam. `StreamAssembly.livePlacementMembers` is the member set the stream
 /// `ReplicaSetController` places partitions over. Since #1390 the voter set it is bounded by
 /// (`TopologyObserver.coreNodes()`) is health-independent, so a dead voter stays in it; placing over the
 /// voters alone kept a killed owner as the HRW winner forever. These tests run in the per-PR suite, unlike
@@ -71,7 +72,7 @@ class LivePlacementMembersSeamTest {
 
     @Test
     void livePlacementMembers_allVotersHealthy_placesOverEveryVoter() {
-        assertThat(AetherNode.livePlacementMembers(VOTERS, healthyFsm())).containsExactlyInAnyOrder(SELF,
+        assertThat(StreamAssembly.livePlacementMembers(VOTERS, healthyFsm())).containsExactlyInAnyOrder(SELF,
                                                                                                     PEER_B,
                                                                                                     PEER_C);
     }
@@ -82,7 +83,7 @@ class LivePlacementMembersSeamTest {
     @Test
     void livePlacementMembers_ownerDeparted_excludesItAndReResolvesOwnerToSurvivor() {
         var fsm = healthyFsm();
-        var before = AetherNode.livePlacementMembers(VOTERS, fsm);
+        var before = StreamAssembly.livePlacementMembers(VOTERS, fsm);
         var partition = partitionOwnedByPeer(before);
         var deadOwner = ownerOver(before, partition);
 
@@ -91,7 +92,7 @@ class LivePlacementMembersSeamTest {
         assertThat(VOTERS).as("arming: a dead voter stays in the installed voter set")
                           .contains(deadOwner);
 
-        var after = AetherNode.livePlacementMembers(VOTERS, fsm);
+        var after = StreamAssembly.livePlacementMembers(VOTERS, fsm);
 
         assertThat(after).as("a departed voter must leave stream placement")
                          .doesNotContain(deadOwner)
@@ -107,13 +108,13 @@ class LivePlacementMembersSeamTest {
 
         fsm.onSwimSuspect(PEER_B, 2L);
 
-        assertThat(AetherNode.livePlacementMembers(VOTERS, fsm)).contains(PEER_B);
+        assertThat(StreamAssembly.livePlacementMembers(VOTERS, fsm)).contains(PEER_B);
     }
 
     /// Voters bound the set: a counted core that is not an installed voter never enters placement.
     @Test
     void livePlacementMembers_countedButNotInstalled_excludesIt() {
-        assertThat(AetherNode.livePlacementMembers(Set.of(SELF, PEER_B), healthyFsm())).containsExactlyInAnyOrder(SELF,
+        assertThat(StreamAssembly.livePlacementMembers(Set.of(SELF, PEER_B), healthyFsm())).containsExactlyInAnyOrder(SELF,
                                                                                                                    PEER_B);
     }
 
@@ -122,7 +123,7 @@ class LivePlacementMembersSeamTest {
     @Test
     void livePlacementMembersSupplier_ownerDeparted_nextReadExcludesIt() {
         var fsm = healthyFsm();
-        var source = AetherNode.livePlacementMembers(() -> VOTERS, fsm);
+        var source = StreamAssembly.livePlacementMembers(() -> VOTERS, fsm);
 
         assertThat(source.get()).contains(PEER_C);
 
@@ -138,8 +139,8 @@ class LivePlacementMembersSeamTest {
 
         fsm.onSwimDeparted(PEER_C, 2L);
 
-        assertThat(AetherNode.streamPlacementMembers(new AtomicReference<>(),
-                                                     AetherNode.livePlacementMembers(() -> VOTERS, fsm)))
+        assertThat(StreamAssembly.streamPlacementMembers(new AtomicReference<>(),
+                                                     StreamAssembly.livePlacementMembers(() -> VOTERS, fsm)))
             .containsExactlyInAnyOrder(SELF, PEER_B);
     }
 
@@ -152,7 +153,7 @@ class LivePlacementMembersSeamTest {
         var fsm = healthyFsm();
         var controller = ReplicaSetController.replicaSetController(ReplicaRegistry.replicaRegistry(),
                                                                    SELF,
-                                                                   AetherNode.livePlacementMembers(() -> VOTERS, fsm),
+                                                                   StreamAssembly.livePlacementMembers(() -> VOTERS, fsm),
                                                                    VOTERS::size,
                                                                    CATALOG,
                                                                    (_, _) -> {},
@@ -169,8 +170,8 @@ class LivePlacementMembersSeamTest {
         controller.reconcile();
 
         assertThat(controller.reconciledMembers()).doesNotContain(deadOwner);
-        assertThat(AetherNode.streamPlacementMembers(new AtomicReference<>(controller),
-                                                     AetherNode.livePlacementMembers(() -> VOTERS, fsm)))
+        assertThat(StreamAssembly.streamPlacementMembers(new AtomicReference<>(controller),
+                                                     StreamAssembly.livePlacementMembers(() -> VOTERS, fsm)))
             .as("backfill orchestrator once the controller is bound")
             .doesNotContain(deadOwner);
         assertThat(controller.ownerFor(STREAM, partition).or(deadOwner)).isNotEqualTo(deadOwner);

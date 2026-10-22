@@ -1,6 +1,6 @@
 # Aether Forge: Local Development Environment
 
-Aether Forge is a built-in local development environment for running, testing, and debugging Aether clusters. It provides a visual dashboard, real-time monitoring, and chaos engineering capabilities — all in a single process.
+Aether Forge is a built-in local development environment for running, testing, and debugging Aether clusters. It provides a REST API for status, load generation and chaos engineering — all in a single process. (Forge has no web UI: the dashboard was removed in 1.0.0-rc5.)
 
 ## Why Forge?
 
@@ -15,7 +15,7 @@ Traditional testing approaches fall short for distributed systems:
 
 Forge provides:
 - **Local multi-node cluster** — Run 5+ nodes in a single process
-- **Visual dashboard** — Real-time cluster topology, per-node metrics (CPU, heap, leader status)
+- **Status API** — Cluster roster and per-node metrics (CPU, heap, leader status) over REST
 - **Management API access** — Each node exposes management API (ports 5150+)
 - **Cluster operations** — Add/remove nodes, rolling restarts, scale up/down
 - **Chaos operations** — Kill nodes, inject failures, observe recovery
@@ -32,7 +32,7 @@ If your project was created with `jbct init --slice`, it includes a `run-forge.s
 ./run-forge.sh
 ```
 
-This starts Forge with sensible defaults. Open the dashboard at `http://localhost:8888`.
+This starts Forge with sensible defaults. Its REST API is served at `http://localhost:8888`.
 
 ### Using the installed Forge (Manual)
 
@@ -48,19 +48,20 @@ aether-forge \
   --load-config examples/load-config.toml \
   --auto-start
 
-# Open dashboard
-open http://localhost:8888
+# Check cluster status
+curl http://localhost:8888/api/nodes/status
 ```
 
 **Contributor path** (a Forge built from a monorepo checkout, e.g. to test a Forge change):
 `mvn package -pl aether/forge/forge-core -am -DskipTests`, then `java -jar aether/forge/forge-core/target/aether-forge.jar`
 with the same arguments. The example scripts take this path only with `./run-forge.sh --forge-from-source`.
 
-The dashboard shows:
-- **Cluster topology** — Nodes with ports, leader indicator, health status
+`GET /api/nodes/status` reports:
+- **Cluster roster** — Nodes with ports, leader indicator, health status
 - **Per-node metrics** — CPU usage, heap memory, leader status
-- **Cluster controls** — Add node, kill node, rolling restart
-- **Management access** — Direct links to each node's management API (ports 5150+)
+
+Cluster controls (add node, kill node, rolling restart) are the `/api/chaos/*` endpoints below, and
+each node's management API is on ports 5150+.
 
 ### CLI Options
 
@@ -84,7 +85,7 @@ Environment variables override CLI arguments:
 | FORGE_BLUEPRINT | Path to blueprint file |
 | FORGE_LOAD_CONFIG | Path to load config file |
 | FORGE_AUTO_START | Set to "true" to auto-start load |
-| FORGE_PORT | Dashboard port (default: 8888) |
+| FORGE_PORT | Forge API port (default: 8888) |
 | CLUSTER_SIZE | Number of nodes (default: 5) |
 | LOAD_RATE | Initial load rate (legacy support) |
 | AETHER_FORGE_DATA | Absolute path of the durable data directory (overrides the per-project default) |
@@ -189,7 +190,7 @@ Three things worth knowing:
 nodes = 5                    # Number of nodes to simulate
 base_port = 6000             # Base QUIC/consensus UDP port (node i binds base_port + i)
 management_port = 5150       # Base management port
-dashboard_port = 8888        # Dashboard port
+dashboard_port = 8888        # Forge API port (key name predates the dashboard removal)
 app_http_port = 8070         # Base app HTTP port (load target)
 start_timeout_seconds = 60   # How long to wait for the cluster to finish forming, and for the startup blueprint deploy, before exiting
 ```
@@ -348,13 +349,13 @@ rate = "500/s"
 duration = "5m"
 ```
 
-### Dashboard Load Controls
+### Load Controls
 
-The dashboard provides controls for load generation:
+The load endpoints below provide:
 - **Start/Stop** — Start or stop all load generation
 - **Pause/Resume** — Temporarily pause without stopping
-- **Per-target metrics** — View rate, latency, success rate per target
-- **Upload Config** — Paste TOML configuration directly
+- **Per-target metrics** — Rate, latency, success rate per target (`/api/load/status`)
+- **Upload Config** — POST TOML configuration directly
 
 ### REST API
 
@@ -387,17 +388,13 @@ curl http://localhost:8888/api/load/status
 
 ## Chaos Operations
 
-### Via Dashboard
-
-The dashboard provides one-click chaos operations:
+### Operations
 
 - **Kill Node**: Immediately terminate a node
-- **Kill Leader**: Terminate the current leader node
-- **Rolling Restart**: Toggle continuous rolling restart (kills random node, waits 2.5s, adds replacement, repeats)
+- **Kill Leader**: Terminate the current leader node (kill the `leaderId` reported by `/api/nodes/status`)
+- **Rolling Restart**: Continuous rolling restart (kills random node, waits 2.5s, adds replacement, repeats); start and stop are separate calls
 - **Add Node**: Add a new node to the cluster
 - **Reset Metrics**: Clear all metrics and events
-
-The Rolling Restart button toggles between "Rolling Restart" (start) and "Stop Restart" (stop) states.
 
 ### Via REST API
 
@@ -440,31 +437,6 @@ curl http://localhost:8888/api/chaos/status
 | CPU_SPIKE | Simulate CPU load | nodeId, level |
 | MEMORY_PRESSURE | Simulate memory pressure | nodeId, level |
 
-## Dashboard Features
-
-### Topology View
-
-Visual representation of your cluster with:
-- Node status (healthy, unhealthy, leader)
-- Management port links
-- Slice distribution
-
-### Metrics Charts
-
-Real-time charts showing:
-- Requests per second
-- Latency distribution
-- Error rates
-- CPU and memory per node
-
-### Event Log
-
-Timeline of cluster events:
-- Node joins/leaves
-- Leader elections
-- Scaling events
-- Chaos operations
-
 ## Troubleshooting
 
 ### Forge Won't Start
@@ -488,11 +460,11 @@ curl http://localhost:8888/api/load/status
 curl http://localhost:8888/api/load/config
 ```
 
-### Dashboard Not Loading
+### Forge API Not Answering
 
 ```bash
 # Check if server is running
-curl http://localhost:8888/health
+curl http://localhost:8888/api/forge/status
 
 # Check logs for errors
 ```

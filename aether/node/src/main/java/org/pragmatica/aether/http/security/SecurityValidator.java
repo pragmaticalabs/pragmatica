@@ -25,11 +25,11 @@ public interface SecurityValidator {
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 
     static SecurityValidator apiKeyValidator(Set<String> validKeys) {
-        return new ApiKeySecurityValidator(ApiKeySecurityValidator.fromKeySet(validKeys));
+        return HttpAuthenticator.apiKeyValidator(validKeys)::validate;
     }
 
     static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
-        return new ApiKeySecurityValidator(keyEntries);
+        return HttpAuthenticator.apiKeyValidator(keyEntries)::validate;
     }
 
     static SecurityValidator kvStoreAwareValidator(SecurityValidator configValidator,
@@ -38,7 +38,7 @@ public interface SecurityValidator {
     }
 
     static SecurityValidator jwtValidator(JwtConfig jwtConfig) {
-        return new JwtSecurityValidator(jwtConfig);
+        return HttpAuthenticator.jwtValidator(jwtConfig)::validate;
     }
 
     /// GRANTS ADMIN + SERVICE TO EVERY CALLER. Named `permitAll` rather than `noOp` because "no-op"
@@ -64,6 +64,9 @@ public interface SecurityValidator {
 
     /// The safe "no credentials are configured" validator: public routes pass with an EMPTY context,
     /// everything else is refused with [SecurityError#NO_VALIDATOR_CONFIGURED] (#573).
+    ///
+    /// Installed by the app-HTTP plane's `SecurityMode.NONE` arm. The management plane does NOT use it: under
+    /// `security_mode = "none"` that plane never consults a validator and is fully open (#1121).
     ///
     /// "No validator configured" must mean NO AUTHORITY, never ALL AUTHORITY. Returning a failure
     /// rather than an empty success is deliberate: [KvStoreApiKeyValidator] consults its delegate

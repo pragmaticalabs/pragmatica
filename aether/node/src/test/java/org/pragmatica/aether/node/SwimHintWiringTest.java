@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
+import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.cluster.metrics.MetricObservation;
 
 import java.util.List;
@@ -32,7 +34,7 @@ class SwimHintWiringTest {
 
     @Test
     void quicPeerStateListener_onPeerLeft_sendsLinkLostPeerLeftHint() {
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerLeft(PEER);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerLeft(PEER);
 
         assertThat(hints).hasSize(1);
         var hint = (TransportObservation.PeerUnreachable) hints.getFirst();
@@ -46,7 +48,7 @@ class SwimHintWiringTest {
 
     @Test
     void quicPeerStateListener_onPeerReconnected_startsLinkEpochAndSendsReachable() {
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerReconnected(PEER);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerReconnected(PEER);
 
         assertThat(linkEpochs)
             .as("A reconnect discards ClusterSync misses counted against the previous link (R-a)")
@@ -56,7 +58,7 @@ class SwimHintWiringTest {
 
     @Test
     void quicPeerStateListener_onPeerJoined_startsLinkEpochAndSendsReachable() {
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerJoined(PEER);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerJoined(PEER);
 
         assertThat(linkEpochs).containsExactly(PEER);
         assertThat(hints).containsExactly(new TransportObservation.PeerReachable(PEER));
@@ -66,7 +68,7 @@ class SwimHintWiringTest {
     void quicPeerStateListener_onPeerIdentityRefuted_refutesTheDialedIdentityOnly() {
         var claimant = new NodeId("node-claimant");
 
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerIdentityRefuted(PEER, claimant);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerIdentityRefuted(PEER, claimant);
 
         assertThat(hints)
             .as("#1830: the dialed identity is refuted; the node answering at its address is only named")
@@ -76,7 +78,7 @@ class SwimHintWiringTest {
 
     @Test
     void pingTimeoutReporter_sendsPeerUnresponsivePingTimeoutHint() {
-        AetherNode.pingTimeoutReporter(hints::add).accept(PEER);
+        SwimAssembly.pingTimeoutReporter(hints::add).accept(PEER);
 
         assertThat(hints).hasSize(1);
         var hint = (TransportObservation.PeerUnreachable) hints.getFirst();
@@ -89,7 +91,7 @@ class SwimHintWiringTest {
 
     @Test
     void pongResponsiveReporter_sendsPeerResponsiveForPongSender() {
-        AetherNode.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(PEER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+        SwimAssembly.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(PEER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
                                    0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         assertThat(hints)
@@ -101,7 +103,7 @@ class SwimHintWiringTest {
     /// excludes self; pongs go to the leader only), so this pins the guard, not a producer.
     @Test
     void pongResponsiveReporter_selfPong_sendsNothing() {
-        AetherNode.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(SELF, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+        SwimAssembly.pongResponsiveReporter(SELF, hints::add).accept(new ClusterSyncPong(SELF, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
                                    0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         assertThat(hints).as("There is no hint about self to retract").isEmpty();

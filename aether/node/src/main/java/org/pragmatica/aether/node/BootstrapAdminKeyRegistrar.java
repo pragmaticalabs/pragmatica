@@ -125,7 +125,7 @@ public final class BootstrapAdminKeyRegistrar {
             return;
         }
 
-        bootstrapLeg.get().onSuccess(this::latchSuccess).onFailure(this::onTransientFailure);
+        bootstrapLeg.get().withSuccess(this::latchSuccess).withFailure(this::onTransientFailure);
     }
 
     @Contract

@@ -12,10 +12,10 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Promise;
 
 
-/// #1105: how every Forge proxy route calls an embedded node's management API. Each request carries the
+/// #1105: how every Forge call to an embedded node's management API is made. Each request carries the
 /// operator's credential as `X-API-Key` when one is configured: with a sibling `aether.toml` declaring keys
-/// the nodes run `SecurityMode.API_KEY`, and a keyless proxy call is refused on the node (`AUTH_FAILURE`)
-/// while the dashboard shows the call failing. One builder for all proxy classes, so no route can forget it.
+/// the nodes run `SecurityMode.API_KEY`, and a keyless call is refused on the node (`AUTH_FAILURE`). One
+/// builder for every caller, so no call can forget it.
 public record NodeHttp(JdkHttpOperations ops, OperatorKey operatorKey) {
     static final String API_KEY_HEADER = "X-API-Key";
 

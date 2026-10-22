@@ -35,7 +35,7 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 /// That rule governs QUERIES. Clear was a MUTATION of state that no longer exists, and it was
 /// measurably already a no-op: `activeAlertsAsList` re-adds every stream `AlertInjected` whose id is
 /// absent from the local map, so clearing the map emptied the dedup set and the alerts returned on the
-/// next read — 2 seconds later, at the dashboard's poll rate. It only appeared to work in the
+/// next read — 2 seconds later, at the removed dashboard's poll rate. It only appeared to work in the
 /// bootstrap window, when the stream read returns empty. Threshold alerts are re-derived from live
 /// metrics within one tick, so clearing those was equally transient.
 ///

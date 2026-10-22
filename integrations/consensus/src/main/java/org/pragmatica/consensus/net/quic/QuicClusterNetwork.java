@@ -44,6 +44,7 @@ import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.ConnectionError;
+import org.pragmatica.consensus.net.InboundMessageAuthority;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
@@ -189,17 +190,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// window has long since passed.
     private final Map<NodeId, Long> firstObservedMissingMs = new ConcurrentHashMap<>();
     private volatile LongSupplier wallClockMs = System::currentTimeMillis;
+    private volatile LongSupplier reconcileTickOffsetMs = QuicClusterNetwork::drawReconcileTickOffsetMs;
 
     /// Periodic missing-peer reconciler tunables. The reconciler runs every
     /// `RECONCILE_TICK` and, for any configured peer whose `PeerState.phase()` is
     /// not CONNECTED, dispatches a `connectPeer(...)` call gated by a per-peer
-    /// jittered exponential backoff (initial 5s, cap 60s — matches Theme I patterns).
+    /// jittered exponential backoff (initial 5s, cap 60s — matches Theme I patterns); while the
+    /// raw-SWIM liveness gate reports the peer alive the cap is the initial 5s (one dial per tick).
     /// Closes the asymmetric-recreation gap: when a node container is recreated
     /// mid-cluster it may handshake with most peers but permanently miss one, leaving
     /// no traffic to clear the sticky SUSPECTED snapshot state.
     private static final TimeSpan RECONCILE_TICK = TimeSpan.timeSpan(5L).seconds();
     private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
+
+    /// Minimum spacing between reconciler dials to a peer SWIM reports alive: the lower jitter bound of the
+    /// initial delay (4 s). With SWIM alive the backoff cap equals its initial value; a peer SWIM does not see
+    /// alive keeps the 60 s cap. The spacing sits below the smallest gap between two jittered ticks
+    /// (`RECONCILE_TICK` - `RECONCILE_TICK_JITTER_MS` = 4.2 s), so every tick may dial.
+    private static final long RECONCILE_ALIVE_SPACING_MS = Math.round(RECONCILE_BACKOFF_INITIAL_MS * JitterUtil.LIGHT_MIN_FACTOR);
+
+    /// Each fixed-rate tick runs a random `[0, RECONCILE_TICK_JITTER_MS)` after its slot, drawn per node and per
+    /// tick, so nodes that all see a healed peer (same start time, same tick phase) do not dial it in lockstep.
+    /// The jitter acts on the dial instant itself; a jitter on the spacing gate alone cannot, because the dial
+    /// only ever happens on a tick.
+    private static final long RECONCILE_TICK_JITTER_MS = 800L;
     /// Multiple of the QUIC hello/handshake timeout after which a peer pinned in CONNECTING is
     /// treated as a hung dial and force-evicted by the reconciler so a fresh re-dial can proceed.
     /// A dial that neither completes (`onPeerConnected`) nor fails (`onConnectFailed`) — e.g. a
@@ -219,9 +234,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// window and can no longer handshake, so an authenticated Hello arriving AFTER that window is
     /// a false-DEAD survivor, not a drained ghost — accept it (the authenticated Hello is itself
     /// proof-of-life). Below the floor the original DENY stands (covers the deliberate-drain
-    /// window). Mirrors the aether drain grace-terminate = `MembershipConfig.DEFAULT_SPLIT_TIMEOUT
-    /// (15s) × 2 = 30s` (aether/aether-deployment `MembershipConfig`); the consensus layer cannot
-    /// depend on that module, so the value is mirrored here and kept in sync by this reference.
+    /// window). A copy of the aether drain grace-terminate assumption `MembershipConfig.DEFAULT_SPLIT_TIMEOUT
+    /// (15s) × 2 = 30s` (aether/aether-deployment `MembershipConfig`): the consensus layer cannot depend on that
+    /// module, so the value is duplicated here and nothing keeps it in sync. The aether side reaps after the
+    /// operator-configurable `autoHealConfig.provisioningTimeout()` and the split timeout is configurable too, so
+    /// the authority for the real window is that module's, not this constant.
     private static final long TOMBSTONE_READMIT_GRACE_FLOOR_MS = 30_000L;
     /// Multiple of the transport keepalive interval (= ClusterSync `pingInterval`) after which a
     /// CONNECTED peer that has received NO inbound frame on ANY lane is treated as a silent zombie
@@ -261,6 +278,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// earlier) and fed directly with the dialer expected-vs-actual Hello diagnostic
     /// ([#journalDialerHello]). Diagnostic-only; defaults to a no-op.
     private volatile Consumer<PeerTransitionRecord> peerTransitionListener = ignored -> {};
+
+    /// Test hook (transport overhaul N33): told of every attach decision, DUPLICATE and REJECTED included, which
+    /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
+    private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
 
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
@@ -683,11 +704,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var serverRef = server;
         // #1461: arming is a DEPENDENT step (`withSuccess`), not an `onSuccess` handler, which runs asynchronously and
         // may land after the returned promise resolves: a completed start then implies the periodic tasks are armed.
+        // The same holds for the ready hooks (a caller that awaited the start has them fired) and for the failed-start
+        // reset of `isRunning` (a retry after the failure is not turned away by a CAS the late handler had not cleared).
+        // The start promise resolves on a Netty I/O thread and a dependent step runs on the resolving thread, so the hooks
+        // themselves are an ASYNC chain step (`fireReadyHooks`): the start still waits for them, but they never run on the
+        // I/O thread (the only production hook binds SWIM's UDP port and awaits it).
         return serverRef.start(port)
                         .map(unit -> captureLoopbackLoop(serverRef, unit))
                         .withSuccess(_ -> armPeriodicTasks())
-                        .onSuccess(_ -> fireReadyHooks())
-                        .onFailure(this::onStartFailed)
+                        .withSuccess(_ -> transportReady.set(true))
+                        .flatMap(this::fireReadyHooks)
+                        .withFailure(this::onStartFailed)
                         .mapToUnit();
     }
 
@@ -717,11 +744,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// Runs as an async chain step of the start (off the I/O thread, before the start resolves), so a hook that throws must not fail the start it reports on: each hook is
+    /// isolated and a throw is logged (the hooks after it still run, as the detached handler never guaranteed).
+    ///
+    /// FER (degrade forward): the start has already succeeded, so a hook's throw is absorbed with a WARN rather than reported
+    /// as a failed start. Guarantee earned: the start's outcome is the transport's, not a hook's. Mechanism: a single run per
+    /// hook; the WARN is the only record of a lost hook.
+    private Promise<Unit> fireReadyHooks(Unit unit) {
+        return Promise.promise(this::runReadyHooks);
+    }
+
     @Contract
-    private void fireReadyHooks() {
-        transportReady.set(true);
-        readyHooks.forEach(Runnable::run);
+    private void runReadyHooks(Promise<Unit> done) {
+        readyHooks.forEach(this::runReadyHook);
         readyHooks.clear();
+        done.succeed(unit());
+    }
+
+    @Contract
+    private void runReadyHook(Runnable hook) {
+        Result.lift(hook::run).onFailure(cause -> log.warn("Transport-ready hook failed: {}", cause.message()));
     }
 
     /// #487: pin ONE event loop from the (now-started) server's group as the self-loopback lane, so a
@@ -759,7 +801,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// task via `CancellableTask.set` which cancels the old future first.
     @Contract
     private void startMissingPeerReconciler() {
-        var future = SharedScheduler.scheduleAtFixedRate(this::reconcileMissingPeersTick, RECONCILE_TICK, RECONCILE_TICK);
+        var future = SharedScheduler.scheduleAtFixedRate(this::scheduleJitteredReconcileTick,
+                                                         RECONCILE_TICK,
+                                                         RECONCILE_TICK);
 
         reconcilerTask.set(future);
         log.debug("Missing-peer reconciler scheduled (tick={}ms, backoff initial={}ms, cap={}ms)",
@@ -892,7 +936,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // duplicate ADD. Terminal removal of a *confirmed-dead* peer is a separate concern
         // handled by `departurePermanent` (the leader's co-confirmed-death verdict /
         // DECOMMISSIONED / SWIM DepartedObserved), which drives the peer to REMOVED. Because
-        // restart is disabled cluster-wide, a same-NodeId never returns; the only paths from
+        // restart is disabled cluster-wide, a restarted process (new boot token) is refused; only the same process the
+        // cluster wrongly declared dead can come back, through `readmit`; the only paths from
         // EVICTED to REMOVED are `departurePermanent` and shutdown — `disconnect` itself never
         // makes the transition terminal.
         //
@@ -965,6 +1010,35 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// The new connection lost the arbitration. When the incumbent was dialed by the other end this is the dual-dial
+    /// race: the peer may already have written on the loser, so it drains like [#closeSupersededConnection] (#2030).
+    private void closeDuplicate(QuicPeerConnection loser, PeerState state) {
+        var kept = state.activeConnection();
+
+        kept.onPresent(survivor -> observeSupersede(loser, survivor));
+        if (kept.filter(survivor -> isDualDialLoser(loser, survivor)).isPresent()) {
+            drainLoser(loser);
+        } else {
+            loser.close();
+        }
+    }
+
+    /// #2030: finish the loser's lanes and close it when they have flushed or the bound passes; how it ended is
+    /// counted and logged so the bound can be tuned from the field.
+    private void drainLoser(QuicPeerConnection loser) {
+        loser.closeAfterDrain(QuicPeerConnection.DRAIN_BOUND_MS, end -> recordDrainEnd(loser, end));
+    }
+
+    @Contract
+    private void recordDrainEnd(QuicPeerConnection loser, QuicPeerConnection.DrainEnd end) {
+        quicMetrics.onLoserDrainEnded(end == QuicPeerConnection.DrainEnd.FLUSHED);
+        log.info("Dual-dial loser to peer {} closed: {}",
+                 loser.peerId(),
+                 end == QuicPeerConnection.DrainEnd.FLUSHED
+                 ? "every lane flushed"
+                 : "drain bound of " + QuicPeerConnection.DRAIN_BOUND_MS + " ms reached with lanes still open");
+    }
+
     private void closeDroppedConnection(QuicPeerConnection connection) {
         connection.close()
                   .onFailure(cause -> log.warn("Failed to close dropped connection for peer {}: {}",
@@ -977,28 +1051,52 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void closeSupersededConnection(QuicPeerConnection superseded, QuicPeerConnection replacement) {
         observeSupersede(superseded, replacement);
         quicMetrics.onConnectionClosed();
-        closeDroppedConnection(superseded);
+        if (isDualDialLoser(superseded, replacement)) {
+            // #2030 shape 2: both peers are alive and dialed each other, so the loser still carries frames the peer
+            // is reading; let what is written on it flush before it closes. Shape 1 (the same dialer re-dialed over a
+            // link it judged dead) keeps the immediate close: its peer has abandoned the link, a drain would only burn
+            // its bound.
+            drainLoser(superseded);
+        } else {
+            closeDroppedConnection(superseded);
+        }
     }
 
-    /// #1727 — what is at risk when a superseded connection is closed at once. The close discards frames
-    /// quiche accepted but the peer has not acked, and there is no public API for acked bytes, so this counts
-    /// what IS observable: lanes with writes not yet accepted by quiche (unflushed) and lanes written within
-    /// [QuicPeerConnection#SUPERSEDE_RISK_WINDOW_NANOS] (possibly unacked). The cloud campaign reads the rate
-    /// from `quic_superseded_lane_streams_at_risk_total` to decide whether a drain-before-close is needed.
+    /// What becomes of the loser, for the supersede log line.
+    static String closeDisposition(QuicPeerConnection loser, QuicPeerConnection winner) {
+        return isDualDialLoser(loser, winner)
+               ? "draining before close"
+               : "closing at once, writes not yet delivered are discarded";
+    }
+
+    /// The two links were dialed by different ends — the dual-dial race — as opposed to one end re-dialing.
+    static boolean isDualDialLoser(QuicPeerConnection loser, QuicPeerConnection winner) {
+        return loser.initiator()
+                    .flatMap(old -> winner.initiator()
+                                          .map(current -> !old.equals(current)))
+                    .or(false);
+    }
+
+    /// #1727 — what a superseded or duplicate connection holds when its arbitration is decided: frames quiche
+    /// accepted but the peer has not acked. There is no public API for acked bytes, so this counts what IS observable:
+    /// lanes with writes not yet accepted by quiche (unflushed) and lanes written within
+    /// [QuicPeerConnection#SUPERSEDE_RISK_WINDOW_NANOS] (possibly unacked). An immediate close discards them; the
+    /// loser of a dual dial is drained instead (#2030), so for it the figure is what the drain has to flush.
+    /// `quic_superseded_lane_streams_at_risk_total` accumulates it for both shapes.
     @Contract
     private void observeSupersede(QuicPeerConnection superseded, QuicPeerConnection replacement) {
         var risk = superseded.laneWritesAtRisk(System.nanoTime());
 
         quicMetrics.onSupersededClose(risk.lanesAtRisk());
-        log.info("Superseding connection to peer {} ({}): {} lane stream(s) with writes at risk of being discarded"
-                + " by the immediate close — {} with unflushed writes, {} written within {} ms (unacked writes are"
-                + " not observable)",
+        log.info("Superseding connection to peer {} ({}): {} lane stream(s) with unflushed or recent writes — {} with"
+                + " unflushed writes, {} written within {} ms (unacked writes are not observable); {}",
                  superseded.peerId(),
                  supersedeShape(superseded, replacement),
                  risk.lanesAtRisk(),
                  risk.unflushedLanes(),
                  risk.recentLanes(),
-                 TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS));
+                 TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS),
+                 closeDisposition(superseded, replacement));
     }
 
     /// Same dialer on both connections = the designated dialer re-dialed (same-direction re-dial); different
@@ -1072,6 +1170,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         return Promise.success(dispatchPayloadWithOutcome(peerId, message));
+    }
+
+    @Override
+    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId,
+                                                                         M message,
+                                                                         TimeSpan offlineTtl) {
+        if (blackholed) {
+            return Promise.success(new WriteOutcome.Sent(peerId));
+        }
+
+        return Promise.success(dispatchPayloadWithOutcome(peerId, message, expiryWithin(offlineTtl)));
     }
 
     @Override
@@ -1164,7 +1273,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Rotate TLS certificates by restarting the QUIC server with new SSL contexts.
-    /// Existing connections drain naturally; peers reconnect automatically.
+    /// Connections this node accepted close with the old server and their dialers reconnect; connections it dialed
+    /// are not drained and keep the old certificate until they end.
     @SuppressWarnings("JBCT-PAT-01")  // Lifecycle: stop old server, update contexts, start new
     public Promise<Unit> rotateCertificate(QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
         return boundPort().async(QuicTransportError.CertificateRotationFailed.FACTORY.apply("Server not running"))
@@ -1260,17 +1370,49 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         quicMetrics.onMessageReceived();
-        if (message instanceof Message.Wired wired && org.pragmatica.consensus.net.InboundMessageAuthority.isBound(sender,
-                                                                                                                   wired,
-                                                                                                                   proposalRelayMembership) && inboundMessagePolicy.test(sender,
-                                                                                                                                                                         wired) && inboundFaultFilter.test(sender,
-                                                                                                                                                                                                           wired)) {
-            router.route(wired);
+        if (message instanceof Message.Wired wired) {
+            routeWired(sender, wired);
         } else {
             log.trace("Non-routable message from {}: {}",
                       sender,
                       option(message).map(Object::getClass).map(Class::getSimpleName));
         }
+    }
+
+    /// Routes a wired message past the three inbound refusal gates, in order: origin binding, the
+    /// installed policy, the fault filter. Each refusal is counted on its own counter (#1535).
+    @Contract
+    private void routeWired(NodeId sender, Message.Wired wired) {
+        if (!InboundMessageAuthority.isBound(sender, wired, proposalRelayMembership)) {
+            refuse("claimed origin is not the authenticated peer", sender, wired, quicMetrics.onUnboundDrop());
+        } else if (!inboundMessagePolicy.test(sender, wired)) {
+            refuse("inbound message policy", sender, wired, quicMetrics.onPolicyDrop());
+        } else if (!inboundFaultFilter.test(sender, wired)) {
+            log.trace("Inbound fault filter dropped {} from {}",
+                      wired.getClass().getSimpleName(),
+                      sender);
+            quicMetrics.onFaultFilterDrop();
+        } else {
+            router.route(wired);
+        }
+    }
+
+    /// Operator-visible refusal: WARN on the first and then on every power-of-two occurrence, so a peer
+    /// that keeps sending refused traffic cannot flood the log. The counter carries the exact total.
+    @Contract
+    private void refuse(String gate, NodeId sender, Message.Wired wired, long total) {
+        if (isLoggedRefusal(total)) {
+            log.warn("Refused inbound {} from {} ({}); {} refused by this gate so far",
+                     wired.getClass().getSimpleName(),
+                     sender,
+                     gate,
+                     total);
+        }
+    }
+
+    /// The first refusal and every power-of-two occurrence after it (1, 2, 4, 8, ...) is logged.
+    static boolean isLoggedRefusal(long total) {
+        return Long.bitCount(total) == 1;
     }
 
     /// Consensus defence in depth (terminal removal): traffic from a retired NodeId — whether the
@@ -1464,11 +1606,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         if (!state.beginConnecting(System.nanoTime())) {
             // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
+            attachObserver.accept(new AttachObservation(peerId, "dial skipped", Option.none()));
+
             return;
         }
 
         var address = new InetSocketAddress(inetAddress, port);
         var attempt = dialAttempts.incrementAndGet();
+        // #2138: the dial's generation outranks every link of this pair seen so far, so both ends rank this link
+        // against any other identically; taken after beginConnecting succeeded, so each dial gets its own.
+        var generation = state.nextDialGeneration();
 
         log.info("Dial journal: attempt #{} to {} at {} started", attempt, peerId, address);
         // Per-ATTEMPT dial timeout (H10, Wave 5): the timeout must NOT fail the dial promise —
@@ -1483,7 +1630,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // over another link first, which abandons this attempt while its QUIC handshake is
         // incomplete (#1578). A late attach never refreshes the receipt-evidence liveness clock —
         // it only restarts the attach-grace phase age, see PeerState#markInbound.
-        clientRef.connect(peerId, address)
+        clientRef.connect(peerId, address, generation)
                  .onSuccess(conn -> onDialCompleted(peer, conn, attempt))
                  .onFailure(cause -> onDialFailed(peer, cause, attempt));
         armDialAttemptTimeout(peer);
@@ -1715,6 +1862,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
         outcome.superseded().onPresent(old -> closeSupersededConnection(old, connection));
+        attachObserver.accept(new AttachObservation(peerId,
+                                                    origin,
+                                                    Option.some(outcome.result())));
         boolean isReconnect;
 
         switch (outcome.result()) {
@@ -1737,7 +1887,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             }
             case PeerState.AttachResult.DUPLICATE -> {
                 log.debug("Duplicate connection from {}, closing new (existing is active)", peerId);
-                connection.close();
+                closeDuplicate(connection, state);
 
                 return;
             }
@@ -1933,6 +2083,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// dispatch flow as `dispatchPayload` but surfaces the synchronous local-transport
     /// verdict so the caller can fail-fast against unreachable replicas.
     private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message) {
+        return dispatchPayloadWithOutcome(peerId, message, capExpiry());
+    }
+
+    /// As [#dispatchPayloadWithOutcome(NodeId, Message.Wired)], for a request frame whose caller stops waiting at
+    /// `expiry` (#1996), as [#dispatchPayload(NodeId, Message.Wired, PeerState.Expiry)] does for the untracked send.
+    private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
         if (peerId.equals(self.id())) {
             return loopbackToSelf(message);
         }
@@ -1940,10 +2096,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
-            return dispatchToAbsentPeer(peerId, message);
+            return dispatchToAbsentPeer(peerId, message, expiry);
         }
 
-        return dispatchToPeer(state, message);
+        return dispatchToPeer(state, message, expiry);
     }
 
     /// #491: a unicast to a peer with NO PeerState. An authoritative MEMBER ([#swimMembershipAllows]) gets an
@@ -2483,7 +2639,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// A peer driven to terminal REMOVED by `departurePermanent` (restart disabled — a dead
-    /// NodeId never returns under the same id) must not be written to or retried. Distinct from
+    /// NodeId never returns as a new process under the same id) must not be written to or retried. Distinct from
     /// EVICTED (transient live-flap), which keeps buffering via `offerOutbound` and drains on
     /// reconnect — only REMOVED short-circuits here.
     private boolean isPeerRemoved(NodeId peerId) {
@@ -2495,7 +2651,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// One write attempt against the captured lane stream. Re-validated every attempt:
     /// if the channel went inactive or is still backpressured this fails (a `Cause`, never a
     /// throw) and the enclosing Retry either reschedules or gives up. A peer disconnecting
-    /// mid-retry therefore fails cleanly — the offline buffer handles reconnect delivery.
+    /// mid-retry therefore fails cleanly, but nothing re-buffers the frame: when the retries run
+    /// out the only action is a DEBUG line, the frame was already reported `Sent`, and recovery
+    /// is the layer above's (Rabia retransmit, the DHT quorum collector, caller deadlines).
     /// This is the atomic unit the Retry re-invokes, so it performs NO retry itself.
     private Promise<Unit> rawBackpressuredWrite(QuicStreamChannel ch,
                                                 byte[] bytes,
@@ -2666,17 +2824,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         reconnectBackoff.compute(peerId,
                                  (_, prior) -> {
                                      if (prior == null) {
-                                     allowed[0] = true;
+                                         allowed[0] = true;
 
-                                     return new ReconnectBackoff(nowMs + jittered(BACKOFF_INITIAL_MS),
-                                                                 BACKOFF_INITIAL_MS);
-                                 }
+                                         return new ReconnectBackoff(nowMs + jittered(BACKOFF_INITIAL_MS),
+                                                                     BACKOFF_INITIAL_MS);
+                                     }
 
                                      if (nowMs < prior.nextAttemptMs) {
-                                     allowed[0] = false;
+                                         allowed[0] = false;
 
-                                     return prior;
-                                 }
+                                         return prior;
+                                     }
 
                                      allowed[0] = true;
                                      var nextDelay = Math.min(prior.currentDelayMs * 2, BACKOFF_CAP_MS);
@@ -2697,6 +2855,25 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var factor = BACKOFF_JITTER_MIN + (BACKOFF_JITTER_MAX - BACKOFF_JITTER_MIN) * ThreadLocalRandom.current().nextDouble();
 
         return Math.max(1L, (long)(delayMs * factor));
+    }
+
+    /// Fixed-rate entry of the reconciler: defers the tick by a random offset below `RECONCILE_TICK_JITTER_MS`.
+    /// The deferred tick re-checks `isRunning`, so a tick pending at `stop()` is a no-op.
+    @Contract
+    void scheduleJitteredReconcileTick() {
+        var _ = SharedScheduler.schedule(this::reconcileMissingPeersTick,
+                                         TimeSpan.timeSpan(reconcileTickOffsetMs.getAsLong()).millis());
+    }
+
+    /// Test seam — replaces the random tick offset with a fixed one.
+    @Contract
+    void overrideReconcileTickOffsetForTests(LongSupplier offsetMs) {
+        this.reconcileTickOffsetMs = offsetMs;
+    }
+
+    /// Random offset in `[0, RECONCILE_TICK_JITTER_MS)`; package-private so a test can bound its spread.
+    static long drawReconcileTickOffsetMs() {
+        return ThreadLocalRandom.current().nextLong(RECONCILE_TICK_JITTER_MS);
     }
 
     /// Periodic missing-peer reconciler tick. For every configured non-passive peer that is
@@ -3009,10 +3186,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     ? getOrCreatePeer(peerId)
                     : existing;
 
-        if (!state.reconcileBackoffAllows(nowMs,
-                                          RECONCILE_BACKOFF_INITIAL_MS,
-                                          RECONCILE_BACKOFF_CAP_MS,
-                                          this::reconcileJitter)) {
+        if (!reconcileBackoffAllows(state, nowMs)) {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
 
             return;
@@ -3072,16 +3246,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     ? getOrCreatePeer(peerId)
                     : existing;
 
-        if (!state.reconcileBackoffAllows(nowMs,
-                                          RECONCILE_BACKOFF_INITIAL_MS,
-                                          RECONCILE_BACKOFF_CAP_MS,
-                                          this::reconcileJitter)) {
+        if (!reconcileBackoffAllows(state, nowMs)) {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
 
             return;
         }
 
         reconcileDialPeer(nodeInfo, forceInitiate);
+    }
+
+    /// Per-peer reconcile backoff, capped at 60 s for a peer SWIM does not see alive and at the initial 5 s
+    /// while the raw-SWIM liveness gate reports it HEALTHY or SUSPECTED (an unwired gate reads as not alive).
+    /// Re-read at every tick, so the cap follows the gate: a peer reported alive after a long outage dials on
+    /// the next tick instead of waiting out the attempt time earned at the 60 s cap.
+    private boolean reconcileBackoffAllows(PeerState state, long nowMs) {
+        return swimLivenessAllows(state.peerId())
+               ? state.reconcileBackoffAllowsWhileAlive(nowMs, RECONCILE_BACKOFF_INITIAL_MS, RECONCILE_ALIVE_SPACING_MS)
+               : state.reconcileBackoffAllows(nowMs,
+                                              RECONCILE_BACKOFF_INITIAL_MS,
+                                              RECONCILE_BACKOFF_CAP_MS,
+                                              this::reconcileJitter);
     }
 
     /// Default jitter for the missing-peer reconciler. Light bands (0.8x–1.2x) — peers
@@ -3235,6 +3419,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// survived a simultaneous dial.
     Option<QuicPeerConnection> activeConnectionForTests(NodeId peerId) {
         return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
+    }
+
+    /// What [#attachObserverForTests] is told: where the connection came from (`inbound Hello` or `dial attempt #n`,
+    /// as in the dial journal) and what the attach decided. Reported after the displaced incumbent was closed; for
+    /// DUPLICATE and REJECTED the new connection's own close follows in the same call. A dial that found the peer
+    /// already CONNECTED over the inbound link never produces a connection: it is reported as `dial skipped`, with no
+    /// result, so a test can tell its own dial will not be decided.
+    record AttachObservation(NodeId peerId, String origin, Option<PeerState.AttachResult> result) {}
+
+    /// Package-private test hook (transport overhaul N33) — observe every attach decision. Lets a test tell that
+    /// this end's own dial of a simultaneous pair has been decided, which is not visible in the peer's phase: the
+    /// inbound link has already made it CONNECTED. A null observer restores the no-op.
+    @Contract
+    void attachObserverForTests(Consumer<AttachObservation> observer) {
+        this.attachObserver = observer == null
+                              ? ignored -> {}
+                              : observer;
     }
 
     /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally

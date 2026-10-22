@@ -57,6 +57,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundReq
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusDemoted;
+import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusObserving;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -162,6 +163,21 @@ public class RabiaEngine<C extends Command> {
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
 
     private volatile Option<Cause> authorityFailure = Option.none();
+    /// Why this node's OWN persisted history could not be restored (#1468). Set only by
+    /// [#recordOwnRestoreFailure] and never cleared in-process: the own-restore arm runs only after a genesis has
+    /// resolved (adoption needs an installed electorate), and no genesis installs after that, so unlike
+    /// `authorityFailure` there is no clear in [#installGenesis]. It is not set by a responder-snapshot or a
+    /// re-persist failure, so a supervisor that bounds the stop (`OwnRestoreWatchdog`) acts only on the arms
+    /// it was given.
+    private volatile Option<Cause> ownRestoreFailure = Option.none();
+    /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
+    /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
+    /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which
+    /// the constructor also sets (an invalid initial electorate) and a later genesis clears, so bounding all of
+    /// `authorityFailure` would halt a node that is only waiting for its cluster to form.
+    private volatile Option<Cause> restoredStateSaveFailure = Option.none();
+    /// Set by a restore, cleared by the announce that follows the first transition into a serving state (#1516).
+    private final AtomicBoolean restoreAnnouncePending = new AtomicBoolean();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
     private final Map<Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
     /// The §4 command this voter currently carries on its proposals. Always of the current base epoch:
@@ -184,6 +200,18 @@ public class RabiaEngine<C extends Command> {
     /// Executor-confined. The slot this replica last asked each peer to repair; one request per slot.
     private final Map<NodeId, Phase> repairRequests = new HashMap<>();
     private volatile Option<Cause> stateTransferFailure = Option.none();
+
+    /// The cause of a failed restore of this node's own persisted history, while the node is fenced
+    /// from activating because of it (#1468).
+    public Option<Cause> ownRestoreFailure() {
+        return ownRestoreFailure;
+    }
+
+    /// The cause of a failed re-persist after a restore or adoption, while the node is fenced from
+    /// activating because of it (#1516).
+    public Option<Cause> restoredStateSaveFailure() {
+        return restoredStateSaveFailure;
+    }
 
     public Option<Cause> stateTransferFailure() {
         return stateTransferFailure;
@@ -699,7 +727,7 @@ public class RabiaEngine<C extends Command> {
     /// authoritative source for `ClusterStateNotification` (E2 Phase 2c.0, 2026-05-28).
     private final Consumer<ConsensusEvent> consensusEventListener;
 
-    /// Single-fire-per-transition gate for `ConsensusActive` / `ConsensusPassive` / `ConsensusDemoted`.
+    /// Single-fire-per-transition gate for `ConsensusActive` / `ConsensusPassive` / `ConsensusDemoted` / `ConsensusObserving`.
     /// Tracks the last published sense; the consumer fires only on true edges. Three senses, not two,
     /// because "not active" has two causes the app layer must tell apart (#1790): an observer of a live
     /// quorum (`OBSERVING`) still applies committed decisions, any other non-active state (`PASSIVE`)
@@ -742,6 +770,13 @@ public class RabiaEngine<C extends Command> {
     private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
 
     private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
+    /// Whether a sync round is open: a [SyncRequest] has gone out and the engine has not yet adopted a state from the answers. A
+    /// request opens a round ([#openSyncRound]); an activation completes it and a quorum-loss pause invalidates it ([#closeSyncRound]).
+    /// A response is accepted only into an open round, so input that crosses a pause (answers to a request sent before it) or arrives
+    /// after the adoption it was meant for cannot take a `Paused` engine to `Active` without a quorum ACTIVE, nor re-adopt on a
+    /// settled one. The flag starts open: a cold engine takes responses before its first request, as it always did. The rounds are
+    /// local; the protocol carries no round id, so answers to an earlier request of the SAME open round are still accepted.
+    private volatile boolean syncRoundOpen = true;
     private final RabiaPersistence<C> persistence;
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
@@ -1098,11 +1133,12 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void promoteObserverToActive() {
-        var oldState = engineState.getAndSet(new EngineState.Idle());
+        var oldState = enterServing(new EngineState.Idle());
 
         exitState(oldState);
         notifyConsensusStateTransition();
         log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
+        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
@@ -1147,7 +1183,6 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doClusterConnected() {
-        syncResponses.clear();
         syncRounds.set(0);
         electorateRefusalReported.set(false);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
@@ -1156,6 +1191,7 @@ public class RabiaEngine<C extends Command> {
         // Syncing (triggerResync is a no-op while Syncing) and can be drained/killed as a not-ready
         // node before the first request ever goes out. The scheduled `synchronize` remains the retry;
         // doSynchronize processes accumulated responses (>= quorum) or re-broadcasts.
+        openSyncRound();
         broadcastCoreObservers(new SyncRequest(self));
         var task = SharedScheduler.schedule(this::synchronize,
                                             config.syncRetryInterval().randomize(SCALE));
@@ -1195,6 +1231,7 @@ public class RabiaEngine<C extends Command> {
 
         var oldState = engineState.getAndSet(new EngineState.Paused());
 
+        closeSyncRound();
         exitState(oldState);
         notifyConsensusStateTransition();
         saveState().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
@@ -1213,6 +1250,12 @@ public class RabiaEngine<C extends Command> {
         safeExecute(this::doResumeFromPause);
     }
 
+    /// A node removed from the electorate before or during the pause (#1799) has no vote to resume:
+    /// it returns to Observing, the state it left ([#startPhase] refuses to run there).
+    private boolean resumesAsObserver() {
+        return observerMode || !isVoter(self);
+    }
+
     private void doResumeFromPause() {
         var current = engineState.get();
 
@@ -1220,15 +1263,23 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        engineState.set(new EngineState.Idle());
+        var observer = resumesAsObserver();
+
+        enterServing(observer
+                     ? new EngineState.Observing()
+                     : new EngineState.Idle());
         notifyConsensusStateTransition();
-        log.info("Node {} resumed from pause (quorum returned). currentPhase={}, pendingBatches={}",
+        log.info("Node {} resumed from pause (quorum returned) as {}. currentPhase={}, pendingBatches={}",
                  self,
+                 observer
+                 ? "observer"
+                 : "voter",
                  currentPhase.get(),
                  pendingBatches.size());
         // Replay through the live ordering guard. A remaining gap starts synchronization;
         // only a decision at the applied frontier can mutate the state machine.
         drainBufferedDecisions();
+        announceRestoreIfPending();
         if (!pendingBatches.isEmpty() || requestedConfiguration.isPresent()) {
             safeExecute(this::startPhase);
         }
@@ -2157,7 +2208,7 @@ public class RabiaEngine<C extends Command> {
         log.trace("Node {} starting phase {} with batch {}", self, phase, batch.id());
         var stallDetector = createStallDetector();
 
-        if (!engineState.compareAndSet(current, new EngineState.InPhase(stallDetector))) {
+        if (!enterServingIf(current, new EngineState.InPhase(stallDetector))) {
             stallDetector.cancel(false);
 
             return;
@@ -2175,8 +2226,17 @@ public class RabiaEngine<C extends Command> {
         safeExecute(this::doSynchronize);
     }
 
+    /// A sync-retry tick is queued behind whatever adoption is already running, so it can reach the executor
+    /// after that adoption has settled the engine. Both [#isSyncSettled] checks are therefore load-bearing:
+    /// without them a late tick re-enters `Syncing` from `Observing` and publishes PASSIVE for an observer
+    /// that never had a quorum to lose (auto-heal replacements join as observers).
+    ///
+    /// A `Paused` engine is settled too: a sync tick must not move a `Paused` (or `Observing`) engine. The intended exit from
+    /// `Paused` is a quorum ACTIVE ([#resumeFromPause], no sync round). Pausing from `Syncing` cancels the scheduled retry but
+    /// not a tick already queued on the executor; that tick must not turn `Paused` into `Syncing`, because `Syncing` ignores the
+    /// ACTIVE that would have resumed the engine.
     private void doSynchronize() {
-        if (engineState.get().isActive()) {
+        if (isSyncSettled()) {
             return;
         }
         // Check if we already have enough responses from previous attempt
@@ -2184,16 +2244,16 @@ public class RabiaEngine<C extends Command> {
         // #1447: a round is stuck by its OUTCOME, not by whether adoption ran. An adoption that did not
         // activate (a restore that failed, an activation that was refused) retries and counts like any
         // other round; at clusterSize 1 adoption runs on every round, so this is the only way it counts.
-        if (engineState.get().isActive()) {
+        if (isSyncSettled()) {
             return;
         }
 
         warnIfSyncStuck(adopted);
-        // Only clear and restart if we don't have enough responses
-        syncResponses.clear();
+        // Only restart if we don't have enough responses: the request opens a round, which starts with no answers
         var request = new SyncRequest(self);
 
         log.trace("Node {}: requesting phase synchronization {}", self, request);
+        openSyncRound();
         broadcastCoreObservers(request);
         var task = SharedScheduler.schedule(this::synchronize,
                                             config.syncRetryInterval().randomize(SCALE));
@@ -2201,6 +2261,15 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         notifyConsensusStateTransition();
+    }
+
+    /// Synchronization has nothing left to do: the engine is a voter in `Idle`/`InPhase`, an observer that has adopted state, or paused
+    /// for quorum loss. `Observing` is a settled outcome of the sync loop, not a station on the way to `Active`, and a sync tick must
+    /// not move a `Paused` (or `Observing`) engine: the intended exit from `Paused` is a quorum ACTIVE ([#resumeFromPause]).
+    private boolean isSyncSettled() {
+        var current = engineState.get();
+
+        return current.isActive() || current.isObserving() || current.isPaused();
     }
 
     /// #660 observability half: the retry loop logged only at TRACE, so a node deadlocked in `Syncing`
@@ -2374,6 +2443,7 @@ public class RabiaEngine<C extends Command> {
     /// restore failure is NOT recorded here: another sync round may adopt a readable snapshot.
     private void recordOwnRestoreFailure(Cause cause) {
         authorityFailure = Option.some(cause);
+        ownRestoreFailure = Option.some(cause);
         logRestoreFailure(cause);
     }
 
@@ -2387,9 +2457,8 @@ public class RabiaEngine<C extends Command> {
     private void activateOnLiveState(String reason) {
         log.debug("Node {} activating on its own state ({}); own phase {}", self, reason, currentPhase.get());
         syncResponses.clear();
+        restoreAnnouncePending.set(true);
         activate();
-        replayStateNotifications();
-        notifyStateRestored();
     }
 
     @Contract
@@ -2481,8 +2550,10 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (engineState.get().isActive()) {
-            log.trace("Node {} ignoring synchronization response {}. Node is active", self, response);
+        if (engineState.get().isActive() || !syncRoundOpen) {
+            log.trace("Node {} ignoring synchronization response {}. No sync round is open or the node is active",
+                      self,
+                      response);
 
             return;
         }
@@ -2510,9 +2581,8 @@ public class RabiaEngine<C extends Command> {
         // up perpetually `MAX_PHASE_AHEAD` behind and burns its retry budget on resyncs.
         if (state.snapshot().length == 0) {
             applyRestoredState(state);
+            restoreAnnouncePending.set(true);
             activate();
-            replayStateNotifications();
-            notifyStateRestored();
 
             return;
         }
@@ -2523,9 +2593,8 @@ public class RabiaEngine<C extends Command> {
         stateMachine.restoreCommittedSnapshot(state.snapshot(),
                                               state.lastCommittedPhase().value())
                     .onSuccess(_ -> applyRestoredState(state))
+                    .onSuccessRun(() -> restoreAnnouncePending.set(true))
                     .onSuccessRun(this::activate)
-                    .onSuccessRun(this::replayStateNotifications)
-                    .onSuccessRun(this::notifyStateRestored)
                     .onFailure(cause -> onRestoreFailure.accept(cause));
     }
 
@@ -2568,11 +2637,58 @@ public class RabiaEngine<C extends Command> {
     /// and `#syncAdoptionSaveFails_logsFailedToPersistAtError`.
     private void recordRestoredStateSaveFailure(Cause cause) {
         authorityFailure = Option.some(cause);
+        restoredStateSaveFailure = Option.some(cause);
         log.error("Node {} restored state but FAILED to persist it: {}. The restore is "
                  + "in memory ONLY — this node's disk still holds its previous checkpoint, "
                  + "so a restart will lose the restored history and serve a stale store.",
                   self,
                   cause);
+    }
+
+    /// The ONE write path for the serving states `Idle`, `InPhase` and `Observing` (#1516). A restore that is waiting to be
+    /// announced (`restoreAnnouncePending`) becomes DUE the moment a serving state is written; it is announced at the
+    /// transition's tail by [#announceRestoreIfPending], after the state change has been published (`ConsensusActive`)
+    /// and the start promise resolved, so consumers see the serving event before the replay and an exception in a
+    /// listener cannot cut the activation short. Returns the state that was replaced. `EngineServingWritePathTest` fails
+    /// if any other write of a serving state appears in this class, or if the announce is called from anywhere but the
+    /// tail of a serving transition.
+    private EngineState enterServing(EngineState serving) {
+        return engineState.getAndSet(serving);
+    }
+
+    /// [#enterServing] as a compare-and-set.
+    private boolean enterServingIf(EngineState expected, EngineState serving) {
+        return engineState.compareAndSet(expected, serving);
+    }
+
+    /// A restore installs the state silently and marks it unannounced; the restore's observable effects, the
+    /// notification replay and then the post-restore listeners, run when the engine next stands in `Idle`, `InPhase`
+    /// or `Observing` and clears the mark (#1516). The invariant is "a notification implies ACTIVE": a restore on a
+    /// node whose [#activate] is refused (authority failure, outside the electorate, participation record not
+    /// writable) retries on the next sync round, and replaying on each of those rounds delivered the same world once
+    /// per round from a node that was not serving. Dropping the effects instead would lose them: the node can reach
+    /// `Idle`/`Observing` without a second restore (`Syncing` -> `Paused` -> [#doResumeFromPause], or a promotion), and a
+    /// consumer that never saw the replay would serve a world it was never told about, with derived views that the
+    /// listeners invalidate left stale. So it is called at the tail of every transition that writes a serving state through [#enterServing] (after the
+    /// state is published and the start promise resolved, before the first phase is started); with the mark clear it is a
+    /// no-op, and with the mark set it announces exactly once, whatever the path, and the burst reads the LATEST
+    /// installed state (two restores while inactive produce one announce). A node that is fenced for good never
+    /// reaches a serving state and so never announces.
+    private void announceRestoreIfPending() {
+        if (restoreAnnouncePending.compareAndSet(true, false)) {
+            runIsolated("notification replay", this::replayStateNotifications);
+            notifyStateRestored();
+        }
+    }
+
+    /// An announce step that throws is logged with its cause and does not stop the next step or the activation that
+    /// is running it. Containment, not recovery: the failed listener is not retried (the restore is announced once).
+    @Contract
+    private void runIsolated(String what, Runnable step) {
+        Result.lift(Causes::fromThrowable, step::run).onFailure(cause -> log.error("Node {} {} failed and was skipped: {}",
+                                                                                   self,
+                                                                                   what,
+                                                                                   cause.message()));
     }
 
     /// Fire the state machine's deferred notification burst (cluster-topology-overhaul §5.8,
@@ -2661,7 +2777,7 @@ public class RabiaEngine<C extends Command> {
     /// Invoke the post-restore listeners in registration order. Runs on the consensus apply thread.
     @Contract
     private void notifyStateRestored() {
-        onStateRestored.forEach(Runnable::run);
+        onStateRestored.forEach(listener -> runIsolated("post-restore listener", listener));
     }
 
     /// A snapshot that skips local slots may already include any old pending request.
@@ -2737,6 +2853,16 @@ public class RabiaEngine<C extends Command> {
                                   .isSuccess();
     }
 
+    /// A new round starts with no answers: whatever was collected before it belongs to an earlier request and does not count.
+    private void openSyncRound() {
+        syncRoundOpen = true;
+        syncResponses.clear();
+    }
+
+    private void closeSyncRound() {
+        syncRoundOpen = false;
+    }
+
     /// Once per sync episode: every retry of the adoption loop re-enters [#activate], so an unguarded WARN
     /// repeated at the retry cadence without bound (measured: one per `syncRetryInterval`). The stall
     /// itself stays reported periodically by [#warnIfSyncStuck].
@@ -2769,13 +2895,14 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        var oldState = engineState.getAndSet(new EngineState.Idle());
+        var oldState = enterServing(new EngineState.Idle());
 
         exitState(oldState);
         armCleanupTask();
         armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
+        closeSyncRound();
         syncResponses.clear();
         syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
@@ -2784,22 +2911,25 @@ public class RabiaEngine<C extends Command> {
         // Must happen AFTER engineState=Idle so that `handleDecision`'s state guard accepts
         // re-applied Decisions, and AFTER the Idle-restore so phase-filter math is correct.
         drainBufferedDecisions();
+        announceRestoreIfPending();
         safeExecute(this::startPhase);
     }
 
     private void activateAsObserver() {
-        var oldState = engineState.getAndSet(new EngineState.Observing());
+        var oldState = enterServing(new EngineState.Observing());
 
         exitState(oldState);
         armCleanupTask();
         armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
+        closeSyncRound();
         syncResponses.clear();
         syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
         drainBufferedDecisions();
+        announceRestoreIfPending();
     }
 
     /// Cancels any timers owned by the old state during a transition.
@@ -2862,16 +2992,21 @@ public class RabiaEngine<C extends Command> {
         consensusEventListener.accept(new ConsensusPassive(self));
     }
 
-    // Only Active -> Observing is a demotion: a voter reconfiguration removed this node while the
-    // cluster kept quorum. Passive -> Observing (cold-start observer) was never published and stays so.
+    // Active -> Observing is a demotion: a voter reconfiguration removed this node while the cluster kept quorum.
+    // Passive -> Observing is an observer that is observing again (#2306): the recovery edge of its earlier Passive.
+    // For a cold-start observer nothing was published before it, so the aggregator, which publishes a recovery only
+    // after a published warning, drops the signal.
     @Contract
     private void emitObserving(PublishedSense prev) {
-        if (prev != PublishedSense.ACTIVE) {
+        if (prev == PublishedSense.ACTIVE) {
+            log.info("Node {}: emitting ConsensusDemoted (left the electorate; observing a live quorum)", self);
+            consensusEventListener.accept(new ConsensusDemoted(self));
+
             return;
         }
 
-        log.info("Node {}: emitting ConsensusDemoted (left the electorate; observing a live quorum)", self);
-        consensusEventListener.accept(new ConsensusDemoted(self));
+        log.info("Node {}: emitting ConsensusObserving (observer applies committed decisions again)", self);
+        consensusEventListener.accept(new ConsensusObserving(self));
     }
 
     /// Creates a periodic stall detector that re-broadcasts the held proposal set and this
@@ -3415,8 +3550,7 @@ public class RabiaEngine<C extends Command> {
         var stallDetector = createStallDetector();
         var current = engineState.get();
 
-        if (! (current instanceof EngineState.Idle) || !engineState.compareAndSet(current,
-                                                                                  new EngineState.InPhase(stallDetector))) {
+        if (! (current instanceof EngineState.Idle) || !enterServingIf(current, new EngineState.InPhase(stallDetector))) {
             stallDetector.cancel(false);
 
             return;
@@ -3984,7 +4118,7 @@ public class RabiaEngine<C extends Command> {
         var oldState = engineState.get();
 
         if (oldState instanceof EngineState.InPhase) {
-            engineState.set(new EngineState.Idle());
+            enterServing(new EngineState.Idle());
             exitState(oldState);
             notifyConsensusStateTransition();
         }
@@ -4006,21 +4140,31 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        engineState.set(new EngineState.Idle());
+        enterServing(new EngineState.Idle());
         armCleanupTask();
         armQuietSlotProbe();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());
+        announceRestoreIfPending();
         safeExecute(this::openSlotAfterChange);
     }
 
+    /// Applying a decision advances an observer's phase; it does not resume a paused one. `Paused` is left by a quorum ACTIVE
+    /// ([#resumeFromPause], which returns a non-voter to `Observing`), so a paused observer stays `Paused` while it keeps applying.
     private void advancePhaseAsObserver(Phase nextPhase) {
-        var oldState = engineState.getAndSet(new EngineState.Observing());
+        if (engineState.get().isPaused()) {
+            log.trace("Node {} (observer) advancing to phase {} while paused", self, nextPhase);
+
+            return;
+        }
+
+        var oldState = enterServing(new EngineState.Observing());
 
         exitState(oldState);
         notifyConsensusStateTransition();
         log.trace("Node {} (observer) advancing to phase {}", self, nextPhase);
+        announceRestoreIfPending();
     }
 
     /// Gets or creates phase data for a specific phase. Data for a current or future slot created under

@@ -16,6 +16,7 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.SourceName;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -32,6 +33,22 @@ public interface NodeLifecycleManager {
     Promise<InstanceInfo> provisionNode(ProvisionSpec spec);
     Promise<Unit> terminateNode(NodeId nodeId);
     boolean isCloudManaged();
+
+    /// Committed allocations of `role` that are not released, with the phase each is in. A DISPATCHED allocation is an
+    /// uncertain create: its acknowledgement may have been lost, so it remains capacity. An OBSERVED one is a provider-confirmed instance.
+    default Map<NodeId, AetherValue.CapacityReservationPhase> allocatedNodes(String role) {
+        return Map.of();
+    }
+
+    /// Where the lifecycle's operator events go (default: nowhere, the log line stands).
+    default Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        return Unit.unit();
+    }
+
+    /// Source inventory reconciliation: adopts what the providers list and confirms the absence of observed allocations.
+    default Promise<Unit> reconcileInventory() {
+        return Promise.unitPromise();
+    }
 
     /// Retry accounting for durable no-create evidence after its placement operation consumed it.
     default Promise<Unit> reconcileRefusals() {

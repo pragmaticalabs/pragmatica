@@ -39,7 +39,6 @@
         <module>slice-annotations</module>
         <module>aether-config</module>
         <module>aether-setup</module>
-        <module>dashboard</module>
         <module>slice-api</module>
         <module>environment-integration</module>
         <module>environment</module>
@@ -53,11 +52,13 @@
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
+        <module>http-security</module>
         <!-- Split node modules - ordered by dependency -->
         <module>aether-metrics</module>
         <module>aether-dht</module>
         <module>aether-storage</module>
         <module>aether-invoke</module>
+        <module>db-migrations</module>
         <module>aether-deployment</module>
         <module>aether-control</module>
         <!-- TTM modules - after control and metrics -->
@@ -92,6 +93,14 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>test-logging</artifactId>
             <scope>test</scope>
+        </dependency>
+        <!-- JBCT-ASYNC-01 (type-attributed Promise callback check): javac discovers it from the classpath in every module of this
+             tree that has no annotationProcessorPaths; modules that do list jbct-async-check there. Warning level; switch a
+             module off with -Ajbct.async.severity=off. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 
@@ -139,11 +148,6 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>dns</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>serialization-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -174,11 +178,6 @@
             </dependency>
 
             <!-- Internal -->
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>dashboard</artifactId>
-                <version>${project.version}</version>
-            </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>aether-config</artifactId>

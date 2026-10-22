@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -72,7 +73,7 @@ class OwnerPromotionAlarmLockOrderTest {
                                                (_, _, _, tail) -> Promise.success(tail),
                                                () -> true,
                                                (_, _, _, _, _) -> Promise.success(List.of()),
-                                               AetherNode.ownerPromotionAlarm(sink),
+                                               StreamAssembly.ownerPromotionAlarm(sink),
                                                TimeSpan.timeSpan(1).hours(),
                                                (_, _) -> 1L,
                                                (_, _, _, _, _) -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise());

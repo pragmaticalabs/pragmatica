@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.node.fsm;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketAddress;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -15,12 +14,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.invoke.InvocationHandler;
@@ -63,6 +56,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -130,7 +124,9 @@ class NodeDeploymentStateManifestReadFailureTest {
         assertThat(withCause.stream().filter(line -> line.startsWith("Could not read reactive manifest")).count()).isEqualTo(3);
         assertThat(withCause.stream().filter(line -> line.startsWith("Could not read config update manifest")).count()).isEqualTo(1);
         assertThat(withCause.stream().filter(line -> line.startsWith("Could not read stream role declarations")).count()).isEqualTo(1);
-        assertThat(withCause).hasSize(5);
+        // #1337: the publisher bindings are read once at ACTIVE, for the topic publisher row.
+        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read publisher manifest")).count()).isEqualTo(1);
+        assertThat(withCause).hasSize(6);
     }
 
     /// The quiet branch: a slice whose jar ships no manifest answers `null`, which is not a read
@@ -144,21 +140,15 @@ class NodeDeploymentStateManifestReadFailureTest {
 
     private List<String> activateCapturingWarnings(boolean failingReads) {
         store.failingReads = failingReads;
-        var warnings = new ArrayList<String>();
-        var detach = capturingWarnings(warnings);
-
-        try {
+        try (var capture = LogCapture.capture(NodeDeploymentState.Active.class, Level.WARN, true)) {
             harness.dispatch(new QuorumEstablished());
             harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
 
             await().atMost(5, TimeUnit.SECONDS)
                    .untilAsserted(() -> assertThat(activeTransitions()).describedAs("every reader catches, so the slice still activates")
                                                                        .isNotEmpty());
-        } finally {
-            detach.run();
+            return capture.messages(Level.WARN);
         }
-
-        return warnings;
     }
 
     /// The node's own state put (`NodeArtifactKey` → `NodeArtifactValue`) carrying ACTIVE.
@@ -328,32 +318,6 @@ class NodeDeploymentStateManifestReadFailureTest {
         @Override public Option<ConfigurationProvider> sliceComposite(Artifact artifact) {
             return Option.none();
         }
-    }
-
-    /// Capture WARN lines of the ACTIVE state's logger (the readers live there); the returned runnable detaches the appender. The
-    /// filter on the logger NAME keeps other loggers' WARNs out.
-    private static Runnable capturingWarnings(List<String> sink) {
-        var context = (LoggerContext) LogManager.getContext(false);
-        var config = context.getConfiguration();
-        var loggerConfig = config.getLoggerConfig(NodeDeploymentState.Active.class.getName());
-        var appender = new AbstractAppender("manifest-warn-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && NodeDeploymentState.Active.class.getName().equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
     }
 
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {

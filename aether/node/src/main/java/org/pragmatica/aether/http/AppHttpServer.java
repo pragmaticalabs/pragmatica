@@ -32,7 +32,10 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
+import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
@@ -64,6 +67,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerError;
+import org.pragmatica.http.server.BodyRateLimit;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
@@ -88,6 +92,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.http3.Http3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -119,6 +124,12 @@ public interface AppHttpServer {
     @MessageReceiver
     @Contract
     void onHttpForwardResponse(HttpForwardResponse response);
+
+    /// A target's answer that a request this node forwarded was refused before dispatch (#2244 F1). The default
+    /// drops it, for implementations that never forward.
+    @MessageReceiver
+    @Contract
+    default void onHttpForwardNotApplied(HttpForwardNotApplied notApplied) {}
 
     @Contract
     void rebuildRouter();
@@ -530,8 +541,11 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
-                         .or(QuicSslContextFactory.createSelfSignedServer());
+        // #2310: the h3 ALPN token, without which no HTTP/3 client completes the QUIC handshake
+        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg,
+                                                                        ClientAuthPolicy.NOT_REQUESTED,
+                                                                        Http3.supportedApplicationProtocols()))
+                         .or(QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()));
         // A QUIC context that cannot be built refuses the start (fail closed). A BIND failure of the HTTP/3 listener is
         // non-fatal only when HTTP/1.1 also serves (BOTH); with HTTP/3 as the only app protocol it would leave the node
         // running with no app listener at all, so it is propagated.
@@ -561,9 +575,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+        var serverConfig = serverConfig("app-http-h3", config);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -594,9 +606,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private HttpServerConfig buildServerConfig() {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+        var serverConfig = serverConfig("app-http", config);
         // #967: never demand a client certificate from callers of a USER-facing listener. The node's
         // cluster TlsConfig is Mutual, so building this listener from it made every slice request
         // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
@@ -666,11 +676,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                log,
                                                "App HTTP listeners")
                             .flatMap(_ -> restartWithNewBundle(newBundle))
-                            .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                      pair.h3(),
-                                                                                                      currentRoutes)))
+                            .map(pair -> recordRotationApplied(pair, currentRoutes))
                             .mapToUnit()
                             .onSuccessRun(tlsRotation::applied);
+    }
+
+    /// A MAP stage, not an `onSuccess` observer: an observer runs concurrently with whoever awaits the rotation promise, so a
+    /// caller reading `boundPort()` right after the rotation resolved could still see the old listener's port (#2152). As a stage,
+    /// "the rotation resolved" implies "the new listeners are recorded".
+    private AppHttpContext.ServerPair recordRotationApplied(AppHttpContext.ServerPair pair, RouteTable currentRoutes) {
+        context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(), pair.h3(), currentRoutes));
+
+        return pair;
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
@@ -707,9 +724,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+        var serverConfig = serverConfig("app-http", config);
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                              ? this::handleRequestWithAltSvc
@@ -727,7 +742,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH3WithBundle(CertificateBundle newBundle) {
-        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle, ClientAuthPolicy.NOT_REQUESTED);
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle,
+                                                                   ClientAuthPolicy.NOT_REQUESTED,
+                                                                   Http3.supportedApplicationProtocols());
 
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
                                                     cause.message()))
@@ -743,9 +760,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+        var serverConfig = serverConfig("app-http-h3", config);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -1493,13 +1508,16 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, exceeded.message(), path, requestId);
     }
 
+    /// #2310: the trailers travel with the request, to a local slice and across a forward alike.
     private HttpRequestContext toHttpRequestContext(HttpRequest request, String requestId) {
         return HttpRequestContext.httpRequestContext(request.path(),
                                                      request.method().name(),
                                                      request.queryParams().asMap(),
                                                      request.headers().asMap(),
                                                      request.body(),
-                                                     requestId);
+                                                     request.trailers().asMap(),
+                                                     requestId,
+                                                     SecurityContext.securityContext());
     }
 
     private void handleRemoteRoute(HttpRequest request,
@@ -1528,10 +1546,36 @@ class AppHttpServerAdapter implements AppHttpServer {
                      .forward(httpCtx, route, requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> sendProblem(response,
-                                                     HttpStatus.GATEWAY_TIMEOUT,
+                                                     forwardFailureStatus(cause),
                                                      HttpError.clientMessage(cause),
                                                      request.path(),
                                                      requestId));
+    }
+
+    /// Every app listener, HTTP/1.1 and HTTP/3, at start and at certificate rotation, is configured here, so the
+    /// request bounds `[app-http]` declares (`max_request_size`, `read_timeout`, `min_body_rate`) reach all of them (F6).
+    static HttpServerConfig serverConfig(String name, AppHttpConfig config) {
+        return HttpServerConfig.httpServerConfig(name,
+                                                 config.port())
+                               .withMaxContentLength(config.maxRequestSize())
+                               .withReadTimeout(config.readTimeout())
+                               .withBodyRateLimit(bodyRateLimit(config));
+    }
+
+    /// `[app-http] min_body_rate` with the server's default grace and window (F6).
+    private static BodyRateLimit bodyRateLimit(AppHttpConfig config) {
+        return BodyRateLimit.bodyRateLimit(config.minBodyRate(),
+                                           BodyRateLimit.DEFAULT_GRACE,
+                                           BodyRateLimit.DEFAULT_WINDOW);
+    }
+
+    /// A [ForwardError] names its own status: 503 per the 2026-10-07 ruling (know 14a3606152), whose detail says
+    /// whether the outcome is unknown or nothing was applied, and 413 for a request no cluster frame can carry. Every
+    /// failure the forwarder produces is one; a cause from anywhere else keeps the former 504.
+    private static HttpStatus forwardFailureStatus(Cause cause) {
+        return cause instanceof ForwardError forwardError
+               ? forwardError.status()
+               : HttpStatus.GATEWAY_TIMEOUT;
     }
 
     @Override
@@ -1550,8 +1594,16 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         Result.<HttpRequestContext, byte[]> lift1(des::decode,
                                                   request.requestData())
-              .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
+              .onFailure(cause -> refuseUndecodable(network, request, cause))
               .onSuccess(httpCtx -> dispatchForwardedRequest(httpCtx, request, network, ser));
+    }
+
+    private void refuseUndecodable(ClusterNetwork network, HttpForwardRequest request, Cause cause) {
+        log.error("Deserialization failed [{}]: {} (cause chain: {})",
+                  request.requestId(),
+                  cause.message(),
+                  HttpError.causeChain(cause));
+        sendForwardNotApplied(network, request, NotAppliedReason.UNDECODABLE_REQUEST);
     }
 
     private void logAndSendForwardError(ClusterNetwork network,
@@ -1581,7 +1633,7 @@ class AppHttpServerAdapter implements AppHttpServer {
             log.warn("[{}] Forwarded request arrived with {} budget remaining; refusing without dispatch",
                      request.requestId(),
                      deadline.remaining());
-            sendForwardError(network, request, "Sender request budget exhausted before dispatch");
+            sendForwardNotApplied(network, request, NotAppliedReason.BUDGET_EXHAUSTED);
 
             return;
         }
@@ -1608,7 +1660,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         if (routerOpt.isEmpty()) {
             log.warn("No local router for forwarded request {} {} [{}]", method, path, request.requestId());
-            sendForwardError(network, request, "Route not found locally");
+            sendForwardNotApplied(network, request, NotAppliedReason.ROUTE_NOT_FOUND);
 
             return;
         }
@@ -1793,16 +1845,69 @@ class AppHttpServerAdapter implements AppHttpServer {
               .onFailure(cause -> logAndSendForwardError(network, request, "Response serialization failed", cause));
     }
 
+    /// #2249 F5: a response that does not fit one cluster frame is never sent. The ingress's frame decoder would
+    /// reject it and close the whole FORWARD lane from this node, failing every other forward on it. The slice has
+    /// already run, so the request is answered, not refused: the ingress receives a small 502 ProblemDetail ("response
+    /// too large to forward") as an ordinary answer, which it neither retries nor re-sends.
     private void sendForwardPayload(ClusterNetwork network, HttpForwardRequest request, byte[] payload) {
-        var forwardResponse = new HttpForwardResponse(selfNodeId,
-                                                      request.correlationId(),
-                                                      request.requestId(),
-                                                      true,
-                                                      payload,
-                                                      request.pipeline());
+        var forwardResponse = forwardSuccess(request, payload);
 
-        network.send(request.sender(), forwardResponse);
+        network.validateOutboundMessage(forwardResponse)
+               .onSuccess(_ -> sendForwardResponse(network, request, forwardResponse))
+               .onFailure(_ -> sendResponseTooLarge(network, request, payload.length));
+    }
+
+    private HttpForwardResponse forwardSuccess(HttpForwardRequest request, byte[] payload) {
+        return new HttpForwardResponse(selfNodeId,
+                                       request.correlationId(),
+                                       request.requestId(),
+                                       true,
+                                       payload,
+                                       request.pipeline());
+    }
+
+    private void sendForwardResponse(ClusterNetwork network, HttpForwardRequest request, HttpForwardResponse response) {
+        network.send(request.sender(), response);
         log.trace("Sent forward success response [{}]", request.requestId());
+    }
+
+    private void sendResponseTooLarge(ClusterNetwork network, HttpForwardRequest request, int payloadBytes) {
+        log.warn("[{}] Forwarded response encodes to {} bytes, over the cluster frame limit; answering 502 instead",
+                 request.requestId(),
+                 payloadBytes);
+        var problem = ProblemDetail.problemDetail(HttpStatus.BAD_GATEWAY,
+                                                  RESPONSE_TOO_LARGE_DETAIL,
+                                                  "",
+                                                  request.requestId());
+
+        JSON_MAPPER.writeAsString(problem)
+                   .map(json -> HttpResponseData.httpResponseData(HttpStatus.BAD_GATEWAY.code(),
+                                                                  Map.of("Content-Type", "application/problem+json"),
+                                                                  json.getBytes(StandardCharsets.UTF_8)))
+                   .flatMap(response -> Result.lift1(serializer.unwrap()::encode,
+                                                     response))
+                   .onSuccess(encoded -> sendForwardResponse(network,
+                                                             request,
+                                                             forwardSuccess(request, encoded)))
+                   .onFailure(cause -> sendForwardError(network, request, RESPONSE_TOO_LARGE_DETAIL));
+    }
+
+    static final String RESPONSE_TOO_LARGE_DETAIL = "Response too large to forward from the node that served it";
+
+    /// #2244 F1: the three refusals this receiver makes BEFORE any router or slice code runs (request undecodable,
+    /// wire budget exhausted on arrival, no local route) prove the request was not applied here, so they are
+    /// answered out of band and the sender may re-send them to another node whatever the method. Everything after
+    /// dispatch (a slice failure, a response that cannot be encoded) goes back as [HttpForwardResponse] with
+    /// `success=false`, which the sender treats as "may have been applied". A host authorization refusal is an
+    /// ordinary 401/403 answer and is not re-sent anyway.
+    private void sendForwardNotApplied(ClusterNetwork network, HttpForwardRequest request, NotAppliedReason reason) {
+        network.send(request.sender(),
+                     new HttpForwardNotApplied(selfNodeId,
+                                               request.correlationId(),
+                                               request.requestId(),
+                                               reason,
+                                               request.pipeline()));
+        log.debug("Sent forward not-applied response [{}]: {}", request.requestId(), reason);
     }
 
     private void sendForwardError(ClusterNetwork network, HttpForwardRequest request, String errorMessage) {
@@ -1821,6 +1926,12 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     public void onHttpForwardResponse(HttpForwardResponse response) {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
+    }
+
+    @Override
+    @Contract
+    public void onHttpForwardNotApplied(HttpForwardNotApplied notApplied) {
+        httpForwarder.onPresent(fwd -> fwd.onHttpForwardNotApplied(notApplied));
     }
 
     @Override

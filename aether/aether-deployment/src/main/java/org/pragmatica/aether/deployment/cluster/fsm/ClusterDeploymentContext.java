@@ -13,6 +13,7 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.CommunitySizing;
+import org.pragmatica.aether.deployment.cluster.CommunityPolicyView;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -60,6 +61,9 @@ public final class ClusterDeploymentContext {
     /// communities under the default size; legacy constructors default it to
     /// [CommunitySizing#DEFAULT] (target 100, floor 3) so existing call sites are unchanged.
     private final CommunitySizing communitySizing;
+    /// The community policy the leader acts on (#241): the committed `[community_policy]`, the node-level
+    /// [#communitySizing] when the committed config carries none.
+    private final CommunityPolicyView communityPolicy;
     /// #590 core-absence read-seam. Late-wired rather than constructor-injected, matching the
     /// `setDrainTargets` / `setColdBootSupplier` idiom: the collector that backs it is built well after
     /// the deployment context, and every existing call site (production and test) keeps the
@@ -220,6 +224,7 @@ public final class ClusterDeploymentContext {
         this.clock = clock;
         this.memberSourceSupplier = memberSourceSupplier;
         this.communitySizing = communitySizing;
+        this.communityPolicy = CommunityPolicyView.communityPolicyView(kvStore, communitySizing);
         this.dormant = new ClusterDeploymentState.Dormant(this);
         this.stopped = new ClusterDeploymentState.Stopped(this);
     }
@@ -240,6 +245,14 @@ public final class ClusterDeploymentContext {
 
     /// A slice whose LOAD the gate refused since `since`; `warned` once the warning was raised, `lastResubmitMs` when its target put was last re-submitted.
     public record AwaitedTarget(long since, boolean warned, long lastResubmitMs) {}
+
+    /// #241: what the derived-community growth policy has decided but not yet seen commit, and the sources it has refused. Kept here, not in
+    /// `Active`, so it survives a leader FSM rebuild on this node.
+    private final CommunityAdmissionLedger communityAdmission = CommunityAdmissionLedger.communityAdmissionLedger();
+
+    public CommunityAdmissionLedger communityAdmission() {
+        return communityAdmission;
+    }
 
     public org.pragmatica.utility.warning.OperatorWarningSink operatorWarnings() {
         return operatorWarnings.get();
@@ -364,6 +377,11 @@ public final class ClusterDeploymentContext {
     /// [CommunitySizing#DEFAULT] (target 100, floor 3).
     public CommunitySizing communitySizing() {
         return communitySizing;
+    }
+
+    /// The community policy in force (#241): the committed `[community_policy]`, else [#communitySizing] with growth off.
+    public CommunityPolicyView communityPolicy() {
+        return communityPolicy;
     }
 
     /// The leader's observed community-liveness view (#590). Defaults to

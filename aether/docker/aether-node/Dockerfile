@@ -29,6 +29,12 @@ RUN usermod -l aether -d /home/aether -m ubuntu && \
 RUN mkdir -p /app /data /config /data/backups && \
     chown -R aether:aether /app /data /config
 
+# Node state directory on the boot filesystem, NOT under /data (#1473): it holds the volume sentinels that tell an
+# unmounted data volume from a first boot. It guards only while it outlives the data volume, so mount a small separate
+# volume or bind mount here to survive container recreation; with no mount it lives in the container layer and covers
+# restarts only. Override with AETHER_STATE_DIR.
+RUN mkdir -p /var/lib/aether && chown aether:aether /var/lib/aether
+
 WORKDIR /app
 
 # Copy the shaded JAR from build context
@@ -53,7 +59,7 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
 # Expose ports
 # 8090/udp - Cluster communication (QUIC: consensus, inter-node messaging)
 # 8190/udp - SWIM health detection (cluster port + 100)
-# 8080     - Management API (REST, WebSocket dashboard)
+# 8080     - Management API (REST, WebSocket feeds)
 EXPOSE 8090/udp 8190/udp 8080
 
 # Health check using liveness probe (bypasses auth — no audit log spam).

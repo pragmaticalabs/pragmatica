@@ -37,7 +37,7 @@ That's it. No Spring annotations, no dependency injection framework, no HTTP cli
 - **No service discovery** — the runtime tracks where every slice instance lives
 - **No retry logic** — built-in retry with exponential backoff and node failover
 - **No circuit breakers** — the reliability fabric handles failure automatically
-- **No serialization code** — request/response types are serialized transparently (Fury binary serialization for inter-node, JSON for HTTP)
+- **No serialization code** — request/response types are serialized transparently (generated binary codecs for inter-node, JSON for HTTP)
 
 ### Slice Lifecycle
 
@@ -61,10 +61,9 @@ Classloaders isolate **dependency versions**; the **cluster** isolates failures.
 
 ### Local Development: Forge
 
-Forge is a single-JVM multi-node simulator. It runs a full 5-node cluster on your laptop with a web dashboard for:
+Forge is a single-JVM multi-node simulator. It runs a full 5-node cluster on your laptop and exposes a REST API (port 8888) for:
 
-- **Topology visualization** — see nodes, leader, connections (D3.js)
-- **Real-time metrics** — CPU, heap, throughput, success rate (Chart.js, WebSocket push)
+- **Cluster status and events** — nodes, leader, load metrics, event timeline
 - **Chaos operations** — kill nodes, crash leader, rolling restart
 - **Load generation** — configurable request rates with ramp-up
 
@@ -143,7 +142,7 @@ aether scale org.example:order-processor --min 2 --max 10 --target-cpu 60 --targ
 
 **Prometheus endpoint:** `GET /metrics/prometheus` — standard scrape-compatible format.
 
-**WebSocket dashboard:** Real-time push at `/ws/dashboard` — no polling. Nodes, metrics, alerts, all streamed.
+**WebSocket feeds:** Real-time push at `/ws/status` (cluster status) and `/ws/events` (new cluster events) — no polling.
 
 **Alert thresholds:** Configurable per metric, persisted via consensus. Set warning and critical levels, get notified when crossed.
 
@@ -155,7 +154,7 @@ aether scale org.example:order-processor --min 2 --max 10 --target-cpu 60 --targ
 
 ### Management API
 
-30+ REST endpoints covering cluster status, slice management, metrics, controller configuration, alert thresholds, deployments, artifact repository, and dashboard. Full programmatic control of everything the CLI can do.
+30+ REST endpoints covering cluster status, slice management, metrics, controller configuration, alert thresholds, deployments, and artifact repository. Full programmatic control of everything the CLI can do.
 
 ### Artifact Repository
 
@@ -222,8 +221,8 @@ Aether collapses this stack. The runtime provides service discovery, load balanc
 | Scaling | Reactive + predictive | HPA (reactive only) | Manual | Manual |
 | Retry/resilience | Built-in fabric | Service mesh required | Built-in | Built-in |
 | Version compatibility | Built-in | Contract discipline | No built-in | No built-in |
-| Operational tooling | CLI + API + Dashboard | kubectl + ecosystem | Limited | Limited |
-| Observability | Built-in metrics + dashboard | Grafana/Prometheus stack | Limited | Lightbend telemetry |
+| Operational tooling | CLI + API | kubectl + ecosystem | Limited | Limited |
+| Observability | Built-in metrics | Grafana/Prometheus stack | Limited | Lightbend telemetry |
 
 **Where Aether is stronger:** deployment safety, version evolution, operational simplicity, latency (no sidecar proxy), scaling intelligence.
 
@@ -250,7 +249,7 @@ This is closer to how a well-designed monolith works internally, except the runt
 
 **Developer productivity:** Write business logic as plain Java interfaces. No HTTP client code, no retry policies, no circuit breaker configuration, no Kubernetes manifests. The Aether annotation processor generates everything from the slice interface.
 
-**Operational simplicity:** One CLI, one management API, one dashboard. Rolling updates, scaling, and health monitoring are built in — not bolted on from five different vendors.
+**Operational simplicity:** One CLI, one management API. Rolling updates, scaling, and health monitoring are built in — not bolted on from five different vendors.
 
 ### License
 
@@ -351,11 +350,11 @@ No polling. No periodic reconciliation loops for core state.
 | **Storage** | DHT with consistent hashing, quorum reads/writes, 3 replication modes, 64KB chunked artifact storage with integrity verification |
 | **Deployment** | Blueprint-based (TOML), unified deploy command (canary, blue-green, rolling) with weighted routing, health-based guardrails |
 | **Scaling** | Decision tree controller (1s reactive), TTM ONNX predictor (60s proactive), configurable per-blueprint thresholds and cooldowns |
-| **Observability** | Push-based metrics (1s), per-method invocation tracking with P50/P95/P99, Prometheus export, WebSocket real-time dashboard, dynamic aspects, EMA latency smoothing |
+| **Observability** | Push-based metrics (1s), per-method invocation tracking with P50/P95/P99, Prometheus export, WebSocket live feeds, dynamic aspects, EMA latency smoothing |
 | **Alerts** | Configurable thresholds per metric, persistent via consensus, warning + critical levels |
-| **Management** | 37 CLI commands (single + REPL), 30+ REST endpoints, web dashboard |
+| **Management** | 37 CLI commands (single + REPL), 30+ REST endpoints |
 | **Networking** | Netty-based cluster transport, topology management with quorum detection, reconnection with backoff |
-| **Local Dev** | Forge (5-node single-JVM simulator), chaos operations, load generation, web dashboard |
+| **Local Dev** | Forge (5-node single-JVM simulator), chaos operations, load generation |
 | **Testing** | 10,686 unit tests, 21 Forge integration tests, 14 Docker integration suites (~50 scripts) against 5-node clusters |
 
 ### E2E Test Coverage
@@ -420,7 +419,7 @@ cd aether/forge
 mvn exec:java
 ```
 
-Open `http://localhost:8888` for the dashboard. Deploy the URL Shortener example, generate load, kill nodes, and watch the cluster recover.
+Forge serves its REST API on `http://localhost:8888`. Deploy the URL Shortener example, generate load, kill nodes, and watch the cluster recover through the API and logs.
 
 ### Deploy to a Cluster
 

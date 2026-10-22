@@ -449,7 +449,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// Reads each accepted stream's 1-byte lane preamble and routes by lane.
     ///
     /// Phase machine:
-    ///   - AWAITING_PREAMBLE: first framed message is the 1-byte lane index.
+    ///   - AWAITING_PREAMBLE: first framed message is the lane index; on a CONTROL stream the dialer's 8-byte
+    ///     link generation follows it (absent from an earlier node).
     ///       * CONTROL → transition to AWAITING_HELLO (the handshake rides CONTROL).
     ///       * any data lane → resolve the per-peer connection from the parent QuicChannel
     ///         attribute, register this stream under the lane, swap to the shared data handler.
@@ -460,6 +461,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// Installed at stream init so it receives `channelActive` for the handshake/preamble timeout.
     private class ServerStreamHandler extends SimpleChannelInboundHandler<ByteBuf> {
         private Phase phase = Phase.AWAITING_PREAMBLE;
+        /// The link generation the dialer announced behind the CONTROL lane byte; 0 when it sent none (#2138).
+        private long dialerGeneration;
 
         private enum Phase {
             AWAITING_PREAMBLE,
@@ -509,7 +512,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void handlePreamble(ChannelHandlerContext ctx, ByteBuf buf) {
-            PeerOpenedLaneRouter.preambleLane(buf).fold(() -> onInvalidPreamble(ctx), lane -> routePreamble(ctx, lane));
+            PeerOpenedLaneRouter.preambleLane(buf).fold(() -> onInvalidPreamble(ctx),
+                                                        lane -> routePreamble(ctx, lane, buf));
         }
 
         private Unit onInvalidPreamble(ChannelHandlerContext ctx) {
@@ -520,8 +524,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             return unit();
         }
 
-        private Unit routePreamble(ChannelHandlerContext ctx, StreamType lane) {
+        private Unit routePreamble(ChannelHandlerContext ctx, StreamType lane, ByteBuf buf) {
             if (lane == StreamType.CONTROL) {
+                // #2138: the dialer's link generation rides behind the lane byte. A bare one-byte preamble (an
+                // earlier node, or a dialer with no generation) leaves it 0 and the link unranked.
+                dialerGeneration = PeerOpenedLaneRouter.preambleGeneration(buf);
                 phase = Phase.AWAITING_HELLO;
 
                 return unit();
@@ -655,7 +662,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             var quicChannel = (QuicChannel) ctx.channel().parent();
-            var peerConnection = quicPeerConnection(hello.sender(), hello.sender(), quicChannel);
+            var peerConnection = quicPeerConnection(hello.sender(), hello.sender(), dialerGeneration, quicChannel);
             // The handshake stream is the CONTROL lane.
             var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // Install the lazy lane-opener so a write that races the data-lane preamble window can

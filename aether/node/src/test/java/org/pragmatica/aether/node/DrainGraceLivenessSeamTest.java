@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
@@ -25,7 +26,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
-/// The #1050 / #1062 wiring pin, at the REAL seam. `AetherNode.drainGraceLiveness` builds every piece of
+/// The #1050 / #1062 wiring pin, at the REAL seam. `TopologyAssembly.drainGraceLiveness` builds every piece of
 /// membership and liveness evidence the CTM consults before an irreversible reap, plus the configured core
 /// count that the CTM, the `LeaderReconciler` and the `QuorumLossDetector` share. Each projection is pinned
 /// against a real boot-seeded [MembershipFsm], where the counted, tracked and observed projections diverge.
@@ -74,7 +75,7 @@ class DrainGraceLivenessSeamTest {
 
         fsm.onDrainRequested(PEER_C);
 
-        var liveness = AetherNode.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.coreCountedMembers()
                            .get()).containsExactlyInAnyOrder(SELF, PEER_B);
@@ -91,7 +92,7 @@ class DrainGraceLivenessSeamTest {
         assertThat(fsm.coreObservedMembers(SELF)).as("arming: the observed projection must diverge from the counted one")
                                                  .containsExactly(SELF);
 
-        var liveness = AetherNode.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.coreCountedMembers()
                            .get()).containsExactlyInAnyOrder(SELF, PEER_B, PEER_C);
@@ -110,7 +111,7 @@ class DrainGraceLivenessSeamTest {
         fsm.onMemberDescriptor(NodeInfo.nodeInfo(worker, nodeAddress("10.0.0.2", 6000).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")));
         fsm.onMemberDescriptor(NodeInfo.nodeInfo(worker, nodeAddress("10.0.0.2", 6000).unwrap()));
 
-        var liveness = AetherNode.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.advertisedRole()
                            .apply(worker)).isEqualTo(Option.some("worker"));
@@ -122,7 +123,7 @@ class DrainGraceLivenessSeamTest {
     /// Before the FSM is published the projection answers `none()` for every id (fail-closed: no comparison).
     @Test
     void drainGraceLiveness_advertisedRole_beforeFsmPublished_isNone() {
-        var liveness = AetherNode.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.advertisedRole()
                            .apply(PEER_B)).isEqualTo(Option.none());
@@ -131,7 +132,7 @@ class DrainGraceLivenessSeamTest {
     /// S2: the configured count is the committed `ClusterConfigValue.coreCount` when present, never 0.
     @Test
     void drainGraceLiveness_configuredCoreCount_readsTheCommittedConfig() {
-        var liveness = AetherNode.drainGraceLiveness(() -> null, () -> committedCoreCount(5), TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> null, () -> committedCoreCount(5), TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.configuredCoreCount()
                            .getAsInt()).isEqualTo(5);
@@ -140,7 +141,7 @@ class DrainGraceLivenessSeamTest {
     /// S2: before the config is committed, the bootstrap topology size stands in — still never 0.
     @Test
     void drainGraceLiveness_configuredCoreCount_fallsBackToTopologySize() {
-        var liveness = AetherNode.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.configuredCoreCount()
                            .getAsInt()).isEqualTo(TOPOLOGY_CORE_NODES);
@@ -162,7 +163,7 @@ class DrainGraceLivenessSeamTest {
         when(detector.healthOf(faulty)).thenReturn(SwimHealth.FAULTY);
         when(detector.healthOf(unknown)).thenReturn(SwimHealth.UNKNOWN);
 
-        var liveness = AetherNode.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> detector, _ -> false, () -> null, Set::of);
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> detector, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.swimAlive()
                            .test(PEER_B)).as("HEALTHY is alive").isTrue();
@@ -180,7 +181,7 @@ class DrainGraceLivenessSeamTest {
     /// false, never a throw. The transport view and the retained dispatched set pass through as given.
     @Test
     void drainGraceLiveness_beforePublication_readsEmpty_passingTransportAndRetainedThrough() {
-        var liveness = AetherNode.drainGraceLiveness(() -> null,
+        var liveness = TopologyAssembly.drainGraceLiveness(() -> null,
                                                      Option::none,
                                                      TOPOLOGY_CORE_NODES,
                                                      () -> null,

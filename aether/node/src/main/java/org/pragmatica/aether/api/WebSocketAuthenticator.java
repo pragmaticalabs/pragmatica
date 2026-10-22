@@ -70,8 +70,9 @@ public final class WebSocketAuthenticator {
                          () -> {});
     }
 
-    /// Variant that runs `onAuthSuccess` immediately after a session authenticates (used by the
-    /// dashboard to deliver INITIAL_STATE on the authenticated path — #293). The callback fires only
+    /// Variant that runs `onAuthSuccess` immediately after a session authenticates, so a feed can
+    /// deliver its initial state on the authenticated path (#293; the removed dashboard feed was its
+    /// only production caller, the status and event feeds send none). The callback fires only
     /// on a fresh successful authentication, never on already-authenticated or failed messages.
     public boolean onMessage(WebSocketSession session, String text, Runnable onAuthSuccess) {
         if (!securityEnabled || authenticatedSessions.contains(session.id())) {

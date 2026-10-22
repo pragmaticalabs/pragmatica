@@ -1,0 +1,2 @@
+### Fixed (2026-10-18 — #2251: repeated multipart fields lost values)
+- **`tag=a&tag=b` as multipart fields kept only `b`.** `MultipartRequest.fieldValues(name)` returns every value in body order. `field(name)` and `fields()` now return the FIRST value, matching `file(name)`; before, they returned the last. [verified: integrations/http-routing/src/test/java/org/pragmatica/http/routing/MultipartParserTest.java]
