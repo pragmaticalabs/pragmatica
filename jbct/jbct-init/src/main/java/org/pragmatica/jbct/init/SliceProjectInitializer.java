@@ -832,7 +832,7 @@ public final class SliceProjectInitializer {
         [cluster]
         nodes = 5
         management_port = 5150
-        dashboard_port = 8888
+        forge_port = 8888
         app_http_port = 8070
 
         [observability]

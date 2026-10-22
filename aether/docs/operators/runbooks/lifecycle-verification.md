@@ -23,7 +23,7 @@ not reach the router at all. It falls through to the server's unmatched-path fal
 3. **Confirm no other Forge is running on this machine first.** All four of Forge's port settings
    are configurable in `forge.toml` — `base_port` (the cluster's QUIC/consensus UDP range,
    `base_port`–`base_port+nodes-1`, default `6000`), `management_port`, `app_http_port` and
-   `dashboard_port` (the port of Forge's own REST API). Moving all four lets a second instance coexist; moving only the other three
+   `forge_port` (the port of Forge's own REST API). Moving all four lets a second instance coexist; moving only the other three
    does not, because the QUIC range collides. Before #1719 that collision was silent (the sockets
    carried `SO_REUSEADDR`, so a duplicate bind succeeded and the datagrams were split); since #1719 the
    QUIC bind is exclusive and a taken port fails the node's start with `BindFailed` naming the port.

@@ -99,6 +99,19 @@ class SliceProjectInitializerTest {
                   .hasSize(3);
     }
 
+    /// #2385: Forge refuses the old `dashboard_port` key at load, so a new project must carry `forge_port`.
+    @Test
+    void initialize_validParams_forgeTomlCarriesForgePortKey() throws Exception {
+        var projectDir = tempDir.resolve("forge-port-slice");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "com.test", "forge-port-slice")
+                                            .flatMap(SliceProjectInitializer::initialize);
+        assertThat(result.isSuccess())
+                  .isTrue();
+        assertThat(Files.readString(projectDir.resolve("forge.toml")))
+                  .contains("\nforge_port = 8888\n")
+                  .doesNotContain("dashboard_port");
+    }
+
     @Test
     void initialize_validParams_generatesSliceInterface() throws Exception {
         var projectDir = tempDir.resolve("inventory-service");

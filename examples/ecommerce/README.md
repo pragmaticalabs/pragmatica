@@ -18,7 +18,7 @@ Each slice module has `slices/<Name>.toml` and a `routes.toml` under `src/main/r
 ## Configuration
 
 - `aether.toml`: runtime configuration, including the `[database]` section (PostgreSQL `localhost:5432`, database/user/password `forge`).
-- `forge.toml`: Forge cluster configuration (`nodes = 7`, management port `5150`, Forge API port `8888` (`dashboard_port` in the file), app HTTP port `8070`).
+- `forge.toml`: Forge cluster configuration (`nodes = 7`, management port `5150`, Forge API port `8888` (`forge_port` in the file), app HTTP port `8070`).
 - `src/main/resources/schema/` (`V001__create_tables.sql`, `V002__seed_data.sql`): schema and seed data; per-slice migrations live under each module's `src/main/resources/schema/`.
 
 ## Build
