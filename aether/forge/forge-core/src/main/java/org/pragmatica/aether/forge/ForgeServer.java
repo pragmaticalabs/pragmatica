@@ -219,8 +219,8 @@ public final class ForgeServer {
 
     private static EmberConfig loadOrRefuse(Path path, IntConsumer exit) {
         return EmberConfig.load(path)
-                          .onFailure(cause -> ForgeAppConfig.refuse("refusing to start: " + path + " could not be loaded: "
-                                                                    + cause.message(),
+                          .onFailure(cause -> ForgeAppConfig.refuse("refusing to start: " + path
+                                                                   + " could not be loaded: " + cause.message(),
                                                                     exit))
                           .or(EmberConfig.DEFAULT);
     }

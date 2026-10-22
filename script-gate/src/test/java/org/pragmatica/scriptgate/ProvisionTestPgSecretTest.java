@@ -34,8 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// and every stub ran - an absence measured on a run that never generated or sent a password would prove nothing.
 class ProvisionTestPgSecretTest {
     private static final String MAIN_FLOW = "# Main flow";
+
     private static final Pattern PASSWORD_LINE = Pattern.compile("^export PG_PASSWORD=([0-9a-f]{32})$",
                                                                  Pattern.MULTILINE);
+
     private static final Pattern PASSWORD_FILE = Pattern.compile("pw_file=(\\S+/pg-password)");
 
     /// Records argv, then answers the calls a fresh provision makes. The POST body is kept whether it came as an
@@ -104,11 +106,11 @@ class ProvisionTestPgSecretTest {
         given(ScriptRunner.writeExecutable(stubDir.resolve("curl"), CURL).mapToUnit());
         given(ScriptRunner.writeExecutable(stubDir.resolve("ssh"), SSH).mapToUnit());
         given(ScriptRunner.writeExecutable(stubDir.resolve("ssh-keygen"), SSH_KEYGEN).mapToUnit());
-        given(ScriptRunner.writeExecutable(stubDir.resolve("jq"), JQ.formatted(ScriptGate.requiredTool("jq")))
+        given(ScriptRunner.writeExecutable(stubDir.resolve("jq"),
+                                           JQ.formatted(ScriptGate.requiredTool("jq")))
                           .mapToUnit());
         given(Result.lift(() -> Files.createDirectories(state)).mapToUnit());
-        given(Result.lift(() -> Files.writeString(sshKey.resolveSibling("id_stub.pub"), "ssh-ed25519 AAAASTUB stub\n"))
-                    .mapToUnit());
+        given(Result.lift(() -> Files.writeString(sshKey.resolveSibling("id_stub.pub"), "ssh-ed25519 AAAASTUB stub\n")).mapToUnit());
         given(Result.lift(() -> Files.writeString(functions, functionsBeforeMainFlow())).mapToUnit());
     }
 
@@ -152,10 +154,7 @@ class ProvisionTestPgSecretTest {
     @Test
     void freshProvision_removesThePasswordWorkFile() {
         var execution = executed(runTraced());
-        var passwordFile = PASSWORD_FILE.matcher(execution.output())
-                                        .results()
-                                        .map(match -> match.group(1))
-                                        .findFirst();
+        var passwordFile = PASSWORD_FILE.matcher(execution.output()).results().map(match -> match.group(1)).findFirst();
 
         assertThat(execution.exitCode()).as(execution.output()).isZero();
         assertThat(passwordFile).as("the trace names the password file").isPresent();
@@ -166,8 +165,7 @@ class ProvisionTestPgSecretTest {
         return Option.from(PASSWORD_LINE.matcher(Result.lift(() -> Files.readString(envFile)).or(""))
                                         .results()
                                         .map(match -> match.group(1))
-                                        .findFirst())
-                     .or("");
+                                        .findFirst()).or("");
     }
 
     private String read(String name) {

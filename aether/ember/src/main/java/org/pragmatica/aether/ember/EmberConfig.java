@@ -263,8 +263,8 @@ public record EmberConfig(int nodes,
     // value; the document records those reads and the load refuses naming every one.
     private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
         return refuseRenamedKeys(doc).flatMap(_ -> assembleFromDocument(doc, baseDir))
-                                     .flatMap(config -> doc.requireNoTypeMismatches()
-                                                           .map(_ -> config));
+                                .flatMap(config -> doc.requireNoTypeMismatches()
+                                                      .map(_ -> config));
     }
 
     private static Result<Unit> refuseRenamedKeys(org.pragmatica.config.toml.TomlDocument doc) {
