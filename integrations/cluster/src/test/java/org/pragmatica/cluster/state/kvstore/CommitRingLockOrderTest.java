@@ -57,10 +57,24 @@ class CommitRingLockOrderTest {
         }
     }
 
+    private static final List<String> CONTROL_THREADS = List.of("inverted-heartbeat", "writer-in-mutate");
+
     private static long[] deadlocked() {
         var ids = ManagementFactory.getThreadMXBean().findDeadlockedThreads();
 
         return ids == null ? new long[0] : ids;
+    }
+
+    /// The deadlocked threads that are NOT the positive control's own (its two daemon threads stay deadlocked for the life of the JVM).
+    private static List<String> deadlockedOutsideTheControl() {
+        var ids = deadlocked();
+
+        return ids.length == 0
+               ? List.of()
+               : java.util.Arrays.stream(ManagementFactory.getThreadMXBean().getThreadInfo(ids))
+                                 .map(java.lang.management.ThreadInfo::getThreadName)
+                                 .filter(name -> !CONTROL_THREADS.contains(name))
+                                 .toList();
     }
 
     @Test
@@ -125,7 +139,7 @@ class CommitRingLockOrderTest {
 
         threads.forEach(Thread::start);
         Thread.sleep(1_500);
-        var cycle = deadlocked();
+        var cycle = deadlockedOutsideTheControl();
 
         stop.set(true);
         for (var thread : threads) {

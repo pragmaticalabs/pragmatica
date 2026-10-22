@@ -280,7 +280,7 @@ class KVStoreReplicaRingTest {
         for (var round = 0; round < 300; round++) {
             var snapshot = store.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
             var text = new String(snapshot.bytes(), StandardCharsets.UTF_8);
-            var keys = text.split("k\\d+=").length - 1;
+            var keys = (int) java.util.regex.Pattern.compile("Key\\[id=k\\d+\\]").matcher(text).results().count();
 
             // slots 1..revision-1 were committed: that many `k<slot>` keys, plus the incarnation key
             if (keys != snapshot.revision() - 1) {
