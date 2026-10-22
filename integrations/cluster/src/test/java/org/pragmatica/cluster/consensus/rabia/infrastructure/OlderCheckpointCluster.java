@@ -237,7 +237,7 @@ public final class OlderCheckpointCluster {
                .onFailure(cause -> {
                    throw new AssertionError("commit failed: " + cause);
                });
-        awaitCondition("every node applied the batch; applied counts " + appliedCounts(),
+        awaitCondition(() -> "every node applied the batch; applied counts " + appliedCounts(),
                        () -> nodes.values().stream().allMatch(node -> node.store().applied().size() > before));
 
         return this;
@@ -267,11 +267,15 @@ public final class OlderCheckpointCluster {
     }
 
     public static void awaitCondition(String what, BooleanSupplier condition) {
+        awaitCondition(() -> what, condition);
+    }
+
+    public static void awaitCondition(java.util.function.Supplier<String> what, BooleanSupplier condition) {
         var deadline = System.nanoTime() + BOUND_MILLIS * 1_000_000L;
 
         while (!condition.getAsBoolean()) {
             if (System.nanoTime() > deadline) {
-                throw new AssertionError("timed out waiting: " + what);
+                throw new AssertionError("timed out waiting: " + what.get());
             }
             LockSupport.parkNanos(5_000_000L);
         }
