@@ -139,6 +139,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.http3.Http3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -511,8 +512,11 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
-                         .or(QuicSslContextFactory.createSelfSignedServer());
+        // #2310: the h3 ALPN token, without which no HTTP/3 client completes the QUIC handshake
+        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg,
+                                                                        ClientAuthPolicy.NOT_REQUESTED,
+                                                                        Http3.supportedApplicationProtocols()))
+                         .or(QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()));
         // A QUIC context that cannot be built refuses the start: an HTTP/3 listener configured for TLS must not
         // silently not exist (nor, in BOTH mode, leave the node reporting a start that bound only some listeners).
         return quicTls.fold(cause -> quicTlsRefused("management-h3", cause), this::startH3WithSslContext);
@@ -704,7 +708,9 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
-        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle, ClientAuthPolicy.NOT_REQUESTED);
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle,
+                                                                   ClientAuthPolicy.NOT_REQUESTED,
+                                                                   Http3.supportedApplicationProtocols());
 
         return quicTls.map(this::startH3WithSslContext)
                       .onFailure(cause -> log.error("Failed to create QUIC SSL context for management server rotation: {}",
@@ -2169,7 +2175,9 @@ class ManagementServerImpl implements ManagementServer {
                                                      ctx.queryParams().asMap(),
                                                      ctx.headers().asMap(),
                                                      ctx.body(),
-                                                     "mgmt");
+                                                     ctx.trailers().asMap(),
+                                                     "mgmt",
+                                                     SecurityContext.securityContext());
     }
 
     @SuppressWarnings("JBCT-PAT-01")

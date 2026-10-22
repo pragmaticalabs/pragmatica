@@ -8,6 +8,7 @@ import java.util.List;
 import org.pragmatica.aether.http.adapter.SliceRouterFactory;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentCategory;
@@ -138,7 +139,9 @@ public final class TerraHttpServer {
                                                                                       request.queryParams().asMap(),
                                                                                       request.headers().asMap(),
                                                                                       request.body(),
-                                                                                      request.requestId())))
+                                                                                      request.trailers().asMap(),
+                                                                                      request.requestId(),
+                                                                                      SecurityContext.securityContext())))
                       .flatMap(promise -> promise);
     }
 

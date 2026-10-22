@@ -111,6 +111,49 @@ sealed interface HttpForwardMessage extends ProtocolMessage {
 }
 ```
 
+### HTTP/3 listener and ALPN
+
+`AppHttpServer` and `ManagementServer` build their QUIC server contexts with `Http3.supportedApplicationProtocols()`.
+That is the `h3` ALPN token, and QUIC refuses a handshake without one. The same holds for every path that builds a
+context: self-signed, a configured certificate, and certificate rotation, including the `TlsRotation` pre-check. A new
+caller of `HttpServer.http3Server` must pass a context built the same way (#2310). `AppHttpServerH3AlpnTest` and
+`ManagementServerH3AlpnTest` pin this with a standard HTTP/3 client.
+The HTTP/3 response writer also lowercases header names (RFC 9114 §4.2), because Netty refuses a HEADERS frame with an
+uppercase one, such as the `X-Request-Id` the app server sets.
+
+### Request trailers
+
+A client can send fields after the body: chunked-encoding trailers on HTTP/1.1, or a trailing HEADERS frame on
+HTTP/3. Both transports deliver them as `HttpRequest.trailers()`, a `Headers` value (#2310).
+
+- **Kept apart from the headers.** Trailers are never merged into `headers()`, as RFC 9110 §6.5.2 requires.
+  Security validation, routing and content-type handling read the header section only.
+- **Names are folded with `Locale.ROOT`, and case variants merge.** `x-a` and `X-A` are one field, and their values
+  are kept in arrival order. The JVM default locale never affects matching: under `tr-TR`, `AUTHORIZATION` is still
+  forbidden.
+- **Empty when the client sent none.** The accessor returns `Headers.empty()`, never `null`. A request built
+  without a transport, such as a test double, also has no trailers: the interface's default answers empty.
+- **Forbidden fields are discarded; the request is still served.** `Headers.FORBIDDEN_TRAILER_FIELDS` lists the
+  names whose meaning must be settled before the body is read (RFC 9110 §6.5.1). They cover framing
+  (`content-length`, `transfer-encoding`, `trailer`, `te`, the hop-by-hop fields), routing (`host`), authentication
+  (`authorization`, `proxy-authorization`, `cookie`), request modifiers (`expect`, `max-forwards`, `cache-control`,
+  `pragma`, `range`, the `if-*` conditionals) and content format (`content-type`, `content-encoding`,
+  `content-language`, `content-location`, `content-range`). The request is not refused, because the RFC treats
+  discarding trailers as the normal outcome, and a value the server would never act on is no reason to fail a
+  request whose body has already arrived. On HTTP/3, pseudo-header fields in trailers are refused by Netty's
+  stream validation.
+- **Size.**
+  - **HTTP/1.1:** the decoder's 8192-byte field limit covers the header section and the trailer section
+    together. A request over it is answered `431 Request Header Fields Too Large`, the connection is closed, and
+    the handler is never called. An over-long request line with no headers gets `414`, and any other undecodable request gets `400`.
+  - **HTTP/3:** `SETTINGS_MAX_FIELD_SECTION_SIZE` (8192 bytes) applies to each field section separately, as
+    RFC 9114 defines it. A trailer section over it is a connection error, so the request is never dispatched.
+- **Forwarding.** `HttpRequestContext` carries the trailers in its `trailers` component, so a request forwarded
+  to another node reaches its slice with them. The same holds for a management request forwarded to its owner,
+  which is rebuilt as `ForwardedRequestContext`. Adding this component changed the record's wire shape. A node
+  running a build without it cannot decode a forward from a node running a build with it, and the reverse also
+  fails. Upgrade all nodes of a cluster before relying on mixed-version HTTP forwarding.
+
 ## Request Flow
 
 ### Local Request

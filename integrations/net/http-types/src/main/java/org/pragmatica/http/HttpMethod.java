@@ -58,7 +58,7 @@ public enum HttpMethod {
     /// @param method HTTP method string
     /// @return Result containing the HttpMethod or an error for unknown methods
     public static Result<HttpMethod> httpMethod(String method) {
-        return switch (method.toUpperCase()) {
+        return switch (method.toUpperCase(Locale.ROOT)) {
             case "GET" -> Result.success(GET);
             case "POST" -> Result.success(POST);
             case "PUT" -> Result.success(PUT);

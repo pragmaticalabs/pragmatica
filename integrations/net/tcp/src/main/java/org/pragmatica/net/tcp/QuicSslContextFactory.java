@@ -77,12 +77,16 @@ public final class QuicSslContextFactory {
 
     /// Create a self-signed QUIC server SSL context for development.
     ///
+    /// #2310: QUIC requires ALPN, so a server context that a client must reach over a named protocol (`h3` for
+    /// HTTP/3) has to offer that token; without one no client completes the handshake.
+    ///
+    /// @param applicationProtocols ALPN tokens the server offers
     /// @return QUIC SSL context or error
-    public static Result<QuicSslContext> createSelfSignedServer() {
+    public static Result<QuicSslContext> createSelfSignedServer(String... applicationProtocols) {
         return loadIdentityAndBuild(new TlsConfig.Identity.SelfSigned(),
                                     Option.empty(),
                                     ClientAuthPolicy.NOT_REQUESTED,
-                                    new String[0]);
+                                    applicationProtocols);
     }
 
     private static Result<QuicSslContext> loadIdentityAndBuild(TlsConfig.Identity identity,

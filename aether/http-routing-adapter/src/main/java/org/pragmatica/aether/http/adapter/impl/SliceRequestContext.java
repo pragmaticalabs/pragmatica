@@ -111,6 +111,12 @@ public final class SliceRequestContext implements RequestContext {
         return Headers.headers(httpContext.headers());
     }
 
+    /// #2310: the trailer fields the request carried, locally received or forwarded.
+    @Override
+    public Headers trailers() {
+        return Headers.trailers(httpContext.trailers());
+    }
+
     @Override
     public HttpHeaders responseHeaders() {
         return responseHeaders;

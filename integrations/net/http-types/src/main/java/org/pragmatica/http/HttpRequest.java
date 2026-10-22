@@ -39,6 +39,16 @@ public interface HttpRequest {
     /// Request body as bytes.
     byte[] body();
 
+    /// #2310: request trailer fields, the field section a client sends after the body (RFC 9110 §6.5): chunked
+    /// trailers on HTTP/1.1, the trailing HEADERS frame on HTTP/3. Empty when the client sent none. Kept apart from
+    /// [#headers()] and never merged into it; the names in [Headers#FORBIDDEN_TRAILER_FIELDS] are discarded by the
+    /// transport. Empty by default: a request that no transport received (a test double, a synthetic request) has
+    /// no trailer section. A request that wraps or carries another request must override this and pass the
+    /// trailers on.
+    default Headers trailers() {
+        return Headers.empty();
+    }
+
     /// Request body as UTF-8 string.
     default String bodyAsString() {
         var bytes = body();
