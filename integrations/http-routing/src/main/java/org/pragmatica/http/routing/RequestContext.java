@@ -291,8 +291,8 @@ public interface RequestContext extends HttpRequest {
             return Headers.trailers(fieldMap(request.trailingHeaders()));
         }
 
-        /// #2310: names folded with [java.util.Locale#ROOT] and kept in arrival order, so values of names that differ
-        /// only in case merge in the order they arrived.
+        /// #2310: names folded with [java.util.Locale#ROOT]; values of names that differ only in case merge into one
+        /// list, in the order the fields arrived (the list holds the order, not the map type).
         private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
             var fieldMap = new LinkedHashMap<String, List<String>>();
 

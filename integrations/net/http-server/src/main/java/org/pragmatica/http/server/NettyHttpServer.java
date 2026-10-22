@@ -572,7 +572,7 @@ final class NettyHttpServer implements HttpServer {
         }
 
         private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
-            // #2310: insertion order, so values of names that differ only in case keep their arrival order
+            // #2310: values of names that differ only in case merge into one list, in arrival order (the list holds the order)
             var fieldMap = new LinkedHashMap<String, List<String>>();
 
             for (var entry : fields) {

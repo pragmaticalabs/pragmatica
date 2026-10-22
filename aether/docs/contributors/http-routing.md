@@ -145,7 +145,7 @@ HTTP/3. Both transports deliver them as `HttpRequest.trailers()`, a `Headers` va
 - **Size.**
   - **HTTP/1.1:** the decoder's 8192-byte field limit covers the header section and the trailer section
     together. A request over it is answered `431 Request Header Fields Too Large`, the connection is closed, and
-    the handler is never called. Any other undecodable request gets `400`.
+    the handler is never called. An over-long request line with no headers gets `414`, and any other undecodable request gets `400`.
   - **HTTP/3:** `SETTINGS_MAX_FIELD_SECTION_SIZE` (8192 bytes) applies to each field section separately, as
     RFC 9114 defines it. A trailer section over it is a connection error, so the request is never dispatched.
 - **Forwarding.** `HttpRequestContext` carries the trailers in its `trailers` component, so a request forwarded
