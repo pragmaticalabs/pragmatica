@@ -32,7 +32,9 @@ public class AlertThresholdEvaluator {
 
     private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
+
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
+
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private AlertThresholdEvaluator(Supplier<ManageableNode> nodeSupplier, AlertManager alertManager) {
@@ -85,9 +87,7 @@ public class AlertThresholdEvaluator {
     }
 
     private void evaluateAllMetrics() {
-        var allMetrics = nodeSupplier.get()
-                                     .metricsCollector()
-                                     .allMetrics();
+        var allMetrics = nodeSupplier.get().metricsCollector().allMetrics();
 
         for (var entry : allMetrics.entrySet()) {
             var nodeId = entry.getKey();

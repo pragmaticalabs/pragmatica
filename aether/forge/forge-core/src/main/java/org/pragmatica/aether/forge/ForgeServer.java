@@ -64,7 +64,6 @@ public final class ForgeServer {
 
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
-
     private final HttpOperations http;
     /// The credential Forge presents on its OWN control-plane calls (currently the startup blueprint
     /// deploy). Empty when no keys are configured, which is the default and leaves every request
@@ -783,12 +782,12 @@ public final class ForgeServer {
     }
 
     private void startHttpServer() {
-        apiHandler.map(ForgeRequestHandler::forgeRequestHandler)
-                  .onPresent(this::launchHttpServer);
+        apiHandler.map(ForgeRequestHandler::forgeRequestHandler).onPresent(this::launchHttpServer);
     }
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
-        var config = HttpServerConfig.httpServerConfig("forge", forgeConfig.dashboardPort())
+        var config = HttpServerConfig.httpServerConfig("forge",
+                                                       forgeConfig.dashboardPort())
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
                                      .withChunkedWrite();
 

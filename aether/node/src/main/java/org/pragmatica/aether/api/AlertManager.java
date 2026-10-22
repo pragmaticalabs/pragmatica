@@ -411,13 +411,13 @@ public class AlertManager {
                                                                                          metric,
                                                                                          nodeId,
                                                                                          value))
-                                                     .onPresent(severity -> handleAlertValue(alertKey,
-                                                                                             existing,
-                                                                                             severity,
-                                                                                             metric,
-                                                                                             nodeId,
-                                                                                             value,
-                                                                                             threshold));
+                         .onPresent(severity -> handleAlertValue(alertKey,
+                                                                 existing,
+                                                                 severity,
+                                                                 metric,
+                                                                 nodeId,
+                                                                 value,
+                                                                 threshold));
     }
 
     /// The severity this metric holds AFTER hysteresis (#969) — the whole of the damping logic.
