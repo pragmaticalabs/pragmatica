@@ -125,6 +125,9 @@ class JsonSectionBinderTest {
             .containsExactly(new JsonSettingsError.UnknownKey("json.codecs.a.colour"));
         assertThat(faults(bind(Map.of("json.codecs.a.b.implementation", "generated"))))
             .containsExactly(new JsonSettingsError.UnknownKey("json.codecs.a.b.implementation"));
+        assertThat(faults(bind(Map.of("json.codecs.a.implementation", "generated",
+                                      "json.codecs.a.implementation.extra", "x"))))
+            .containsExactly(new JsonSettingsError.UnknownKey("json.codecs.a.implementation.extra"));
     }
 
     @Test

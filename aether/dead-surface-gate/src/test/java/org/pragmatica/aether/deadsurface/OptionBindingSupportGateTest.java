@@ -81,8 +81,11 @@ class OptionBindingSupportGateTest {
                                                                "org.pragmatica.aether.resource.interceptor.RateGuardConfig",
                                                                "org.pragmatica.aether.resource.interceptor.RateLimitConfig",
                                                                "org.pragmatica.aether.resource.interceptor.RetryConfig",
+                                                               // #2378: no Option component in any of the three; bound by JsonSectionBinder, not the record binder
+                                                               "org.pragmatica.aether.resource.json.JsonSectionConfig",
                                                                "org.pragmatica.aether.resource.notification.NotificationConfig",
                                                                "org.pragmatica.aether.resource.notification.RetryConfig",
+                                                               "org.pragmatica.aether.slice.JsonCodecSelection",
                                                                "org.pragmatica.aether.slice.PgNotificationConfig",
                                                                "org.pragmatica.aether.slice.RetentionPolicy",
                                                                "org.pragmatica.aether.slice.StreamConfig",
@@ -90,6 +93,7 @@ class OptionBindingSupportGateTest {
                                                                "org.pragmatica.email.http.HttpEmailConfig",
                                                                "org.pragmatica.net.smtp.SmtpAuth",
                                                                "org.pragmatica.net.smtp.SmtpConfig",
+                                                               "org.pragmatica.serialization.json.JsonOptions",
                                                                "org.pragmatica.storage.ContentStoreConfig");
 
     /// Every `Option<X>` component the walk finds, as `Record.component : Option<X>`.
