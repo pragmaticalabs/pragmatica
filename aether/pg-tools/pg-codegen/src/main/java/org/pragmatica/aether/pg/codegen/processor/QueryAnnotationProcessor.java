@@ -1311,9 +1311,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             for ( var param : method.getParameters()) {
                 collectTypeImports(param.asType(), imports);
                 if ( isRecordType(param)) {
-                    for ( var field : extractRecordComponentFields(param)) {
-                        addImportForQualifiedName(field.typeName(), imports);
-                    }
                     collectComponentTypeImports((TypeElement) ((DeclaredType) param.asType()).asElement(), imports);
                 }
             }
@@ -1349,19 +1346,20 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if ( innerElement == null) {
             return;
         }
-        for ( var component : innerElement.getEnclosedElements()) {
-            if ( component.getKind() == ElementKind.RECORD_COMPONENT) {
-                addImportForQualifiedName(component.asType().toString(), imports);
-            }
-        }
         collectComponentTypeImports(innerElement, imports);
     }
 
-    /// Imports the type arguments of a record's components, so an `Option<Vo>` component's
-    /// `Vo.valueMapping()` reference resolves.
+    /// Imports a record's component types and their type arguments, so a value-object component's
+    /// `Vo.valueMapping()` reference (also inside `Option<Vo>`) resolves. A `@Jsonb` component is skipped: its
+    /// codec constant names the type by its qualified name, and importing it could clash with another type of
+    /// the same simple name.
     private void collectComponentTypeImports(TypeElement record, Set<String> imports) {
         for ( var component : record.getEnclosedElements()) {
-            if ( component.getKind() == ElementKind.RECORD_COMPONENT && component.asType() instanceof DeclaredType dt) {
+            if ( component.getKind() != ElementKind.RECORD_COMPONENT || isMarked(component)) {
+                continue;
+            }
+            addImportForQualifiedName(component.asType().toString(), imports);
+            if ( component.asType() instanceof DeclaredType dt) {
                 for ( var arg : dt.getTypeArguments()) {
                     collectTypeImports(arg, imports);
                 }
