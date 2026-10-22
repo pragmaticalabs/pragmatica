@@ -110,6 +110,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/resource/durable-entity` | `org.pragmatica-lite.aether:resource-durable-entity` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/http` | `org.pragmatica-lite.aether:resource-http` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/interceptors` | `org.pragmatica-lite.aether:resource-interceptors` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
+| `aether/resource/json` | `org.pragmatica-lite.aether:resource-json` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/notification` | `org.pragmatica-lite.aether:resource-notification` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/services` | `org.pragmatica-lite.aether:resource-services` | pom | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/services/artifact-repo` | `org.pragmatica-lite.aether:artifact-repo` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
@@ -234,4 +235,4 @@ The limits are cumulative per month, so a second release in the same month needs
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-42 modules publish, 137 skip (179 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+42 modules publish, 138 skip (180 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).

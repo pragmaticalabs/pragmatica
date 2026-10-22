@@ -276,6 +276,11 @@
                 <artifactId>resource-interceptors</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-json</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>

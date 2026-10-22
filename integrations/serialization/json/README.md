@@ -5,7 +5,9 @@ time: plain Java that reads and writes UTF-8 bytes directly, with no reflection,
 no Jackson. Decoding returns `Result<T>`; malformed or unacceptable input is a typed `JsonError`, never an exception.
 
 The module depends on `core` only and works outside Aether. Inside Aether, the slice processor generates the same
-codecs for HTTP route request and response types automatically; those need no annotation.
+codecs for HTTP route request and response types automatically; those need no annotation. A slice chooses their
+naming in its `routes.toml` (`[json] naming`) and their options and implementation at deploy time in its `[json]`
+configuration section (see the Aether resource reference, "JSON Codec Settings").
 
 ## Maven setup
 
@@ -276,14 +278,18 @@ JsonTypeCodec<List<BuyRequest>> list          = JsonTypeCodec.listOf(BuyRequestJ
 JsonTypeCodec<Set<Level>> levels              = JsonTypeCodec.setOf(LevelJson.CODEC);
 JsonTypeCodec<Option<BuyRequest>> maybe       = JsonTypeCodec.optionOf(BuyRequestJson.CODEC);   // null <-> empty
 JsonTypeCodec<Map<String, BuyRequest>> byName = JsonTypeCodec.mapOf(BuyRequestJson.CODEC);      // String keys
+JsonTypeCodec<Map<ProductId, BuyRequest>> byId = JsonTypeCodec.mapOf(ProductIdJson.KEY, BuyRequestJson.CODEC);
+JsonTypeCodec<Map<Level, BuyRequest>> byLevel  = JsonTypeCodec.mapOf(LevelJson.KEY, BuyRequestJson.CODEC);
 
 Result<List<BuyRequest>> batch = list.decode(bytes);
 ```
 
 They write the same bytes, and accept and refuse the same input, as the code the generator emits for a component of
 that container type. Elements and map values are nested, so a value object among them is bare. Lists decode to `ArrayList`, sets to `LinkedHashSet` (a repeated element is kept once) and maps
-to `LinkedHashMap` (a repeated key keeps its last value), all in document order. A map keyed by an enum or a value
-object is available as a record component, not as a combinator. `optionOf` is no container: an option's value takes
+to `LinkedHashMap` (a repeated key keeps its last value), all in document order. A map keyed by an enum or by a value
+object over a `String` takes that type's key codec, `KEY` on its generated entry point (`JsonKeyCodec`; for an
+`@Json` enum or value object over a `String` only): the key is written and read as the generated map code does, a
+value object's through its factory, so a refused key fails the decode. `optionOf` is no container: an option's value takes
 the form of where the option stands, so `optionOf(EmailJson.CODEC)` writes `{"value":"a@b.c"}` as the whole document
 and `"a@b.c"` inside a list.
 
@@ -373,6 +379,8 @@ SignupJson.encode(signup);                                // {"email":"a@b.c"}
 - Records and enums must be accessible from their own package (public, or package-private in the same package), and
   so must a value object's factory.
 - Naming is per compilation (`-Ajson.naming`), not per type; `@JsonName` renames single components.
+- `KEY` exists only on the entry point of an `@Json` enum or value object over a `String`. A map keyed by a type that
+  is not itself `@Json` is available as a record component, not as a combinator.
 
 ## Packages
 

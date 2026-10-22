@@ -150,4 +150,20 @@ class JsonMapperOptionsTest {
 
         assertThat(snake.writeAsString(account()).unwrap()).startsWith("{\"nick_name\":null,\"legacy_Name\":\"Jo\"");
     }
+
+    /// #2378: the slice-route fallback factory applies the naming, the options and the value-object handling together.
+    @Test
+    void valueObjectMapperWithNamingAndOptions_appliesAllThree() {
+        var mapper = JsonMapper.valueObjectJsonMapper(NamingStrategy.SNAKE_CASE,
+                                                      options(NullInclusion.EXCLUDE, true, false, 1000, MAX, MAX, MAX));
+
+        assertThat(mapper.writeAsString(new Count(3)).unwrap()).isEqualTo("{\"count\":3}");
+        assertThat(mapper.writeAsString(account()).unwrap()).contains("\"legacy_Name\"")
+                                                             .doesNotContain("nick_name")
+                                                             .doesNotContain("nickName");
+        assertThat(mapper.readString("{\"count\":3,\"extra\":1}", Count.class).isSuccess()).isFalse();
+        assertThat(JsonMapper.valueObjectJsonMapper(NamingStrategy.SNAKE_CASE, JsonOptions.DEFAULTS)
+                             .writeAsString(new Account(Option.some("n"), "d", Tier.PRO, Map.of(), List.of()))
+                             .unwrap()).contains("\"nick_name\":\"n\"").contains("\"pro-tier\"");
+    }
 }

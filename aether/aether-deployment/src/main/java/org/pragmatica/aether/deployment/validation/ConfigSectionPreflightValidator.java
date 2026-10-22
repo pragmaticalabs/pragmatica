@@ -29,6 +29,9 @@ import static org.pragmatica.aether.deployment.validation.MissingConfigSection.m
 /// that subsystem already has its own validation stage ([StreamResourceValidator]) with different,
 /// deliberately non-gating semantics, and folding it into this hard-fail check would be scope creep
 /// beyond #547's acceptance criteria.
+/// The implicit `[json]` section of a slice with HTTP routes (#2378) is outside this check by construction: the slice
+/// processor writes no `resource.N` entry for it, so it never appears in [SliceTopology#resources()], and its absence
+/// is the defaults rather than a missing section.
 ///
 /// **Where a section may come from (#1067).** Each slice's sections are evaluated over the layering the
 /// slice loader applies to THAT slice, built by the loader's own functions rather than a copy of them:

@@ -34,6 +34,11 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>config-service</artifactId>
         </dependency>
+        <!-- JsonOptions in a slice's JSON codec selection; core only, so a slice gains no JSON library -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>serialization-codec-processor</artifactId>

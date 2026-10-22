@@ -21,6 +21,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.NamingStrategy;
 
 
 /// Loader for route configuration from TOML files.
@@ -50,6 +51,9 @@ import org.pragmatica.lang.utils.Causes;
 ///
 /// [errors.explicit]
 /// SomeAmbiguousType = 404
+///
+/// [json]
+/// naming = "snake_case"     # build-time JSON naming of the route codecs; default as_declared
 /// }```
 public final class RouteConfigLoader {
     public static final String CONFIG_FILE = "routes.toml";
@@ -65,6 +69,9 @@ public final class RouteConfigLoader {
 
     /// Matches a `[vN.routes]` section header (the version-routes block) and captures the version number.
     private static final Pattern VERSION_ROUTES_SECTION = Pattern.compile("^v(\\d+)\\.routes$");
+
+    private static final String JSON_SECTION = "json";
+    private static final String JSON_NAMING = "naming";
 
     private RouteConfigLoader() {}
 
@@ -92,6 +99,34 @@ public final class RouteConfigLoader {
     }
 
     private static Result<RouteConfig> assembleRouteConfig(TomlDocument toml) {
+        return Result.all(assembleRoutes(toml),
+                          parseJsonNaming(toml))
+                     .map(RouteConfig::withJsonNaming);
+    }
+
+    /// `[json] naming`: the build-time JSON naming of the generated route codecs (`as_declared`, `snake_case`,
+    /// `kebab_case`, `pascal_case`, any case or separator). It is the only key there: the other JSON options are
+    /// deploy-time, in the slice's `resources.toml` `[json]`, so one here is refused rather than ignored.
+    private static Result<Option<NamingStrategy>> parseJsonNaming(TomlDocument toml) {
+        var misplaced = toml.keys(JSON_SECTION)
+                            .stream()
+                            .filter(key -> !JSON_NAMING.equals(key))
+                            .sorted()
+                            .toList();
+
+        if (!misplaced.isEmpty()) {
+            return Causes.cause("routes.toml [json] holds only 'naming'; " + misplaced
+                                + " are deploy-time options and belong in the slice's resources.toml [json]")
+                         .result();
+        }
+
+        return toml.getString(JSON_SECTION, JSON_NAMING)
+                   .map(raw -> NamingStrategy.namingStrategy(raw)
+                                             .map(Option::some))
+                   .or(Result.success(Option.none()));
+    }
+
+    private static Result<RouteConfig> assembleRoutes(TomlDocument toml) {
         var errorsConfig = parseErrors(toml);
         var versionNumbers = discoverVersions(toml);
         var hasFlatRoutes = !toml.keys("routes").isEmpty();

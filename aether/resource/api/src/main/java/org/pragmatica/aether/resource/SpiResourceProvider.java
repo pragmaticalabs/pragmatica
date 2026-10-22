@@ -11,6 +11,7 @@ import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
+import org.pragmatica.aether.resource.json.JsonSectionConfig;
 import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
@@ -433,7 +434,18 @@ public final class SpiResourceProvider implements ResourceProvider {
                          .or(() -> noProviderForSectionBinder(factory, section));
     }
 
+    /// The second intentional exception to #547 (the first is [#topicNameFallback]): the `[json]` section is
+    /// provisioned implicitly for every slice with HTTP routes, and the runtime has complete defaults for it, so a
+    /// runtime with no slice composite to read it from (a minimal runtime, a slice whose `resources.toml` does not
+    /// parse) binds it as absent, the implicit generated codec under default options. Only absence falls back: with
+    /// a composite, a present `[json]` is bound strictly and a fault fails provisioning. Every other section binder
+    /// keeps the refusal.
+    @SuppressWarnings("unchecked")
     private static <T, C> Promise<C> noProviderForSectionBinder(ResourceFactory<T, C> factory, String section) {
+        if (factory.configType().equals(JsonSectionConfig.class)) {
+            return Promise.success((C) JsonSectionConfig.defaults(section));
+        }
+
         return new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
                                                                  new ResourceProvisioningError.SectionBinderNeedsProvider(factory.resourceType(),
                                                                                                                           section)).promise();
@@ -481,8 +493,8 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// ephemeral default would silently downgrade a declared-durable topic to fire-and-forget
     /// delivery.
     ///
-    /// This is the intentional exception to #547's "no resource type silently synthesises
-    /// configuration" gate: `TopicConfig` is a single-field record whose value the runtime already
+    /// This is the first of two intentional exceptions to #547's "no resource type silently synthesises
+    /// configuration" gate (the second, the implicit `[json]` section, is at [#noProviderForSectionBinder]): `TopicConfig` is a single-field record whose value the runtime already
     /// knows independently of `resources.toml` (the topic name), so there is nothing to synthesise —
     /// declaring it here, by design, rather than removing it, is #547's Gap-1 resolution. It also
     /// means `ConfigSectionPreflightValidator`'s deploy-time pre-flight deliberately does not check

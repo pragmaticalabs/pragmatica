@@ -50,7 +50,8 @@ import static org.pragmatica.lang.Option.some;
 /// the same for every type except a value object, which is a JSON object of its one component as a document
 /// (`{"value":"a@b.c"}`) and its bare component when nested (`"a@b.c"`).
 ///
-/// The static combinators ([#listOf], [#setOf], [#optionOf], [#mapOf]) wrap a codec into one for a container
+/// The static combinators ([#listOf], [#setOf], [#optionOf], [#mapOf], and [#mapOf(JsonKeyCodec, JsonTypeCodec)] for
+/// enum and value-object keys) wrap a codec into one for a container
 /// of its type. They write the same bytes and accept and refuse the same documents as the container code the
 /// generator emits for a component of that type: elements and map values take the nested form. An option is no
 /// container of its own: [#optionOf] keeps the form its value has where the option stands.
@@ -90,9 +91,12 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer,
     }
 
     /// This codec reading and writing under `options`: `BuyRequestJson.CODEC.withOptions(options)`,
-    /// `JsonTypeCodec.listOf(BuyRequestJson.CODEC).withOptions(options)`, or a codec from `JsonCodecs.codecFor`.
+    /// `JsonTypeCodec.listOf(BuyRequestJson.CODEC).withOptions(options)`, or a codec from `JsonCodecs.codecFor`. The same
+    /// codec when it already has these options.
     public JsonTypeCodec<T> withOptions(JsonOptions options) {
-        return new JsonTypeCodec<>(writer, reader, nestedWriter, nestedReader, options);
+        return options.equals(this.options)
+               ? this
+               : new JsonTypeCodec<>(writer, reader, nestedWriter, nestedReader, options);
     }
 
     /// Decodes the whole of `json`.
@@ -157,8 +161,16 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer,
     /// A JSON object with free-form string keys and `values` in their nested form, decoded into a mutable
     /// `LinkedHashMap` in document order; a repeated key keeps its last value, unless the options refuse duplicates.
     public static <V> JsonTypeCodec<Map<String, V>> mapOf(JsonTypeCodec<V> values) {
-        return jsonTypeCodec((out, map) -> writeObject(out, map, values.nestedWriter()),
-                             in -> readObject(in, values.nestedReader()));
+        return mapOf(JsonKeyCodec.STRING, values);
+    }
+
+    /// A JSON object whose member names are `keys` (an enum's constants, a value object's bare value: its entry
+    /// point's `KEY`) and whose values are `values` in their nested form, decoded into a mutable `LinkedHashMap` in
+    /// document order; a repeated key keeps its last value, unless the options refuse duplicates. A key a value
+    /// object's factory refuses fails the decode, as in the generated map code.
+    public static <K, V> JsonTypeCodec<Map<K, V>> mapOf(JsonKeyCodec<K> keys, JsonTypeCodec<V> values) {
+        return jsonTypeCodec((out, map) -> writeObject(out, map, keys.writer(), values.nestedWriter()),
+                             in -> readObject(in, keys.reader(), values.nestedReader()));
     }
 
     private Result<T> read(JsonReader in) {
@@ -195,7 +207,10 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer,
     }
 
     @Contract
-    private static <V> void writeObject(JsonWriter out, Map<String, V> map, BodyWriter<V> value) {
+    private static <K, V> void writeObject(JsonWriter out,
+                                           Map<K, V> map,
+                                           JsonKeyCodec.KeyWriter<K> key,
+                                           BodyWriter<V> value) {
         out.writeByte('{');
         var first = true;
 
@@ -205,7 +220,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer,
             }
 
             first = false;
-            out.writeString(entry.getKey());
+            key.write(out, entry.getKey());
             out.writeByte(':');
             value.write(out, entry.getValue());
         }
@@ -231,12 +246,12 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer,
         return values;
     }
 
-    private static <V> Map<String, V> readObject(JsonReader in, BodyReader<V> value) {
-        var values = new LinkedHashMap<String, V>();
+    private static <K, V> Map<K, V> readObject(JsonReader in, JsonKeyCodec.KeyReader<K> key, BodyReader<V> value) {
+        var values = new LinkedHashMap<K, V>();
 
         if (in.beginObject()) {
             for (var more = in.firstEntry(); more; more = in.nextEntry()) {
-                if (values.put(in.readKey(), value.read(in)) != null) {
+                if (values.put(key.read(in), value.read(in)) != null) {
                     in.repeatedKey();
                 }
             }

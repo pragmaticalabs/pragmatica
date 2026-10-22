@@ -145,6 +145,17 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED.code()).isEqualTo("community-assignment-unplaced");
     }
 
+    /// #2378 (know 14b6b16b8): a refused live `[json]` change is CRITICAL and closed by an INFO recovery of its own
+    /// subsystem.
+    @Test
+    void jsonConfigRejected_isCritical_andClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.JSON_CONFIG_REJECTED.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.JSON_CONFIG_REJECTED.code()).isEqualTo("json-config-rejected");
+        assertThat(OperatorWarningCode.JSON_CONFIG_APPLIED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.JSON_CONFIG_REJECTED);
+        assertThat(OperatorWarningCode.JSON_CONFIG_APPLIED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.JSON_CONFIG_APPLIED.code()).isEqualTo("json-config-applied");
+    }
+
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
         OperatorWarningCode.SWIM_KILL_GATE_HELD,
         OperatorWarningCode.CORE_ABSENCE_FENCE,

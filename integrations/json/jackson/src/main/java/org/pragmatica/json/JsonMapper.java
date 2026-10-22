@@ -190,6 +190,22 @@ public interface JsonMapper {
                          .build();
     }
 
+    /// As [#valueObjectJsonMapper()], naming properties with `naming` and reading and writing under `options`: the
+    /// Jackson fallback of a slice's generated route codecs compiled with `naming` and selected with `options`, so a
+    /// type the generated codecs do not cover keeps their names and accept/refuse decisions.
+    ///
+    /// @param naming  the build-time naming strategy
+    /// @param options the deploy-time options
+    ///
+    /// @return JsonMapper instance
+    static JsonMapper valueObjectJsonMapper(NamingStrategy naming, JsonOptions options) {
+        return jsonMapper().withPragmaticaTypes()
+                         .withValueObjects()
+                         .withNaming(naming)
+                         .withOptions(options)
+                         .build();
+    }
+
     /// Builder interface for configuring JsonMapper.
     interface JsonMapperBuilder {
         /// Registers PragmaticaModule for Result/Option serialization.

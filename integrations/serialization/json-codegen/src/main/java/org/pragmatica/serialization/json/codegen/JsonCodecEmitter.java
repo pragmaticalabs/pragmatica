@@ -41,7 +41,8 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// An **entry point** ([#emitEntryPoint], one `@Json` root) is a public final class named after the root
 /// (`<Flat>Json`, [JsonNames]) whose public members are the API: `CODEC`, `codec(JsonOptions)` (the same codec under
-/// deploy-time options), the `decode` and `encode` shortcuts, and `CODECS`. It is also the root's `ServiceLoader`
+/// deploy-time options), the `decode` and `encode` shortcuts, `CODECS`, and, for an enum or a value object over a
+/// `String`, `KEY` (the type as a map key, for `JsonTypeCodec.mapOf(KEY, values)`). It is also the root's `ServiceLoader`
 /// provider (`JsonCodecProvider`, with the public no-argument constructor a class-path provider needs), serving
 /// `CODEC` for `JsonCodecs.codecFor`. The code for the root and every record and enum it reaches sits in
 /// package-private nested `<Flat>JsonCodec` interfaces, so it is reachable through `CODECS` but is not the surface a
@@ -124,6 +125,13 @@ final class JsonCodecEmitter {
         out.add("        return CODEC.withOptions(options);");
         out.add("    }");
         out.add("");
+        mapKey(root).onPresent(key -> {
+                                   out.add("    /// The type as a map key, for `JsonTypeCodec.mapOf(KEY, values)`: the generated map code's own key form.");
+                                   out.add("    public static final " + RT + "JsonKeyCodec<" + type + "> KEY = " + RT
+                                           + "JsonKeyCodec.jsonKeyCodec((out, key) -> " + writeKey(key, "key") + ",");
+                                   out.add("                                                                     in -> " + readKey(key) + ");");
+                                   out.add("");
+                               });
         out.addAll(emitRegistry("public static final "));
         out.add("");
         out.add("    /// The ServiceLoader's instance; the codec itself is the CODEC constant.");
@@ -664,6 +672,22 @@ final class JsonCodecEmitter {
         wrapped.add(ind + "}");
 
         return wrapped;
+    }
+
+    // The root as a map key, when the generator accepts it as one: an enum, or a value object over a String.
+    private Option<JsonType> mapKey(TypeElement root) {
+        if (root.getKind() == javax.lang.model.element.ElementKind.ENUM) {
+            return some(new JsonType.EnumRef(root));
+        }
+
+        return Option.option(analyzer.records()
+                                     .get(typeName(root)))
+                     .filter(JsonType.RecordDefinition::isValueObject)
+                     .filter(definition -> definition.components()
+                                                     .getFirst()
+                                                     .type() instanceof JsonType.Scalar scalar
+                                           && scalar.kind() == JsonType.ScalarKind.STRING)
+                     .map(_ -> new JsonType.RecordRef(root));
     }
 
     private String writeKey(JsonType key, String expr) {
