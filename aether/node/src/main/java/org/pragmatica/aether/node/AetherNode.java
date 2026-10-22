@@ -85,7 +85,6 @@ import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.HighWaterOwnerEpochGate;
-import org.pragmatica.aether.dht.KvOwnerEpochSource;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -174,8 +173,6 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.consensus.net.quic.PeerConnectivityReporter;
 import org.pragmatica.cluster.node.SwitchableClusterNode;
-import org.pragmatica.cluster.node.forward.ForwardApplyRequest;
-import org.pragmatica.cluster.node.forward.ForwardApplyResponse;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
@@ -197,16 +194,9 @@ import org.pragmatica.aether.metrics.NodeReportedStateHolder;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
-import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTConfig;
-import org.pragmatica.dht.DHTMessage;
-import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
-import org.pragmatica.dht.DHTRebalancer;
-import org.pragmatica.dht.DHTTopologyListener;
-import org.pragmatica.dht.DistributedDHTClient;
-import org.pragmatica.dht.LoggingResolveFallbackObserver;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.lang.Cause;
@@ -237,6 +227,7 @@ import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.node.assembly.EntityAssembly;
+import org.pragmatica.aether.node.assembly.DhtAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.Server;
@@ -837,31 +828,6 @@ public interface AetherNode extends ManageableNode {
                                                        GitBackupRepository.DEFAULT_TIMEOUT);
     }
 
-    /// A6: the repair plane's current protocol — stamp digests and paged pulls — and the freshness-gated verified read
-    /// of content-addressed keys, answered with a Get- or ExistsResponse. The legacy DHT routes stay beside these for
-    /// peers still on the previous version during a rolling upgrade. Without the verified-read route every remote
-    /// verified read waits out its phase deadline before falling back to the quorum read.
-    @Contract
-    static void routeDhtRepairPlane(List<MessageRouter.Entry<?>> allEntries,
-                                    DHTNode dhtNode,
-                                    DHTNetwork dhtNetwork,
-                                    DHTAntiEntropy dhtAntiEntropy) {
-        allEntries.add(MessageRouter.Entry.route(DHTMessage.StampDigestRequest.class,
-                                                 request -> dhtNode.handleStampDigestRequest(request,
-                                                                                             response -> dhtNetwork.send(request.sender(),
-                                                                                                                         response))));
-        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageRequest.class,
-                                                 request -> dhtNode.handleMigrationPageRequest(request,
-                                                                                               response -> dhtNetwork.send(request.sender(),
-                                                                                                                           response))));
-        allEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationPageResponse.class,
-                                                 dhtAntiEntropy::onMigrationPageResponse));
-        allEntries.add(MessageRouter.Entry.route(DHTMessage.VerifiedReadRequest.class,
-                                                 request -> dhtNode.handleVerifiedReadRequest(request,
-                                                                                              response -> dhtNetwork.send(request.sender(),
-                                                                                                                          response))));
-    }
-
     @SuppressWarnings("unchecked")
     private static void routeKvBackup(List<MessageRouter.Entry<?>> allEntries, KvBackupService service) {
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
@@ -1458,62 +1424,10 @@ public interface AetherNode extends ManageableNode {
                                                                     () -> clusterNode.leaderManager()
                                                                                      .leader(),
                                                                     clusterNode::isPendingCatchUp);
-        // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
-        // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
-        // just calls `send` and reports Sent — but the DHT quorum collectors need the
-        // real synchronous refusal signal to fail-fast against unreachable replicas
-        // (see aether/docs/specs/dht-resilience-spec.md Layer 1/3).
-        DHTNetwork dhtNetwork = new DHTNetwork() {
-            @Contract
-            @Override
-            public void send(NodeId target, org.pragmatica.consensus.ProtocolMessage msg) {
-                var _ = clusterNode.network().send(target, msg);
-            }
-
-            @Override
-            public Promise<org.pragmatica.consensus.net.WriteOutcome> sendOutcome(NodeId target,
-                                                                                  org.pragmatica.consensus.ProtocolMessage msg) {
-                return clusterNode.network()
-                                  .sendOutcome(target, msg);
-            }
-
-            @Override
-            public Set<NodeId> livePeers() {
-                // Membership-FSM unification (Wave D, consumer #3) + scale-down zombie-write fix
-                // (2026-06-12): the DHT live-peer set is sourced from the authoritative
-                // MembershipFsm.dhtRoutableMembers() (OBSERVED + MEMBER + SUSPECT) plus self. This is
-                // the NARROWER projection that, unlike broadcastEligibleMembers(), ALSO excludes
-                // DEPARTING: a drained node (commanded to leave on a scale-down) is about to halt, so
-                // routing a NEW DHT replica write/read to it produces a silent zombie target — the QUIC
-                // send returns Sent, the QuorumCollector never sees a failure, and the op stalls until
-                // the per-op timeout (surfacing as a 500 on a write issued shortly after scale-down).
-                // Excluding DEPARTING closes that window at drain-COMMAND time (~1s post-scale-down via
-                // the leader ping → DrainRequested), before the node halts and far ahead of the ~14s
-                // SWIM aging path. This governs only NEW-op target selection; in-flight ops (tracked by
-                // correlation id) and the drainer's own InFlightRequestTracker are untouched, so
-                // in-flight drain semantics are preserved. An OBSERVED joining replacement and a
-                // SUSPECT flapping member are still UP and can serve reads, so they remain in the set;
-                // the per-op timeout plus the new total<quorum fast-fail guard are the safety net. Self
-                // is always included (it handles local replicas directly). Before the FSM is published
-                // (early boot / non-cluster worker paths) this degrades to the prior transport view
-                // (connectedPeers + self), preserving back-compat.
-                if (configuredWorker(config)) {
-                    return dhtNode.ring()
-                                  .nodes()
-                                  .stream()
-                                  .filter(clusterNode.network().connectedPeers()::contains)
-                                  .collect(Collectors.toSet());
-                }
-
-                var live = Option.option(membershipFsmRef.get())
-                                 .map(MembershipFsm::dhtRoutableMembers)
-                                 .or(() -> new HashSet<>(clusterNode.network().connectedPeers()));
-
-                live.add(config.self());
-
-                return live;
-            }
-        };
+        var dhtNetwork = DhtAssembly.dhtNetwork(new DhtAssembly.DhtNetworkInputs(config,
+                                                                                 clusterNode,
+                                                                                 dhtNode,
+                                                                                 membershipFsmRef));
         // #499 zombie fix + #644 arming fix: every periodic SharedScheduler task this node wants is
         // DEFERRED here as an arming thunk, armed only once cluster formation resolves in start(),
         // and cancelled first in stop(). SharedScheduler is JVM-global, so an uncancelled fixed-rate
@@ -1522,24 +1436,12 @@ public interface AetherNode extends ManageableNode {
         // And a task armed at ASSEMBLY runs on a node that was never started (#642's evidence run:
         // two held-back Ember nodes, 274 snapshot ticks each) — see PeriodicTasks for the contract.
         var periodicTasks = PeriodicTasks.periodicTasks();
-        var baseDhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
-                                                                      dhtNetwork,
-                                                                      KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
-                                                                                                            BootstrapModule.CORE_PARTITION_ID));
-        // An all-miss resolve reads as a bare "absent" everywhere above the client; this observer writes the WARN that
-        // says whether the key is absent everywhere or unreachable, for artifact keys only (other keys' absence is normal
-        // traffic and logs at DEBUG). The cache client is scoped from the base client, not from this one:
-        // a cache miss is normal traffic and must not WARN.
-        var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(ArtifactStore::isArtifactMetadataKeyHex,
-                                                                                                                                LOG::warn,
-                                                                                                                                LOG::debug,
-                                                                                                                                LOG::info));
-        // The cache namespace declares its own replication in the committed `[cache]` section (#1777 track 1),
-        // re-read on every operation; `config.cache()` supplies its timeout and retry policy, and its factors
-        // until the committed ones are resolved.
-        var cacheDhtConfig = new AtomicReference<>(config.cache());
-        var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);
-        var dhtClientOption = Option.<DHTClient> some(dhtClient);
+        var dhtClientsOut = DhtAssembly.dhtClients(new DhtAssembly.DhtClientsInputs(config, kvStore, dhtNode, dhtNetwork));
+        var baseDhtClient = dhtClientsOut.baseDhtClient();
+        var dhtClient = dhtClientsOut.dhtClient();
+        var cacheDhtConfig = dhtClientsOut.cacheDhtConfig();
+        var cacheDhtClient = dhtClientsOut.cacheDhtClient();
+        var dhtClientOption = dhtClientsOut.dhtClientOption();
         var storageSetupsResult = StorageAssembly.createStorageSetups(new StorageAssembly.CreateStorageSetupsInputs(config,
                                                                                                                     storageKeyring,
                                                                                                                     dhtClientOption));
@@ -1574,40 +1476,21 @@ public interface AetherNode extends ManageableNode {
                                                                                                    repositories,
                                                                                                    sharedLibraryLoader,
                                                                                                    resourceProviderSetup));
-        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork);
-        // #1818 round 3: departure pushes are accepted only from departing senders. The predicate needs the
-        // ClusterSyncCollector, built further down, so it is resolved through this holder (strict until then).
-        var departingSendersRef = new AtomicReference<Predicate<NodeId>>(_ -> false);
-        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode,
-                                                           dhtNetwork,
-                                                           sender -> departingSendersRef.get()
-                                                                                        .test(sender));
-        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer, dhtAntiEntropy);
+        var dhtRebalancingOut = DhtAssembly.dhtRebalancing(new DhtAssembly.DhtRebalancingInputs(dhtNode, dhtNetwork));
+        var dhtRebalancer = dhtRebalancingOut.dhtRebalancer();
+        var departingSendersRef = dhtRebalancingOut.departingSendersRef();
+        var dhtAntiEntropy = dhtRebalancingOut.dhtAntiEntropy();
+        var dhtTopologyListener = dhtRebalancingOut.dhtTopologyListener();
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
-        // #1777 CTO ruling R1b: a replication change switches the DHT to its new quorums cluster-wide, by a committed fact
-        var dhtSettlement = DhtReplicationSettlement.dhtReplicationSettlement(new DhtReplicationSettlement.Inputs(config.self(),
-                                                                                                                  !configuredWorker(config),
-                                                                                                                  kvStore,
-                                                                                                                  dhtNode,
-                                                                                                                  config.artifactRepo(),
-                                                                                                                  () -> clusterNode.leaderManager()
-                                                                                                                                   .isLeader(),
-                                                                                                                  switchableCluster::apply,
-                                                                                                                  () -> dhtWritingWorkers(Option.option(membershipFsmRef.get())),
-                                                                                                                  member -> committedDeparture(Option.option(membershipFsmRef.get()),
-                                                                                                                                               member),
-                                                                                                                  delegateRouter::route,
-                                                                                                                  System::currentTimeMillis,
-                                                                                                                  () -> !clusterNode.isPendingCatchUp()
-                                                                                                                  // v1882 r5: a replica accepts writes only once consensus has applied its log tail
-                                                                                                                 ));
-
-        dhtNode.onReplicationCaughtUp(_ -> dhtSettlement.report());
-        // #1777 (owner rule): this node announces its own writes being refused as stale beyond the bound
-        var dhtWriterStaleWatch = DhtWriterStaleWatch.dhtWriterStaleWatch(config.self(),
-                                                                          dhtNode,
-                                                                          delegateRouter::route,
-                                                                          System::currentTimeMillis);
+        var dhtSettlementOut = DhtAssembly.dhtSettlement(new DhtAssembly.DhtSettlementInputs(config,
+                                                                                             delegateRouter,
+                                                                                             kvStore,
+                                                                                             clusterNode,
+                                                                                             dhtNode,
+                                                                                             membershipFsmRef,
+                                                                                             switchableCluster));
+        var dhtSettlement = dhtSettlementOut.dhtSettlement();
+        var dhtWriterStaleWatch = dhtSettlementOut.dhtWriterStaleWatch();
         var corePeerIds = config.topology()
                                 .coreNodes()
                                 .stream()
@@ -2463,18 +2346,13 @@ public interface AetherNode extends ManageableNode {
         var communityRetirements = retirementIndexesOut.communityRetirements();
         var nodeReplacements = retirementIndexesOut.nodeReplacements();
         var upgradeRuns = retirementIndexesOut.upgradeRuns();
-        // #1777 track 1: restored state is when the committed `[replication]` / `[cache]` factors become readable —
-        // or are known to be absent, which means the built-in ones. Later commits re-resolve through the
-        // ClusterConfigKey put below.
-        clusterNode.onStateRestored(() -> {
-            resolveDhtReplication(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
-                                                   AetherValue.ClusterConfigValue.class),
-                                  dhtNode,
-                                  config,
-                                  cacheDhtConfig,
-                                  dhtSettlement);
-            dhtSettlement.reapply();
-        });
+
+        DhtAssembly.dhtReplicationRestore(new DhtAssembly.DhtReplicationRestoreInputs(config,
+                                                                                      kvStore,
+                                                                                      clusterNode,
+                                                                                      dhtNode,
+                                                                                      cacheDhtConfig,
+                                                                                      dhtSettlement));
         var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> retirementCandidates(communityRetirements.including(cdmDrainingNodesRef.get()
                                                                                                                                             .get()),
@@ -2944,86 +2822,16 @@ public interface AetherNode extends ManageableNode {
                                                                                               communityDrain,
                                                                                               placementReconciler,
                                                                                               aetherEntries));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
-                                                    request -> dhtNode.handleGetRequest(request,
-                                                                                        response -> dhtNetwork.send(request.sender(),
-                                                                                                                    response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutRequest.class,
-                                                    request -> dhtNode.handlePutRequest(request,
-                                                                                        response -> dhtNetwork.send(request.sender(),
-                                                                                                                    response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
-                                                    request -> dhtNode.handleRemoveRequest(request,
-                                                                                           response -> dhtNetwork.send(request.sender(),
-                                                                                                                       response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsRequest.class,
-                                                    request -> dhtNode.handleExistsRequest(request,
-                                                                                           response -> dhtNetwork.send(request.sender(),
-                                                                                                                       response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetResponse.class, dhtClient::onGetResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutResponse.class, dhtClient::onPutResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveResponse.class, dhtClient::onRemoveResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsResponse.class, dhtClient::onExistsResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestRequest.class,
-                                                    request -> dhtNode.handleDigestRequest(request,
-                                                                                           response -> dhtNetwork.send(request.sender(),
-                                                                                                                       response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class, dhtAntiEntropy::onDigestResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
-                                                    request -> dhtNode.handleMigrationDataRequest(request,
-                                                                                                  response -> dhtNetwork.send(request.sender(),
-                                                                                                                              response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
-                                                    dhtAntiEntropy::onMigrationDataResponse));
-        routeDhtRepairPlane(aetherEntries, dhtNode, dhtNetwork, dhtAntiEntropy);
-        // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
-        // drain can confirm the chunk reached a surviving replica before halting.
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
-        aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
-                                                    event -> {
-                                                        if (!configuredWorker(config)) {
-                                                            dhtTopologyListener.onNodeJoined(event);
-                                                        }
-                                                    }));
-        aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
-                                                    event -> {
-                                                        if (!configuredWorker(config)) {
-                                                            dhtTopologyListener.onNodeRemoved(event);
-                                                        }
-                                                    }));
-        aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
-                                                    event -> {
-                                                        if (!configuredWorker(config)) {
-                                                            dhtTopologyListener.onNodeDecommissioned(event);
-                                                        }
-                                                    }));
-        // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
-        aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
-                                                    dhtTopologyListener::onSelfShutdown));
-        // PeerDisconnected → DHT-ring prune is intentionally NOT wired. The naive variant
-        // (commit `d3e54717e`, reverted here) pruned aggressively on every transient QUIC
-        // drop, which triggered a rebalance storm under sustained write pressure (16-chunk
-        // 1MB artifact fan-out): each chunk replication targeting a freshly-pruned peer ran
-        // through a re-replication pass that saturated QUIC, which in turn caused
-        // `writeIfWritable` watermark drops, which manifest as the 1MB-push hang we tried
-        // to fix. Consensus-driven `MembershipDecision.NodeRemoved` (wired via
-        // `dhtTopologyListener::onNodeRemoved` above) IS the correct ring-prune trigger:
-        // it fires only after the cluster has agreed the node is gone, not on every QUIC
-        // flap. Future work: bound transport-level pruning by an observation window
-        // (e.g., 30s of unbroken PeerDisconnected with no intervening ConnectionEstablished)
-        // before pruning, so genuinely-dead peers eventually leave the ring without the
-        // every-flap storm.
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
-                                                                            (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
-                                                                                                                                       clusterNode));
-
-        aetherEntries.add(forwardRequestRoute);
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        MessageRouter.Entry forwardResponseRoute = MessageRouter.Entry.route(ForwardApplyResponse.class,
-                                                                             forwardingClusterNode::onForwardApplyResponse);
-
-        aetherEntries.add(forwardResponseRoute);
+        DhtAssembly.dhtRoutes(new DhtAssembly.DhtRoutesInputs(config,
+                                                              clusterNode,
+                                                              dhtNode,
+                                                              dhtNetwork,
+                                                              dhtClient,
+                                                              dhtRebalancer,
+                                                              dhtAntiEntropy,
+                                                              dhtTopologyListener,
+                                                              forwardingClusterNode,
+                                                              aetherEntries));
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
         var selfId = config.self();
         var gossipEncryptionOut = SwimAssembly.gossipEncryption(new SwimAssembly.GossipEncryptionInputs(config));
@@ -3464,17 +3272,7 @@ public interface AetherNode extends ManageableNode {
                                                                             storageSetups,
                                                                             storageMaintenanceDriver,
                                                                             periodicTasks::defer));
-        // #420/#1136: the DHT anti-entropy cycle. `DHTAntiEntropy.start()` had no caller, so the
-        // "periodic 30 s repair" never ran in production and `[timeouts.dht] anti_entropy_interval`
-        // was parsed by nothing. Armed here, with the node's other periodic work (#644: after
-        // formation, cancelled first on stop, never a zombie), on the configured interval; the
-        // join-time round in DHTTopologyListener is the fast path, this cycle is its retry.
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
-                                                                      config.timeouts().dht().antiEntropyInterval()));
-        // #1777 track 2: fills the partitions this node is a replica of but not yet authoritative for —
-        // at boot, and after every ring change — within about a tick of their sources answering.
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::catchUpNow,
-                                                                      DHTAntiEntropy.CATCH_UP_INTERVAL));
+        DhtAssembly.dhtTicks(new DhtAssembly.DhtTicksInputs(config, dhtAntiEntropy, periodicTasks::defer));
         StreamAssembly.streamTicks(new StreamAssembly.StreamTicksInputs(streamPartitionManager, periodicTasks::defer));
         var streamServingOut = StreamAssembly.streamServing(new StreamAssembly.StreamServingInputs(config,
                                                                                                    kvStore,
@@ -3889,11 +3687,11 @@ public interface AetherNode extends ManageableNode {
     /// `committed` is the configuration being applied — the one a commit notification carries, so its version is the
     /// version this node reports as applied (#1777 R1b), never a later one read back from the store.
     @Contract
-    private static void resolveDhtReplication(Option<AetherValue.ClusterConfigValue> committed,
-                                              DHTNode dhtNode,
-                                              AetherNodeConfig config,
-                                              AtomicReference<DHTConfig> cacheDhtConfig,
-                                              DhtReplicationSettlement settlement) {
+    static void resolveDhtReplication(Option<AetherValue.ClusterConfigValue> committed,
+                                      DHTNode dhtNode,
+                                      AetherNodeConfig config,
+                                      AtomicReference<DHTConfig> cacheDhtConfig,
+                                      DhtReplicationSettlement settlement) {
         var version = committed.map(AetherValue.ClusterConfigValue::configVersion).or(DHTNode.NO_CHANGE);
 
         ClusterReplication.defaults(committed)
@@ -3945,27 +3743,6 @@ public interface AetherNode extends ManageableNode {
                      resolved.writeQuorum(),
                      resolved.readQuorum());
         }
-    }
-
-    /// #1777 R1b: the workers a replication change waits for — every worker the membership tracks that has not been
-    /// marked Dead in the leader's membership view. Any of them may write to the DHT. The view decides only WHEN a change
-    /// settles; the replication-change fence on every put keeps a writer it misses safe (#1777 R1c).
-    static Set<NodeId> dhtWritingWorkers(Option<MembershipFsm> membershipFsm) {
-        return membershipFsm.map(fsm -> fsm.memberDescriptors()
-                                           .entrySet()
-                                           .stream()
-                                           .filter(entry -> "worker".equalsIgnoreCase(entry.getValue().role()))
-                                           .map(Map.Entry::getKey)
-                                           .filter(fsm::isTrackedAndNotDead)
-                                           .collect(Collectors.toSet()))
-                            .or(Set.of());
-    }
-
-    /// #1777 R1b: whether the leader's membership view holds `member` `Dead`. Not a committed fact: a wrong verdict only
-    /// hastens or delays a settle (#1777 R1c).
-    static boolean committedDeparture(Option<MembershipFsm> membershipFsm, NodeId member) {
-        return membershipFsm.map(fsm -> "Dead".equals(fsm.memberStates().get(member)))
-                            .or(false);
     }
 
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —
@@ -4854,39 +4631,6 @@ public interface AetherNode extends ManageableNode {
                               AetherValue.ActivationDirectiveValue.class)
                     .flatMap(directive -> store.getTyped(new AetherKey.CommunityPlacementOperationKey(directive.communityId()),
                                                          AetherValue.CommunityPlacementOperationValue.class));
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"})
-    private static void handleForwardApplyRequest(ForwardApplyRequest request,
-                                                  RabiaNode<KVCommand<AetherKey>> clusterNode) {
-        clusterNode.apply((List) request.commands())
-                   .onSuccess(results -> sendSuccessResponse(clusterNode,
-                                                             request,
-                                                             (List) results))
-                   .onFailure(cause -> sendFailureResponse(clusterNode,
-                                                           request,
-                                                           (Cause) cause));
-    }
-
-    @SuppressWarnings({"rawtypes"})
-    private static void sendSuccessResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                            ForwardApplyRequest request,
-                                            List<?> results) {
-        var response = new ForwardApplyResponse<>(clusterNode.self(), request.correlationId(), results, Option.empty());
-
-        clusterNode.network().send(request.sender(), response);
-    }
-
-    @SuppressWarnings({"rawtypes"})
-    private static void sendFailureResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                            ForwardApplyRequest request,
-                                            Cause cause) {
-        var response = new ForwardApplyResponse<>(clusterNode.self(),
-                                                  request.correlationId(),
-                                                  List.of(),
-                                                  Option.some(cause.message()));
-
-        clusterNode.network().send(request.sender(), response);
     }
 
     static boolean configuredWorker(AetherNodeConfig config) {

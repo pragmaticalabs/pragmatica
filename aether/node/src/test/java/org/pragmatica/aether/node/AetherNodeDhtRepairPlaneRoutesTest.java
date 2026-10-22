@@ -12,6 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.assembly.DhtAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.dht.ConsistentHashRing;
@@ -29,7 +30,7 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// A6 (#2265): the node routes the repair plane's message types to the DHT, and every request is answered to its
-/// sender. Goes through the production wiring (`AetherNode.routeDhtRepairPlane`) with a real DHT node and a recording
+/// sender. Goes through the production wiring (`DhtAssembly.routeDhtRepairPlane`) with a real DHT node and a recording
 /// network. Without the verified-read route, every remote verified read waits out its phase deadline (15 s at
 /// defaults) before falling back to the quorum read, and nothing in the DHT module's own tests can see it.
 class AetherNodeDhtRepairPlaneRoutesTest {
@@ -50,7 +51,7 @@ class AetherNodeDhtRepairPlaneRoutesTest {
         var node = DHTNode.dhtNode(SELF, memoryStorageEngine(), ring, config);
         DHTNetwork network = (target, message) -> sent.add(Map.entry(target, message));
 
-        AetherNode.routeDhtRepairPlane(entries, node, network, DHTAntiEntropy.dhtAntiEntropy(node, network, config));
+        DhtAssembly.routeDhtRepairPlane(entries, node, network, DHTAntiEntropy.dhtAntiEntropy(node, network, config));
     }
 
     /// The message router's dispatch: every route entry registered for exactly this message class.
