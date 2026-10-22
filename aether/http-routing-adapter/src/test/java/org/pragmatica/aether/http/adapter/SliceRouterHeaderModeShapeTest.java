@@ -83,7 +83,7 @@ class SliceRouterHeaderModeShapeTest {
     }
 
     private HttpResponseData send(String path, int version) {
-        return send(path, Map.of(API_VERSION.toLowerCase(), List.of(String.valueOf(version))), router());
+        return send(path, Map.of(API_VERSION.toLowerCase(Locale.ROOT), List.of(String.valueOf(version))), router());
     }
 
     private HttpResponseData sendNoHeader(String path, SliceRouter router) {

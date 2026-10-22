@@ -19,6 +19,7 @@ package org.pragmatica.http.server;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -81,6 +82,24 @@ class Http3ResponseHeaderNamesTest {
         assertThat(headers.status()).as("the response arrives").isNotNull();
         assertThat(headers.status().toString()).isEqualTo("200");
         assertThat(headers.get("x-request-id")).hasToString("req-upper");
+    }
+
+    /// Under `tr-TR` a default-locale lower case turns the `I` of `X-Request-Id` into a dotless `ı`, which is not the
+    /// name the client asked for: response names are folded with `Locale.ROOT`.
+    @Test
+    void mixedCaseResponseHeader_isSentLowercase_underATurkishDefaultLocale() throws Exception {
+        var saved = Locale.getDefault();
+
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+            var headers = exchange();
+
+            assertThat(headers.status()).as("the response arrives").isNotNull();
+            assertThat(headers.get("x-request-id")).hasToString("req-upper");
+        } finally {
+            Locale.setDefault(saved);
+        }
     }
 
     /// The response headers, or empty headers (no status) when the stream ended without a response.

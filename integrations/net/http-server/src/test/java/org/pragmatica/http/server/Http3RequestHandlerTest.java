@@ -20,6 +20,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -163,6 +164,36 @@ class Http3RequestHandlerTest {
         assertThat(responseStatus(channel)).isEqualTo("413");
         assertThat(((Http3Server.Http3RequestHandler) channel.pipeline().first()).holdsBodyBuffer()).isFalse();
         channel.finishAndReleaseAll();
+    }
+
+    /// Netty lowercases H3 field names on the wire, so this fold is a defence: it is driven here with a container that
+    /// does not validate, and under `tr-TR` a default-locale fold would turn the `I` of `X-ID` into a dotless `ı`.
+    @Test
+    void uppercaseFieldNames_areFoldedWithRootLocale_underATurkishDefaultLocale() {
+        var saved = Locale.getDefault();
+
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+            var channel = channel();
+            var headers = new DefaultHttp3Headers(false);
+            var trailers = new DefaultHttp3Headers(false);
+
+            headers.method("POST");
+            headers.path("/upload");
+            headers.set("X-ID", "h");
+            trailers.set("X-TRAILER-ID", "t");
+            channel.writeInbound(new DefaultHttp3HeadersFrame(headers));
+            channel.writeInbound(new DefaultHttp3HeadersFrame(trailers));
+            channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+
+            assertThat(dispatched).hasSize(1);
+            assertThat(dispatched.getFirst().headers().get("x-id")).isEqualTo(Option.some("h"));
+            assertThat(dispatched.getFirst().trailers().get("x-trailer-id")).isEqualTo(Option.some("t"));
+            channel.finishAndReleaseAll();
+        } finally {
+            Locale.setDefault(saved);
+        }
     }
 
     @Test

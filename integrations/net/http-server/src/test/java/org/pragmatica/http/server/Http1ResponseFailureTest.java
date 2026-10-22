@@ -66,6 +66,7 @@ class Http1ResponseFailureTest {
         var outcome = exchange();
 
         assertThat(outcome.status()).as("the unsent response is replaced by a 500").isEqualTo(500);
+        assertThat(outcome.body()).as("the 500 carries the server's own body").isEqualTo("{\"error\":\"Internal Server Error\"}");
         assertThat(outcome.elapsedMs()).as("answered promptly, not at the client's timeout").isLessThan(PROMPT_MS);
     }
 
@@ -136,7 +137,7 @@ class Http1ResponseFailureTest {
                            .unwrap();
     }
 
-    private record Outcome(int status, long elapsedMs) {}
+    private record Outcome(int status, long elapsedMs, String body) {}
 
     private Outcome exchange() throws IOException {
         try (var socket = new Socket("127.0.0.1", server.port())) {
@@ -151,7 +152,9 @@ class Http1ResponseFailureTest {
             var response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
             var elapsedMs = (System.nanoTime() - sent) / 1_000_000;
 
-            return new Outcome(Integer.parseInt(response.substring(9, 12)), elapsedMs);
+            return new Outcome(Integer.parseInt(response.substring(9, 12)),
+                               elapsedMs,
+                               response.substring(response.indexOf("\r\n\r\n") + 4));
         }
     }
 }

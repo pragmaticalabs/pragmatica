@@ -23,6 +23,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// #2310: the RFC 9110 §6.5.1 trailer policy, shared by every transport through [Headers#trailers(Map)].
 class HeadersTrailersTest {
@@ -132,6 +133,23 @@ class HeadersTrailersTest {
         var headers = Headers.fromSingleValueMap(Map.of("X-B", "1", "x-b", "2"));
 
         assertThat(headers.getAll("x-b")).containsExactlyInAnyOrder("1", "2");
+    }
+
+    /// The values handed out are not a window onto mutable state: the per-name lists and the map itself are immutable.
+    @Test
+    void headers_valueListsAndMap_areImmutable() {
+        var headers = Headers.headers(Map.of("x-a", List.of("1")));
+
+        assertThatThrownBy(() -> headers.getAll("x-a").add("2")).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> headers.asMap().put("x-b", List.of("3"))).isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void trailers_valueListsAndMap_areImmutable() {
+        var trailers = Headers.trailers(Map.of("x-a", List.of("1")));
+
+        assertThatThrownBy(() -> trailers.getAll("x-a").add("2")).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> trailers.asMap().put("x-b", List.of("3"))).isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
