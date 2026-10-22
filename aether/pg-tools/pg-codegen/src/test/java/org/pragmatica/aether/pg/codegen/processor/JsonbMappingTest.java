@@ -5,6 +5,7 @@ package org.pragmatica.aether.pg.codegen.processor;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import org.pragmatica.aether.resource.db.JsonText;
@@ -204,7 +205,9 @@ class JsonbMappingTest {
             assertThat(result.generatedSource("test.OnlyDocRepoFactory")).contains("import org.pragmatica.aether.resource.db.RowDecodeError;");
         }
 
+        // Bounded: a broken clash numbering loops forever instead of failing.
         @Test
+        @Timeout(120)
         void sameSimpleNameInTwoPackages_getsDistinctCodecConstants() throws Exception {
             var otherProfile = """
                 package other;
@@ -417,6 +420,36 @@ class JsonbMappingTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("@Jsonb target 'profiles'").contains("is not a record or enum type");
+        }
+
+        @Test
+        void markedPlainStringOrGenericRecord_isCompileError() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Unit;
+                import org.pragmatica.lang.Promise;
+
+                record Box<T>(T value) {}
+
+                @PgSql
+                public interface RawRepo {
+                    @Query("UPDATE documents SET profile = :raw WHERE id = :id")
+                    Promise<Unit> storeRaw(long id, @Jsonb String raw);
+
+                    @Query("UPDATE documents SET legacy = :box WHERE id = :id")
+                    Promise<Unit> storeBox(long id, @Jsonb Box<String> box);
+                }
+                """;
+
+            var result = compile(source, "test/RawRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("@Jsonb target 'raw' has type 'java.lang.String'")
+                                            .contains("@Jsonb target 'box' has type 'test.Box<java.lang.String>'");
         }
 
         @Test

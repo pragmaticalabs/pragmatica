@@ -45,7 +45,8 @@ public sealed interface ColumnRepr permits ValueMappingResolver.Binding, ColumnR
     }
 
     /// An `Option<T>` target of a nullable column: empty binds as SQL NULL and SQL NULL reads as empty. `element`
-    /// is `T`'s column-side handling when `T` is not a plain column type.
+    /// is `T`'s column-side handling when `T` is not a plain column type (a value object or a document, both of
+    /// which decode through a lift).
     record Nullable(String elementTypeName, Option<ColumnRepr> element) implements ColumnRepr {
         // A lambda parameter may not shadow a local, so the bind lambda's name cannot be a Java method parameter's.
         private static final String PRESENT = "present$";
@@ -70,9 +71,7 @@ public sealed interface ColumnRepr permits ValueMappingResolver.Binding, ColumnR
 
         @Override
         public String liftExpr() {
-            return element.map(ColumnRepr::liftExpr)
-                          .filter(lift -> !lift.isEmpty())
-                          .map(lift -> "raw -> RowDecodeError.liftOptional(raw, " + lift + ")")
+            return element.map(repr -> "raw -> RowDecodeError.liftOptional(raw, " + repr.liftExpr() + ")")
                           .or("");
         }
     }
