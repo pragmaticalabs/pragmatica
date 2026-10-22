@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// #893: `ContentStoreFactory.close` was a no-op override — `return Promise.unitPromise()` — which
 /// reports success while releasing nothing and is indistinguishable from a working close. A
 /// content store owns nothing releasable of its own: the `StorageInstance` it writes through is
-/// the NODE's (registered as a runtime extension by `AetherNode.registerRuntimeExtensions`), never
+/// the NODE's (registered as a runtime extension by `SliceRuntimeAssembly.registerRuntimeExtensions`), never
 /// a slice's to close — closing it from one slice's unload would shut the node's content storage
 /// under every other slice. (Nothing shuts it down at node stop either; that is #1078.) So the
 /// honest shape is NO override: the resource falls through to `ResourceFactory`'s default dispatch,

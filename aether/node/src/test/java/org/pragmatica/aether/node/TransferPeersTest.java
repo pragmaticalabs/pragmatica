@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.consensus.NodeId;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,7 +23,7 @@ class TransferPeersTest {
 
     @Test
     void transferPeers_includesAVoterThatIsNotInTheMintTimeList() {
-        var peers = AetherNode.transferPeers(Set.of(MINT_TIME), () -> Set.of(MINT_TIME, NEW_LEADER));
+        var peers = MembershipAssembly.transferPeers(Set.of(MINT_TIME), () -> Set.of(MINT_TIME, NEW_LEADER));
 
         assertThat(peers.test(NEW_LEADER)).as("the current leader, absent from the mint-time list").isTrue();
         assertThat(peers.test(MINT_TIME)).isTrue();
@@ -32,7 +33,7 @@ class TransferPeersTest {
     @Test
     void transferPeers_followsTheElectorateAsItChanges() {
         var electorate = new AtomicReference<Set<NodeId>>(Set.of());
-        var peers = AetherNode.transferPeers(Set.of(MINT_TIME), electorate::get);
+        var peers = MembershipAssembly.transferPeers(Set.of(MINT_TIME), electorate::get);
 
         assertThat(peers.test(NEW_LEADER)).as("before the electorate is installed").isFalse();
 

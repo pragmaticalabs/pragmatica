@@ -36,7 +36,7 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// [#observe] runs on the promotion thread after each cycle. The driver starts one cycle at a time, and each start
 /// happens-after the previous finish, so the per-instance state needs no further coordination.
-final class PromotionStallWatch {
+public final class PromotionStallWatch {
     static final int STALLED_AFTER_CYCLES = 3;
     private static final Logger log = LoggerFactory.getLogger(PromotionStallWatch.class);
 
@@ -51,7 +51,7 @@ final class PromotionStallWatch {
 
     /// Watches every instance's promotion manager. The inert one (`streams`, or `promotion = false`) never runs a cycle,
     /// so its stats never move and it never raises anything.
-    static PromotionStallWatch promotionStallWatch(Map<String, StorageSetup> setups, OperatorWarningSink sink) {
+    public static PromotionStallWatch promotionStallWatch(Map<String, StorageSetup> setups, OperatorWarningSink sink) {
         var managers = setups.entrySet()
                              .stream()
                              .collect(Collectors.toMap(Map.Entry::getKey,

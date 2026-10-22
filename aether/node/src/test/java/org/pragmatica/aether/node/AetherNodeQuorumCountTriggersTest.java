@@ -19,6 +19,7 @@ import org.pragmatica.aether.deployment.membership.ntt.NttTimerScheduler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -79,7 +80,7 @@ class AetherNodeQuorumCountTriggersTest {
 
     /// The production derivation, fed the same three inputs the assembly feeds it.
     private int derivedCount() {
-        return AetherNode.derivedMemberCount(Option.option(fsmRef.get()), SELF, voters.get());
+        return MembershipAssembly.derivedMemberCount(Option.option(fsmRef.get()), SELF, voters.get());
     }
 
     /// Voter source with `RabiaEngine.onVoterConfiguration` semantics: registers the listener and replays an
@@ -93,7 +94,7 @@ class AetherNodeQuorumCountTriggersTest {
     private void wireTransitionTrigger() {
         var journal = TransitionJournal.transitionJournal();
 
-        fsm.onTransition(record -> AetherNode.onFsmTransition(journal, detectorRef, record));
+        fsm.onTransition(record -> MembershipAssembly.onFsmTransition(journal, detectorRef, record));
     }
 
     /// genesis / §4 command / sync adoption: the engine stores the configuration, THEN calls its listeners.
@@ -114,7 +115,7 @@ class AetherNodeQuorumCountTriggersTest {
         AetherNode.wireQuorumCountTriggers(detector, fsm, this::voterSource);
         observeAllPeers();
         // The presence sampler's final UP edge: the assembly's nttReconcileTrigger. Electorate still empty.
-        AetherNode.onNttReconcile(detectorRef, new AtomicReference<>());
+        MembershipAssembly.onNttReconcile(detectorRef, new AtomicReference<>());
 
         assertThat(detector.currentMemberCount()).as("arming: derived against an empty electorate").isZero();
         assertThat(detector.currentRequiredThreshold()).as("no electorate: threshold unknown").isZero();
@@ -136,7 +137,7 @@ class AetherNodeQuorumCountTriggersTest {
         AetherNode.wireQuorumCountTriggers(detector, fsm, this::voterSource);
         wireTransitionTrigger();
         observeAllPeers();
-        AetherNode.onNttReconcile(detectorRef, new AtomicReference<>());
+        MembershipAssembly.onNttReconcile(detectorRef, new AtomicReference<>());
         installVoters();
         assertThat(detector.isArmed()).as("arming: the race was survived").isTrue();
 
@@ -205,7 +206,7 @@ class AetherNodeQuorumCountTriggersTest {
         installVoters();
         assertThat(detector.isArmed()).as("arming: quorate inputs, nothing has evaluated").isFalse();
 
-        AetherNode.onNttReconcile(detectorRef, new AtomicReference<>());
+        MembershipAssembly.onNttReconcile(detectorRef, new AtomicReference<>());
 
         assertThat(detector.isArmed()).isTrue();
     }
@@ -217,7 +218,7 @@ class AetherNodeQuorumCountTriggersTest {
         installVoters();
         assertThat(detector.isArmed()).as("arming: quorate inputs, nothing has evaluated").isFalse();
 
-        AetherNode.onMembershipDeath(E, _ -> {}, detectorRef, new AtomicReference<>());
+        MembershipAssembly.onMembershipDeath(E, _ -> {}, detectorRef, new AtomicReference<>());
 
         assertThat(detector.isArmed()).isTrue();
     }
@@ -234,13 +235,13 @@ class AetherNodeQuorumCountTriggersTest {
         observeAllPeers();
         fsm.onSwimHealthy(staged, 1L);
 
-        assertThat(AetherNode.derivedMemberCount(Option.some(fsm), SELF, Option.none())).isZero();
+        assertThat(MembershipAssembly.derivedMemberCount(Option.some(fsm), SELF, Option.none())).isZero();
 
         installVoters();
 
         assertThat(fsm.strictCoreObservedMemberCount(SELF)).as("arming: the FSM sees six observed MEMBERs").isEqualTo(6);
-        assertThat(AetherNode.derivedMemberCount(Option.some(fsm), SELF, voters.get())).isEqualTo(5);
-        assertThat(AetherNode.derivedMemberCount(Option.none(), SELF, voters.get())).as("pre-FSM window").isZero();
+        assertThat(MembershipAssembly.derivedMemberCount(Option.some(fsm), SELF, voters.get())).isEqualTo(5);
+        assertThat(MembershipAssembly.derivedMemberCount(Option.none(), SELF, voters.get())).as("pre-FSM window").isZero();
     }
 
     /// The assembly really builds the detector from the derivation and really wires the two triggers; none of it

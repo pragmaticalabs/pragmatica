@@ -208,7 +208,7 @@ class DurableEntityFactoryTest {
                                  EntityTimerDriver timerDriver,
                                  List<String> events) {}
 
-    /// A fully-wired provisioning context — the shape `AetherNode.registerEntityExtensionsOnSpi`
+    /// A fully-wired provisioning context — the shape `EntityAssembly.registerEntityExtensionsOnSpi`
     /// produces — with the three unload collaborators reachable so the test can watch them.
     private static Result<UnloadFixture> unloadFixture() {
         var events = new ArrayList<String>();
@@ -549,7 +549,7 @@ class DurableEntityFactoryTest {
     }
 
     /// A context carrying every mandatory fence collaborator — the shape
-    /// `AetherNode.registerEntityExtensionsOnSpi` produces. The committed-owner source names SELF for
+    /// `EntityAssembly.registerEntityExtensionsOnSpi` produces. The committed-owner source names SELF for
     /// every arc, which is what a provisioned entity sees on the node that owns its keys; with the
     /// no-owner source the write path would (correctly) refuse every write as transient.
     private static ProvisioningContext fencedContext() {

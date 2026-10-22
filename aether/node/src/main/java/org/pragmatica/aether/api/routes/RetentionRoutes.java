@@ -311,7 +311,7 @@ public final class RetentionRoutes implements RouteSource {
 
     /// The entity checkpoint floor for a stream partition: present only for `entity:`-namespaced
     /// streams with a committed [EntityFoldCheckpointValue]. Mirrors the retention wiring's own read
-    /// (`AetherNode.entityRetentionFloor`) — same key, same absent-means-`-1` reading.
+    /// (`StreamAssembly.entityRetentionFloor`) — same key, same absent-means-`-1` reading.
     static long checkpointFloor(KVStore<AetherKey, AetherValue> kvStore, String stream, int partition) {
         return EntityPartitionArc.keyspaceOf(stream)
                                  .flatMap(keyspace -> kvStore.getTyped(EntityCheckpointKey.entityCheckpointKey(keyspace,

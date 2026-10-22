@@ -9,6 +9,7 @@ import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.DurableAllocation;
+import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase;
 import org.pragmatica.consensus.NodeId;
 
@@ -36,7 +37,7 @@ class DurableAllocationWiringTest {
 
     @Test
     void pendingCoreAllocations_mapsADispatchedCreateToUncertainAndAnObservedOneToConfirmed() {
-        var pending = AetherNode.pendingCoreAllocations(Map.of(UNCERTAIN, CapacityReservationPhase.DISPATCHED,
+        var pending = TopologyAssembly.pendingCoreAllocations(Map.of(UNCERTAIN, CapacityReservationPhase.DISPATCHED,
                                                                CONFIRMED, CapacityReservationPhase.OBSERVED),
                                                         Set.of());
 
@@ -47,7 +48,7 @@ class DurableAllocationWiringTest {
 
     @Test
     void pendingCoreAllocations_leavesOutAnInstalledVoter() {
-        var pending = AetherNode.pendingCoreAllocations(Map.of(UNCERTAIN, CapacityReservationPhase.DISPATCHED,
+        var pending = TopologyAssembly.pendingCoreAllocations(Map.of(UNCERTAIN, CapacityReservationPhase.DISPATCHED,
                                                                INSTALLED, CapacityReservationPhase.OBSERVED),
                                                         Set.of(INSTALLED));
 
@@ -56,7 +57,7 @@ class DurableAllocationWiringTest {
 
     @Test
     void pendingCoreAllocations_readsAnUnrecognisedPhaseAsUncertain() {
-        var pending = AetherNode.pendingCoreAllocations(Map.of(UNCERTAIN, CapacityReservationPhase.UNKNOWN), Set.of());
+        var pending = TopologyAssembly.pendingCoreAllocations(Map.of(UNCERTAIN, CapacityReservationPhase.UNKNOWN), Set.of());
 
         assertThat(pending).containsEntry(UNCERTAIN, DurableAllocation.UNCERTAIN);
     }

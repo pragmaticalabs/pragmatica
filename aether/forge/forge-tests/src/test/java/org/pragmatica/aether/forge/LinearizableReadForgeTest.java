@@ -43,7 +43,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// `(stream, partition)` arc and returns the authoritative data, both when issued ON the committed owner
 /// and from a NON-owner node (which forwards to the committed owner). The committed ownership record is
 /// minted by the production [StreamPartitionOwnershipWriter] through REAL consensus — the same path
-/// `AetherNode.driveStreamOwnership` uses — so the committed owner the read routes to is the fenced,
+/// `StreamAssembly.driveStreamOwnership` uses — so the committed owner the read routes to is the fenced,
 /// authoritative one, NOT the on-the-fly HRW owner.
 ///
 /// ## What it proves

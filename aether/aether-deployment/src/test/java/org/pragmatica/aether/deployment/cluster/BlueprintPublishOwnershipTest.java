@@ -1624,7 +1624,7 @@ class BlueprintPublishOwnershipTest {
             return BlueprintService.blueprintService(cluster, store, repository, artifactStore(withoutMigrations(PREFLIGHT_COORDS)), nodeComposite);
         }
 
-        /// The node composite exactly as `AetherNode.createResourceProviderFacade` layers it: the operator KV
+        /// The node composite exactly as `SliceRuntimeAssembly.createResourceProviderFacade` layers it: the operator KV
         /// overlay first, the node's own `node.toml` beneath.
         private ConfigurationProvider nodeComposite(ConfigurationProvider kvOverlay, ConfigurationProvider nodeToml) {
             return LayeredConfigProvider.layered(List.of(NamedConfigProvider.namedConfigProvider("KV", kvOverlay),

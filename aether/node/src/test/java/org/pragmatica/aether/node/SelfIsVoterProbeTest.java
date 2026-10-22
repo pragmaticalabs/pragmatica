@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.assembly.ClusterEventsAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.ClusterConfig;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -23,20 +24,20 @@ class SelfIsVoterProbeTest {
 
     @Test
     void isInstalledVoterOrUnknown_isTrue_whenNoRosterIsInstalled() {
-        assertThat(AetherNode.isInstalledVoterOrUnknown(Option.none(), SELF)).isTrue();
+        assertThat(ClusterEventsAssembly.isInstalledVoterOrUnknown(Option.none(), SELF)).isTrue();
     }
 
     @Test
     void isInstalledVoterOrUnknown_isTrue_whenTheRosterContainsSelf() {
         var roster = new VoterConfiguration(0, new ClusterConfig(List.of(SELF, OTHER)));
 
-        assertThat(AetherNode.isInstalledVoterOrUnknown(Option.some(roster), SELF)).isTrue();
+        assertThat(ClusterEventsAssembly.isInstalledVoterOrUnknown(Option.some(roster), SELF)).isTrue();
     }
 
     @Test
     void isInstalledVoterOrUnknown_isFalse_whenTheInstalledRosterExcludesSelf() {
         var roster = new VoterConfiguration(0, new ClusterConfig(List.of(OTHER)));
 
-        assertThat(AetherNode.isInstalledVoterOrUnknown(Option.some(roster), SELF)).isFalse();
+        assertThat(ClusterEventsAssembly.isInstalledVoterOrUnknown(Option.some(roster), SELF)).isFalse();
     }
 }

@@ -51,7 +51,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// #689 — the leader holds both halves of the role comparison: the role it PROVISIONED a node with
 /// (`provisionReplacement(..., intendedRole)`) and the role that node ADVERTISES as membership holds
 /// it (`MembershipFsm.memberDescriptor(id).role()`, reached through `MembershipLiveness.advertisedRole`
-/// — here a test-side descriptor map, exactly the projection `AetherNode.drainGraceLiveness` wires).
+/// — here a test-side descriptor map, exactly the projection `TopologyAssembly.drainGraceLiveness` wires).
 /// A provisioned node whose label never arrives is classified CORE by `MemberDescriptor.isCoreRole` —
 /// deliberately, and unchanged here — so an intended worker that boots unlabelled silently joins the
 /// core set and every community-tier mechanism gated on "not a core" is suppressed on it with nothing

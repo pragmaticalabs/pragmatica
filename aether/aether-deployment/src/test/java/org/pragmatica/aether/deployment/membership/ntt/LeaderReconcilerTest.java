@@ -3179,7 +3179,7 @@ class LeaderReconcilerTest {
     /// core: present, healthy and `role=core`, so it neither hides a real deficit's size nor manufactures a
     /// phantom one. The replacement here arrives through a REAL `SwimProtocol`, so what reaches the FSM is
     /// whatever SWIM's gossip path actually carries; the observation routing mirrors
-    /// `AetherNode.routeSwimEdgeToMembershipFsm` (which the node module's own test drives directly).
+    /// `MembershipAssembly.routeSwimEdgeToMembershipFsm` (which the node module's own test drives directly).
     @Nested
     class GossipLearnedCore {
         private static final NodeId REPLACEMENT = NodeId.randomNodeId();

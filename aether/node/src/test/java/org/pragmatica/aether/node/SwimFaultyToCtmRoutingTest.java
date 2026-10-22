@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.swim.SwimObservation;
 
@@ -16,7 +17,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 /// #1050 (verify-1057-r2 S1) — the SWIM observation listener hands ONLY the FAULTY edge to
 /// [ClusterTopologyManager#onSwimFaulty]. `DepartedObserved` is the second half of the same FAULTY-edge pair
-/// and would otherwise re-arm twice; HEALTHY and SUSPECT are life, not death. Pins `AetherNode.routeSwimFaultyToCtm`;
+/// and would otherwise re-arm twice; HEALTHY and SUSPECT are life, not death. Pins `MembershipAssembly.routeSwimFaultyToCtm`;
 /// the `addObservationListener` registration itself lives inside the node assembly and has no seam.
 class SwimFaultyToCtmRoutingTest {
     private static final NodeId PEER = new NodeId("node-b");
@@ -25,7 +26,7 @@ class SwimFaultyToCtmRoutingTest {
     void faultyObserved_reachesTheCtm_asOnSwimFaulty() {
         var ctm = mock(ClusterTopologyManager.class);
 
-        AetherNode.routeSwimFaultyToCtm(new SwimObservation.FaultyObserved(PEER, 3L), ctm);
+        MembershipAssembly.routeSwimFaultyToCtm(new SwimObservation.FaultyObserved(PEER, 3L), ctm);
 
         verify(ctm).onSwimFaulty(PEER);
     }
@@ -34,10 +35,10 @@ class SwimFaultyToCtmRoutingTest {
     void everyOtherEdge_isDropped() {
         var ctm = mock(ClusterTopologyManager.class);
 
-        AetherNode.routeSwimFaultyToCtm(new SwimObservation.DepartedObserved(PEER, 3L), ctm);
-        AetherNode.routeSwimFaultyToCtm(new SwimObservation.SuspectObserved(PEER, 3L), ctm);
-        AetherNode.routeSwimFaultyToCtm(new SwimObservation.HealthyObserved(PEER, 3L), ctm);
-        AetherNode.routeSwimFaultyToCtm(new SwimObservation.UnknownObserved(PEER, 3L), ctm);
+        MembershipAssembly.routeSwimFaultyToCtm(new SwimObservation.DepartedObserved(PEER, 3L), ctm);
+        MembershipAssembly.routeSwimFaultyToCtm(new SwimObservation.SuspectObserved(PEER, 3L), ctm);
+        MembershipAssembly.routeSwimFaultyToCtm(new SwimObservation.HealthyObserved(PEER, 3L), ctm);
+        MembershipAssembly.routeSwimFaultyToCtm(new SwimObservation.UnknownObserved(PEER, 3L), ctm);
 
         verifyNoInteractions(ctm);
     }

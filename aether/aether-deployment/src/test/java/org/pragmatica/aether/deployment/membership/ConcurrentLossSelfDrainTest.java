@@ -101,7 +101,7 @@ class ConcurrentLossSelfDrainTest {
         }
     }
 
-    /// Byte-identical to `AetherNode#crossesMemberBoundary`.
+    /// Byte-identical to `MembershipAssembly#crossesMemberBoundary`.
     private static boolean crossesMemberBoundary(MembershipTransitionRecord record) {
         return "Member".equals(record.fromState()) != "Member".equals(record.toState());
     }

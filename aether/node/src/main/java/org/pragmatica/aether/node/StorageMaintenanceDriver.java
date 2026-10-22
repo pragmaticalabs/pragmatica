@@ -63,10 +63,10 @@ public final class StorageMaintenanceDriver {
         this.promotionExecutor = promotionExecutor;
     }
 
-    static StorageMaintenanceDriver storageMaintenanceDriver(DemotionManager demotionManager,
-                                                             PromotionManager promotionManager,
-                                                             PromotionStallWatch stallWatch,
-                                                             StorageGarbageCollector garbageCollector) {
+    public static StorageMaintenanceDriver storageMaintenanceDriver(DemotionManager demotionManager,
+                                                                    PromotionManager promotionManager,
+                                                                    PromotionStallWatch stallWatch,
+                                                                    StorageGarbageCollector garbageCollector) {
         return storageMaintenanceDriver(demotionManager,
                                         promotionManager,
                                         stallWatch,
