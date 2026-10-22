@@ -12,7 +12,6 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.JsonText;
 import org.pragmatica.aether.resource.db.PgSqlConnector;
-import org.pragmatica.aether.resource.db.RowDecodeError;
 import org.pragmatica.aether.resource.db.async.PgSqlConnectorFactory;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -31,10 +30,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /// The generated `@Jsonb` factory (`JsonbMappingTest.DOC_REPO`) against a LIVE PostgreSQL 16 through the async
 /// connector: a record with a nested record, an `Option` field (present and empty) and a list round-trips through a
 /// `jsonb` column and a `json` column of the same row; an empty `Option<T>` component is stored as SQL NULL and read
-/// back as empty; a `@Jsonb` param drives a containment query; a corrupt stored document fails the row with a typed
-/// `RowDecode` naming the column. It also pins the binding premise: a `String` parameter is declared `varchar` and a
-/// `jsonb` column refuses it, while `JsonText` binds to `json` and `jsonb` alike. Self-skips when no Docker daemon is
-/// reachable.
+/// back as empty; a `@Jsonb` param drives a containment query; a corrupt stored document fails the row, naming the
+/// column. It also pins the binding premise: a `String` parameter is declared `varchar`, which the server accepts for
+/// assignment to a `jsonb` column but not as a `jsonb` operator's operand, while `JsonText` (type unspecified) works for
+/// both. Self-skips when no Docker daemon is reachable.
 class JsonbPostgresRoundTripTest {
     private static final String DDL = """
         CREATE TABLE documents (
@@ -188,8 +187,10 @@ class JsonbPostgresRoundTripTest {
         assertPairs(invoke("evolvedDocument"));
     }
 
+    /// The generated mapper fails with a typed `RowDecode` (see `JsonbMappingTest`); the async connector reports every
+    /// mapper failure that is not a connector error as `DatabaseFailure` carrying its message, which names the column.
     @Test
-    void corruptStoredDocument_failsTheRowWithTypedRowDecode() throws Exception {
+    void corruptStoredDocument_failsTheRow_namingTheColumn() throws Exception {
         connector.update("INSERT INTO documents (id, profile, legacy, title) VALUES ($1, $2, $3, $4)",
                          8L,
                          JsonText.jsonText("{\"name\": 42}"),
@@ -201,21 +202,33 @@ class JsonbPostgresRoundTripTest {
         var result = (Result<?>) invokeWith("findById", 8L);
 
         assertThat(result.isFailure()).as("a document the codec refuses fails the row").isTrue();
-        result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(RowDecodeError.RowDecode.class,
-                                                                           decode -> assertThat(decode.column()).isEqualTo("profile")));
+        result.onFailure(cause -> assertThat(cause.message()).contains("Failed to decode column 'profile'")
+                                                             .contains("Malformed JSON"));
     }
 
     @Test
-    void stringParam_isRefusedByJsonbColumn_whileJsonTextBindsToJsonAndJsonb() {
-        var asString = connector.update("INSERT INTO documents (id, profile, legacy, title) VALUES ($1, $2, $3, $4)",
+    void stringParam_isAcceptedForAssignment_butNotAsJsonbOperand_whileJsonTextWorksForBoth() {
+        var assigned = connector.update("INSERT INTO documents (id, profile, legacy, title) VALUES ($1, $2, $3, $4)",
                                         5L,
                                         BOB_JSON,
-                                        JsonText.jsonText(BOB_JSON),
+                                        BOB_JSON,
                                         "string")
                                 .await();
 
-        assertThat(asString.isFailure()).as("a String parameter is declared varchar, which a jsonb column refuses").isTrue();
-        asString.onFailure(cause -> assertThat(cause.message()).contains("jsonb"));
+        assertThat(assigned.fold(Cause::message, _ -> "bound")).as("a varchar parameter assigned to jsonb and json columns")
+                                                              .isEqualTo("bound");
+
+        var operand = connector.queryOne("SELECT count(*) FROM documents WHERE profile @> $1", row -> row.getLong("count"), "{}")
+                               .await();
+
+        assertThat(operand.isFailure()).as("a varchar parameter is no jsonb operand").isTrue();
+        operand.onFailure(cause -> assertThat(cause.message()).contains("operator does not exist"));
+        assertThat(connector.queryOne("SELECT count(*) FROM documents WHERE profile @> $1",
+                                      row -> row.getLong("count"),
+                                      JsonText.jsonText("{}"))
+                            .await())
+            .as("JsonText as the jsonb operand")
+            .isEqualTo(Result.success(1L));
 
         var asJsonText = connector.update("INSERT INTO documents (id, profile, legacy, title) VALUES ($1, $2, $3, $4)",
                                           6L,

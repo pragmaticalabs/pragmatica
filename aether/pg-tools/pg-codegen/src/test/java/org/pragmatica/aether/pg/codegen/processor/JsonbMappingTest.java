@@ -7,7 +7,20 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import org.pragmatica.aether.resource.db.JsonText;
+import org.pragmatica.aether.resource.db.RowDecodeError;
+import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -110,6 +123,71 @@ class JsonbMappingTest {
     }
 
     @Nested
+    class RuntimeDecode {
+        private static final String PROFILE = "{\"name\":\"Ann\",\"nick\":\"an\",\"addresses\":[],\"home\":{\"city\":\"Kyiv\",\"zip\":\"01001\"}}";
+
+        @Test
+        void storedDocuments_decodeIntoTheRecord_nullAsEmpty() throws Exception {
+            var decoded = (Result<?>) documentRowMapper().invoke(null, row(Map.of("profile", PROFILE, "legacy", PROFILE)));
+
+            assertThat(decoded.isSuccess()).as(String.valueOf(decoded)).isTrue();
+            assertThat(decoded.toString()).contains("profile=Profile[name=Ann, nick=Some(an), addresses=[], home=Address[city=Kyiv, zip=01001]]")
+                                          .contains("previous=None()");
+        }
+
+        @Test
+        void corruptDocument_yieldsTypedRowDecodeNamingTheColumn_notException() throws Exception {
+            var decoded = (Result<?>) documentRowMapper().invoke(null, row(Map.of("profile", "{\"name\":42}", "legacy", PROFILE)));
+            var captured = new AtomicReference<Cause>();
+
+            decoded.onFailure(captured::set);
+
+            assertThat(captured.get()).isInstanceOfSatisfying(RowDecodeError.RowDecode.class,
+                                                              decode -> assertThat(decode.column()).isEqualTo("profile"));
+        }
+
+        private Method documentRowMapper() throws Exception {
+            var result = TestCompilationHelper.compileAndCompileGenerated(DOC_REPO, "test/DocRepo.java", tempDir);
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+
+            var loader = new URLClassLoader(new URL[]{tempDir.resolve("classes").toUri().toURL()}, getClass().getClassLoader());
+            var mapper = Arrays.stream(loader.loadClass("test.DocRepoFactory").getDeclaredMethods())
+                               .filter(method -> method.getName().equals("mapDocumentRow"))
+                               .findFirst()
+                               .orElseThrow();
+
+            mapper.setAccessible(true);
+
+            return mapper;
+        }
+
+        // Document columns from `documents`: present ones as JsonText, absent ones as SQL NULL.
+        private static RowMapper.RowAccessor row(Map<String, String> documents) {
+            return new RowMapper.RowAccessor() {
+                @Override public Result<String> getString(String column) { return Result.success("t"); }
+                @Override public Result<Integer> getInt(String column) { return Result.success(0); }
+                @Override public Result<Long> getLong(String column) { return Result.success(1L); }
+                @Override public Result<Double> getDouble(String column) { return Result.success(0.0); }
+                @Override public Result<Boolean> getBoolean(String column) { return Result.success(false); }
+                @Override public Result<byte[]> getBytes(String column) { return Result.success(new byte[0]); }
+
+                @Override
+                public <V> Result<V> getObject(String column, Class<V> type) {
+                    return Result.success(type.cast(JsonText.jsonText(documents.get(column))));
+                }
+
+                @Override
+                public <V> Result<Option<V>> getOptional(String column, Class<V> type) {
+                    return Result.success(Option.option(documents.get(column)).map(text -> type.cast(type == JsonText.class
+                                                                                                    ? JsonText.jsonText(text)
+                                                                                                    : text)));
+                }
+            };
+        }
+    }
+
+    @Nested
     class EscapeHatch {
         @Test
         void valueMappingToJsonText_readsAndBindsJsonText() throws Exception {
@@ -152,7 +230,7 @@ class JsonbMappingTest {
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("PG-VALIDATE")
                                             .contains("JSON codec generator cannot handle")
-                                            .contains("java.lang.Runnable")
+                                            .contains("component action: neither a record nor an enum")
                                             .contains("ValueMapping<test.Task, JsonText>");
         }
 
