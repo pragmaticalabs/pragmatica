@@ -175,6 +175,9 @@ class ReplicaFeedEngineTripwireTest {
         assertThat(passive.isPaused()).isFalse();
         assertThat(passive.isObserving()).isFalse();
         assertThat(passive.currentPhaseForTesting()).as("and never advances its phase").isEqualTo(Phase.ZERO);
+        assertThat(passive.bufferedDecisionCountForTesting()).as("nor buffers a decision for a later replay: the passive engine never reaches the apply path at all").isZero();
+        assertThat(passive.isPendingCatchUp()).as("nor starts a sync (a quorum notification would put a voting engine in Syncing)").isFalse();
+        assertThat(network.getMessages()).as("and sends nothing").isEmpty();
     }
 
     @Test
