@@ -10,13 +10,16 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.node.machine.LocalOutcome;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmTimings;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -195,7 +198,7 @@ class CloseAndOverrunProbeTest {
     /// returns, and it runs once although the Close item and the exit hook both reach it.
     @Test
     void closeWhoseWaitExpires_warns_andShutsDownOnce() throws Exception {
-        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+        try (var logs = LogCapture.capture(FsmRuntime.class, Level.ALL, false)) {
             var probe = new Probe(new ManualTimerService());
 
             probe.start();
@@ -204,20 +207,20 @@ class CloseAndOverrunProbeTest {
 
             var closer = Thread.ofPlatform().start(probe::close);
 
-            await().atMost(Duration.ofSeconds(15)).until(() -> logs.lines().stream().anyMatch(line -> line.message().contains("deployment-fsm-stop-timeout")));
+            await().atMost(Duration.ofSeconds(15)).until(() -> logs.entries().stream().anyMatch(line -> line.message().contains("deployment-fsm-stop-timeout")));
             probe.release.countDown();
             closer.join(15_000);
             await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
             await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> probe.closings.get() == 1);
 
-            assertThat(logs.lines()).anySatisfy(line -> assertThat(line.level()).isEqualTo(org.apache.logging.log4j.Level.WARN));
+            assertThat(logs.entries()).anySatisfy(line -> assertThat(line.level()).isEqualTo(Level.WARN));
         }
     }
 
     /// F-4: the overrun is reported for a bounded op whose body outlives its timeout, and both clocks are stopped when the body returns.
     @Test
     void aBoundedOpWhoseBodyOutlivesItsTimeout_isReportedOverrunning_andBothClocksStopWhenItReturns() {
-        try (var logs = new LogCapture(LocalOpExecutor.class.getName())) {
+        try (var logs = LogCapture.capture(LocalOpExecutor.class, Level.ALL, false)) {
             var clock = new ManualTimerService();
             var timings = NodeFsmTimings.nodeFsmTimings();
             var started = Collections.synchronizedList(new ArrayList<Promise<LocalOutcome>>());
@@ -233,10 +236,10 @@ class CloseAndOverrunProbeTest {
 
             clock.advance(1_000);
             await().atMost(Duration.ofSeconds(5)).until(() -> settled.size() == 1);
-            assertThat(logs.lines()).as("not yet past the step bound").noneMatch(line -> line.message().contains("deployment-localop-overrun"));
+            assertThat(logs.entries()).as("not yet past the step bound").noneMatch(line -> line.message().contains("deployment-localop-overrun"));
 
             clock.advance(timings.boundOf(LocalStep.LOAD));
-            await().atMost(Duration.ofSeconds(5)).until(() -> logs.lines().stream().anyMatch(line -> line.message().contains("deployment-localop-overrun")));
+            await().atMost(Duration.ofSeconds(5)).until(() -> logs.entries().stream().anyMatch(line -> line.message().contains("deployment-localop-overrun")));
 
             started.getFirst().succeed(LocalOutcome.done());
             await().atMost(Duration.ofSeconds(5)).until(() -> clock.armedCount() == 0);
@@ -337,7 +340,7 @@ class CloseAndOverrunProbeTest {
     /// and no stop timeout is logged.
     @Test
     void concurrentCloses_shareOneCompletion_andLogNoFalseStopTimeout() throws Exception {
-        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+        try (var logs = LogCapture.capture(FsmRuntime.class, Level.ALL, false)) {
             var probe = new Probe(new ManualTimerService());
 
             probe.start();
@@ -354,7 +357,7 @@ class CloseAndOverrunProbeTest {
 
             assertThat(first.isAlive()).as("the first returned without waiting out the timeout").isFalse();
             assertThat(second.isAlive()).as("so did the second").isFalse();
-            assertThat(logs.lines()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
+            assertThat(logs.entries()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
             assertThat(probe.closings.get()).isEqualTo(1);
         }
     }
@@ -362,7 +365,7 @@ class CloseAndOverrunProbeTest {
     /// N-9: one `close()` of a started runtime is released by the consumer's own shutdown, within its wait, and says nothing about a stop timeout.
     @Test
     void aLoneClose_releasesWithinItsWait_andLogsNoStopTimeout() {
-        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+        try (var logs = LogCapture.capture(FsmRuntime.class, Level.ALL, false)) {
             var probe = new Probe(new ManualTimerService());
 
             probe.start();
@@ -371,7 +374,7 @@ class CloseAndOverrunProbeTest {
             probe.close();
 
             assertThat(Duration.ofNanos(System.nanoTime() - started)).as("released by the consumer, not by the 5 s wait").isLessThan(Duration.ofSeconds(3));
-            assertThat(logs.lines()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
+            assertThat(logs.entries()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
             assertThat(probe.closings.get()).isEqualTo(1);
         }
     }
@@ -406,7 +409,7 @@ class CloseAndOverrunProbeTest {
     /// with, says so, and the shutdown still happens when the input returns.
     @Test
     void closeOfAConsumerStuckInAnInput_returnsAfterItsBound_andWarnsNamingTheBound() throws Exception {
-        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+        try (var logs = LogCapture.capture(FsmRuntime.class, Level.ALL, false)) {
             var probe = new Probe(new ManualTimerService(), 400L);
 
             probe.start();
@@ -418,7 +421,7 @@ class CloseAndOverrunProbeTest {
             probe.close();
 
             assertThat(Duration.ofNanos(System.nanoTime() - started)).as("not held past its bound").isBetween(Duration.ofMillis(300), Duration.ofSeconds(4));
-            assertThat(logs.lines()).anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout").contains("400 ms"));
+            assertThat(logs.entries()).anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout").contains("400 ms"));
             probe.release.countDown();
             await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
         }
@@ -446,7 +449,8 @@ class CloseAndOverrunProbeTest {
     /// A stop whose waiting thread is interrupted goes on at once: the consumer is stuck in an input, so joining it would only double the wait.
     @Test
     void aCloseInterruptedWhileWaiting_goesOnAtOnce_withoutJoiningTheStuckConsumer() throws Exception {
-        try (var logs = new LogCapture(FsmRuntime.class.getName(), FsmMailbox.class.getName())) {
+        try (var runtimeLogs = LogCapture.capture(FsmRuntime.class, Level.ALL, false);
+             var mailboxLogs = LogCapture.capture(FsmMailbox.class, Level.ALL, false)) {
             var probe = new Probe(new ManualTimerService(), 30_000L);
 
             probe.start();
@@ -460,7 +464,7 @@ class CloseAndOverrunProbeTest {
             closer.join(2_000);
 
             assertThat(closer.isAlive()).as("close() came back right after the interrupt, not after a second wait").isFalse();
-            assertThat(logs.lines()).anySatisfy(line -> assertThat(line.message()).contains("Interrupted while closing"));
+            assertThat(Stream.concat(runtimeLogs.entries().stream(), mailboxLogs.entries().stream()).toList()).anySatisfy(line -> assertThat(line.message()).contains("Interrupted while closing"));
             probe.release.countDown();
             await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
         }

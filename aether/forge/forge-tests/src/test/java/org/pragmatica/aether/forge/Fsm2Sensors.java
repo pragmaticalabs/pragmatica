@@ -15,13 +15,8 @@ import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.testlogging.LogCapture;
 
 /// What a FSM2 cluster run is checked against (phase-3 design 9.5 O6, 12 item 6): the log lines the deployment FSM loggers wrote while it ran, and
 /// the checked-in expected-WARN list of the scenario (`fsm2/expected-warns-*.txt`). Shared by T and E-01, so both read the same sensors the same way.
@@ -49,50 +44,38 @@ final class Fsm2Sensors implements AutoCloseable {
     }
 
     private final List<Logged> logged = new CopyOnWriteArrayList<>();
-    private final List<CapturingAppender> appenders = new ArrayList<>();
+    private final List<LogCapture> captures = new ArrayList<>();
 
     private Fsm2Sensors() {}
 
-    /// Starts capturing the FSM loggers; `close()` stops it.
+    /// Starts capturing the FSM loggers; `close()` stops it. Each logger keeps the level it inherits (an INFO floor, as the capture reads INFO and
+    /// up), its events go on to the console, and all of them land in one list in arrival order.
     static Fsm2Sensors capture() {
         var sensors = new Fsm2Sensors();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
 
         for (var name : LOGGERS) {
-            var existing = configuration.getLoggerConfig(name);
-            var config = name.equals(existing.getName())
-                         ? existing
-                         : new LoggerConfig(name, existing.getLevel(), true);
-
-            if (!name.equals(existing.getName())) {
-                configuration.addLogger(name, config);
-            }
-            var appender = new CapturingAppender(name, sensors.logged);
-
-            appender.start();
-            config.addAppender(appender, Level.INFO, null);
-            sensors.appenders.add(appender);
+            sensors.captures.add(LogCapture.capture(name,
+                                                    thresholdOf(name),
+                                                    true,
+                                                    event -> sensors.logged.add(new Logged(event.getLevel(),
+                                                                                           event.getMessage().getFormattedMessage()))));
         }
-        ctx.updateLoggers();
 
         return sensors;
     }
 
+    private static Level thresholdOf(String loggerName) {
+        var inherited = LogManager.getLogger(loggerName).getLevel();
+
+        return inherited.isMoreSpecificThan(Level.INFO)
+               ? inherited
+               : Level.INFO;
+    }
+
     @Override
     public void close() {
-        if (appenders.isEmpty()) {
-            return;
-        }
-
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        for (var appender : appenders) {
-            ctx.getConfiguration().getLoggerConfig(appender.logger()).removeAppender(appender.getName());
-            appender.stop();
-        }
-        ctx.updateLoggers();
-        appenders.clear();
+        captures.forEach(LogCapture::close);
+        captures.clear();
     }
 
     /// Every WARN-or-worse line captured so far.
@@ -159,25 +142,5 @@ final class Fsm2Sensors implements AutoCloseable {
         }
 
         return new Expectation(match.group(1), match.group(2), Integer.parseInt(match.group(3)), Integer.parseInt(match.group(4)));
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final String logger;
-        private final List<Logged> sink;
-
-        private CapturingAppender(String logger, List<Logged> sink) {
-            super("Fsm2Sensors-" + logger, (Filter) null, null, true, Property.EMPTY_ARRAY);
-            this.logger = logger;
-            this.sink = sink;
-        }
-
-        String logger() {
-            return logger;
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            sink.add(new Logged(event.getLevel(), event.getMessage().getFormattedMessage()));
-        }
     }
 }

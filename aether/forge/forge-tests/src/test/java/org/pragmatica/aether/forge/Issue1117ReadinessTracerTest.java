@@ -7,12 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -38,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -148,8 +144,7 @@ class Issue1117ReadinessTracerTest {
     private final List<String> remediationLines = new CopyOnWriteArrayList<>();
     private Fsm2Sensors sensors;
     private EmberCluster cluster;
-    private CapturingAppender appender;
-    private LoggerConfig captureConfig;
+    private LogCapture capture;
 
     @BeforeAll
     void setUp() {
@@ -699,49 +694,31 @@ class Issue1117ReadinessTracerTest {
     /// Captures WARN lines of the node-deployment FSM package without changing what the run logs: the logger config is
     /// additive and keeps the level it inherits.
     private void installCapture() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        var existing = configuration.getLoggerConfig(CAPTURE_LOGGER);
+        capture = LogCapture.capture(CAPTURE_LOGGER, captureThreshold(), true, this::collectRemediationLine);
+    }
 
-        appender = new CapturingAppender(remediationLines);
-        appender.start();
-        if (CAPTURE_LOGGER.equals(existing.getName())) {
-            captureConfig = existing;
-        } else {
-            captureConfig = new LoggerConfig(CAPTURE_LOGGER, existing.getLevel(), true);
-            configuration.addLogger(CAPTURE_LOGGER, captureConfig);
+    /// The inherited level, with the WARN floor the capture reads.
+    private static Level captureThreshold() {
+        var inherited = LogManager.getLogger(CAPTURE_LOGGER).getLevel();
+
+        return inherited.isMoreSpecificThan(Level.WARN)
+               ? inherited
+               : Level.WARN;
+    }
+
+    private void collectRemediationLine(LogEvent event) {
+        var message = event.getMessage().getFormattedMessage();
+
+        if (message.contains(REMEDIATION_MARKER) && message.contains(" still ")) {
+            remediationLines.add(message);
         }
-        captureConfig.addAppender(appender, Level.WARN, null);
-        ctx.updateLoggers();
     }
 
     private void removeCapture() {
-        if (captureConfig == null) {
+        if (capture == null) {
             return;
         }
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        captureConfig.removeAppender(appender.getName());
-        ctx.updateLoggers();
-        appender.stop();
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> lines;
-
-        private CapturingAppender(List<String> lines) {
-            super("T1117RemediationCapture", (Filter) null, null, true, Property.EMPTY_ARRAY);
-            this.lines = lines;
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            var message = event.getMessage().getFormattedMessage();
-
-            if (message.contains(REMEDIATION_MARKER) && message.contains(" still ")) {
-                lines.add(message);
-            }
-        }
+        capture.close();
     }
 
     // --- HTTP ----------------------------------------------------------------------------------------------------

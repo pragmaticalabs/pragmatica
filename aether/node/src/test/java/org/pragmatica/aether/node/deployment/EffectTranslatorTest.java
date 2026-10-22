@@ -10,10 +10,12 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.logging.log4j.Level;
@@ -33,6 +35,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -54,12 +57,13 @@ class EffectTranslatorTest {
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final List<String> migrations = new CopyOnWriteArrayList<>();
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    private LogCapture logs;
+    private final Map<String, LogCapture> logs = new HashMap<>();
     private EffectTranslator translator;
 
     @BeforeEach
     void setUp() {
-        logs = new LogCapture(AUDIT, NODE_LOG, CLUSTER_LOG, EffectTranslator.class.getName());
+        Stream.of(AUDIT, NODE_LOG, CLUSTER_LOG, EffectTranslator.class.getName())
+              .forEach(logger -> logs.put(logger, LogCapture.capture(logger, Level.ALL, false)));
         translator = EffectTranslator.effectTranslator(new EffectTranslator.Targets(SELF,
                                                                                     events::add,
                                                                                     () -> OperatorWarningSink.handingOffTo(warnings::add),
@@ -69,7 +73,13 @@ class EffectTranslatorTest {
 
     @AfterEach
     void tearDown() {
-        logs.close();
+        logs.values().forEach(LogCapture::close);
+        logs.clear();
+    }
+
+    /// What the logger named `logger` logged since set-up, in arrival order.
+    private List<LogCapture.Entry> on(String logger) {
+        return logs.get(logger).entries();
     }
 
     private void node(NodeFsmEffect effect) {
@@ -186,10 +196,10 @@ class EffectTranslatorTest {
     @Test
     void aScaleUpAudit_writesTheTypedAuditLogLine() {
         cluster(new ClusterEffect.Audit("reconciliation-scale-up", ORDERS.asString() + " 3 -> 5"));
-        var viaTranslator = logs.on(AUDIT);
+        var viaTranslator = on(AUDIT);
 
         org.pragmatica.aether.deployment.AuditLog.reconciliationScaleUp(ORDERS.asString(), 3, 5);
-        var direct = logs.on(AUDIT).subList(viaTranslator.size(), logs.on(AUDIT).size());
+        var direct = on(AUDIT).subList(viaTranslator.size(), on(AUDIT).size());
 
         assertThat(viaTranslator).hasSize(1);
         assertThat(viaTranslator.getFirst().message()).isEqualTo("RECONCILIATION_SCALE_UP artifact=org.example:orders:1.0.0 currentInstances=3 desiredInstances=5");
@@ -200,7 +210,7 @@ class EffectTranslatorTest {
     void aScaleDownAudit_writesTheTypedAuditLogLine() {
         cluster(new ClusterEffect.Audit("reconciliation-scale-down", ORDERS.asString() + " 5 -> 2"));
 
-        assertThat(logs.on(AUDIT)).extracting(LogCapture.Line::message)
+        assertThat(on(AUDIT)).extracting(LogCapture.Entry::message)
                                   .containsExactly("RECONCILIATION_SCALE_DOWN artifact=org.example:orders:1.0.0 currentInstances=5 desiredInstances=2");
     }
 
@@ -211,7 +221,7 @@ class EffectTranslatorTest {
         cluster(new ClusterEffect.Route(new RoutedEvent.ActivationBlocked("main", blueprint, List.of("a:b:1.0.0", "c:d:2.0.0"), "org.example:schema:2.0.0", 1)));
         cluster(new ClusterEffect.Audit("schema-activation-blocked", "main owner=" + blueprint.asString()));
 
-        assertThat(logs.on(AUDIT)).extracting(LogCapture.Line::message)
+        assertThat(on(AUDIT)).extracting(LogCapture.Entry::message)
                                   .containsExactly("SCHEMA_ACTIVATION_BLOCKED datasource=main owningBlueprint=" + blueprint.asString() + " blockedSlices=[a:b:1.0.0, c:d:2.0.0]");
     }
 
@@ -219,15 +229,15 @@ class EffectTranslatorTest {
     void anAuditActionWithoutATypedMethod_writesNoLine_andIsReported() {
         cluster(new ClusterEffect.Audit("something-new", "detail"));
 
-        assertThat(logs.on(AUDIT)).as("MT-34: never a free-text audit line").isEmpty();
-        assertThat(logs.on(EffectTranslator.class.getName())).extracting(LogCapture.Line::level).contains(Level.ERROR);
+        assertThat(on(AUDIT)).as("MT-34: never a free-text audit line").isEmpty();
+        assertThat(on(EffectTranslator.class.getName())).extracting(LogCapture.Entry::level).contains(Level.ERROR);
     }
 
     @Test
     void aMalformedScaleDetail_writesNoLine() {
         cluster(new ClusterEffect.Audit("reconciliation-scale-up", "not the shape"));
 
-        assertThat(logs.on(AUDIT)).isEmpty();
+        assertThat(on(AUDIT)).isEmpty();
     }
 
     // -- warnings ------------------------------------------------------------------------------------------------------
@@ -261,7 +271,7 @@ class EffectTranslatorTest {
 
         assertThat(warnings).isEmpty();
         assertThat(registry.counter("aether_deployment_fsm_warnings_unmapped_total", "code", "a-future-fsm-warning").count()).isEqualTo(1.0);
-        assertThat(logs.on(EffectTranslator.class.getName())).anySatisfy(line -> {
+        assertThat(on(EffectTranslator.class.getName())).anySatisfy(line -> {
             assertThat(line.level()).isEqualTo(Level.WARN);
             assertThat(line.message()).contains("a-future-fsm-warning").contains("org.example:orders:1.0.0@core-2").contains("no desired row");
         });
@@ -358,7 +368,7 @@ class EffectTranslatorTest {
     void theWriteProbeSensorLine_reachesTheNodeLoggerAtInfo() {
         node(new NodeFsmEffect.Log(NodeFsmEffect.Level.INFO, "write-probe-resubmit node=core-1 artifact=org.example:orders:1.0.0 probe 1"));
 
-        assertThat(logs.on(NODE_LOG)).extracting(LogCapture.Line::level, LogCapture.Line::message)
+        assertThat(on(NODE_LOG)).extracting(LogCapture.Entry::level, LogCapture.Entry::message)
                                      .containsExactly(org.assertj.core.groups.Tuple.tuple(Level.INFO, "write-probe-resubmit node=core-1 artifact=org.example:orders:1.0.0 probe 1"));
     }
 
@@ -366,7 +376,7 @@ class EffectTranslatorTest {
     void theWriteConfirmTimeoutSensorLine_reachesTheNodeLoggerAtWarn() {
         node(new NodeFsmEffect.Log(NodeFsmEffect.Level.WARN, "write-confirm-timeout node=core-1 artifact=org.example:orders:1.0.0"));
 
-        assertThat(logs.on(NODE_LOG)).extracting(LogCapture.Line::level).containsExactly(Level.WARN);
+        assertThat(on(NODE_LOG)).extracting(LogCapture.Entry::level).containsExactly(Level.WARN);
     }
 
     @Test
@@ -386,7 +396,7 @@ class EffectTranslatorTest {
         node(new NodeFsmEffect.Log(NodeFsmEffect.Level.ERROR, "e"));
         node(new NodeFsmEffect.Log(NodeFsmEffect.Level.CRITICAL, "c"));
 
-        assertThat(logs.on(NODE_LOG)).extracting(LogCapture.Line::level, LogCapture.Line::message)
+        assertThat(on(NODE_LOG)).extracting(LogCapture.Entry::level, LogCapture.Entry::message)
                                      .containsExactly(org.assertj.core.groups.Tuple.tuple(Level.DEBUG, "d"),
                                                       org.assertj.core.groups.Tuple.tuple(Level.INFO, "i"),
                                                       org.assertj.core.groups.Tuple.tuple(Level.WARN, "w"),
@@ -398,7 +408,7 @@ class EffectTranslatorTest {
     void aClusterLogLine_reachesTheClusterLogger() {
         cluster(new ClusterEffect.Log("reconcile took 3 ms"));
 
-        assertThat(logs.on(CLUSTER_LOG)).extracting(LogCapture.Line::message).containsExactly("reconcile took 3 ms");
+        assertThat(on(CLUSTER_LOG)).extracting(LogCapture.Entry::message).containsExactly("reconcile took 3 ms");
     }
 
     // -- migrations and misrouted effects -------------------------------------------------------------------------------------
@@ -415,6 +425,6 @@ class EffectTranslatorTest {
         cluster(new ClusterEffect.RequestRebuild(1L));
 
         assertThat(events).isEmpty();
-        assertThat(logs.on(EffectTranslator.class.getName())).extracting(LogCapture.Line::level).containsExactly(Level.ERROR, Level.ERROR);
+        assertThat(on(EffectTranslator.class.getName())).extracting(LogCapture.Entry::level).containsExactly(Level.ERROR, Level.ERROR);
     }
 }

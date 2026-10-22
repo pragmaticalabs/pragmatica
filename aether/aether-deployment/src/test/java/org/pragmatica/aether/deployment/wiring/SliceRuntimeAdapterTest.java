@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,7 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.config.source.TomlConfigSource;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
@@ -462,10 +464,10 @@ class SliceRuntimeAdapterTest {
 
         cluster.script = _ -> Causes.cause("quorum paused").promise();
 
-        try (var logs = new LogCapture(SliceRuntimeAdapter.class.getName())) {
+        try (var logs = LogCapture.capture(SliceRuntimeAdapter.class, Level.ALL, false)) {
             assertThat(adapterOver(cluster).run(new NodeFsmEffect.LocalOp(1, 0, Option.some(ORDERS), LocalStep.FORCED_CLEANUP, 0, Option.none())).await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
             assertThat(store.calls).containsExactly("deactivate " + ORDERS, "unload " + ORDERS);
-            assertThat(logs.lines()).as("the refusal is logged, not swallowed silently")
+            assertThat(logs.entries()).as("the refusal is logged, not swallowed silently")
                                     .anySatisfy(line -> assertThat(line.message()).contains("Could not release the legs of " + ORDERS).contains("quorum paused"));
         }
     }

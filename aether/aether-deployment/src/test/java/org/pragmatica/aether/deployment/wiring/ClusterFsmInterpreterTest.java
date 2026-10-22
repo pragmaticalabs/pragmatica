@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
@@ -19,6 +20,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -424,7 +426,7 @@ class ClusterFsmInterpreterTest {
     class Stop {
         @Test
         void aConsumerStuckInASubscriber_doesNotHoldTheStopPastTheBound_andTheStopSaysSo() {
-            try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+            try (var logs = LogCapture.capture(FsmRuntime.class, Level.ALL, false)) {
                 var rig = new ClusterRig(400L);
 
                 rig.activate();
@@ -437,7 +439,7 @@ class ClusterFsmInterpreterTest {
                 rig.interpreter.close();
 
                 assertThat(Duration.ofNanos(System.nanoTime() - started)).as("W-27: held past the bound").isLessThan(Duration.ofSeconds(4));
-                assertThat(logs.lines()).as("W-27: no WARN").anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout").contains("400 ms"));
+                assertThat(logs.entries()).as("W-27: no WARN").anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout").contains("400 ms"));
                 rig.release();
                 rig.awaitThat(() -> rig.interpreter.state() instanceof ClusterState.Dormant);
             }
@@ -445,14 +447,14 @@ class ClusterFsmInterpreterTest {
 
         @Test
         void aStopOfAnIdleLeader_deactivatesFirst_andLogsNoStopTimeout() {
-            try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+            try (var logs = LogCapture.capture(FsmRuntime.class, Level.ALL, false)) {
                 var rig = new ClusterRig(400L);
 
                 rig.activate();
                 rig.interpreter.close();
 
                 assertThat(rig.interpreter.state()).isInstanceOf(ClusterState.Dormant.class);
-                assertThat(logs.lines()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
+                assertThat(logs.entries()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
             }
         }
     }

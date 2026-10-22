@@ -11,6 +11,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -28,6 +29,7 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -371,7 +373,7 @@ class Fsm2SystemTest {
         void drainNode_ofAConsumerStuckInAnInput_givesUpAtTheBound_andWarns() throws InterruptedException {
             var release = new CountDownLatch(1);
 
-            try (var logs = new LogCapture(Fsm2System.class.getName());
+            try (var logs = LogCapture.capture(Fsm2System.class, Level.ALL, false);
                  var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withStopWait(300).assembled()) {
                 harness.selfReadyHook = () -> awaitRelease(release);
                 harness.router.route(ClusterStateNotification.active());
@@ -381,7 +383,7 @@ class Fsm2SystemTest {
                 harness.system.unwrap().drainNode();
 
                 assertThat(Duration.ofNanos(System.nanoTime() - started)).as("bounded by the stop wait, not by the stuck input").isLessThan(Duration.ofSeconds(5));
-                assertThat(logs.on(Fsm2System.class.getName())).anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout")
+                assertThat(logs.entries()).anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout")
                                                                                                            .contains("node did not drain within 300 ms"));
                 release.countDown();
             } finally {
@@ -414,13 +416,13 @@ class Fsm2SystemTest {
 
         @Test
         void drainNode_ofAnIdleNode_returnsWithoutAWarning() {
-            try (var logs = new LogCapture(Fsm2System.class.getName());
+            try (var logs = LogCapture.capture(Fsm2System.class, Level.ALL, false);
                  var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withStopWait(300).assembled()) {
                 enterQuorum(harness);
 
                 harness.system.unwrap().drainNode();
 
-                assertThat(logs.on(Fsm2System.class.getName())).noneSatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout"));
+                assertThat(logs.entries()).noneSatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout"));
             }
         }
 
