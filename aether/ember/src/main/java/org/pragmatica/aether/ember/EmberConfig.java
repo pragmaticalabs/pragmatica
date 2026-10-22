@@ -28,6 +28,10 @@ import org.pragmatica.lang.Result;
 /// from, and not coupled to, the 60-second higher-id grace in `QuicClusterNetwork` (#491): the two
 /// are numerically equal and serve unrelated purposes, and no evidence of a real relationship was
 /// found.
+///
+/// `dashboardPort` is the port of Forge's own HTTP API (load and chaos control). The name, and the
+/// `dashboard_port` TOML key, predate the removal of the web dashboard and are kept so existing
+/// `forge.toml` files keep working; renaming the key is a separate, config-breaking decision.
 public record EmberConfig(int nodes,
                           int basePort,
                           int managementPort,

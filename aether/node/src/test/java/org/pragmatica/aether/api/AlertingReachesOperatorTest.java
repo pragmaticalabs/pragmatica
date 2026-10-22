@@ -45,9 +45,10 @@ import static org.mockito.ArgumentMatchers.eq;
 /// produced a working alert.
 ///
 ///   1. **Evaluation was conditioned on a UI client.** `checkThreshold`'s only production caller,
-///      `DashboardMetricsPublisher.checkAndBroadcastAlerts`, sat AFTER an
+///      the old dashboard publisher's `checkAndBroadcastAlerts`, sat AFTER an
 ///      `if (connectedClients() == 0) return;`. On a headless cluster no threshold was ever
-///      evaluated. Measured on a live 3-node rc4 cluster: thresholds set far below live values
+///      evaluated. The dashboard is gone and the caller is now `AlertThresholdEvaluator`, which has no
+///      client to wait for. Measured on a live 3-node rc4 cluster: thresholds set far below live values
 ///      produced zero alerts in 210s, while injected alerts appeared immediately.
 ///   2. **The event was never constructed.** `AlertEvent.ThresholdAlert` was declared,
 ///      pattern-matched by `AlertForwarder`'s renderer, and received by its `@MessageReceiver` --
@@ -55,7 +56,7 @@ import static org.mockito.ArgumentMatchers.eq;
 ///   3. **The forwarder was never constructed** (#957), so nothing left the process by any path.
 ///
 /// The tests below are written so that reverting any single production hunk reddens a NAMED test:
-/// hunk 1 reddens [#thresholdIsEvaluatedWithNoDashboardClientConnected], hunks 2 and 3 redden
+/// hunk 1 reddens [#thresholdIsEvaluatedOnAHeadlessNode], hunks 2 and 3 redden
 /// [#raisedThresholdAlertReachesARealWebhook].
 class AlertingReachesOperatorTest {
     private static final NodeId NODE = new NodeId("node-1");
@@ -109,30 +110,28 @@ class AlertingReachesOperatorTest {
         return node;
     }
 
-    /// HUNK 1. No WebSocket client is connected in a unit test -- `connectedClients()` is 0, which is
-    /// exactly the production state in which evaluation used to be skipped. A raised alert here can
-    /// therefore only mean evaluation ran without a dashboard client.
+    /// HUNK 1. Nothing is attached to the node in a unit test -- no WebSocket feed, no client of any
+    /// kind -- which is exactly the production state in which evaluation used to be skipped. A raised
+    /// alert here can therefore only mean evaluation ran with nothing connected.
     ///
-    /// Reverting the hunk (moving `checkAndBroadcastAlerts()` back below the guard) makes this fail.
+    /// Making `evaluateThresholds()` return before it reaches `checkThreshold` (the shape of the old
+    /// `connectedClients() == 0` guard) makes this fail.
     @Test
-    void thresholdIsEvaluatedWithNoDashboardClientConnected() {
+    void thresholdIsEvaluatedOnAHeadlessNode() {
         var alertManager = managerWithThreshold("cpu.usage", 0.7, 0.9);
         var node = nodeReporting("cpu.usage", 0.95);
-        var publisher = DashboardMetricsPublisher.dashboardMetricsPublisher(() -> node, alertManager);
+        var evaluator = AlertThresholdEvaluator.alertThresholdEvaluator(() -> node, alertManager);
 
-        assertThat(DashboardWebSocketHandler.connectedClients())
-                .describedAs("precondition: the guard's condition must actually hold, or this test proves nothing")
-                .isZero();
         assertThat(alertManager.activeAlertCount()).isZero();
 
-        publisher.publishMetrics();
+        evaluator.evaluateThresholds();
 
         assertThat(alertManager.activeAlertCount())
-                .describedAs("a metric above its critical threshold must raise an alert even with no dashboard client")
+                .describedAs("a metric above its critical threshold must raise an alert on a headless node")
                 .isEqualTo(1);
     }
 
-    /// Control for the test above: with the SAME publisher and the SAME zero connected clients, a
+    /// Control for the test above: with the SAME evaluator and the SAME headless node, a
     /// value BELOW the threshold raises nothing. Without this, `activeAlertCount() == 1` above could
     /// be satisfied by an implementation that raises unconditionally, which is the mirror-image
     /// defect and would pass the first assertion.
@@ -140,15 +139,15 @@ class AlertingReachesOperatorTest {
     void valueBelowThresholdRaisesNothingUnderTheSameConditions() {
         var alertManager = managerWithThreshold("cpu.usage", 0.7, 0.9);
         var node = nodeReporting("cpu.usage", 0.10);
-        var publisher = DashboardMetricsPublisher.dashboardMetricsPublisher(() -> node, alertManager);
+        var evaluator = AlertThresholdEvaluator.alertThresholdEvaluator(() -> node, alertManager);
 
-        publisher.publishMetrics();
+        evaluator.evaluateThresholds();
 
         assertThat(alertManager.activeAlertCount()).isZero();
     }
 
-    /// A sustained breach must raise ONCE, not once per evaluation tick. `publishMetrics` runs every
-    /// second on every node (`DEFAULT_BROADCAST_INTERVAL_MS = 1000`, started unconditionally from
+    /// A sustained breach must raise ONCE, not once per evaluation tick. `evaluateThresholds` runs every
+    /// second on every node (`EVALUATION_INTERVAL_MS = 1000`, started unconditionally from
     /// `ManagementServer.onServerStarted`), so a level-triggered implementation would append an
     /// `alertHistory` entry every second on any node above a default threshold and overwrite the
     /// 100-entry deque in under two minutes. `shouldTrigger` is severity-transition-gated, which is
@@ -158,7 +157,7 @@ class AlertingReachesOperatorTest {
     void aSustainedBreachRaisesOnceNotOncePerEvaluation() {
         var alertManager = managerWithThreshold("cpu.usage", 0.7, 0.9);
         var node = nodeReporting("cpu.usage", 0.95);
-        var publisher = DashboardMetricsPublisher.dashboardMetricsPublisher(() -> node, alertManager);
+        var evaluator = AlertThresholdEvaluator.alertThresholdEvaluator(() -> node, alertManager);
         var forwarder = Mockito.mock(AlertForwarder.class);
 
         Mockito.when(forwarder.forward(any())).thenReturn(Promise.success(Unit.unit()));
@@ -169,7 +168,7 @@ class AlertingReachesOperatorTest {
         alertManager.bindEventSink(sink, HLC);
 
         for (var tick = 0; tick < 20; tick++) {
-            publisher.publishMetrics();
+            evaluator.evaluateThresholds();
         }
 
         // NOTE: `activeAlertCount()` is deliberately NOT asserted here. `activeAlerts` is keyed

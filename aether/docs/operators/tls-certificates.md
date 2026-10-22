@@ -14,6 +14,10 @@ Aether uses TLS in three contexts:
 | Management API | TCP (HTTP/1.1 or HTTP/3) | Same as cluster |
 | Application HTTP (slice endpoints) | TCP (HTTP/1.1 or HTTP/3) | Same as cluster |
 
+The HTTP/3 listeners of the management API and of application HTTP run over QUIC on the same port numbers over UDP.
+They offer the `h3` ALPN token, which every HTTP/3 client requires, whether the certificate is self-signed, configured,
+or rotated (#2310). Before rc5 they offered no ALPN token, and no HTTP/3 client could complete a handshake.
+
 Additionally, SWIM gossip messages (UDP port 8190) are encrypted with AES-256-GCM using a key
 derived from the same cluster secret.
 

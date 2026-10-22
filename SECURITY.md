@@ -151,7 +151,7 @@ it. None of them isolates one slice's data from another slice in the same cluste
 ### Default security posture (management API)
 
 As of a hardening fix tracked under **#290**, a node with no explicit `security_mode` configured
-runs in **`API_KEY`** mode, not open access — the management plane and dashboard require a
+runs in **`API_KEY`** mode, not open access — the management plane requires a
 credential by default [mechanism: `aether/aether-config/src/main/java/org/pragmatica/aether/config/ConfigLoader.java`,
 `populateAppHttpConfig`: `explicitMode.or(SecurityMode.API_KEY)`]. If you provisioned no API key
 yourself, the first elected leader generates one random `ADMIN` key on first startup and prints it

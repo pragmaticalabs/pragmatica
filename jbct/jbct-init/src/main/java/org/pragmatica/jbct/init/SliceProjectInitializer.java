@@ -890,7 +890,7 @@ public final class SliceProjectInitializer {
 
         echo ""
         echo "Starting Aether Forge..."
-        echo "  Dashboard:  http://localhost:8888"
+        echo "  Forge API:  http://localhost:8888"
         echo "  App HTTP:   http://localhost:8070"
         echo "  Management: http://localhost:5150"
         echo ""
@@ -1104,8 +1104,8 @@ public final class SliceProjectInitializer {
             # Test the API
             curl http://localhost:8070/api/hello/World
 
-            # Dashboard
-            open http://localhost:8888
+            # Forge API (load and chaos control)
+            curl http://localhost:8888/api/forge/status
 
         ## Development
 

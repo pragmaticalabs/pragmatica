@@ -63,12 +63,6 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>dashboard</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>

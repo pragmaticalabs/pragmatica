@@ -59,7 +59,7 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
 # Expose ports
 # 8090/udp - Cluster communication (QUIC: consensus, inter-node messaging)
 # 8190/udp - SWIM health detection (cluster port + 100)
-# 8080     - Management API (REST, WebSocket dashboard)
+# 8080     - Management API (REST, WebSocket feeds)
 EXPOSE 8090/udp 8190/udp 8080
 
 # Health check using liveness probe (bypasses auth — no audit log spam).

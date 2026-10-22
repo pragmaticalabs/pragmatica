@@ -2520,8 +2520,7 @@ the view actionable (see recovery below).
 Absence is data here: `-1` per the table above, and a `null` `wal` on a partition of a durable stream
 means that partition is on the non-durable path on this node.
 
-**Periodic invariant watch.** The metrics-threshold alert path is evaluated only while a dashboard
-client is connected, so a violation nobody polls for would stay invisible. A periodic watch re-runs
+**Periodic invariant watch.** A violation nobody polls for would stay invisible. A periodic watch re-runs
 this same assembly **every 5 minutes** and, for each NEWLY violated partition, WARN-logs and raises
 one operator alert — name **`retention-invariant`**, severity **`CRITICAL`** — through the alert
 injection path (visible via `GET /api/v1/alerts/active` and `aether alerts active`). A raise requires the
@@ -2537,12 +2536,9 @@ no local source. Recovery is restoring the missing range from a replica that sti
 accepting the documented loss and re-baselining the checkpoint. The flag is computed on read: it
 clears on the next read (and the next watch tick) after local sources again cover `checkpoint + 1`.
 
-**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. This is a
-PER-NODE coverage diagnostic; per the 2026-07-20 owner ruling a dormant dimension must show a true
-degenerate value rather than a fabricated one, and a cluster aggregate of per-node coverage verdicts
-has no honest degenerate rendering (nodes legitimately differ — that difference is the signal). The
-periodic `retention-invariant` alert is the push-side surface; this endpoint and
-`aether storage retention` are the pull side.
+This is a PER-NODE coverage diagnostic: nodes legitimately differ, and that difference is the signal, so
+there is no cluster aggregate. The periodic `retention-invariant` alert is the push-side surface; this
+endpoint and `aether storage retention` are the pull side.
 
 ---
 
@@ -4146,34 +4142,7 @@ Get Maven metadata XML for an artifact. Rendered from the artifact's versions se
 
 ---
 
-## Dashboard
-
-### GET /dashboard
-
-Serves the built-in cluster monitoring dashboard (static HTML/JS/CSS files).
-
-**Content-Type**: `text/html`
-
-Open in browser: `http://localhost:8080/dashboard`
-
-Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
-
----
-
 ## WebSocket Endpoints
-
-### WS /ws/dashboard
-
-Real-time dashboard metrics streaming via WebSocket.
-
-**Connection:**
-```javascript
-const ws = new WebSocket('ws://localhost:8080/ws/dashboard');
-ws.onmessage = (event) => {
-  const metrics = JSON.parse(event.data);
-  console.log(metrics);
-};
-```
 
 ### WS /ws/status
 
@@ -4434,11 +4403,10 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 Every route below is served under the `/api/v1/v1` prefix (landed 2026-08-28, #300), composed at one
 site by `ManagementRoute`'s `API_BASE` constant [mechanism:
 `aether/aether-management-api/.../route/ManagementRoute.java`; design:
-[`management-api-versioning-spec.md`](../specs/management-api-versioning-spec.md) §2.1]. Four
+[`management-api-versioning-spec.md`](../specs/management-api-versioning-spec.md) §2.1]. Three
 surfaces are deliberately unversioned carve-outs and stay bare: the health probes
 (`/health/live`, `/health/ready` — spec §2.2), the artifact-repository routes (`/repository/**` —
-spec §2.2), the dashboard (`/dashboard`, a static asset, not a management-API route), and the
-WebSocket endpoints (`/ws/*`, likewise outside the `ManagementRoute` enum). The Stream Management
+spec §2.2), and the WebSocket endpoints (`/ws/*`, likewise outside the `ManagementRoute` enum). The Stream Management
 and Stream Namespaces sections below are intentionally not covered by this note or this table — a
 separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that surface; see
 [`versioning-and-compatibility.md`](versioning-and-compatibility.md) for status.
@@ -4544,8 +4512,6 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
 | PUT | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
 | POST | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
-| GET | `/dashboard` | Dashboard |
-| WS | `/ws/dashboard` | WebSocket |
 | WS | `/ws/status` | WebSocket |
 | WS | `/ws/events` | WebSocket |
 
@@ -5648,16 +5614,6 @@ by the threshold alert path, with a default threshold of WARNING 5,000 / CRITICA
 
 Assembled ON REQUEST from counters the checkpoint tick already maintains; no hot-path accounting is added.
 
-**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The dashboard is
-ontology-shaped — it presents cluster-wide dimensions — and this is a PER-NODE diagnostic whose value is in
-comparing one node's counters against its own history, not in a cluster aggregate. Summing `writes` across
-nodes would produce a number that looks meaningful and is not: nodes checkpoint different partitions, so the
-sum answers no operator question. Per the 2026-07-20 owner ruling, a dormant dimension must show a true
-degenerate value rather than a fabricated one, and there is no honest degenerate rendering here — so the
-slot stays dormant with this decision recorded, and the CLI plus this endpoint are the operator surface.
-Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted; that is a different
-(aggregatable) question and would earn a panel.
-
 **Response:**
 ```json
 {
@@ -5701,13 +5657,6 @@ the leader acts on). Persistent disagreement outside a deploy window means a nod
 slice version.
 
 Assembled ON REQUEST from committed records the runtime already maintains; no hot-path accounting.
-
-**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The
-hosting set changes only on deploy/unload/node-restart and is naturally read at those moments through
-this endpoint or `aether entity keyspaces`; a standing panel would show a static list. Per the
-2026-07-20 owner ruling the slot stays dormant with this decision recorded; the CLI plus this
-endpoint are the operator surface. Revisit if hosting-set churn becomes an alertable condition —
-that is a different (event-shaped) question and would earn a panel.
 
 **Response:**
 ```json
@@ -6652,9 +6601,5 @@ added that this node has not yet seen voting past R) and `failure`. Stages: `UNA
 `CATCHING_UP`. A state-transfer refusal remains visible in `failure`; it is not reported as a
 successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
 
-Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
-`completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.
-
-Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
 Worker HTTP reads of `/api/v1/metrics`, `/api/v1/metrics/history` and `/api/v1/nodes/metrics`
 are forwarded to a core; local diagnostics retain their explicitly local scope.

@@ -170,6 +170,20 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    /// #2310: a chunked request's trailers reach the Terra route that serves it.
+    @Test void serve_chunkedRequestWithTrailers_routeReadsThem() throws Exception {
+        var route = Route.<String>post("/upload").toImmediate(context -> org.pragmatica.lang.Result.success(context.trailers().get("x-checksum").or("none")))
+            .withSecurity(SecurityPolicy.publicRoute()).asText();
+        var host = start(List.of(route), HttpAuthenticator.denyUnlessPublicValidator(), new AtomicInteger());
+        try (var socket = new java.net.Socket("127.0.0.1", host.port())) {
+            socket.setSoTimeout(10_000);
+            socket.getOutputStream().write(("POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                + "5\r\nhello\r\n0\r\nx-checksum: abc123\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            var response = new String(socket.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.US_ASCII);
+            assertThat(response).startsWith("HTTP/1.1 200").endsWith("abc123");
+        } finally { close(host); }
+    }
+
     @Test void serve_handlerDefect_doesNotHangDrain() throws Exception {
         var route = Route.<String>get("/defect").withoutParameters().to(_ -> { throw new IllegalStateException("private details"); })
             .withSecurity(SecurityPolicy.publicRoute()).asText();

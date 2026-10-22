@@ -222,16 +222,14 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
-    public record ObservabilityTimeouts(TimeSpan dashboardBroadcast,
-                                        TimeSpan metricsSlidingWindow,
+    public record ObservabilityTimeouts(TimeSpan metricsSlidingWindow,
                                         TimeSpan eventLoopProbe,
                                         TimeSpan samplerRecalculation,
                                         TimeSpan invocationCleanup,
                                         int traceStoreCapacity,
                                         int alertHistorySize) {
         public static ObservabilityTimeouts observabilityTimeouts() {
-            return new ObservabilityTimeouts(timeSpan(1).seconds(),
-                                             timeSpan(2).hours(),
+            return new ObservabilityTimeouts(timeSpan(2).hours(),
                                              timeSpan(100).millis(),
                                              timeSpan(5).seconds(),
                                              timeSpan(60).seconds(),

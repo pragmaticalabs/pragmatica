@@ -27,7 +27,7 @@ High-level design and the numbered architecture series, one document per subsyst
 - [09 — Distributed Storage (DHT)](architecture/09-storage.md) — distributed hash table for artifact storage and caching
 - [10 — Security](architecture/10-security.md) — mTLS, gossip encryption, RBAC, API key authentication
 - [11 — Slice Container](architecture/11-slice-container.md) — ClassLoader isolation, dependency materialization, lifecycle hooks
-- [12 — Management and Tooling](architecture/12-management.md) — CLI, Management API, Forge simulator, web dashboard
+- [12 — Management and Tooling](architecture/12-management.md) — CLI, Management API, Forge simulator
 - [13 — Cloud Integration](architecture/13-cloud-integration.md) — automated infrastructure management across cloud providers
 - [14 — Consistency and Partition Behavior](architecture/14-consistency-and-partitions.md) — per-operation consistency/partition contract and the mechanism earning each guarantee
 - [15 — Resource and Isolation Model](architecture/15-resource-and-isolation-model.md) — single-JVM node model and the per-slice isolation limits that follow from it

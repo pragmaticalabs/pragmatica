@@ -42,9 +42,9 @@ class ReactorRootsTest {
     // --- the real tree --------------------------------------------------------------------------------
 
     /// Floors, not exact counts: a module added to the tree must not redden this test (the gate pom test
-    /// keeps the pom in sync). 57 = every non-aggregator module reachable through `<modules>` outside profiles: the 29 direct
-    /// leaves of `aether/pom.xml` (incl. this gate) + environment 5 + resource 13 + forge 4 + pg-tools 6.
-    /// 56 of them are `packaging=jar`; `pg-tools/pg-maven-plugin` is `maven-plugin`. The
+    /// keeps the pom in sync). 56 = every non-aggregator module reachable through `<modules>` outside profiles: the 28 direct
+    /// leaves of `aether/pom.xml` (incl. this gate; the dashboard module was the 29th until it was removed) + environment 5 + resource 13 + forge 4 + pg-tools 6.
+    /// 55 of them are `packaging=jar`; `pg-tools/pg-maven-plugin` is `maven-plugin`. The
     /// exact set is compared to the DOM reading above; the floors catch a collapse.
     @Test
     void declaredModules_realTree_isEveryNonAggregatorModuleReachableThroughModules() throws Exception {
@@ -53,9 +53,9 @@ class ReactorRootsTest {
 
         assertEquals(expected, Set.copyOf(actual), "ReactorRoots disagrees with the DOM reading of the module tree");
         assertEquals(actual.size(), Set.copyOf(actual).size(), "a module is listed twice: " + actual);
-        assertTrue(actual.size() >= 57, "corpus collapsed below its floor of 57: " + actual.size());
-        assertTrue(actual.stream().filter(module -> "jar".equals(packaging(module))).count() >= 56,
-                   "packaging=jar modules collapsed below their floor of 56");
+        assertTrue(actual.size() >= 56, "corpus collapsed below its floor of 56: " + actual.size());
+        assertTrue(actual.stream().filter(module -> "jar".equals(packaging(module))).count() >= 55,
+                   "packaging=jar modules collapsed below their floor of 55");
     }
 
     @Test
@@ -99,7 +99,7 @@ class ReactorRootsTest {
 
         assertTrue(ReactorRoots.missingProductionOutput().isEmpty(),
                    "corpus modules with sources but no target/classes: " + ReactorRoots.missingProductionOutput());
-        assertTrue(withSources.size() >= 55, "modules with src/main/java collapsed below their floor of 55");
+        assertTrue(withSources.size() >= 54, "modules with src/main/java collapsed below their floor of 54");
         assertTrue(ReactorRoots.productionRoots().containsAll(withSources.stream().map(module -> module.resolve("target/classes")).toList()),
                    "a module with sources contributes no root");
     }

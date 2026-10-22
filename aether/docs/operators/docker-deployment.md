@@ -15,7 +15,7 @@ Two container images are available:
 | Image | Description | Port |
 |-------|-------------|------|
 | `aether-node` | Runtime node for Aether cluster | 8080 (API), 8090 (cluster) |
-| `aether-forge` | Testing simulator with dashboard | 8888 |
+| `aether-forge` | Testing simulator (load and chaos REST API) | 8888 |
 
 ## Quick Start
 
@@ -78,7 +78,7 @@ docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
 docker compose --profile forge up --build
 ```
 
-Access Forge dashboard at http://localhost:8888
+Forge's REST API is at http://localhost:8888
 
 ## Docker Compose Configuration
 
@@ -150,7 +150,7 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FORGE_PORT` | 8888 | Dashboard port |
+| `FORGE_PORT` | 8888 | Forge API port |
 | `CLUSTER_SIZE` | 5 | Simulated cluster size |
 | `LOAD_RATE` | 1000 | Requests per second |
 | `JAVA_OPTS` | `-Xmx1g -XX:+UseZGC` | JVM options |
@@ -426,6 +426,6 @@ jobs:
 
 | Port | Protocol | Usage |
 |------|----------|-------|
-| 8080 | HTTP | Management API, Dashboard |
+| 8080 | HTTP | Management API |
 | 8090 | TCP | Cluster communication |
-| 8888 | HTTP | Forge dashboard |
+| 8888 | HTTP | Forge REST API |

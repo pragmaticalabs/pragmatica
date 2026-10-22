@@ -78,11 +78,11 @@ class ManagementRouteCoverageTest {
 
         assertThat(unserved)
                 .withFailMessage("These ManagementRoute entries are DECLARED but no handler is registered for "
-                                + "them, so the CLI and dashboard advertise a capability the server answers with "
+                                + "them, so the CLI advertises a capability the server answers with "
                                 + "a bare 404 (#525). Fix by either (a) registering a real handler via "
                                 + "ManagementRoutes.route(ManagementRoute.X), (b) registering an honest 501 in "
                                 + "NotImplementedRoutes naming what is missing, or (c) deleting the enum entry "
-                                + "together with its CLI subcommand, dashboard call and docs. If the route IS "
+                                + "together with its CLI subcommand and docs. If the route IS "
                                 + "registered but through a helper taking it as a parameter, spell the "
                                 + "registration out literally as route(ManagementRoute.X) — this scan only sees "
                                 + "the literal form. Do NOT add it to PREFIX_HANDLED unless a prefix handler "

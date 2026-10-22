@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # provision-test-pg.sh — Provision a single Hetzner VM running PostgreSQL for cloud
-# integration tests, and emit `export PG_URL=...` to stdout + /tmp/aether-test-pg.env.
+# integration tests, and write `export PG_URL=...` to /tmp/aether-test-pg.env (mode 0600).
 #
 # IDEMPOTENT: re-running with no flags reuses an existing PG VM (label
 # `aether-cluster=test-pg`). Use --fresh to force re-provisioning, --destroy to
@@ -45,7 +45,7 @@ FLAGS
     (no flag)        Reuse existing PG VM if present, else provision a fresh one.
     --fresh          Destroy any existing PG VM first, then provision new.
     --destroy        Destroy the PG VM and its SSH key, then exit.
-    --print-only     Print existing PG_URL if VM exists; exit 1 if not provisioned.
+    --print-only     Print the non-secret env lines if VM exists; exit 1 if not provisioned.
     --help, -h       Print this help and exit.
 
 ENVIRONMENT
@@ -60,11 +60,14 @@ ENVIRONMENT
                      (default: /tmp/aether-test-pg.env).
 
 OUTPUT
-    On success, prints to stdout and to /tmp/aether-test-pg.env (mode 0600):
+    On success, writes /tmp/aether-test-pg.env (mode 0600):
         # PG VM <id>  IP=<ip>  provisioned=<timestamp>
         export PG_URL=postgres://aether:<password>@<ip>:5432/aether_forge
+        export PG_PASSWORD=<password>   (plus PG_USER, PG_HOST, PG_DB)
 
-    Tests can pick this up via `source /tmp/aether-test-pg.env`.
+    stdout carries only the allow-listed lines (PG_USER, PG_HOST, PG_PORT, PG_DB);
+    PG_URL, PG_PASSWORD and everything else are never printed. Tests pick them up via
+    `source /tmp/aether-test-pg.env`.
 
 EXAMPLES
     provision-test-pg.sh                    # idempotent provision/reuse
@@ -407,8 +410,30 @@ export PG_DB=aether_forge
 EOF
     chmod 0600 "$ENV_FILE"
     log_info "wrote ${ENV_FILE} (mode 0600)"
-    # Echo the same block to stdout so callers can capture/source as needed.
-    cat "$ENV_FILE"
+    # Callers source the file; stdout gets the non-secret lines only.
+    print_env_summary
+}
+
+# ---------------------------------------------------------------------------
+# Print a NON-SECRET summary of the env file.
+#
+# This used to be `cat "$ENV_FILE"`, which wrote PG_PASSWORD and the
+# credential-bearing PG_URL to stdout on EVERY invocation — including the
+# idempotent reuse and --print-only paths, which are the ones run most often.
+# The file itself is mode 0600, but stdout is not: it lands in terminal
+# scrollback, CI job logs, and any wrapper that captures the tool's output.
+# No caller parses this stdout; every consumer sources the file directly:
+#
+#     set -a; source /tmp/aether-test-pg.env; set +a
+#
+# ALLOW-LIST, not deny-list: only the canonical `export PG_{USER,HOST,PORT,DB}=<plain value>`
+# lines are printed. Anything else — comments, other variables, unexported, indented or
+# quoted forms, a value carrying anything but [A-Za-z0-9._-] — is dropped, so a hand-edited
+# or foreign file cannot leak a secret through a form a deny-list did not anticipate.
+# ---------------------------------------------------------------------------
+print_env_summary() {
+    grep -E '^export PG_(USER|HOST|PORT|DB)=[A-Za-z0-9._-]+$' "$ENV_FILE" || true
+    echo "# PG_URL, PG_PASSWORD and every other variable are in ${ENV_FILE} (mode 0600) and are not printed."
 }
 
 # ---------------------------------------------------------------------------
@@ -489,7 +514,7 @@ print_only() {
         log_err "password is unrecoverable from this side; redeploy with --fresh"
         exit 1
     fi
-    cat "$ENV_FILE"
+    print_env_summary
     exit 0
 }
 
@@ -506,7 +531,7 @@ reuse_existing() {
         exit 1
     fi
     log_ok "reusing existing VM (env file present)"
-    cat "$ENV_FILE"
+    print_env_summary
     exit 0
 }
 

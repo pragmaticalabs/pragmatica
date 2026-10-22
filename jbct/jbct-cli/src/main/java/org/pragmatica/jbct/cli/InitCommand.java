@@ -133,7 +133,7 @@ public class InitCommand implements Callable<Integer> {
                 System.out.println("  1. cd " + projectDir.getFileName());
                 System.out.println("  2. ./run-forge.sh");
                 System.out.println("  3. curl http://localhost:8070/api/hello/World");
-                System.out.println("  4. Dashboard: http://localhost:8888");
+                System.out.println("  4. Forge API: http://localhost:8888");
             } else {
                 System.out.println("Project initialized successfully!");
                 System.out.println();

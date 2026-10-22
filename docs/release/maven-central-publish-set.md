@@ -69,7 +69,6 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/aether-ttm` | `org.pragmatica-lite.aether:aether-ttm` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/aether-ttm-onnx` | `org.pragmatica-lite.aether:aether-ttm-onnx` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/cli` | `org.pragmatica-lite.aether:cli` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
-| `aether/dashboard` | `org.pragmatica-lite.aether:dashboard` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/db-migrations` | `org.pragmatica-lite.aether:db-migrations` | jar | skip | shared runtime implementation bundled with Aether/Terra; not a generated slice-project dependency |
 | `aether/dead-surface-gate` | `org.pragmatica-lite.aether:dead-surface-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `aether/e2e-tests/echo-slice` | `org.pragmatica-lite.aether.test:echo-slice` | jar | skip | end-to-end test slice |
@@ -235,4 +234,4 @@ The limits are cumulative per month, so a second release in the same month needs
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-42 modules publish, 138 skip (180 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+42 modules publish, 137 skip (179 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).

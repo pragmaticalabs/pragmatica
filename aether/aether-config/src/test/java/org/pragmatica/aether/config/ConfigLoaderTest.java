@@ -1171,4 +1171,24 @@ class ConfigLoaderTest {
 
         assertThat(ConfigLoader.loadFromString(accepted).isSuccess()).isTrue();
     }
+
+    /// The dashboard's `dashboard_broadcast` timeout was removed with the dashboard. A config file written before that still
+    /// carries it, so the load must not turn that into a refusal; the remaining `[timeouts.observability]` keys in the same
+    /// section must keep applying. Mutation: making the parser refuse unknown keys in the section turns the first block red.
+    @Test
+    void loadFromString_retiredDashboardBroadcastKey_isIgnoredAndTheSectionStillApplies() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [timeouts.observability]
+            dashboard_broadcast = "500ms"
+            event_loop_probe = "50ms"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail("a retired key must not refuse the config: " + cause.message()))
+            .onSuccess(config -> assertThat(config.timeouts().observability().eventLoopProbe().millis()).isEqualTo(50L));
+    }
 }

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.Locale;
+
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -14,12 +16,14 @@ import org.pragmatica.http.HttpRequest;
 record ForwardedRequestContext(HttpRequestContext source,
                                HttpMethod httpMethod,
                                Headers headers,
-                               QueryParams queryParams) implements HttpRequest {
+                               QueryParams queryParams,
+                               Headers trailers) implements HttpRequest {
     static ForwardedRequestContext forwardedRequestContext(HttpRequestContext source) {
         return new ForwardedRequestContext(source,
-                                           HttpMethod.valueOf(source.method().toUpperCase()),
+                                           HttpMethod.valueOf(source.method().toUpperCase(Locale.ROOT)),
                                            Headers.headers(source.headers()),
-                                           QueryParams.queryParams(source.queryParams()));
+                                           QueryParams.queryParams(source.queryParams()),
+                                           Headers.trailers(source.trailers()));
     }
 
     @Override
@@ -45,6 +49,12 @@ record ForwardedRequestContext(HttpRequestContext source,
     @Override
     public QueryParams queryParams() {
         return queryParams;
+    }
+
+    /// #2310: the trailer fields the forwarded request carried.
+    @Override
+    public Headers trailers() {
+        return trailers;
     }
 
     @Override
