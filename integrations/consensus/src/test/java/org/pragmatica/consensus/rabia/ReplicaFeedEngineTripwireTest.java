@@ -97,7 +97,11 @@ class ReplicaFeedEngineTripwireTest {
     }
 
     private RabiaEngine<TestCommand> passiveEngine(StateMachine<TestCommand> machine) {
-        var passive = engine(WORKER, machine, true);
+        return passiveEngine(machine, true);
+    }
+
+    private RabiaEngine<TestCommand> passiveEngine(StateMachine<TestCommand> machine, boolean gated) {
+        var passive = engine(WORKER, machine, gated);
 
         assertThat(passive.configurePassiveClient().isSuccess()).as("precondition: the engine is a passive client").isTrue();
 
@@ -158,10 +162,18 @@ class ReplicaFeedEngineTripwireTest {
         assertThat(passive.isPassiveClientReady()).as("readiness failed, so the engine reports the worker as not ready").isFalse();
     }
 
+    /// Both activation modes: a gated engine would park an ACTIVE quorum notification on its own, so the ungated run is the one that
+    /// shows the notification is ignored because the engine is passive, not because it is gated.
     @Test
     void passiveEngine_appliesNothingAndStaysStopped_whenFedDecisionsAndQuorumNotifications() {
+        assertPassiveEngineStaysInert(true);
+        assertPassiveEngineStaysInert(false);
+    }
+
+    private void assertPassiveEngineStaysInert(boolean gated) {
         var machine = new CountingStateMachine();
-        var passive = passiveEngine(machine);
+        var passive = passiveEngine(machine, gated);
+        var mode = gated ? "gated" : "ungated";
 
         passive.clusterState(ClusterStateNotification.active());
         passive.processDecision(committing(machine, 0, "never applied"));
@@ -169,15 +181,15 @@ class ReplicaFeedEngineTripwireTest {
         passive.settleForTesting().await();
         passive.settleForTesting().await();
 
-        assertThat(machine.getProcessedCommands()).as("TW-O4: a passive engine applies no command").isEmpty();
-        assertThat(machine.committedBatches.get()).as("and commits no batch").isZero();
-        assertThat(passive.isActive()).isFalse();
-        assertThat(passive.isPaused()).isFalse();
-        assertThat(passive.isObserving()).isFalse();
-        assertThat(passive.currentPhaseForTesting()).as("and never advances its phase").isEqualTo(Phase.ZERO);
-        assertThat(passive.bufferedDecisionCountForTesting()).as("nor buffers a decision for a later replay: the passive engine never reaches the apply path at all").isZero();
-        assertThat(passive.isPendingCatchUp()).as("nor starts a sync (a quorum notification would put a voting engine in Syncing)").isFalse();
-        assertThat(network.getMessages()).as("and sends nothing").isEmpty();
+        assertThat(machine.getProcessedCommands()).as("TW-O4 (%s): a passive engine applies no command", mode).isEmpty();
+        assertThat(machine.committedBatches.get()).as("(%s) and commits no batch", mode).isZero();
+        assertThat(passive.isActive()).as("(%s)", mode).isFalse();
+        assertThat(passive.isPaused()).as("(%s)", mode).isFalse();
+        assertThat(passive.isObserving()).as("(%s)", mode).isFalse();
+        assertThat(passive.currentPhaseForTesting()).as("(%s) and never advances its phase", mode).isEqualTo(Phase.ZERO);
+        assertThat(passive.bufferedDecisionCountForTesting()).as("(%s) nor buffers a decision for a later replay: the passive engine never reaches the apply path at all", mode).isZero();
+        assertThat(passive.isPendingCatchUp()).as("(%s) nor starts a sync (a quorum notification would put a voting engine in Syncing)", mode).isFalse();
+        assertThat(network.getMessages()).as("(%s) and sends nothing", mode).isEmpty();
     }
 
     @Test
