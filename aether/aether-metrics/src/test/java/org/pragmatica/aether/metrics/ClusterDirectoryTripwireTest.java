@@ -105,9 +105,9 @@ class ClusterDirectoryTripwireTest {
 
     @Test
     void clusterSyncMessages_haveNoDirectorySlot_today() {
-        assertThat(componentNames(ClusterSyncPing.class)).as("TW-O17: ClusterSyncPing has no directory slot; its last component is carriesAuthority").doesNotContain("directory", "observedDirectoryGeneration")
+        assertThat(componentNames(ClusterSyncPing.class)).as("TW-O17: W2 added a directory slot to ClusterSyncPing (the last two components of both messages): enable ClusterDirectoryTripwireTest#aMember_installsTheLeadersDirectory_viaAResponderPong (NT-O44) and MemberPingRecipientTripwireTest#aMember_receivesLeaderContent_throughAGovernorsPong_notThroughALeaderPing, replace their bodies, and re-pin or delete this test").doesNotContain("directory", "observedDirectoryGeneration")
                                                           .last().isEqualTo("carriesAuthority");
-        assertThat(componentNames(ClusterSyncPong.class)).as("TW-O17: ClusterSyncPong has no directory slot beyond the observed-epoch triple; its last component is readyCandidate").doesNotContain("directory", "observedDirectoryGeneration")
+        assertThat(componentNames(ClusterSyncPong.class)).as("TW-O17: W2 added a directory slot to ClusterSyncPong: enable ClusterDirectoryTripwireTest#aMember_installsTheLeadersDirectory_viaAResponderPong (NT-O44) and MemberPingRecipientTripwireTest#aMember_receivesLeaderContent_throughAGovernorsPong_notThroughALeaderPing, replace their bodies, and re-pin or delete this test").doesNotContain("directory", "observedDirectoryGeneration")
                                                           .last().isEqualTo("readyCandidate");
     }
 
