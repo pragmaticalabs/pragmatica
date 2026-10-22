@@ -323,6 +323,33 @@ class KVStoreReplicaRingTest {
         assertThat(store.committedRevision()).as("advance-only and idempotent").isEqualTo(5L);
     }
 
+    /// The hook takes only the store monitor and then the ring lock. `mutationLock` is held while listeners run, so a hook that took it would
+    /// wait on a listener; here a listener asks ANOTHER thread to call the hook and waits for it. Mutation: route the hook through `mutate`,
+    /// and the call never returns while the listener runs.
+    @Test
+    void onPhaseCompleted_doesNotWaitForAListenerThatIsRunning() throws Exception {
+        var router = MessageRouter.mutable();
+        var store = new KVStore<StructuredKey, Object>(router, RingFixtures.TEXT, RingFixtures.deserializerReturning(Map.of()), ReplicaKeyFilter.includeAll(), RingFixtures.SOURCE, 1 << 20);
+        var hookReturned = new java.util.concurrent.atomic.AtomicBoolean();
+
+        router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> _) -> {
+            var caller = new Thread(() -> {
+                store.onPhaseCompleted(9);
+                hookReturned.set(true);
+            });
+
+            caller.start();
+            try {
+                caller.join(1_500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        commit(store, 0, putIncarnation(1, "A"));
+
+        assertThat(hookReturned.get()).as("the hook completed while the listener was still running (mutationLock held)").isTrue();
+    }
+
     @Test
     void twoStoresAtOneLogicalState_reportEqualRevisions_afterV0SlotsAndAnEmptySnapshotRestore() {
         var live = genesisStore();
