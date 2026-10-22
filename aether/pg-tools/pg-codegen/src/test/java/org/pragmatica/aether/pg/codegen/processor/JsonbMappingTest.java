@@ -62,6 +62,34 @@ class JsonbMappingTest {
             assertThat(generated).doesNotContain("probe.name()");
         }
 
+        /// `VALUES (:record)` expands an unmarked record param into its components; a marked one is one document.
+        @Test
+        void markedRecordParam_inValuesList_isNotExpanded() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                record Profile(String name, String city) {}
+
+                @PgSql
+                public interface AuditRepo {
+                    @Query("INSERT INTO documents (profile) VALUES (:profile)")
+                    Promise<Unit> record(@Jsonb Profile profile);
+                }
+                """;
+
+            var result = compile(source, "test/AuditRepo.java");
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.AuditRepoFactory")).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, profile)")
+                                                                       .doesNotContain("profile.name()");
+        }
+
         @Test
         void markedComponent_decodesAndBindsThroughTheCodec() throws Exception {
             var generated = factory(compile(DOC_REPO));
