@@ -205,9 +205,9 @@ class JsonbMappingTest {
             assertThat(result.generatedSource("test.OnlyDocRepoFactory")).contains("import org.pragmatica.aether.resource.db.RowDecodeError;");
         }
 
-        // Bounded: a broken clash numbering loops forever instead of failing.
+        // Bounded on its own thread: a broken clash numbering spins forever, which the test thread cannot interrupt.
         @Test
-        @Timeout(120)
+        @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
         void sameSimpleNameInTwoPackages_getsDistinctCodecConstants() throws Exception {
             var otherProfile = """
                 package other;

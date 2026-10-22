@@ -43,8 +43,8 @@ final class JsonbCodecs {
 
     /// The factory constant holding the codec of `type`, or why `type` cannot be stored as a document.
     Result<String> field(TypeMirror type) {
-        if (! (type instanceof DeclaredType declared) || !(declared.asElement() instanceof TypeElement element) || !isRecordOrEnum(element) || !declared.getTypeArguments()
-                                                                                                                                                        .isEmpty()) {
+        // A generic record is refused by the generator itself, with its reason.
+        if (! (type instanceof DeclaredType declared) || !(declared.asElement() instanceof TypeElement element) || !isRecordOrEnum(element)) {
             return cause(type + " is not a record or enum type").result();
         }
 
