@@ -145,15 +145,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     /// The engine's phase frontier moved: every slot below `nextSlot` is complete, including a V0 or empty slot that never reached
     /// [#processCommitted]. Publishes the frontier as this store's revision (advance-only, idempotent with `processCommitted`) and extends the
-    /// ring's open range.
+    /// ring's open range. Takes only the store monitor and then the ring lock, never `mutationLock`: it emits no notification, and
+    /// `mutationLock` is held while listeners run.
     @Override
-    public Unit onPhaseCompleted(long nextSlot) {
-        return mutate(() -> {
-            committedRevision = Math.max(committedRevision, nextSlot);
-            ring.advance(readTag(), nextSlot);
+    public synchronized Unit onPhaseCompleted(long nextSlot) {
+        committedRevision = Math.max(committedRevision, nextSlot);
+        ring.advance(readTag(), nextSlot);
 
-            return Unit.unit();
-        });
+        return Unit.unit();
     }
 
     /// The sixth storage writer, and the only write a replica makes besides a snapshot install: applies the plain `Put`/`Remove` effects of one

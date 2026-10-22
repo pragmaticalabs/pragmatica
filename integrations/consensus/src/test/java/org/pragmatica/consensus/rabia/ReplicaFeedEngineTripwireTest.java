@@ -60,10 +60,14 @@ class ReplicaFeedEngineTripwireTest {
     private static final class CountingStateMachine extends TestStateMachine {
         final AtomicInteger committedBatches = new AtomicInteger();
         final List<Long> phaseFrontiers = new CopyOnWriteArrayList<>();
+        volatile boolean failHook;
 
         @Override
         public Unit onPhaseCompleted(long nextSlot) {
             phaseFrontiers.add(nextSlot);
+            if (failHook) {
+                throw new IllegalStateException("hook failure");
+            }
 
             return Unit.unit();
         }
@@ -228,6 +232,57 @@ class ReplicaFeedEngineTripwireTest {
         assertThat(machine.committedBatches.get()).as("TW-O8: processCommitted is still told of the one batch only").isEqualTo(1);
         assertThat(machine.phaseFrontiers).as("TW-O8 / NT-O48: the state machine is told 1, 2, 3, the two V0 slots included (mutation: drop the call in advancePhase)")
                                           .containsSequence(1L, 2L, 3L);
+    }
+
+    /// A throwing hook must not wedge the engine: the next phase is still started for the batch this node has pending. Mutation: call the hook in
+    /// `advancePhase` without `runIsolated`, and no phase-1 proposal is ever made.
+    @Test
+    void aThrowingHook_doesNotStopTheEngineStartingTheNextPhase() {
+        var machine = new CountingStateMachine();
+        var active = activeEngine(machine);
+
+        machine.failHook = true;
+        active.apply(List.of(new TestCommand("mine")));
+        await(() -> network.getMessages().stream().anyMatch(message -> message instanceof RabiaProtocolMessage.Synchronous.Propose<?> propose && propose.phase().equals(Phase.ZERO)));
+        active.processDecision(committing(machine, 0, "someone else's"));
+        await(() -> active.currentPhaseForTesting().equals(Phase.phase(1)));
+
+        assertThat(machine.phaseFrontiers).as("the hook ran and threw").contains(1L);
+        await(() -> network.getMessages().stream().anyMatch(message -> message instanceof RabiaProtocolMessage.Synchronous.Propose<?> propose && propose.phase().equals(Phase.phase(1))));
+    }
+
+    /// One hook call per completed slot (plus the one at the restore), across a pause that applies a decision and across a decision buffered
+    /// while the engine was still syncing.
+    @Test
+    void hookCalls_equalTheCompletedSlots_acrossAPausedResumeAndABufferedDrain() {
+        var machine = new CountingStateMachine();
+        var active = activeEngine(machine);
+
+        active.processDecision(committing(machine, 0, "first"));
+        await(() -> active.currentPhaseForTesting().equals(Phase.phase(1)));
+        active.clusterState(ClusterStateNotification.passive());
+        await(active::isPaused);
+        active.processDecision(empty(1));
+        await(() -> active.currentPhaseForTesting().equals(Phase.phase(2)));
+        active.clusterState(ClusterStateNotification.active());
+        await(active::isActive);
+        active.processDecision(empty(2));
+        await(() -> active.currentPhaseForTesting().equals(Phase.phase(3)));
+
+        assertThat(machine.phaseFrontiers).as("the restore, then slots 0, 1 (applied while Paused) and 2, each once").containsExactly(0L, 1L, 2L, 3L);
+
+        var buffering = new CountingStateMachine();
+        var syncing = engine(CORE_1, buffering, false);
+
+        syncing.clusterState(ClusterStateNotification.active());
+        await(() -> network.getMessages().stream().anyMatch(SyncRequest.class::isInstance));
+        syncing.processDecision(committing(buffering, 0, "early"));
+        syncing.processSyncResponse(response(CORE_2));
+        syncing.processSyncResponse(response(CORE_3));
+        await(() -> buffering.phaseFrontiers.contains(1L));
+
+        assertThat(buffering.phaseFrontiers).as("the decision buffered while Syncing is reported when it is drained, once").containsExactly(0L, 1L);
+        assertThat(buffering.getProcessedCommands()).extracting(TestCommand::value).containsExactly("early");
     }
 
     @Test
