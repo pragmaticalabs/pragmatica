@@ -142,8 +142,10 @@ class JsonbMappingTest {
 
             decoded.onFailure(captured::set);
 
-            assertThat(captured.get()).isInstanceOfSatisfying(RowDecodeError.RowDecode.class,
-                                                              decode -> assertThat(decode.column()).isEqualTo("profile"));
+            // A multi-column row collects every column's failure (Result.all), so the typed cause sits in the composite.
+            assertThat(captured.get().stream()).singleElement()
+                                               .isInstanceOfSatisfying(RowDecodeError.RowDecode.class,
+                                                                       decode -> assertThat(decode.column()).isEqualTo("profile"));
         }
 
         private Method documentRowMapper() throws Exception {

@@ -206,39 +206,48 @@ class JsonbPostgresRoundTripTest {
                                                              .contains("Malformed JSON"));
     }
 
+    /// Each probe uses SQL text no other call uses: the driver caches a prepared statement by SQL text alone, so a
+    /// `varchar` bind reusing a statement first prepared with an unspecified (`JsonText`) parameter would be accepted.
     @Test
-    void stringParam_isAcceptedForAssignment_butNotAsJsonbOperand_whileJsonTextWorksForBoth() {
-        var assigned = connector.update("INSERT INTO documents (id, profile, legacy, title) VALUES ($1, $2, $3, $4)",
+    void stringParam_isRefusedByJsonbColumn_whileJsonTextBindsToJsonAndJsonb() {
+        var asString = connector.update("INSERT INTO documents (id, title, profile, legacy) VALUES ($1, $2, $3, $4)",
                                         5L,
+                                        "string",
                                         BOB_JSON,
-                                        BOB_JSON,
-                                        "string")
+                                        JsonText.jsonText(BOB_JSON))
                                 .await();
 
-        assertThat(assigned.fold(Cause::message, _ -> "bound")).as("a varchar parameter assigned to jsonb and json columns")
-                                                              .isEqualTo("bound");
+        assertThat(asString.isFailure()).as("a String parameter is declared varchar, which a jsonb column refuses").isTrue();
+        asString.onFailure(cause -> assertThat(cause.message()).contains("is of type jsonb but expression is of type character varying"));
 
-        var operand = connector.queryOne("SELECT count(*) FROM documents WHERE profile @> $1", row -> row.getLong("count"), "{}")
-                               .await();
-
-        assertThat(operand.isFailure()).as("a varchar parameter is no jsonb operand").isTrue();
-        operand.onFailure(cause -> assertThat(cause.message()).contains("operator does not exist"));
-        assertThat(connector.queryOne("SELECT count(*) FROM documents WHERE profile @> $1",
-                                      row -> row.getLong("count"),
-                                      JsonText.jsonText("{}"))
-                            .await())
-            .as("JsonText as the jsonb operand")
-            .isEqualTo(Result.success(1L));
-
-        var asJsonText = connector.update("INSERT INTO documents (id, profile, legacy, title) VALUES ($1, $2, $3, $4)",
+        var asJsonText = connector.update("INSERT INTO documents (title, id, profile, legacy) VALUES ($1, $2, $3, $4)",
+                                          "json-text",
                                           6L,
                                           JsonText.jsonText(BOB_JSON),
-                                          JsonText.jsonText(BOB_JSON),
-                                          "json-text")
+                                          JsonText.jsonText(BOB_JSON))
                                   .await();
 
         assertThat(asJsonText.fold(Cause::message, _ -> "bound")).as("JsonText into jsonb and json").isEqualTo("bound");
         assertThat(count("SELECT count(*) FROM documents WHERE id = 6")).isEqualTo(1L);
+    }
+
+    @Test
+    void stringParam_isNoJsonbOperand_whileJsonTextIs() throws Exception {
+        invoke("insertBoth");
+
+        var asString = connector.queryOne("SELECT count(*) AS count FROM documents WHERE profile @> $1 AND id > 0",
+                                          row -> row.getLong("count"),
+                                          "{}")
+                                .await();
+
+        assertThat(asString.isFailure()).as("a varchar parameter is no jsonb operand").isTrue();
+        asString.onFailure(cause -> assertThat(cause.message()).contains("operator does not exist"));
+        assertThat(connector.queryOne("SELECT count(*) AS count FROM documents WHERE profile @> $1 AND id >= 0",
+                                      row -> row.getLong("count"),
+                                      JsonText.jsonText("{}"))
+                            .await())
+            .as("JsonText as the jsonb operand")
+            .isEqualTo(Result.success(2L));
     }
 
     private static final String BOB_JSON = "{\"name\":\"Bob\",\"addresses\":[],\"home\":{\"city\":\"Odesa\",\"zip\":\"65000\"}}";
