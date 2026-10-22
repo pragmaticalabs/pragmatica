@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
+import org.pragmatica.aether.node.assembly.SliceRuntimeAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTConfig;
@@ -217,7 +218,7 @@ class AetherNodeDhtReplicationTest {
         var spi = org.pragmatica.aether.resource.SpiResourceProvider.spiResourceProvider(java.util.List.of(new CapturingFactory(captured)),
                                                                                          (_, _) -> org.pragmatica.lang.Result.success("probe"));
 
-        AetherNode.registerDhtExtensions(spi, replicated, cache);
+        SliceRuntimeAssembly.registerDhtExtensions(spi, replicated, cache);
         spi.provide(Probe.class, "probe", org.pragmatica.aether.slice.ProvisioningContext.provisioningContext()).await();
 
         var dhtClient = captured.get().extension(org.pragmatica.dht.DHTClient.class).unwrap();

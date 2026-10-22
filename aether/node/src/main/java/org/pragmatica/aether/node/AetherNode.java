@@ -42,12 +42,8 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
-import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
-import org.pragmatica.config.LayeredConfigProvider;
-import org.pragmatica.config.NamedConfigProvider;
-import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
@@ -93,7 +89,6 @@ import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
-import org.pragmatica.aether.resource.interceptor.CacheDhtClient;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
@@ -106,14 +101,10 @@ import org.pragmatica.aether.dht.KvOwnerEpochSource;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
-import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.SecurityOverrideSynchronizer;
-import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
-import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
-import org.pragmatica.aether.resource.SliceScopedResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.node.entityforward.CommittedEntityStake;
@@ -132,7 +123,6 @@ import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.InvocationMessage;
-import org.pragmatica.aether.invoke.ScheduledClaimStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
@@ -166,8 +156,6 @@ import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
-import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
-import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
@@ -194,7 +182,6 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
-import org.pragmatica.aether.stream.StreamAddressResolver;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamingCoordinator;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -235,7 +222,6 @@ import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
-import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
@@ -261,7 +247,6 @@ import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.SpokesmanPingLoop;
 import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
 import org.pragmatica.aether.config.AlertConfig;
-import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
@@ -295,7 +280,6 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
-import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -342,6 +326,7 @@ import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.aether.node.assembly.StorageAssembly;
 import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.aether.node.assembly.ManagementAssembly;
+import org.pragmatica.aether.node.assembly.SliceRuntimeAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.Server;
@@ -2270,36 +2255,22 @@ public interface AetherNode extends ManageableNode {
         var contentStorage = artifactStorageOut.contentStorage();
         var artifactStore = artifactStorageOut.artifactStore();
         var repositories = artifactStorageOut.repositories();
-        var sharedLibraryLoader = createSharedLibraryLoader(config);
-        // #904: a configured resource provider whose secrets cannot be resolved is a boot failure
-        // naming the secret, propagated exactly like `baseStorageSetupsResult` above -- never a boot
-        // on the no-op facade with provisioning silently disabled.
-        var resourceProviderSetupResult = createResourceProviderFacade(config);
+        var resourceProviderFacadeOut = SliceRuntimeAssembly.resourceProviderFacade(new SliceRuntimeAssembly.ResourceProviderFacadeInputs(config));
+        var sharedLibraryLoader = resourceProviderFacadeOut.sharedLibraryLoader();
+        var resourceProviderSetupResult = resourceProviderFacadeOut.resourceProviderSetupResult();
 
         if (resourceProviderSetupResult.isFailure()) {
             return resourceProviderSetupResult.map(ignored -> null);
         }
 
         var resourceProviderSetup = resourceProviderSetupResult.fold(_ -> null, setup -> setup);
-        var sliceStore = SliceStore.sliceStore(sliceRegistry,
-                                               repositories,
-                                               sharedLibraryLoader,
-                                               deferredInvoker,
-                                               resourceProviderSetup.facade(),
-                                               config.sliceAction(),
-                                               resourceProviderSetup.nodeComposite(),
-                                               Option.some(nodeCodec),
-                                               resourceProviderSetup.secretResolver(),
-                                               sliceClassLoader -> SliceScopedResourceProvider.sliceScopedResourceProvider(sliceClassLoader,
-                                                                                                                           resourceProviderSetup.facade())
-                                               // #773: the node is the only place that can see BOTH
-                                               // the resource SPI and the slice loader, so the
-                                               // slice-scoped overlay is built here and injected
-                                               // down. The parameter is required rather than
-                                               // optional precisely so this cannot be dropped
-                                               // silently — omitting it is a compile error, not a
-                                               // slice that deploys and then fails at load.
-                                              );
+        var sliceStore = SliceRuntimeAssembly.sliceStore(new SliceRuntimeAssembly.SliceStoreInputs(config,
+                                                                                                   sliceRegistry,
+                                                                                                   deferredInvoker,
+                                                                                                   nodeCodec,
+                                                                                                   repositories,
+                                                                                                   sharedLibraryLoader,
+                                                                                                   resourceProviderSetup));
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork);
         // #1818 round 3: departure pushes are accepted only from departing senders. The predicate needs the
         // ClusterSyncCollector, built further down, so it is resolved through this holder (strict until then).
@@ -3131,45 +3102,19 @@ public interface AetherNode extends ManageableNode {
                                              ((TopologyObserver) clusterNode.topologyManager()).inQuorum());
             }
         }
-        var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(),
-                                                                       switchableCluster,
-                                                                       GenerationSnapshotSource.noop(),
-                                                                       routeMountMode(config.appHttp()));
-        var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
-        // #1573 B1: HTTP routes call the typed slice instance, not the bridge, so they record into the
-        // same execution counters here. recordExecution cannot fail (it returns unitResult()).
-        httpRoutePublisher.setRouteOutcomeRecorder((artifact, method, outcome) -> invocationMetrics.recordExecution(artifact,
-                                                                                                                    method,
-                                                                                                                    outcome)
-                                                                                                   .or(Unit.unit()));
-        var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
-        var traceStore = InvocationTraceStore.invocationTraceStore();
-        // #277 increment 5a: the strategy-cell system is the ONE observability engine. Unconfigured
-        // injection points run the fleet baseline (sampling + tracing + depth-leveled logging + counting),
-        // absorbed here from the retired ObservabilityInterceptor. depthThreshold < 0 disables observability
-        // -> counting-only baseline (no fleet emission), the prior noOp-interceptor posture.
-        var observabilityBaseline = config.observability().depthThreshold() < 0
-                                    ? ObservabilityBaseline.countingOnly()
-                                    : ObservabilityBaseline.fleet(AdaptiveSampler.adaptiveSampler(config.observability()
-                                                                                                        .targetTracesPerSec()),
-                                                                  traceStore,
-                                                                  config.self().id(),
-                                                                  config.observability().depthThreshold());
-        var configRegistry = ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNode,
-                                                                                     kvStore,
-                                                                                     observabilityBaseline);
-        var invocationHandler = InvocationHandler.invocationHandler(config.self(),
-                                                                    clusterNode.network(),
-                                                                    invocationMetrics,
-                                                                    config.timeouts().invocation().timeout(),
-                                                                    serializer,
-                                                                    deserializer,
-                                                                    httpRoutePublisher);
-        // #277 increment 2: the config registry IS the write-side cell registrar for both dispatch
-        // seams — bind it so bridge (east-west) and route (north-south) cells register at slice load /
-        // route publish and deregister at unload, and a KV config put swaps their behaviour in place.
-        invocationHandler.setObservabilityCellRegistrar(configRegistry);
-        httpRoutePublisher.setObservabilityCellRegistrar(configRegistry);
+        var invocationOut = SliceRuntimeAssembly.invocation(new SliceRuntimeAssembly.InvocationInputs(config,
+                                                                                                      kvStore,
+                                                                                                      clusterNode,
+                                                                                                      serializer,
+                                                                                                      deserializer,
+                                                                                                      switchableCluster));
+        var httpRoutePublisher = invocationOut.httpRoutePublisher();
+        var invocationMetrics = invocationOut.invocationMetrics();
+        var logLevelRegistry = invocationOut.logLevelRegistry();
+        var traceStore = invocationOut.traceStore();
+        var observabilityBaseline = invocationOut.observabilityBaseline();
+        var configRegistry = invocationOut.configRegistry();
+        var invocationHandler = invocationOut.invocationHandler();
         var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(config.self(),
                                                                                                clusterNode.network());
         var deploymentMetricsScheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(config.self(),
@@ -3272,15 +3217,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                  provider,
                                                                                                  config.appHttp().port()));
         var discoveryProvider = config.environment().flatMap(EnvironmentIntegration::discovery);
-        var endpointRegistry = EndpointRegistry.endpointRegistry();
-        var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
-        var scheduledTaskRegistry = ScheduledTaskRegistry.scheduledTaskRegistry();
-        // #488: constructed here (not next to the consumer manager further down) because the KV
-        // notification routes are collected before the stream subsystem is built. The registry only
-        // accumulates declarations; StreamConsumerManager attaches itself as its change listener.
-        var streamConsumerRegistry = StreamConsumerRegistry.streamConsumerRegistry();
-        var scheduledTaskStateRegistry = ScheduledTaskStateRegistry.scheduledTaskStateRegistry();
-        var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
+        var registriesOut = SliceRuntimeAssembly.registries();
+        var endpointRegistry = registriesOut.endpointRegistry();
+        var topicSubscriptionRegistry = registriesOut.topicSubscriptionRegistry();
+        var scheduledTaskRegistry = registriesOut.scheduledTaskRegistry();
+        var streamConsumerRegistry = registriesOut.streamConsumerRegistry();
+        var scheduledTaskStateRegistry = registriesOut.scheduledTaskStateRegistry();
+        var httpRouteRegistry = registriesOut.httpRouteRegistry();
         var metricsCollector = ClusterSyncCollector.clusterSyncCollector(config.self(),
                                                                          clusterNode.network(),
                                                                          config.timeouts()
@@ -3683,41 +3626,30 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(allInstancesFailedDetector::tick,
                                                                       config.timeouts().cluster().pingInterval(),
                                                                       config.timeouts().cluster().pingInterval()));
-        var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
-        var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
-                                                     clusterNode.network(),
-                                                     endpointRegistry,
-                                                     invocationHandler,
-                                                     serializer,
-                                                     deserializer,
-                                                     config.timeouts().invocation().invokerTimeout().millis(),
-                                                     config.timeouts().observability().invocationCleanup().millis(),
-                                                     deploymentManager);
-
-        deferredInvoker.setDelegate(sliceInvoker);
-        var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
-                                                                             sliceInvoker,
-                                                                             config.self(),
-                                                                             command -> switchableCluster.apply(List.of(command)),
-                                                                             scheduledTaskStateRegistry::stateFor,
-                                                                             clusterNode.leaderManager(),
-                                                                             ScheduledTaskManager.DEFAULT_COMPLETION_BOUND,
-                                                                             ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),
-                                                                                                                           delegateRouter::route),
-                                                                             scheduledClaimStore(kvStore,
-                                                                                                 switchableCluster));
-        // #273 item 1: resolve the drain hook now the manager exists. `DrainProcedure.initiate` runs this
-        // once at the INACTIVE->DRAINING CAS, for every trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED).
-        scheduledTaskDrainHookRef.set(scheduledTaskManager::onDrainInitiated);
-        resourceProviderSetup.spiProvider()
-                             .onPresent(spi -> registerRuntimeExtensions(spi,
-                                                                         topicSubscriptionRegistry,
-                                                                         sliceInvoker,
-                                                                         baseDhtClient,
-                                                                         cacheDhtClient,
-                                                                         contentStorage,
-                                                                         kvStore,
-                                                                         operatorWarningSink));
+        var sliceInvokerOut = SliceRuntimeAssembly.sliceInvoker(new SliceRuntimeAssembly.SliceInvokerInputs(config,
+                                                                                                            delegateRouter,
+                                                                                                            kvStore,
+                                                                                                            deferredInvoker,
+                                                                                                            clusterNode,
+                                                                                                            serializer,
+                                                                                                            deserializer,
+                                                                                                            baseDhtClient,
+                                                                                                            cacheDhtClient,
+                                                                                                            contentStorage,
+                                                                                                            resourceProviderSetup,
+                                                                                                            switchableCluster,
+                                                                                                            invocationMetrics,
+                                                                                                            invocationHandler,
+                                                                                                            endpointRegistry,
+                                                                                                            topicSubscriptionRegistry,
+                                                                                                            scheduledTaskRegistry,
+                                                                                                            scheduledTaskStateRegistry,
+                                                                                                            scheduledTaskDrainHookRef,
+                                                                                                            deploymentManager,
+                                                                                                            operatorWarningSink));
+        var abTestManager = sliceInvokerOut.abTestManager();
+        var sliceInvoker = sliceInvokerOut.sliceInvoker();
+        var scheduledTaskManager = sliceInvokerOut.scheduledTaskManager();
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -3739,54 +3671,25 @@ public interface AetherNode extends ManageableNode {
                                                                                             currentGenerationEpochSupplier);
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
-        var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
-        var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
-        // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
-        // the current leader. #329: gated on consensus catch-up via leaderCatchUpGate (shared with the
-        // ManageableNode.taskGroupOwnerResolver() override) — a lagging replacement leader is withheld
-        // ownership (notAssigned) for a bounded window so leader-local commits do not stall and 503.
-        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver = leaderCatchUpGate::resolve;
-        // Silent-death fix: the data-path forwarder narrows candidates to currently-reachable nodes so
-        // a hard-killed peer (QUIC still CONNECTED until eviction) is dropped from selection/retry long
-        // before the forward timeout would otherwise burn. Membership-FSM unification (Wave D, consumer
-        // #2): reachability is now decided by the authoritative MembershipFsm.reachableMembers (counted
-        // MEMBER + SUSPECT) rather than NTT.keepOnlyAccessible. The FSM is constructed later (membership
-        // v2 wiring below), so the filter derefs the shared membershipFsmRef at request time; before the
-        // FSM exists it degrades to identity (forward falls back to the connectedPeers-only behavior).
-        var workerEndpointDirectory = org.pragmatica.aether.node.health.WorkerEndpointDirectory.workerEndpointDirectory();
-        AccessibilityFilter accessibilityFilter = candidates -> Option.option(membershipFsmRef.get())
-                                                                      .map(fsm -> configuredWorker(config)
-                                                                                  ? workerEndpointDirectory.accessible(candidates,
-                                                                                                                       fsm,
-                                                                                                                       clusterNode.network()
-                                                                                                                                  .connectedPeers())
-                                                                                  : fsm.reachableMembers(candidates))
-                                                                      .or(candidates);
-        // #275: the same narrowing for slice-to-slice invocation — a co-confirmed-DEAD node's endpoints
-        // stay registered until the CDM's removal cleanup lands, and without this a new invocation
-        // was round-robined onto it and hung for the invoker timeout.
-        sliceInvoker.setAccessibilityFilter(accessibilityFilter);
-        var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
-                                                        config.timeouts().forwarding(),
-                                                        config.self(),
-                                                        httpRouteRegistry,
-                                                        Option.some(httpRoutePublisher),
-                                                        Option.some(clusterNode.network()),
-                                                        Option.some(serializer),
-                                                        Option.some(deserializer),
-                                                        config.tls(),
-                                                        Option.some(invocationMetrics),
-                                                        serverBossGroup,
-                                                        serverWorkerGroup,
-                                                        Option.some(deploymentManager),
-                                                        Option.empty(),
-                                                        Option.some(taskGroupOwnerResolver),
-                                                        accessibilityFilter);
-
-        appHttpServer.setOperatorWarningSink(operatorWarningSink);
-        appHttpServer.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
-                                                                                                    () -> workerProjectionFreshRef.get()
-                                                                                                                                  .getAsBoolean()));
+        var appHttpServerOut = SliceRuntimeAssembly.appHttpServer(new SliceRuntimeAssembly.AppHttpServerInputs(config,
+                                                                                                               clusterNode,
+                                                                                                               serializer,
+                                                                                                               deserializer,
+                                                                                                               membershipFsmRef,
+                                                                                                               leaderCatchUpGate,
+                                                                                                               httpRoutePublisher,
+                                                                                                               invocationMetrics,
+                                                                                                               httpRouteRegistry,
+                                                                                                               workerProjectionFreshRef,
+                                                                                                               inFlightTrackerForDrain,
+                                                                                                               deploymentManager,
+                                                                                                               operatorWarningSink,
+                                                                                                               sliceInvoker));
+        var serverBossGroup = appHttpServerOut.serverBossGroup();
+        var serverWorkerGroup = appHttpServerOut.serverWorkerGroup();
+        var taskGroupOwnerResolver = appHttpServerOut.taskGroupOwnerResolver();
+        var workerEndpointDirectory = appHttpServerOut.workerEndpointDirectory();
+        var appHttpServer = appHttpServerOut.appHttpServer();
         var storageMaintenanceOut = StorageAssembly.storageMaintenance(new StorageAssembly.StorageMaintenanceInputs(config,
                                                                                                                     storageSetups,
                                                                                                                     operatorWarningSink));
@@ -6809,31 +6712,6 @@ public interface AetherNode extends ManageableNode {
                                 generationEpoch(incarnation, leaderTerm::current));
     }
 
-    /// #1573: the committed cluster-wide automatic-rollback policy. An absent config, or the bootstrap seed (which
-    /// carries no source TOML), is the built-in default (ON). The section was validated at apply, so a failure here means a document committed
-    /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
-    /// that cannot be read — and the failure is logged.
-    /// The SINGLE-mode scheduled-task claims live in committed cluster state (#1155): read from this node's applied store, written
-    /// through consensus. A write resolves once applied; one the applier refused (VersionFenced) resolves too, so the scheduler
-    /// confirms every claim write by reading the row back.
-    private static ScheduledClaimStore scheduledClaimStore(KVStore<AetherKey, AetherValue> kvStore,
-                                                           SwitchableClusterNode<KVCommand<AetherKey>> cluster) {
-        return new ScheduledClaimStore() {
-            @Override
-            public Option<AetherValue.ScheduledTaskClaimValue> read(AetherKey.ScheduledTaskClaimKey key) {
-                return kvStore.get(key)
-                              .filter(AetherValue.ScheduledTaskClaimValue.class::isInstance)
-                              .map(AetherValue.ScheduledTaskClaimValue.class::cast);
-            }
-
-            @Override
-            public Promise<Unit> write(KVCommand<AetherKey> command) {
-                return cluster.apply(List.of(command))
-                              .mapToUnit();
-            }
-        };
-    }
-
     private static RollbackConfig committedRollbackPolicy(Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader) {
         return clusterConfigReader.get()
                                   .map(AetherValue.ClusterConfigValue::tomlContent)
@@ -8785,212 +8663,15 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// Resolve the cluster-level #198 route-mount mode (§7) from the app-HTTP config. Path mode is
-    /// the default; header mode carries the configured API-version header name into dispatch.
-    private static RouteMountMode routeMountMode(AppHttpConfig appHttp) {
-        return appHttp.apiVersioningDetection()
-                      .isHeaderMode()
-               ? RouteMountMode.headerMode(appHttp.apiVersionHeaderName())
-               : RouteMountMode.pathMode();
-    }
-
-    private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {
-        var log = LoggerFactory.getLogger(AetherNode.class);
-
-        return config.sliceAction()
-                     .frameworkJarsPath()
-                     .fold(() -> {
-                               log.debug("No framework JARs path configured, using Application ClassLoader as parent");
-
-                               return new SharedLibraryClassLoader(AetherNode.class.getClassLoader());
-                           },
-                           path -> FrameworkClassLoader.fromDirectory(path)
-                                                       .onFailure(cause -> log.warn("Failed to create FrameworkClassLoader from {}: {}. "
-                                                                                   + "Falling back to Application ClassLoader.",
-                                                                                    path,
-                                                                                    cause.message()))
-                                                       .map(loader -> {
-                                                                log.info("Using FrameworkClassLoader with {} JARs as parent",
-                                                                         loader.getLoadedJars().size());
-
-                                                                return new SharedLibraryClassLoader(loader);
-                                                            })
-                                                       .or(new SharedLibraryClassLoader(AetherNode.class.getClassLoader())));
-    }
-
     record ResourceProviderSetup(ResourceProviderFacade facade,
                                  Option<DynamicConfigurationProvider> dynamicProvider,
                                  Option<ConfigurationProvider> nodeComposite,
                                  Option<SpiResourceProvider> spiProvider,
                                  Option<Fn1<Promise<String>, String>> secretResolver) {}
 
-    private static Result<ResourceProviderSetup> createResourceProviderFacade(AetherNodeConfig config) {
-        var log = LoggerFactory.getLogger(AetherNode.class);
-
-        return config.configProvider()
-                     .fold(() -> {
-                               log.debug("No configuration provider configured, resource provisioning disabled");
-
-                               return Result.success(new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                               Option.empty(),
-                                                                               Option.empty(),
-                                                                               Option.empty(),
-                                                                               Option.empty()));
-                           },
-                           configProvider -> {
-                               log.info("Creating ConfigService and ResourceProvider from configuration provider");
-                               // Captured once and reused both for node.toml's own resolution below AND
-                               // threaded down to SliceStore for the slice-intrinsic resources.toml layer
-                               // (#269) — the SAME environment-secrets capability, not a second one. This
-                               // stays valid even if node.toml's OWN secret fails to resolve below: that
-                               // failure is about one node.toml key, not about the SecretsProvider itself
-                               // being broken, so slice-level resolution is independent of it.
-                               var secretsProvider = config.environment()
-                                                           .flatMap(EnvironmentIntegration::secrets);
-                               var secretResolver = secretsProvider.map(sp -> (Fn1<Promise<String>, String>) sp::resolveSecret);
-                               // No SecretsProvider (no `[cloud]` block, or `Main.resolveEnvironment`
-                               // dropped a failed one): a `${secrets:...}` placeholder in node.toml
-                               // can never resolve, so it refuses here too rather than being served
-                               // as the literal value -- the `NoSecretsProviderForStorageEncryption`
-                               // rule applied to the config map. A placeholder-free provider (Ember,
-                               // Forge) is returned as-is.
-                               var resolvedProvider = secretsProvider.fold(() -> ConfigurationProvider.withoutSecretResolution(configProvider),
-                                                                           sp -> ConfigurationProvider.withSecretResolution(configProvider,
-                                                                                                                            sp::resolveSecret));
-                               // #904: the operator DID configure a provider; the failure is in
-                               // resolving its secrets, and the refusal says so. Booting on the
-                               // no-op facade instead left `nodeComposite` empty, so every
-                               // `ConfigurationSection` slice failed later with a cause that blamed
-                               // the node for having no provider configured.
-                               return resolvedProvider.fold(cause -> secretResolutionRefused(cause),
-                                                            provider -> {
-                                                                // KV-overlay layer: holds operator config puts only.
-                                                                // Base is empty — the merged view is composed below via
-                                                                // LayeredConfigProvider, so the dynamic overlay sees no
-                                                                // node.toml fall-through and DynamicConfigManager can
-                                                                // operate on the overlay in isolation (Batch 1 of the
-                                                                // hierarchical config refactor).
-                                                                var emptyBase = ConfigurationProvider.builder().build();
-                                                                var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(emptyBase);
-                                                                // node-composite = KV-overlay ⊕ node.toml
-                                                                var kvLayer = NamedConfigProvider.namedConfigProvider("KV",
-                                                                                                                      dynamicProvider);
-                                                                var nodeTomlLayer = NamedConfigProvider.namedConfigProvider("node.toml",
-                                                                                                                            provider);
-                                                                ConfigurationProvider nodeComposite = LayeredConfigProvider.layered(List.of(kvLayer,
-                                                                                                                                            nodeTomlLayer));
-                                                                var configService = ProviderBasedConfigService.providerBasedConfigService(nodeComposite);
-
-                                                                ConfigService.setInstance(configService);
-                                                                var resourceProvider = SpiResourceProvider.spiResourceProvider();
-
-                                                                ResourceProvider.setInstance(resourceProvider);
-                                                                log.info("ConfigService and ResourceProvider initialized with hierarchical composite (KV-overlay + node.toml)");
-                                                                // The provider's OWN complete facade, never a hand-rolled one.
-                                                                // This was an anonymous class implementing the two `provide`
-                                                                // overloads only, so `releaseAll` inherited the interface's
-                                                                // `Promise.unitPromise()` default and every slice unload
-                                                                // reported a successful release without one reaching
-                                                                // `SpiResourceProvider` (#892).
-                                                                return Result.success(new ResourceProviderSetup(resourceProvider.facade(),
-                                                                                                                Option.some(dynamicProvider),
-                                                                                                                Option.some(nodeComposite),
-                                                                                                                Option.some(resourceProvider),
-                                                                                                                secretResolver));
-                                                            });
-                           });
-    }
-
-    private static Result<ResourceProviderSetup> secretResolutionRefused(Cause cause) {
-        return Causes.cause("configured resource provider cannot be built: " + cause.message()
-                           + " — refusing to boot: the node would otherwise start with that configuration"
-                           + " unusable, either with resource provisioning silently disabled or with the"
-                           + " placeholder text served as the value (#904)",
-                            Option.some(cause))
-                     .result();
-    }
-
-    private static ResourceProviderFacade noOpResourceProviderFacade() {
-        return new ResourceProviderFacade() {
-            private static final Cause NOT_CONFIGURED = Causes.cause("Resource provisioning not configured. Use AetherNodeConfig.withConfigProvider() to enable.");
-
-            @Override
-            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return NOT_CONFIGURED.promise();
-            }
-
-            @Override
-            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
-                return NOT_CONFIGURED.promise();
-            }
-
-            /// Deliberate no-op, not an inherited one (#892): resource provisioning is disabled on
-            /// this path, so there is provably nothing for a release to close.
-            @Override
-            public Promise<Unit> releaseAll(String sliceId) {
-                return Promise.unitPromise();
-            }
-        };
-    }
-
-    /// #1777 (CTO ruling R2 / Q4): the bare `DHTClient` extension is the cluster's REPLICATED DHT at the committed
-    /// `[replication]` factors — what idempotency and every other namespace resolve. The cache namespace's lower `[cache]`
-    /// replication is a separate extension type ([CacheDhtClient]) that only the cache asks for. Registering the cache
-    /// client as `DHTClient`, as before, put idempotency's dedup records at RF 1.
-    @Contract
-    static void registerDhtExtensions(SpiResourceProvider spi,
-                                      DHTClient replicatedDhtClient,
-                                      DHTClient cacheDhtClient) {
-        spi.registerExtension(DHTClient.class, replicatedDhtClient);
-        spi.registerExtension(CacheDhtClient.class, new CacheDhtClient(cacheDhtClient));
-    }
-
     /// A real composite (#1927): every configured repository is consulted in order, falling through only when one answered "absent".
     private static Repository compositeRepository(List<Repository> repositories) {
         return CompositeRepository.compositeRepository(repositories);
-    }
-
-    private static void registerRuntimeExtensions(SpiResourceProvider spi,
-                                                  TopicSubscriptionRegistry topicSubscriptionRegistry,
-                                                  SliceInvoker sliceInvoker,
-                                                  DHTClient replicatedDhtClient,
-                                                  DHTClient cacheDhtClient,
-                                                  StorageInstance contentStorage,
-                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                  OperatorWarningSink operatorWarningSink) {
-        spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
-        spi.registerExtension(SliceInvoker.class, sliceInvoker);
-        registerDhtExtensions(spi, replicatedDhtClient, cacheDhtClient);
-        // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
-        // Register a tiered content store so slice-facing ContentStore resources can provision.
-        spi.registerExtension(StorageInstance.class, contentStorage);
-        // #1040: the stream resource factories materialize a declared stream under its ENGINE KEY
-        // rather than the bare `resources.toml` section name, which needs the deploy-time
-        // alias->ResourceAddress bindings. Those live in the cluster KV-Store, which aether-stream
-        // cannot reach, so the lookup is supplied here as an extension. Registered unconditionally:
-        // absence is what a test/Forge runtime looks like, and on a real node the resolver must
-        // always be present or a declared stream silently falls back to the bare spelling again.
-        spi.registerExtension(StreamAddressResolver.class,
-                              (sliceId, alias) -> Artifact.artifact(sliceId).flatMap(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
-                                                                                                                                       artifact,
-                                                                                                                                       alias)));
-        // #1216: a bare pub/sub topic name is scoped to the owning BLUEPRINT, exactly as a stream
-        // alias is. PublisherFactory holds only the publishing slice's id and cannot reach the
-        // cluster KV-Store where `SliceTargetValue.owningBlueprint` lives, so the one hop from slice
-        // identity to blueprint identity is supplied here. Registered unconditionally and for the
-        // same reason as the resolver above: absence is what a test/minimal runtime looks like, and
-        // on a real node the resolver must always be present or a co-deployed publisher and
-        // subscriber fall back to two DIFFERENT slice-derived namespaces and silently never meet.
-        spi.registerExtension(OwningBlueprintResolver.class, OwningBlueprintResolver.kvBacked(kvStore));
-        // #1564: every stream, durable topic and durable entity declaration resolves its replication_factor /
-        // confirmation_factor against the COMMITTED cluster config — the `[replication]` defaults and the desired
-        // core count — read on each resolution, exactly as deploy validation reads it.
-        spi.registerExtension(ReplicationContext.Source.class,
-                              ClusterReplication.source(() -> kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
-                                                                               AetherValue.ClusterConfigValue.class)));
-        // #1564 / #1617 (R10): the replication warnings a stream, durable topic or durable entity raises when it
-        // activates reach this node's cluster event log through its own operator-warning sink.
-        spi.registerExtension(OperatorWarningSink.class, operatorWarningSink);
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot

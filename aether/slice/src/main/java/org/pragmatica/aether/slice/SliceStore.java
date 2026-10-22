@@ -387,7 +387,7 @@ public interface SliceStore {
         /// resolver is configured (#269). All-or-nothing per
         /// `ConfigurationProvider.withSecretResolution`: one failed key drops the WHOLE intrinsic
         /// layer — same convention as node.toml's own secret resolution in
-        /// `AetherNode.createResourceProviderFacade`, and as this file's own pre-existing
+        /// `SliceRuntimeAssembly.createResourceProviderFacade`, and as this file's own pre-existing
         /// malformed-TOML-parse-failure path (see [#parseToFlatMap]) just above it. A dropped layer
         /// means every resource a slice declares ONLY in its own resources.toml (not overridden by
         /// node.toml/KV) fails at provision time as not-configured; see
