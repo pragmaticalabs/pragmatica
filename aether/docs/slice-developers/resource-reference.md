@@ -477,6 +477,22 @@ Nested under `pool_config` in the database section.
 | `transactional(callback)` | `Promise<T>` | Auto-commit/rollback |
 | `isHealthy()` | `Promise<Boolean>` | Health check |
 
+### Documents on Postgres (`json` / `jsonb`)
+
+PostgreSQL is the document store for slices: keep a document in a `jsonb` column and map it to a record.
+
+- **`@PgSql` interfaces:** mark the record component, method or parameter `@Jsonb`. The generated factory encodes and
+  decodes the document with a generated codec, and checks the column type at compile time where it is known. See
+  [JSON Documents](persistence-guide.md#json-documents-json--jsonb).
+- **Hand-written queries on the async transport (`async_url`):** bind a document as `JsonText`
+  (`org.pragmatica.aether.resource.db.JsonText`) and read it with `row.getObject(column, JsonText.class)`. `JsonText`
+  is sent as text with no declared type, so it fits `json` and `jsonb` columns and `jsonb` operators such as `@>`. A
+  `String` parameter is declared `varchar`, which `jsonb` refuses.
+- **Nullable columns:** `row.getOptional(column, type)` reads SQL `NULL` as `Option.none()`. The async transport and the
+  slice test kit's fake connector implement it. Other row accessors refuse it rather than guess.
+- **Index for containment:** `CREATE INDEX ... USING gin (column jsonb_path_ops)` serves `@>` queries.
+- jOOQ (`JooqConnector`) has no document mapping yet.
+
 ### JooqConnector API
 
 | Method | Return Type | Description |
