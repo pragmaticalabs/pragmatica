@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.node.assembly.SliceRuntimeAssembly;
+import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTConfig;
@@ -111,10 +112,10 @@ class AetherNodeDhtReplicationTest {
                                                                                                     org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationStage.WRITERS_SWITCHED,
                                                                                                     0, false);
 
-        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.none(), org.pragmatica.lang.Option.none()).unwrap())
+        assertThat(WorkerHierarchyAssembly.workerDhtReplication(org.pragmatica.lang.Option.none(), org.pragmatica.lang.Option.none()).unwrap())
             .as("nothing committed: the built-in factors, no change to hold")
             .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, -1, -1, 0, 0, true));
-        assertThat(AetherNode.workerDhtReplication(org.pragmatica.lang.Option.some(committed), org.pragmatica.lang.Option.some(unsettled)).unwrap())
+        assertThat(WorkerHierarchyAssembly.workerDhtReplication(org.pragmatica.lang.Option.some(committed), org.pragmatica.lang.Option.some(unsettled)).unwrap())
             .as("#1777 R1b: the committed version and the unsettled change's floor travel with the factors")
             .isEqualTo(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 2, 1, 1, 1, 1, 3, false));
     }
@@ -127,7 +128,7 @@ class AetherNodeDhtReplicationTest {
 
         assertThat(node.acceptsWrites()).as("control: a worker's fence starts unknown").isFalse();
 
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1, 1, 1, 2, 2, true),
+        WorkerHierarchyAssembly.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1, 1, 1, 2, 2, true),
                                              node,
                                              DHTConfig.DEFAULT,
                                              DHTConfig.CACHE_DEFAULT,
@@ -147,7 +148,7 @@ class AetherNodeDhtReplicationTest {
 
         assertThat(node.replicationResolved()).as("control: a worker starts unresolved").isFalse();
 
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1, 1, 1, 2, 2, true),
+        WorkerHierarchyAssembly.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 2, 1, 1, 1, 2, 2, true),
                                              node,
                                              DHTConfig.DEFAULT,
                                              DHTConfig.CACHE_DEFAULT,
@@ -158,7 +159,7 @@ class AetherNodeDhtReplicationTest {
         assertThat(node.config().replicationFactor()).isEqualTo(3);
         assertThat(cache.get().replicationFactor()).isEqualTo(2);
 
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 1, 1, 2, 2, 2, 2, false),
+        WorkerHierarchyAssembly.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(5, 3, 1, 1, 2, 2, 2, 2, false),
                                              node,
                                              DHTConfig.DEFAULT,
                                              DHTConfig.CACHE_DEFAULT,
@@ -180,10 +181,10 @@ class AetherNodeDhtReplicationTest {
         var cache = new AtomicReference<>(DHTConfig.CACHE_DEFAULT);
         var settlement = new RecordingSettlement();
 
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 1, 1, 1, 1, 1, 1, 3, true),
+        WorkerHierarchyAssembly.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 1, 1, 1, 1, 1, 1, 3, true),
                                              node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache, settlement);
         // CF1 -> CF2 committed under version 3; this worker's next poll sees version 5, the change still unsettled
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 5, 3, 1, 3, false),
+        WorkerHierarchyAssembly.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 5, 3, 1, 3, false),
                                              node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache, settlement);
 
         assertThat(node.config().readQuorum()).as("unsettled: R_t = max(R_old 3, R_new 2)").isEqualTo(3);
@@ -191,7 +192,7 @@ class AetherNodeDhtReplicationTest {
         assertThat(node.replicationFence()).as("R1c: the worker stamps its puts with the committed change, not the version it applied it at")
                                            .isEqualTo(3L);
 
-        AetherNode.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 6, 3, 1, 3, true),
+        WorkerHierarchyAssembly.applyWorkerDhtReplication(new org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 6, 3, 1, 3, true),
                                              node, DHTConfig.DEFAULT, DHTConfig.CACHE_DEFAULT, cache, settlement);
 
         assertThat(node.config().readQuorum()).as("settled: R_new").isEqualTo(2);

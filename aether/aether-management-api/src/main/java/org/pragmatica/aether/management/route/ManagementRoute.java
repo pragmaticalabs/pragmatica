@@ -124,7 +124,7 @@ public enum ManagementRoute {
     // GOVERNOR's tcpAddress (GovernorAnnouncementValue), which WORKERS_LIST already serves. Both are
     // answered by NotImplementedRoutes with an honest 501 naming the missing capability, rather than
     // being left unserved (a bare 404 tells the operator nothing) or deleted (worker mode is live —
-    // see AetherNode.activateWorkerMode). Implementing them requires workers to publish health and
+    // see WorkerHierarchyAssembly.activateWorkerMode). Implementing them requires workers to publish health and
     // endpoint facts; that is a feature, not a repair.
     WORKERS_HEALTH(GET, "/workers/health", List.of(), LEADER),
     WORKERS_ENDPOINTS(GET, "/workers/endpoints", List.of(), LEADER),
