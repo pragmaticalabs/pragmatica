@@ -27,7 +27,7 @@ class ClusterEventRedeliveryWiringTest {
     void assembly_schedulesTheRedeliveryTickEverySecond() {
         var code = assemblyCode();
 
-        assertThat(code).containsOnlyOnce("periodicTasks.defer(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,CLUSTER_EVENT_REDELIVERY_INTERVAL,CLUSTER_EVENT_REDELIVERY_INTERVAL));");
+        assertThat(code).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,CLUSTER_EVENT_REDELIVERY_INTERVAL,CLUSTER_EVENT_REDELIVERY_INTERVAL));");
         assertThat(code).containsOnlyOnce("TimeSpanCLUSTER_EVENT_REDELIVERY_INTERVAL=TimeSpan.timeSpan(1).seconds();");
     }
 
