@@ -69,11 +69,16 @@ class ReplicaFeedInterleaveModelTest {
         assertThat(replica.applied()).isEqualTo(START + 1);
     }
 
+    @Test
+    void replicaApplier_doesNotExistYet_today() {
+        assertThat(ReplicaSeam.typeExists("ReplicaApplier")).as("W3 landed ReplicaApplier: with CommitRing (W1) enable realRingAndApplier_neverSkipAnEntry (TW-O16), and delete this test").isFalse();
+    }
+
     @Disabled("W1/W3 (NT-O41): enable when the real CommitRing and ReplicaApplier exist; drive the interleave against them with a stub sink and assert no effect is lost")
     @Test
     void realRingAndApplier_neverSkipAnEntry() {
-        assertThat(ReplicaSeam.typeExists("CommitRing") && ReplicaSeam.typeExists("ReplicaApplier"))
-                .as("W1 adds CommitRing (offer inside the append critical section), W3 adds ReplicaApplier (a heartbeat never moves applied); NT-O41 drives the interleave against both")
-                .isTrue();
+        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("CommitRing") && ReplicaSeam.typeExists("ReplicaApplier"),
+                                     "W1 CommitRing and W3 ReplicaApplier",
+                                     "NT-O41: drive a heartbeat between a batch's revision bump and its entry offer against the real ring and applier, and assert no effect is lost");
     }
 }

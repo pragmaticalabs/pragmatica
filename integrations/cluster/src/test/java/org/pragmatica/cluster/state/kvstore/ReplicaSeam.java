@@ -29,6 +29,14 @@ final class ReplicaSeam {
                      .anyMatch(root -> contains(root, entry));
     }
 
+    /// The body of a `@Disabled` presence probe: it ALWAYS fails, so enabling it can never pass vacuously. Whoever enables it after the
+    /// member lands has to replace the call with the real check of `property`.
+    static AssertionError failClosed(boolean memberExists, String addedBy, String property) {
+        return new AssertionError(memberExists
+                                  ? addedBy + " landed: replace this body with the real check, which is: " + property
+                                  : addedBy + " is not there yet; the property to check once it is: " + property);
+    }
+
     /// True when `KVStore` declares a public method with this name, whatever its parameters.
     static boolean kvStoreHasMethod(String name) {
         return Arrays.stream(KVStore.class.getMethods())

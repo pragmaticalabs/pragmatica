@@ -66,6 +66,9 @@ class OlderCheckpointRestoreTripwireTest {
             second.nodes().forEach(node -> assertThat(node.engine().stateTransferFailure().isEmpty() && node.engine().ownRestoreFailure().isEmpty())
                     .as("nothing across the restart flags the divergence on %s", node.id())
                     .isTrue());
+            second.nodes().forEach(node -> assertThat(node.bootFutureHistoryEvents())
+                    .as("and neither does the one detector the design names, RabiaEngine.detectBootFutureHistory (it compares a restarting node with what its peers report, here they report the same checkpoint), on %s", node.id())
+                    .isEmpty());
         } finally {
             second.close();
         }
@@ -74,6 +77,8 @@ class OlderCheckpointRestoreTripwireTest {
     @Disabled("W1 (CommitRing, anchor): enable when the ring exists; a replica that followed the first history and resubscribes to the restarted cluster must be refused by its anchor and re-snapshot")
     @Test
     void resubscribingReplica_isRefusedByItsAnchor() {
-        assertThat(ReplicaSeam.typeExists("CommitRing")).as("W1 adds CommitRing with k = 8 (slot, batchId) anchor pairs; drive the restart above and assert the replica of the first history is refused AHEAD/mismatch and takes a snapshot").isTrue();
+        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("CommitRing"),
+                                     "W1 CommitRing with k = 8 (slot, batchId) anchor pairs",
+                                     "drive the restart above, resubscribe a replica that followed the first history, and assert it is refused (AHEAD or anchor mismatch) and takes a snapshot");
     }
 }

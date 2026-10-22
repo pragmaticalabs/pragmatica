@@ -114,6 +114,22 @@ class KVStoreEffectReplayTest {
         throw new AssertionError("KVStore.applyEffects exists now: replace the body of this helper with the real call, then this assertion is the property to hold");
     }
 
+    /// Absence tripwires: ENABLED, they go red when the member lands, and their message names the `@Disabled` tests to enable then.
+    @Test
+    void applyEffects_doesNotExistYet_today() {
+        assertThat(ReplicaSeam.kvStoreHasMethod("applyEffects")).as("W1 landed KVStore.applyEffects: enable effectsOfTheTransaction_throughApplyEffects_giveAStoreEqualToTheCoresMinusExcludedKeys (TW-O6) and witnesslessRemoveEffect_landsThroughApplyEffects (TW-O14), wire the applyEffects helper of this class to the real method, and delete this test").isFalse();
+    }
+
+    @Test
+    void commitRing_doesNotExistYet_today() {
+        assertThat(ReplicaSeam.typeExists("CommitRing")).as("W1 landed CommitRing: enable uncommittedProcess_invalidatesTheRing (TW-O7), OlderCheckpointRestoreTripwireTest#resubscribingReplica_isRefusedByItsAnchor (TW-O13) and ReplicaFeedInterleaveModelTest#realRingAndApplier_neverSkipAnEntry (TW-O16), and delete this test").isFalse();
+    }
+
+    @Test
+    void kvStorePhaseHook_doesNotExistYet_today() {
+        assertThat(ReplicaSeam.kvStoreHasMethod("onPhaseCompleted")).as("W1 landed KVStore.onPhaseCompleted: enable revision_equalsTheEnginePhase_afterV0AndEmptySlots (TW-O8 store half) together with ReplicaFeedEngineTripwireTest#stateMachine_isToldTheNewFrontier_afterEveryCompletedSlot (TW-O8 engine half), and delete this test").isFalse();
+    }
+
     @Test
     void guardedTransaction_isRefusedByAStoreThatLacksTheWitnessedKey_today() {
         var core = coreHolding(true);
@@ -171,7 +187,9 @@ class KVStoreEffectReplayTest {
     @Disabled("W1 (CommitRing): enable when the ring exists; assert an uncommitted process() raises the ring floor to the frontier and closes live sinks with EVICTED")
     @Test
     void uncommittedProcess_invalidatesTheRing() {
-        assertThat(ReplicaSeam.typeExists("CommitRing")).as("W1 adds CommitRing; KVStore.process (the uncommitted write path) must invalidate it: floor jumps to the frontier, live sinks close EVICTED").isTrue();
+        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("CommitRing"),
+                                     "W1 CommitRing",
+                                     "KVStore.process (the uncommitted write path) invalidates the ring: the floor jumps to the frontier and live sinks close EVICTED");
     }
 
     @Test
@@ -189,7 +207,9 @@ class KVStoreEffectReplayTest {
     @Disabled("W1 (Q-E phase hook): enable when KVStore.onPhaseCompleted exists; assert revision == engine phase after V0 and empty slots and after an empty-snapshot restore")
     @Test
     void revision_equalsTheEnginePhase_afterV0AndEmptySlots() {
-        assertThat(ReplicaSeam.kvStoreHasMethod("onPhaseCompleted")).as("W1 adds the KVStore override of StateMachine.onPhaseCompleted(long nextSlot): committedRevision = max(., nextSlot) for every completed slot, V0 and empty included").isTrue();
+        throw ReplicaSeam.failClosed(ReplicaSeam.kvStoreHasMethod("onPhaseCompleted"),
+                                     "W1 KVStore.onPhaseCompleted",
+                                     "after onPhaseCompleted(nextSlot) for every completed slot, V0 and empty included, and after an empty-snapshot restore, committedRevision == the engine phase frontier");
     }
 
     @Test

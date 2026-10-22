@@ -222,15 +222,16 @@ class ReplicaFeedEngineTripwireTest {
                                                   .isEqualTo(1);
     }
 
+    @Test
+    void stateMachinePhaseHook_doesNotExistYet_today() {
+        assertThat(phaseHook()).as("W1 landed StateMachine.onPhaseCompleted(long): enable stateMachine_isToldTheNewFrontier_afterEveryCompletedSlot (TW-O8 engine half) together with KVStoreEffectReplayTest#revision_equalsTheEnginePhase_afterV0AndEmptySlots (TW-O8 store half), and delete this test").isNull();
+    }
+
     @Disabled("W1 (Q-E phase hook): enable when StateMachine.onPhaseCompleted(long) exists and the engine calls it for every completed slot, V0 and empty included")
     @Test
     void stateMachine_isToldTheNewFrontier_afterEveryCompletedSlot() {
-        var hook = phaseHook();
-
-        assertThat(hook).as("W1 adds the default method StateMachine.onPhaseCompleted(long nextSlot), called from the tail of advancePhase and of applyRestoredState").isNotNull();
-        // With the hook, the test body is: drive the same three decisions as the enabled twin, record the nextSlot values the
-        // hook receives, and expect 1, 2, 3 (V0 and empty slots included). Wire a recording StateMachine override here when enabling.
-        assertThat(hook.getParameterTypes()).containsExactly(long.class);
+        throw new AssertionError((phaseHook() != null ? "W1 StateMachine.onPhaseCompleted(long) landed: replace this body with the real check, which is: " : "W1 StateMachine.onPhaseCompleted(long) is not there yet; the property to check once it is: ")
+                                 + "drive the same three decisions as emptyDecision_advancesTheEnginePhase_withoutTheStateMachineLearningOfIt with a recording StateMachine and assert the hook received nextSlot 1, 2, 3 (the V0 slots included), and once more at the tail of applyRestoredState");
     }
 
     private static Method clearingSetter() {

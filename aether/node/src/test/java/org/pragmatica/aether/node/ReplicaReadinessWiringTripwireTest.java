@@ -74,7 +74,10 @@ class ReplicaReadinessWiringTripwireTest {
     @Disabled("W4 (cutover): enable when readiness is computed by ReplicaReadiness.ready() and set through setPassiveClientReady; assert a worker is ready iff ready() holds")
     @Test
     void workerIsReady_iffReplicaReadinessHolds() {
-        assertThat(ReplicaSeam.typeExists("ReplicaReadiness")).as("W3 adds ReplicaReadiness (tag equal, heartbeat not stale, lag bound, role, initial catch-up); W4 makes it the only input to isPassiveClientReady and to the node-reported state").isTrue();
+        // ReplicaReadiness lands in W3 but the flip is W4, so the type's presence must not make this pass: it always fails until the body is real.
+        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("ReplicaReadiness"),
+                                     "W3 ReplicaReadiness, flipped by W4",
+                                     "on an assembled worker, isPassiveClientReady() and the node-reported state are READY exactly when ReplicaReadiness.ready() holds, and nothing else sets them");
     }
 
     @SuppressWarnings("unchecked")

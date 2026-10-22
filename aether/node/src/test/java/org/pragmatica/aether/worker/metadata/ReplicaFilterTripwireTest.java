@@ -165,14 +165,15 @@ class ReplicaFilterTripwireTest {
 
     @Test
     void noReplicaFilterExistsToClassifyAKeyClass_today() {
-        assertThat(ReplicaSeam.typeExists(REPLICA_FILTER)).as("TW-O15: today a new AetherKey class is classified only by the exhaustive switch of the projection's scopesFor; W1 adds %s, then enable theFilterClassifiesEveryAetherKeyClass and delete this test", REPLICA_FILTER)
+        assertThat(ReplicaSeam.typeExists(REPLICA_FILTER)).as("TW-O15: W1 landed %s: enable theFilterClassifiesEveryAetherKeyClass with its reflection body, and delete this test", REPLICA_FILTER)
                                                .isFalse();
     }
 
-    @Disabled("W1 (ReplicaFilter): enable when ReplicaFilter exists; the exhaustive-switch property is then pinned by the compiler, this asserts the class is there and is not a stub")
+    @Disabled("W1 (ReplicaFilter): enable when ReplicaFilter exists and replace the body with the reflection test over AetherKey.class.getPermittedSubclasses()")
     @Test
     void theFilterClassifiesEveryAetherKeyClass() {
-        assertThat(ReplicaSeam.typeExists(REPLICA_FILTER)).as("ReplicaFilter is an exhaustive switch over the sealed AetherKey with no default, so a new key class fails to compile until it is classified")
-                                               .isTrue();
+        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists(REPLICA_FILTER),
+                                     "W1 ReplicaFilter",
+                                     "every concrete class in the AetherKey.class.getPermittedSubclasses() hierarchy is classified INCLUDE or EXCLUDE by ReplicaFilter (and the filter's switch has no default, so a new key class fails to compile)");
     }
 }

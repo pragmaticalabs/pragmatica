@@ -93,7 +93,8 @@ public final class OlderCheckpointCluster {
                        RabiaEngine<KVCommand<StringKey>> engine,
                        RecordingStore store,
                        MessageRouter.MutableRouter router,
-                       SeededPersistence persistence) {}
+                       SeededPersistence persistence,
+                       List<String> bootFutureHistoryEvents) {}
 
     /// Persistence that starts from a given saved state (the older checkpoint) and keeps whatever the engine saves afterwards.
     public static final class SeededPersistence implements RabiaPersistence<KVCommand<StringKey>> {
@@ -231,9 +232,13 @@ public final class OlderCheckpointCluster {
                                        false,
                                        persistence);
 
+        // The one detector the design names (section 8): the boot future-history check reports through this listener.
+        var bootFutureHistoryEvents = new CopyOnWriteArrayList<String>();
+
+        engine.onBootFutureHistory((persisted, cluster) -> bootFutureHistoryEvents.add("persisted " + persisted + " > cluster " + cluster));
         router.addRoute(ClusterStateNotification.class, engine::clusterState);
         routers.put(id, router);
-        nodes.put(id, new Node(id, engine, store, router, persistence));
+        nodes.put(id, new Node(id, engine, store, router, persistence, bootFutureHistoryEvents));
         network.addNode(id, handler(engine));
     }
 
