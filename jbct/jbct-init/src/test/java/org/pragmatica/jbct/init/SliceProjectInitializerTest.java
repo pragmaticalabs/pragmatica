@@ -166,6 +166,18 @@ class SliceProjectInitializerTest {
                   .isTrue();
     }
 
+    /// A blank explicit slice name is treated as absent: the name is derived from the artifact ID.
+    @Test
+    void initialize_blankSliceName_derivesNameFromArtifactId() {
+        var projectDir = tempDir.resolve("blank-name");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "my-slice", "  ", "1.0.0", "1.0.0", "1.0.0")
+                                            .flatMap(SliceProjectInitializer::initialize);
+        assertThat(result.isSuccess())
+                  .isTrue();
+        assertThat(projectDir.resolve("src/main/java/org/example/myslice/myslice/MySlice.java"))
+                  .exists();
+    }
+
     @Test
     void sliceProjectInitializer_blankGroupId_returnsFailure() {
         var projectDir = tempDir.resolve("test");

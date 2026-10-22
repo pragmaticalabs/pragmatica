@@ -108,6 +108,18 @@ class PersistenceAdderTest {
     }
 
     @Test
+    void persistenceAdder_package_defaultsUnderBasePackage_unlessOverridden() throws Exception {
+        var projectDir = setupProject();
+
+        assertThat(PersistenceAdder.persistenceAdder(projectDir).map(PersistenceAdder::persistencePackage).unwrap())
+                  .isEqualTo("com.example.myslice.persistence");
+        assertThat(PersistenceAdder.persistenceAdder(projectDir, "  ").map(PersistenceAdder::persistencePackage).unwrap())
+                  .isEqualTo("com.example.myslice.persistence");
+        assertThat(PersistenceAdder.persistenceAdder(projectDir, ".db").map(PersistenceAdder::persistencePackage).unwrap())
+                  .isEqualTo("com.example.myslice.db");
+    }
+
+    @Test
     void addPersistence_runTwice_changesThePomOnlyTheFirstTime() throws Exception {
         var projectDir = tempDir.resolve("slice-twice");
 
