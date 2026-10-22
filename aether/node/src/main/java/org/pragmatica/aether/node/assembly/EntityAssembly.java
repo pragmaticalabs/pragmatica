@@ -215,7 +215,7 @@ public sealed interface EntityAssembly {
                                                  entityOwnershipReconciler::onRegistrationRemoved));
         // #1302/#1330: every checkpoint tick reports this node's largest checkpoint lag — over partitions it
         // OWNS, measured from the committed checkpoint in KV — into the node metrics map, where the alert
-        // threshold path (DashboardMetricsPublisher -> AlertManager.checkThreshold) evaluates it.
+        // threshold path (AlertThresholdEvaluator -> AlertManager.checkThreshold) evaluates it.
         var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver(EntityCheckpointLagMetric.sinkFor(metricsCollector),
                                                                                    EntityCheckpointLagMetric.committedCheckpoints(kvStore));
         var entityTimerDriver = EntityTimerDriver.entityTimerDriver();
