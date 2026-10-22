@@ -170,8 +170,7 @@ public final class OlderCheckpointCluster {
                                        ProtocolConfig.testConfig(),
                                        ConsensusMetrics.noop(),
                                        false,
-                                       persistence,
-                                       timeSpan(50).millis());
+                                       persistence);
 
         router.addRoute(ClusterStateNotification.class, engine::clusterState);
         routers.put(id, router);
@@ -238,9 +237,14 @@ public final class OlderCheckpointCluster {
                .onFailure(cause -> {
                    throw new AssertionError("commit failed: " + cause);
                });
-        awaitCondition("every node applied the batch", () -> nodes.values().stream().allMatch(node -> node.store().applied().size() > before));
+        awaitCondition("every node applied the batch; applied counts " + appliedCounts(),
+                       () -> nodes.values().stream().allMatch(node -> node.store().applied().size() > before));
 
         return this;
+    }
+
+    private String appliedCounts() {
+        return nodes.values().stream().map(node -> node.id().id() + "=" + node.store().applied().size() + (node.engine().isActive() ? " active" : " inactive")).toList().toString();
     }
 
     /// Pauses every node (quorum loss: each engine saves its state), reads back each node's checkpoint, and resumes.
