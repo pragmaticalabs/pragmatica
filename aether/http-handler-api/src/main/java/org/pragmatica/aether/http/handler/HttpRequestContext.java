@@ -44,16 +44,6 @@ public record HttpRequestContext(String path,
         }
     }
 
-    public static Result<HttpRequestContext> httpRequestContext(Result<String> path,
-                                                                Result<String> method,
-                                                                Result<Map<String, List<String>>> queryParams,
-                                                                Result<Map<String, List<String>>> headers,
-                                                                Result<byte[]> body,
-                                                                Result<String> requestId,
-                                                                Result<SecurityContext> security) {
-        return Result.all(path, method, queryParams, headers, body, requestId, security).map(HttpRequestContext::httpRequestContext);
-    }
-
     public static HttpRequestContext httpRequestContext(String path,
                                                         String method,
                                                         Map<String, List<String>> queryParams,
