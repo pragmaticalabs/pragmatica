@@ -21,6 +21,7 @@ import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LegCommand.LegKind;
 import org.pragmatica.aether.deployment.wiring.RuntimeFixtures.FakeSliceStore;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceMethod;
@@ -599,5 +600,44 @@ class SliceLegBuildersGoldenTest {
         var adapterFailure = builders.legs(ARTIFACT, slice).fold(cause -> cause.message(), _ -> "no failure");
 
         assertThat(adapterFailure).as(PARITY + ": the FSM2 legs must refuse the tier conflict the legacy topic pass refuses").isEqualTo(legacyFailure);
+    }
+
+    /// Seeds a durable subscriber row of another slice on another node at the address the publisher resolves to.
+    private void seedConflictingDurableSubscriber(Slice publisher) throws Exception {
+        var row = (KVCommand.Put<?, ?>) legacyCommands("doPublishTopicSubscriptions", publisher).getFirst();
+        var address = ((TopicPublisherKey) row.key()).address();
+
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(TopicSubscriptionKey.topicSubscriptionKey(address,
+                                                                                                                              OTHER_PUBLISHER,
+                                                                                                                              MethodName.methodName("onMessage").unwrap(),
+                                                                                                                              OTHER_NODE),
+                                                                                    TopicSubscriptionValue.topicSubscriptionValue(OTHER_NODE, TopicTier.DURABLE)))));
+    }
+
+    /// CUTOVER-BLOCKER tripwire (#1337, the other order): with a durable subscriber row standing, the legacy topic pass refuses an ephemeral
+    /// publisher; the FSM2 legs build anyway.
+    @Test
+    void tripwire_fsm2DoesNotRefuseAnEphemeralPublisher_whereLegacyDoes() throws Exception {
+        var slice = new PublisherOnlySlice();
+
+        seedConflictingDurableSubscriber(slice);
+        var legacyFailure = legacyPublish("doPublishTopicSubscriptions", slice).await().fold(cause -> cause.message(), _ -> "no failure");
+        var adapterFailure = builders.legs(ARTIFACT, slice).fold(cause -> cause.message(), _ -> "no failure");
+
+        assertThat(legacyFailure).as("the legacy topic pass refused the conflict, so the tripwire is not vacuous").contains("published on the EPHEMERAL tier");
+        assertThat(adapterFailure).as(PARITY + ": FSM2 now refuses an ephemeral publisher; enable parity_fsm2RefusesAnEphemeralPublisher_likeLegacy and delete this tripwire")
+                                  .isEqualTo("no failure");
+    }
+
+    @Disabled(PARITY)
+    @Test
+    void parity_fsm2RefusesAnEphemeralPublisher_likeLegacy() throws Exception {
+        var slice = new PublisherOnlySlice();
+
+        seedConflictingDurableSubscriber(slice);
+        var legacyFailure = legacyPublish("doPublishTopicSubscriptions", slice).await().fold(cause -> cause.message(), _ -> "no failure");
+        var adapterFailure = builders.legs(ARTIFACT, slice).fold(cause -> cause.message(), _ -> "no failure");
+
+        assertThat(adapterFailure).as(PARITY + ": the FSM2 legs must refuse the ephemeral publisher the legacy topic pass refuses").isEqualTo(legacyFailure);
     }
 }
