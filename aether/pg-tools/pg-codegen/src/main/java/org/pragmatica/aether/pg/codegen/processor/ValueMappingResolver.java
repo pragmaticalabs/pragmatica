@@ -30,18 +30,21 @@ public final class ValueMappingResolver {
 
     /// The `P` (primitive column) side of a discovered `ValueMapping<Vo, P>`, plus the value
     /// object's simple name used to reference `Vo.valueMapping()` in generated code.
-    public record Binding(String voSimpleName, String pTypeName) {
+    public record Binding(String voSimpleName, String pTypeName) implements ColumnRepr {
         /// Bind expression: lower the value object to its column value (total, cannot fail).
+        @Override
         public String lowerExpr(String valueExpr) {
             return voSimpleName + ".valueMapping().lower().apply(" + valueExpr + ")";
         }
 
         /// The `lift` function reference used inside a row decode's `flatMap`.
+        @Override
         public String liftExpr() {
             return voSimpleName + ".valueMapping().lift()";
         }
 
         /// Row accessor (method + class-literal type argument) for reading `P` from a row.
+        @Override
         public JavaTypeAccessor.AccessorInfo pAccessor() {
             return JavaTypeAccessor.forField(pTypeName);
         }

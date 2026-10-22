@@ -6,6 +6,7 @@ package org.pragmatica.aether.pg.codegen.processor;
 
 import org.pragmatica.aether.pg.codegen.NamingConvention;
 import org.pragmatica.aether.pg.codegen.TypeMapper;
+import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
 import org.pragmatica.aether.pg.codegen.annotation.Query;
 import org.pragmatica.aether.pg.codegen.annotation.Table;
 import org.pragmatica.aether.pg.parser.PostgresParser;
@@ -33,6 +34,7 @@ import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
+import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -82,6 +84,11 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private final Set<String> migrationsLinted = new java.util.HashSet<>();
     private final PostgresParser sqlParser = PostgresParser.create();
     private final Map<String, Result<CstNode>> sqlParseCache = new HashMap<>();
+    /// The `@Jsonb` codecs of the interface being processed.
+    private JsonbCodecs jsonbCodecs;
+    /// A failure already reported to the messager.
+    private static final org.pragmatica.lang.Cause REPORTED = org.pragmatica.lang.utils.Causes.cause("reported");
+    private static final String OPTION_TYPE = "org.pragmatica.lang.Option";
 
     @Override public synchronized void init(ProcessingEnvironment processingEnv) {
         super.init(processingEnv);
@@ -167,9 +174,17 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         note("No schema available for validation; generating factory without validation", interfaceElement);}
         runMigrationLintOnce(configPath);
         note("Generating " + interfaceName + "Factory", interfaceElement);
+        jsonbCodecs = new JsonbCodecs(processingEnv, packageName, interfaceName);
         var methods = analyzeMethods(interfaceElement, schemaOpt);
+        jsonbCodecs.write(interfaceElement)
+                   .onFailure(cause -> error(cause.message(), interfaceElement));
         var additionalImports = collectImports(interfaceElement, methods);
-        var source = FactoryGenerator.generate(packageName, interfaceName, methods, additionalImports);
+        var source = FactoryGenerator.generate(packageName,
+                                               interfaceName,
+                                               methods,
+                                               additionalImports,
+                                               jsonbCodecs.fields(),
+                                               jsonbCodecs.holderName());
         writeSourceFile(packageName.isEmpty()
                         ? interfaceName + "Factory"
                         : packageName + "." + interfaceName + "Factory",
@@ -204,15 +219,33 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var queryAnnotation = execElement.getAnnotation(Query.class);
         if ( queryAnnotation != null) {
         return analyzeQueryMethod(execElement, methodName, resolved, queryAnnotation, schemaOpt);}
+        if (isMarked(execElement)) {
+            error(ProcessorError.jsonbMethodNeedsQuery(methodName), execElement);
+            return null;
+        }
         return analyzeCrudMethod(execElement, methodName, resolved, schemaOpt, interfaceElement);
     }
 
     private FactoryGenerator.MethodInfo analyzeQueryMethod(
     ExecutableElement execElement,
     String methodName,
-    TypeMirrorResolver.ResolvedReturn resolved,
+    TypeMirrorResolver.ResolvedReturn declared,
     Query queryAnnotation,
     Option<Schema> schemaOpt) {
+        var document = documentReturn(execElement, methodName, declared);
+        if (document.isFailure()) {
+            return null;
+        }
+        var documentRepr = document.expect("checked with isFailure above");
+        // A document method reads one column, so it has no row record to map or check against the SELECT list.
+        var resolved = documentRepr.isPresent()
+                       ? new TypeMirrorResolver.ResolvedReturn(declared.kind(),
+                                                               declared.innerTypeName(),
+                                                               declared.simpleTypeName(),
+                                                               false,
+                                                               Option.empty(),
+                                                               declared.rawInnerTypeName())
+                       : declared;
         if (!validateMapperShape(execElement, methodName, resolved)) {
             return null;
         }
@@ -240,6 +273,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
+        var documentColumn = documentRepr.map(repr -> documentColumn(repr, rewritten.sql(), resolved.kind()));
         var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
         // #648: the generated method OVERRIDES the interface method, so its signature is the
         // declaration order, always. Only the bind list follows placeholder order — it is emitted by
@@ -256,7 +290,52 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                bodyParams,
                                                mapperColumns,
                                                resolved.needsMapper(),
-                                               resolved.scalarAccessor());
+                                               resolved.scalarAccessor(),
+                                               documentColumn);
+    }
+
+    /// The document handling of a `@Jsonb` method's result: empty for an unmarked method, a failure (already
+    /// reported) when the return type cannot be a document.
+    private Result<Option<ColumnRepr>> documentReturn(ExecutableElement execElement,
+                                                      String methodName,
+                                                      TypeMirrorResolver.ResolvedReturn resolved) {
+        if (!isMarked(execElement)) {
+            return Result.success(Option.empty());
+        }
+        var kind = resolved.kind();
+        if (kind != MethodAnalyzer.ReturnKind.SINGLE && kind != MethodAnalyzer.ReturnKind.OPTIONAL
+            && kind != MethodAnalyzer.ReturnKind.LIST) {
+            error(ProcessorError.jsonbMethodReturn(methodName), execElement);
+            return REPORTED.result();
+        }
+        var inner = documentType(execElement.getReturnType(), kind);
+        return jsonbCodecs.field(inner)
+                          .map(field -> Option.<ColumnRepr>some(new ColumnRepr.JsonDocument(field)))
+                          .onFailure(cause -> error(ProcessorError.jsonbUnsupportedType(methodName,
+                                                                                        inner.toString(),
+                                                                                        cause.message()),
+                                                    execElement))
+                          .mapError(_ -> REPORTED);
+    }
+
+    // `T` of `Promise<T>`, `Promise<Option<T>>` or `Promise<List<T>>`.
+    private static TypeMirror documentType(TypeMirror returnType, MethodAnalyzer.ReturnKind kind) {
+        var inner = ((DeclaredType) returnType).getTypeArguments().getFirst();
+        return kind == MethodAnalyzer.ReturnKind.SINGLE
+               ? inner
+               : ((DeclaredType) inner).getTypeArguments().getFirst();
+    }
+
+    private static FactoryGenerator.MapperColumn documentColumn(ColumnRepr repr,
+                                                                String sql,
+                                                                MethodAnalyzer.ReturnKind kind) {
+        var columnName = FactoryGenerator.inferScalarColumnName(sql, kind);
+        var accessor = repr.pAccessor();
+        return new FactoryGenerator.MapperColumn(columnName,
+                                                 accessor.method(),
+                                                 columnName,
+                                                 accessor.typeArg(),
+                                                 repr.liftExpr());
     }
 
     /// A positional `$n` placeholder (#1139).
@@ -356,6 +435,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                         ? recordExpansion.bodyParams()
                                         : params);
         validateCrudParamTypes(execElement, parsed, table, boundBody);
+        if (recordExpansion.hasExpansion()) {
+            validateJsonbComponents(execElement, table, recordParamElement(execElement));
+        }
+        if (resolved.needsMapper()) {
+            validateJsonbComponents(execElement, table, TypeMirrorResolver.innerTypeElement(execElement.getReturnType()));
+        }
         var selectColumns = resolveSelectColumns(execElement, resolved, table);
         var sqlOpt = MethodAnalyzer.generateCrudSql(parsed, table, selectColumns, inputFieldNames, resolved.kind());
         if ( sqlOpt.isEmpty()) {
@@ -380,7 +465,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                boundBody,
                                                mapperColumns,
                                                resolved.needsMapper(),
-                                               resolved.scalarAccessor());
+                                               resolved.scalarAccessor(),
+                                               Option.empty());
     }
 
     private FactoryGenerator.MethodInfo buildCrudMethodInfoWithoutSchema(
@@ -409,7 +495,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                boundBody,
                                                mapperColumns,
                                                resolved.needsMapper(),
-                                               resolved.scalarAccessor());
+                                               resolved.scalarAccessor(),
+                                               Option.empty());
     }
 
     private String generateCrudSqlWithoutSchema(
@@ -527,20 +614,75 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return FactoryGenerator.MapperColumn.plain(columnName, accessor.method(), field.name(), accessor.typeArg());
     }
 
-    // --- ValueMapping value-object column mapping ---
+    // --- Column representations: value objects, @Jsonb documents, Option<T> ---
 
-    private boolean hasValueMapping(VariableElement paramElement) {
-        return ValueMappingResolver.resolve(paramElement.asType()).isPresent();
+    /// Whether the param is bound as one column value rather than expanded into its record components.
+    private boolean isBoundWhole(VariableElement paramElement) {
+        return isMarked(paramElement) || ValueMappingResolver.resolve(paramElement.asType()).isPresent();
+    }
+
+    private static boolean isMarked(Element element) {
+        return element.getAnnotation(Jsonb.class) != null;
     }
 
     private static boolean isScalarType(String typeName) {
         return JavaTypeAccessor.SCALARS.containsKey(typeName) || typeName.endsWith("[]");
     }
 
-    /// Validates and lowers value-object bind targets: emits a compile error for any target that
-    /// is neither a supported column type nor a value object with a discoverable ValueMapping, then
-    /// rewrites each value-object target to lower it to its column value (exposing the primitive
-    /// column type for schema validation and `vo.valueMapping().lower().apply(...)` for binding).
+    /// How `element` (a param or record component) crosses the column boundary when its type is not a plain column
+    /// type: a `@Jsonb` document, a value object's `ValueMapping`, or an `Option` of a column type or value object.
+    /// Empty when it is none of these.
+    private Option<ColumnRepr> reprFor(Element element, ExecutableElement site) {
+        var type = element.asType();
+        if (isMarked(element)) {
+            return Option.some(documentRepr(element, type, site));
+        }
+        var binding = ValueMappingResolver.resolve(type);
+        if (binding.isPresent()) {
+            return binding.map(ColumnRepr.class::cast);
+        }
+        return optionElement(type).flatMap(QueryAnnotationProcessor::nullableRepr);
+    }
+
+    // An unsupported document type is reported here; the placeholder keeps the generated source well-formed while the
+    // reported error fails the compilation.
+    private ColumnRepr documentRepr(Element element, TypeMirror type, ExecutableElement site) {
+        var optionElement = optionElement(type);
+        var documentType = optionElement.or(type);
+        var document = jsonbCodecs.field(documentType)
+                                  .onFailure(cause -> error(ProcessorError.jsonbUnsupportedType(element.getSimpleName()
+                                                                                                       .toString(),
+                                                                                                documentType.toString(),
+                                                                                                cause.message()),
+                                                            site))
+                                  .fold(_ -> new ColumnRepr.JsonDocument("null"), ColumnRepr.JsonDocument::new);
+        return optionElement.isPresent()
+               ? new ColumnRepr.Nullable(documentType.toString(), Option.some(document))
+               : document;
+    }
+
+    private static Option<ColumnRepr> nullableRepr(TypeMirror element) {
+        var elementName = element.toString();
+        if (isScalarType(elementName)) {
+            return Option.some(new ColumnRepr.Nullable(elementName, Option.empty()));
+        }
+        return ValueMappingResolver.resolve(element)
+                                   .map(binding -> new ColumnRepr.Nullable(elementName, Option.some(binding)));
+    }
+
+    // `T` of an `Option<T>` type.
+    private static Option<TypeMirror> optionElement(TypeMirror type) {
+        if (type instanceof DeclaredType declared && declared.getTypeArguments().size() == 1
+            && ((TypeElement) declared.asElement()).getQualifiedName().contentEquals(OPTION_TYPE)) {
+            return Option.some(declared.getTypeArguments().getFirst());
+        }
+        return Option.empty();
+    }
+
+    /// Validates and lowers bind targets: emits a compile error for any target that is neither a supported column
+    /// type nor one with a column representation (value object, `@Jsonb` document, `Option`), then rewrites each
+    /// represented target to lower it to its column value (exposing the column-side type for schema validation and
+    /// the lowering expression for binding).
     private List<FactoryGenerator.MethodParam> boundBodyParams(ExecutableElement execElement,
                                                                List<FactoryGenerator.MethodParam> rawBodyParams) {
         var reprs = collectBindReprs(execElement);
@@ -550,36 +692,37 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return applyBindReprs(rawBodyParams, reprs);
     }
 
-    /// Maps each bind target (a scalar/value-object method param, or a field of an expanded payload
-    /// record) to its ValueMapping binding when the target is a single-column value object.
-    private Map<String, ValueMappingResolver.Binding> collectBindReprs(ExecutableElement execElement) {
-        var reprs = new HashMap<String, ValueMappingResolver.Binding>();
+    /// Maps each bind target (a method param, or a component of an expanded payload record) to its column
+    /// representation when it has one.
+    private Map<String, ColumnRepr> collectBindReprs(ExecutableElement execElement) {
+        var reprs = new HashMap<String, ColumnRepr>();
 
         for (var param : execElement.getParameters()) {
-            var direct = ValueMappingResolver.resolve(param.asType());
+            var direct = reprFor(param, execElement);
 
             if (direct.isPresent()) {
                 reprs.put(param.getSimpleName().toString(), direct.expect("checked with isPresent above"));
             } else if (isRecordType(param)) {
-                collectRecordFieldReprs(param, reprs);
+                collectRecordFieldReprs(execElement, param, reprs);
             }
         }
 
         return reprs;
     }
 
-    private void collectRecordFieldReprs(VariableElement recordParam, Map<String, ValueMappingResolver.Binding> reprs) {
+    private void collectRecordFieldReprs(ExecutableElement execElement,
+                                         VariableElement recordParam,
+                                         Map<String, ColumnRepr> reprs) {
         for (var component : ((TypeElement) ((DeclaredType) recordParam.asType()).asElement()).getEnclosedElements()) {
             if (component.getKind() == ElementKind.RECORD_COMPONENT) {
-                ValueMappingResolver.resolve(component.asType())
-                              .onPresent(binding -> reprs.put(component.getSimpleName().toString(), binding));
+                reprFor(component, execElement).onPresent(repr -> reprs.put(component.getSimpleName().toString(), repr));
             }
         }
     }
 
     private void validateBindReprs(ExecutableElement execElement,
                                    List<FactoryGenerator.MethodParam> bodyParams,
-                                   Map<String, ValueMappingResolver.Binding> reprs) {
+                                   Map<String, ColumnRepr> reprs) {
         for (var param : bodyParams) {
             if (!reprs.containsKey(param.name()) && !isScalarType(param.typeName())) {
                 error(ProcessorError.missingValueMappingForParam(param.name(), param.typeName()), execElement);
@@ -588,25 +731,25 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     private static List<FactoryGenerator.MethodParam> applyBindReprs(List<FactoryGenerator.MethodParam> bodyParams,
-                                                                     Map<String, ValueMappingResolver.Binding> reprs) {
+                                                                     Map<String, ColumnRepr> reprs) {
         return reprs.isEmpty()
                ? bodyParams
                : bodyParams.stream().map(param -> loweredParam(param, reprs)).toList();
     }
 
     private static FactoryGenerator.MethodParam loweredParam(FactoryGenerator.MethodParam param,
-                                                             Map<String, ValueMappingResolver.Binding> reprs) {
-        var binding = reprs.get(param.name());
+                                                             Map<String, ColumnRepr> reprs) {
+        var repr = reprs.get(param.name());
 
-        return binding == null
+        return repr == null
                ? param
-               : new FactoryGenerator.MethodParam(param.name(), binding.pTypeName(), binding.lowerExpr(param.accessor()));
+               : new FactoryGenerator.MethodParam(param.name(), repr.pTypeName(), repr.lowerExpr(param.accessor()));
     }
 
-    /// Validates and lifts value-object decode targets: emits a compile error for any return-record
-    /// field that is neither a supported column type nor a value object with a discoverable ValueMapping,
-    /// then rewrites each value-object column to decode through the value object's `lift` (guarded
-    /// by a typed `RowDecode` cause).
+    /// Validates and lifts decode targets: emits a compile error for any return-record field that is neither a
+    /// supported column type nor one with a column representation, then rewrites each represented column to read
+    /// its column-side value and decode it (a value object's `lift` or a document's codec, guarded by a typed
+    /// `RowDecode` cause; an `Option` through the nullable read).
     private List<FactoryGenerator.MapperColumn> boundMapperColumns(ExecutableElement execElement,
                                                                    TypeMirrorResolver.ResolvedReturn resolved,
                                                                    List<FactoryGenerator.MapperColumn> rawColumns) {
@@ -621,8 +764,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return applyDecodeReprs(rawColumns, reprs);
     }
 
-    private Map<String, ValueMappingResolver.Binding> collectDecodeReprs(ExecutableElement execElement) {
-        var reprs = new HashMap<String, ValueMappingResolver.Binding>();
+    private Map<String, ColumnRepr> collectDecodeReprs(ExecutableElement execElement) {
+        var reprs = new HashMap<String, ColumnRepr>();
         var innerElement = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
 
         if (innerElement == null) {
@@ -631,8 +774,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
         for (var component : innerElement.getEnclosedElements()) {
             if (component.getKind() == ElementKind.RECORD_COMPONENT) {
-                ValueMappingResolver.resolve(component.asType())
-                              .onPresent(binding -> reprs.put(component.getSimpleName().toString(), binding));
+                reprFor(component, execElement).onPresent(repr -> reprs.put(component.getSimpleName().toString(), repr));
             }
         }
 
@@ -641,7 +783,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     private void validateDecodeReprs(ExecutableElement execElement,
                                      TypeMirrorResolver.ResolvedReturn resolved,
-                                     Map<String, ValueMappingResolver.Binding> reprs) {
+                                     Map<String, ColumnRepr> reprs) {
         var innerElement = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
 
         if (innerElement == null) {
@@ -663,23 +805,53 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     private static List<FactoryGenerator.MapperColumn> applyDecodeReprs(List<FactoryGenerator.MapperColumn> columns,
-                                                                        Map<String, ValueMappingResolver.Binding> reprs) {
+                                                                        Map<String, ColumnRepr> reprs) {
         return reprs.isEmpty()
                ? columns
                : columns.stream().map(col -> liftedColumn(col, reprs)).toList();
     }
 
     private static FactoryGenerator.MapperColumn liftedColumn(FactoryGenerator.MapperColumn col,
-                                                              Map<String, ValueMappingResolver.Binding> reprs) {
-        var binding = reprs.get(col.fieldName());
+                                                              Map<String, ColumnRepr> reprs) {
+        var repr = reprs.get(col.fieldName());
 
-        if (binding == null) {
+        if (repr == null) {
             return col;
         }
 
-        var accessor = binding.pAccessor();
+        var accessor = repr.pAccessor();
 
-        return col.withLift(accessor.method(), accessor.typeArg(), binding.liftExpr());
+        return col.withLift(accessor.method(), accessor.typeArg(), repr.liftExpr());
+    }
+
+    /// Every `@Jsonb` component of `record` whose column the table has must map to a json or jsonb column.
+    private void validateJsonbComponents(ExecutableElement execElement,
+                                         org.pragmatica.aether.pg.schema.model.Table table,
+                                         TypeElement record) {
+        if (record == null) {
+            return;
+        }
+        for (var component : record.getEnclosedElements()) {
+            if (component.getKind() != ElementKind.RECORD_COMPONENT || !isMarked(component)) {
+                continue;
+            }
+            var name = component.getSimpleName().toString();
+            var columnName = NamingConvention.toSnakeCase(name);
+            table.column(columnName)
+                 .map(column -> column.type())
+                 .filter(pgType -> !isJsonColumn(pgType))
+                 .onPresent(pgType -> error(ProcessorError.jsonbColumnMismatch(name, columnName, table.name(), pgType.name()),
+                                            execElement));
+        }
+    }
+
+    private static boolean isJsonColumn(PgType pgType) {
+        var name = canonicalPgTypeName(pgType);
+        return name.equals("json") || name.equals("jsonb");
+    }
+
+    private static TypeElement recordParamElement(ExecutableElement execElement) {
+        return (TypeElement) ((DeclaredType) execElement.getParameters().getFirst().asType()).asElement();
     }
 
 
@@ -737,7 +909,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if ( !isInsertOrSave(operation) || params.size() != 1) {
         return RecordExpansionResult.noExpansion(params);}
         var paramElement = execElement.getParameters().getFirst();
-        if ( !isRecordType(paramElement) || hasValueMapping(paramElement)) {
+        if ( !isRecordType(paramElement) || isBoundWhole(paramElement)) {
         return RecordExpansionResult.noExpansion(params);}
         var recordParamName = paramElement.getSimpleName().toString();
         var fields = extractRecordComponentFields(paramElement);
@@ -768,7 +940,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         for ( int paramIdx = 0; paramIdx < originalParams.size(); paramIdx++) {
             var param = originalParams.get(paramIdx);
             var paramElement = execElement.getParameters().get(paramIdx);
-            if ( !isRecordType(paramElement) || hasValueMapping(paramElement)) {
+            if ( !isRecordType(paramElement) || isBoundWhole(paramElement)) {
                 allParamNames.add(param.name());
                 bodyParams.add(param);
                 continue;
@@ -1028,6 +1200,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     String columnName,
     String tableName,
     PgType pgType) {
+        if (ColumnRepr.JSON_TEXT.equals(javaType)) {
+            if (!isJsonColumn(pgType)) {
+                error(ProcessorError.jsonbColumnMismatch(paramName, columnName, tableName, pgType.name()), execElement);
+            }
+            return;
+        }
         var mappedOpt = TypeMapper.map(pgType);
         if ( mappedOpt.isEmpty()) {
         return;}
@@ -1136,6 +1314,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                     for ( var field : extractRecordComponentFields(param)) {
                         addImportForQualifiedName(field.typeName(), imports);
                     }
+                    collectComponentTypeImports((TypeElement) ((DeclaredType) param.asType()).asElement(), imports);
                 }
             }
         }
@@ -1173,6 +1352,19 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         for ( var component : innerElement.getEnclosedElements()) {
             if ( component.getKind() == ElementKind.RECORD_COMPONENT) {
                 addImportForQualifiedName(component.asType().toString(), imports);
+            }
+        }
+        collectComponentTypeImports(innerElement, imports);
+    }
+
+    /// Imports the type arguments of a record's components, so an `Option<Vo>` component's
+    /// `Vo.valueMapping()` reference resolves.
+    private void collectComponentTypeImports(TypeElement record, Set<String> imports) {
+        for ( var component : record.getEnclosedElements()) {
+            if ( component.getKind() == ElementKind.RECORD_COMPONENT && component.asType() instanceof DeclaredType dt) {
+                for ( var arg : dt.getTypeArguments()) {
+                    collectTypeImports(arg, imports);
+                }
             }
         }
     }

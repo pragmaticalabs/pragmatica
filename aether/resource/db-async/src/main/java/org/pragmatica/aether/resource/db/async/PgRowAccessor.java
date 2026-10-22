@@ -5,6 +5,7 @@ package org.pragmatica.aether.resource.db.async;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper.RowAccessor;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.postgres.PgRow;
 
@@ -92,6 +93,17 @@ final class PgRowAccessor implements RowAccessor {
                                                                              "Column value was NULL"));
         } catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",
+                                                      e)
+                                         .result();
+        }
+    }
+
+    @Override
+    public <V> Result<Option<V>> getOptional(String column, Class<V> type) {
+        try {
+            return Result.success(option(row.get(column, type)));
+        } catch (Exception e) {
+            return DatabaseConnectorError.queryFailed("getOptional(" + column + ", " + type.getSimpleName() + ")",
                                                       e)
                                          .result();
         }

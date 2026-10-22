@@ -16,6 +16,8 @@ import org.pragmatica.lang.Option;
 
 
 public final class FactoryGenerator {
+    private static final String JSON_TYPE_CODEC = "org.pragmatica.serialization.json.JsonTypeCodec";
+
     private FactoryGenerator() {}
 
     public record MethodInfo(String methodName,
@@ -28,7 +30,8 @@ public final class FactoryGenerator {
                              List<MethodParam> params,
                              List<MapperColumn> mapperColumns,
                              boolean needsMapper,
-                             Option<JavaTypeAccessor.AccessorInfo> scalarAccessor) {}
+                             Option<JavaTypeAccessor.AccessorInfo> scalarAccessor,
+                             Option<MapperColumn> documentColumn) {}
 
     public record MethodParam(String name, String typeName, String accessor) {
         public static MethodParam simple(String name, String typeName) {
@@ -66,7 +69,9 @@ public final class FactoryGenerator {
     public static String generate(String packageName,
                                   String interfaceName,
                                   List<MethodInfo> methods,
-                                  Set<String> additionalImports) {
+                                  Set<String> additionalImports,
+                                  List<JsonbCodecs.CodecField> codecFields,
+                                  String codecHolderName) {
         var sb = new StringBuilder();
         var factoryClassName = interfaceName + "Factory";
         var factoryMethodName = NamingConvention.toFactoryMethodName(interfaceName);
@@ -78,6 +83,7 @@ public final class FactoryGenerator {
         appendMethodImplementations(sb, methods, factoryClassName);
         appendRecordClose(sb, factoryMethodName);
         appendMapperMethods(sb, methods, factoryClassName);
+        appendJsonCodecs(sb, codecFields, codecHolderName);
         appendClassEnd(sb);
 
         return sb.toString();
@@ -194,6 +200,9 @@ public final class FactoryGenerator {
         if (method.needsMapper) {
             sb.append(",\n                    ").append(factoryClassName).append("::map");
             sb.append(toMapperMethodSuffix(method.innerTypeName));
+        } else if (method.documentColumn().isPresent()) {
+            sb.append(",\n                    row -> ")
+              .append(columnExpr(method.documentColumn().expect("checked with isPresent above")));
         } else if (method.scalarAccessor().isPresent()) {
             appendGenericScalarMapper(sb, method);
         } else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {
@@ -267,7 +276,7 @@ public final class FactoryGenerator {
         }
     }
 
-    private static String inferScalarColumnName(String sql, MethodAnalyzer.ReturnKind kind) {
+    static String inferScalarColumnName(String sql, MethodAnalyzer.ReturnKind kind) {
         var returning = returningColumn(sql);
 
         if (returning.isPresent()) {
@@ -519,7 +528,28 @@ public final class FactoryGenerator {
 
     private static boolean hasValueObjectColumn(MethodInfo method) {
         return method.mapperColumns.stream()
-                                   .anyMatch(MapperColumn::hasLift);
+                                   .anyMatch(MapperColumn::hasLift) || method.documentColumn.filter(MapperColumn::hasLift)
+                                                                                           .isPresent();
+    }
+
+    /// One constant per `@Jsonb` type, taken from the generated codec holder by class. The holder's codec map is
+    /// keyed by exact class, so the cast is sound.
+    private static void appendJsonCodecs(StringBuilder sb, List<JsonbCodecs.CodecField> codecFields, String holderName) {
+        if (codecFields.isEmpty()) {
+            return;
+        }
+
+        sb.append('\n');
+        for (var field : codecFields) {
+            sb.append("    private static final ").append(JSON_TYPE_CODEC).append('<').append(field.typeName());
+            sb.append("> ").append(field.name()).append(" = jsonCodec(").append(field.typeName()).append(".class);\n");
+        }
+
+        sb.append("\n    @SuppressWarnings(\"unchecked\")\n");
+        sb.append("    private static <T> ").append(JSON_TYPE_CODEC).append("<T> jsonCodec(Class<T> type) {\n");
+        sb.append("        return (").append(JSON_TYPE_CODEC).append("<T>) ").append(holderName);
+        sb.append(".CODECS.get(type);\n");
+        sb.append("    }\n");
     }
 
     private static void appendClassEnd(StringBuilder sb) {
@@ -532,8 +562,16 @@ public final class FactoryGenerator {
                 sb.append(", ");
             }
 
-            sb.append(simplifyTypeName(params.get(i).typeName())).append(' ').append(params.get(i).name());
+            sb.append(signatureTypeName(params.get(i).typeName())).append(' ').append(params.get(i).name());
         }
+    }
+
+    // A generic type (`Option<java.lang.String>`) is emitted as its qualified form, which needs no import; the
+    // simple-name shortening below would cut it at its last dot.
+    private static String signatureTypeName(String typeName) {
+        return typeName.contains("<")
+               ? typeName
+               : simplifyTypeName(typeName);
     }
 
     private static String simplifyTypeName(String typeName) {

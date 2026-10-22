@@ -4,6 +4,8 @@
 package org.pragmatica.aether.resource.db;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
@@ -29,5 +31,14 @@ public sealed interface RowDecodeError extends Cause {
     /// Used by generated row mappers around a value-object column's `lift`.
     static <T> Result<T> guard(String column, Result<T> decoded) {
         return decoded.mapError(cause -> new RowDecode(column, cause));
+    }
+
+    /// Decodes a nullable column read: an empty `raw` (SQL NULL) stays empty and is never decoded; a present
+    /// value goes through `lift`, whose failure fails the decode. Used by generated row mappers for an
+    /// `Option<T>` component that needs a `lift` (a value object or a `@Jsonb` document).
+    static <P, T> Result<Option<T>> liftOptional(Option<P> raw, Fn1<Result<T>, P> lift) {
+        return raw.fold(() -> Result.success(Option.none()),
+                        present -> lift.apply(present)
+                                       .map(Option::some));
     }
 }
