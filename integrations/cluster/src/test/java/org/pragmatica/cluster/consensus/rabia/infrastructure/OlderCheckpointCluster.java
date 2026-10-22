@@ -306,11 +306,27 @@ public final class OlderCheckpointCluster {
         return nodes.values().stream().map(node -> node.id().id() + "=" + node.store().applied().size() + (node.engine().isActive() ? " active" : " inactive")).toList().toString();
     }
 
+    private boolean checkpointsDescribeTheFrontier() {
+        return nodes.values().stream().allMatch(node -> node.persistence().load().map(saved -> saved.lastCommittedPhase().value() == frontier(node)).or(false));
+    }
+
+    private static long frontier(Node node) {
+        var applied = node.store().applied();
+
+        return applied.isEmpty() ? 0 : applied.getLast().slot() + 1;
+    }
+
+    private String frontiers() {
+        return nodes.values().stream().map(node -> node.id().id() + " applied-frontier=" + frontier(node) + " saved=" + node.persistence().load().map(saved -> saved.lastCommittedPhase().value()).or(-1L)).toList().toString();
+    }
+
     /// Pauses every node (quorum loss: each engine saves its state), reads back each node's checkpoint, and resumes.
     /// The checkpoints are the states a crash at this moment would restart from.
     public Map<NodeId, SavedState<KVCommand<StringKey>>> pauseAndCheckpoint() {
         routers.values().forEach(router -> router.route(ClusterStateNotification.passive()));
         awaitCondition("every node paused", () -> nodes.values().stream().allMatch(node -> node.engine().isPaused()));
+        // The engine flips to Paused BEFORE it persists, so paused is not "saved": wait for the checkpoint to describe the applied frontier.
+        awaitCondition(() -> "every node persisted its pause-time checkpoint; frontiers " + frontiers(), this::checkpointsDescribeTheFrontier);
         var checkpoints = new LinkedHashMap<NodeId, SavedState<KVCommand<StringKey>>>();
 
         nodes.forEach((id, node) -> checkpoints.put(id, node.persistence().load().unwrap()));
