@@ -16,13 +16,19 @@
 
 package org.pragmatica.http.server;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongPredicate;
 
 import io.netty.buffer.Unpooled;
 import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
+import io.netty.handler.codec.http3.DefaultHttp3Headers;
+import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
+import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,8 +47,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// The counter is JVM-wide; this module runs every test class in a fresh JVM, one class at a time, so nothing else
 /// moves it here. Each test sends a 512 KiB body and asserts the counter returns to within [#SLACK] of its value
-/// before the request, well under the buffer's capacity. The stalled and torn-down cases first assert that the counter
-/// does see the server's buffer while the body is held, which shows the instrument can fail.
+/// before the request, well under the buffer's capacity. The over-limit, stalled and torn-down cases first assert that
+/// the counter does see the server's buffer while the body is held, which shows the instrument can fail.
+///
+/// Release is also pinned at its moment, not only eventually: a stream's teardown releases whatever is still held, so
+/// a dispatch or a rejection that skipped its own release would still pass a check made after the stream closed.
 class Http3BodyBufferReleaseTest {
     private static final int BODY = 512 * 1024;
     private static final int LIMIT = 768 * 1024;
@@ -50,6 +59,7 @@ class Http3BodyBufferReleaseTest {
     private static final long BUDGET_MS = 5_000;
 
     private final AtomicInteger dispatchedBodyBytes = new AtomicInteger(-1);
+    private final CompletableFuture<ResponseWriter> unanswered = new CompletableFuture<>();
     private Http3Server server;
     private int port;
     private long baseline;
@@ -68,7 +78,7 @@ class Http3BodyBufferReleaseTest {
                                                          .unwrap(),
                                     (request, writer) -> {
                                         dispatchedBodyBytes.set(request.body().length);
-                                        writer.ok("{}");
+                                        unanswered.complete(writer);
                                     })
                             .await(timeSpan(10).seconds())
                             .unwrap();
@@ -81,13 +91,53 @@ class Http3BodyBufferReleaseTest {
         server.stop().await(timeSpan(10).seconds());
     }
 
+    /// The handler answers only after the check: a slow handler (a forward to another node) must not keep the buffer
+    /// beside the body it was handed, and the stream is still open while it works.
     @Test
-    void dispatchedRequest_releasesItsBodyBuffer() throws Exception {
-        var answer = Http3TestClient.exchange(port, stream -> send(stream, BODY, true));
+    void dispatchedRequest_releasesItsBodyBuffer_beforeTheHandlerAnswers() throws Exception {
+        var answer = Http3TestClient.exchange(port, stream -> {
+            send(stream, BODY, true);
+
+            var writer = unanswered.get(5, TimeUnit.SECONDS);
+
+            assertReleased();
+            writer.ok("{}");
+        });
 
         assertThat(answer.status()).isEqualTo("200");
         assertThat(dispatchedBodyBytes.get()).as("control: the whole body was buffered and dispatched").isEqualTo(BODY);
-        assertReleased();
+    }
+
+    /// A rejection releases the buffer when it answers, not when the stream later closes. Over a real connection the
+    /// stream closes moments after the answer, too soon to tell the two apart, so this drives the handler in an
+    /// `EmbeddedChannel`, which stays open until the test closes it.
+    @Test
+    void rejection_releasesTheBodyBuffer_whileTheStreamIsStillOpen() {
+        var channel = new EmbeddedChannel(new Http3Server.Http3RequestHandler((_, writer) -> writer.ok("{}"),
+                                                                              LIMIT,
+                                                                              timeSpan(60).seconds(),
+                                                                              BodyRateLimit.bodyRateLimit(0,
+                                                                                                          BodyRateLimit.DEFAULT_GRACE,
+                                                                                                          BodyRateLimit.DEFAULT_WINDOW)));
+        var before = usedHeap();
+        var headers = new DefaultHttp3Headers();
+
+        headers.method("POST");
+        headers.path("/");
+        channel.writeInbound(new DefaultHttp3HeadersFrame(headers));
+        channel.writeInbound(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[BODY])));
+
+        assertThat(usedHeap() - before).as("control: the counter sees the held body").isGreaterThanOrEqualTo(BODY);
+
+        channel.writeInbound(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[LIMIT - BODY + 1])));
+
+        Object first = channel.readOutbound();
+
+        assertThat(first).isInstanceOf(Http3HeadersFrame.class);
+        assertThat(((Http3HeadersFrame) first).headers().status().toString()).isEqualTo("413");
+        assertThat(channel.isOpen()).as("control: the stream has not closed").isTrue();
+        assertThat(usedHeap() - before).as("released at the rejection").isLessThan(SLACK);
+        channel.finishAndReleaseAll();
     }
 
     @Test
