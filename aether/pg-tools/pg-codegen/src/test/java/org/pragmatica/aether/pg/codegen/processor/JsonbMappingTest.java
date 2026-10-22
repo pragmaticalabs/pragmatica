@@ -113,6 +113,105 @@ class JsonbMappingTest {
         }
 
         @Test
+        void optionValueObjectFromAnotherPackage_isImported() throws Exception {
+            var nick = """
+                package other;
+
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.Result;
+
+                public record Nick(String value) {
+                    public static Result<Nick> nick(String raw) { return Result.success(new Nick(raw)); }
+                    public static ValueMapping<Nick, String> valueMapping() { return ValueMapping.of(Nick::value, Nick::nick); }
+                }
+                """;
+            var repo = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record TagRow(long id, Option<other.Nick> nick) {}
+
+                @PgSql
+                public interface TagRepo {
+                    @Query("SELECT id, nick FROM documents WHERE id = :id")
+                    Promise<Option<TagRow>> find(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileAndCompileGenerated(java.util.List.of(new TestCompilationHelper.SourceEntry("other/Nick.java", nick),
+                                                                                            new TestCompilationHelper.SourceEntry("test/TagRepo.java", repo)),
+                                                                          tempDir);
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.TagRepoFactory")).contains("import other.Nick;");
+        }
+
+        @Test
+        void documentMethodAsOnlyLift_importsRowDecodeError_andCompiles() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface OnlyDocRepo {
+                    @Query("SELECT profile FROM documents WHERE id = :id")
+                    @Jsonb
+                    Promise<Profile> profileOf(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileAndCompileGenerated(source, "test/OnlyDocRepo.java", tempDir);
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.OnlyDocRepoFactory")).contains("import org.pragmatica.aether.resource.db.RowDecodeError;");
+        }
+
+        @Test
+        void sameSimpleNameInTwoPackages_getsDistinctCodecConstants() throws Exception {
+            var otherProfile = """
+                package other;
+
+                public record Profile(String nickname) {}
+                """;
+            var repo = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                record DocumentRow(long id, @Jsonb Profile profile, @Jsonb other.Profile legacy) {}
+
+                @PgSql
+                public interface TwinRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileAndCompileGenerated(java.util.List.of(new TestCompilationHelper.SourceEntry("other/Profile.java", otherProfile),
+                                                                                            new TestCompilationHelper.SourceEntry("test/TwinRepo.java", repo)),
+                                                                          tempDir);
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.TwinRepoFactory")).contains("PROFILE_JSON = jsonCodec(test.Profile.class)")
+                                                                      .contains("PROFILE_JSON2 = jsonCodec(other.Profile.class)")
+                                                                      .contains("text.decode(PROFILE_JSON2)");
+        }
+
+        @Test
         void unmarkedRepo_generatesNoJsonMachinery() throws Exception {
             var result = compile(OPTION_SCALAR_REPO, "test/NickRepo.java");
 
@@ -234,6 +333,33 @@ class JsonbMappingTest {
                                             .contains("JSON codec generator cannot handle")
                                             .contains("component action: neither a record nor an enum")
                                             .contains("ValueMapping<test.Task, JsonText>");
+        }
+
+        @Test
+        void markedTypeThatIsNoRecordOrEnum_isCompileError() throws Exception {
+            var source = """
+                package test;
+
+                import java.util.List;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface ListRepo {
+                    @Query("UPDATE documents SET profile = :profiles WHERE id = :id")
+                    Promise<Long> store(long id, @Jsonb List<Profile> profiles);
+                }
+                """;
+
+            var result = compile(source, "test/ListRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("@Jsonb target 'profiles'").contains("is not a record or enum type");
         }
 
         @Test
