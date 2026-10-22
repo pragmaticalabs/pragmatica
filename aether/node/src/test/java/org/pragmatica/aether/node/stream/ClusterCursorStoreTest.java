@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -682,6 +683,95 @@ class ClusterCursorStoreTest {
                     .describedAs("the retry is refused again, and now the mirror shows why")
                     .isEqualTo(Result.success(true));
             assertThat(coreCheckpoint()).describedAs("the retry bypassed nothing").isEqualTo(Option.some(10L));
+        }
+    }
+
+    /// TW-O11 of the worker-replica-feed design (W-OBS): the target design excludes the cursor checkpoints from a worker's replica,
+    /// so a worker's committed-state mirror NEVER shows its own checkpoint. `WorkerMirrorLag` above models a mirror that is one decision
+    /// behind; this models one that holds the assignment and will never hold the cursor. Today the verdict compares the committed cursor
+    /// read back from that mirror, so a forwarded commit the core admitted is `LocalOnly` forever, however often it is retried.
+    @Nested
+    class WorkerMirrorWithoutCursors {
+        private KVStore<AetherKey, AetherValue> core;
+        private KVStore<AetherKey, AetherValue> mirror;
+
+        @BeforeEach
+        void setUp() {
+            core = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            mirror = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            var assignment = assignment(SELF, EPOCH);
+
+            core.process(core.createBatch(List.of(assignment)));
+            mirror.process(mirror.createBatch(List.of(assignment)));
+        }
+
+        private ConsumerCursorStore worker() {
+            return ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                         SELF,
+                                                         key -> mirror.getTyped(key, StreamCursorCheckpointValue.class),
+                                                         assignmentsIn(mirror),
+                                                         this::applyOnCoreAndTheMirrorWithoutCursors,
+                                                         () -> true);
+        }
+
+        /// The core applies everything; the mirror applies everything except a cursor checkpoint, the key class the replica excludes.
+        private Promise<Unit> applyOnCoreAndTheMirrorWithoutCursors(List<KVCommand<AetherKey>> commands) {
+            core.process(core.createBatch(commands));
+            mirror.process(mirror.createBatch(commands.stream().filter(command -> !excludedFromTheReplica(command)).toList()));
+
+            return Promise.unitPromise();
+        }
+
+        private static boolean excludedFromTheReplica(KVCommand<AetherKey> command) {
+            return command instanceof KVCommand.Put<AetherKey, ?> put && put.key() instanceof StreamCursorCheckpointKey;
+        }
+
+        private Option<Long> coreCheckpoint() {
+            return core.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class)
+                       .map(StreamCursorCheckpointValue::committedOffset);
+        }
+
+        @Test
+        void commit_onAWorkerWhoseMirrorNeverHoldsTheCursor_isLocalOnlyForever_today() {
+            var worker = worker();
+
+            var first = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var retry = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(coreCheckpoint()).describedAs("control: the authoritative applier ADMITTED the checkpoint").isEqualTo(Option.some(10L));
+            assertThat(first.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
+                    .describedAs("TW-O11: the verdict reads the mirror, which has no cursor, so an admitted commit is LocalOnly; got %s", first)
+                    .isEqualTo(Result.success(true));
+            assertThat(retry.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
+                    .describedAs("and the retry cannot change it: this mirror never catches up")
+                    .isEqualTo(Result.success(true));
+        }
+
+        /// Control for the test above: the identical fixture with a mirror that does receive the cursor is `Persisted`, so the
+        /// `LocalOnly` above is the missing cursor and nothing else.
+        @Test
+        void commit_onAWorkerWhoseMirrorHoldsTheCursor_isPersisted() {
+            var holding = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                                SELF,
+                                                                key -> core.getTyped(key, StreamCursorCheckpointValue.class),
+                                                                assignmentsIn(mirror),
+                                                                commands -> {
+                                                                    core.process(core.createBatch(commands));
+
+                                                                    return Promise.unitPromise();
+                                                                },
+                                                                () -> true);
+
+            assertThat(holding.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await()).isEqualTo(Result.success(CommitOutcome.persisted()));
+        }
+
+        @Disabled("W6 (cursor reads on forwarding nodes): enable when a forwarding node's verdict comes from its own forwarded batch results ([Put, Get, Get]) instead of a mirror; the fixture's command writer then returns those results")
+        @Test
+        void commit_onAForwardingNode_isPersistedFromTheBatchResult_withNoMirror() {
+            var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(outcome).describedAs("the core admitted the checkpoint and the forwarded batch's ordered results prove it, so the commit is Persisted without any mirror; got %s", outcome)
+                               .isEqualTo(Result.success(CommitOutcome.persisted()));
         }
     }
 
