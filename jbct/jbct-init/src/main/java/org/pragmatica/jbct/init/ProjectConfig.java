@@ -5,7 +5,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 
@@ -74,15 +76,16 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
     /// Starts with "." = relative (e.g., ".shared.resource" -> basePackage + ".shared.resource").
     /// Otherwise treated as absolute package name.
     public String resolvePackage(String packageSpec) {
-        if (packageSpec == null || packageSpec.isBlank()) {
-            return basePackage + ".shared.resource";
-        }
+        return Option.option(packageSpec)
+                     .filter(Verify.Is::notBlank)
+                     .map(this::qualifyPackage)
+                     .or(() -> basePackage + ".shared.resource");
+    }
 
-        if (packageSpec.startsWith(".")) {
-            return basePackage + packageSpec;
-        }
-
-        return packageSpec;
+    private String qualifyPackage(String packageSpec) {
+        return packageSpec.startsWith(".")
+               ? basePackage + packageSpec
+               : packageSpec;
     }
 
     private record PomProperties(String groupId, String artifactId) {}
