@@ -538,7 +538,7 @@ public final class MembershipFsm {
     /// per-member monitor is released (still serialised per member by
     /// [`MemberTracking#transitionGuard`], and still while that member's state is exactly what the
     /// record names) — it may therefore read the member map without deadlocking, which is what
-    /// `AetherNode.derivedMemberCount` does on the Member-boundary edge. Cheap and non-blocking
+    /// `MembershipAssembly.derivedMemberCount` does on the Member-boundary edge. Cheap and non-blocking
     /// is still the right shape: a slow listener stalls every further transition of THAT member.
     /// Diagnostic-only; a `null` argument resets it to the no-op.
     @Contract
@@ -1596,7 +1596,7 @@ public final class MembershipFsm {
         /// **That lock order is true but it is NOT what earns the safety, and the distinction matters
         /// because the real invariant is the fragile one.** The fan-out still holds member X's guard
         /// while acquiring every OTHER member's monitor — that is exactly what
-        /// `AetherNode.derivedMemberCount` does. What makes that acyclic is that **the per-member
+        /// `MembershipAssembly.derivedMemberCount` does. What makes that acyclic is that **the per-member
         /// monitor is a LEAF: nothing acquired under it acquires anything else.** [`#applyEvent`]
         /// reaches only the pure state table ([`MembershipState`] contains no `synchronized`), the
         /// timer arm/cancel helpers, and a list append.

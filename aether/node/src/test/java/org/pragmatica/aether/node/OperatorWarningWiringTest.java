@@ -133,7 +133,7 @@ class OperatorWarningWiringTest {
     void assembly_evictsIdleThrottleKeysOncePerMinute() {
         var code = assemblyCode();
 
-        assertThat(code).containsOnlyOnce("periodicTasks.defer(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,OPERATOR_WARNING_EVICTION_INTERVAL,OPERATOR_WARNING_EVICTION_INTERVAL));");
+        assertThat(code).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,OPERATOR_WARNING_EVICTION_INTERVAL,OPERATOR_WARNING_EVICTION_INTERVAL));");
         assertThat(code).containsOnlyOnce("TimeSpanOPERATOR_WARNING_EVICTION_INTERVAL=TimeSpan.timeSpan(60).seconds();");
     }
 

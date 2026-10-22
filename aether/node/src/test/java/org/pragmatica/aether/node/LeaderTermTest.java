@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.node.assembly.ClusterBootstrapAssembly;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
@@ -106,12 +107,12 @@ class LeaderTermTest {
         var otherKey = ConsumerAssignmentKey.consumerAssignmentKey(STREAM, PARTITION, GROUP);
 
         commitLeader(NODE_A);
-        AetherNode.onLeaderKeyCommit(new KVStoreNotification.ValuePut<>(new KVCommand.Put<>(otherKey, "x"),
+        ClusterBootstrapAssembly.onLeaderKeyCommit(new KVStoreNotification.ValuePut<>(new KVCommand.Put<>(otherKey, "x"),
                                                                         Option.none()),
                                      term);
         assertThat(term.current()).as("a put on another key is not a leader commit").isEqualTo(termA);
 
-        AetherNode.onLeaderKeyCommit(new KVStoreNotification.ValuePut<>(new KVCommand.Put<>(LeaderKey.INSTANCE,
+        ClusterBootstrapAssembly.onLeaderKeyCommit(new KVStoreNotification.ValuePut<>(new KVCommand.Put<>(LeaderKey.INSTANCE,
                                                                                             LeaderValue.leaderValue(NODE_A,
                                                                                                                     viewSequence.get())),
                                                                         Option.none()),

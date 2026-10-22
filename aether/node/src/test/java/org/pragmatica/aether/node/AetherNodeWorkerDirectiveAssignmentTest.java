@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.config.WorkerConfig;
+import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -82,7 +83,7 @@ class AetherNodeWorkerDirectiveAssignmentTest {
         var put = new ValuePut<ActivationDirectiveKey, ActivationDirectiveValue>(new KVCommand.Put<>(new ActivationDirectiveKey(target), value),
                                                                                   Option.none());
 
-        AetherNode.handleActivationDirective(put,
+        WorkerHierarchyAssembly.handleActivationDirective(put,
                                              SELF,
                                              Mockito.mock(RabiaNode.class),
                                              Mockito.mock(SwitchableClusterNode.class),

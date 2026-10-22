@@ -172,7 +172,7 @@ public final class NodeReplacementWiring {
     }
 
     /// What is committed in the same transaction as an EXTERNAL replacement's record: the admission intent the operator-started node
-    /// is admitted by, a capacity reservation for its role (core admission and `AetherNode.workerAdmissionAllowed` both admit on
+    /// is admitted by, a capacity reservation for its role (core admission and `WorkerHierarchyAssembly.workerAdmissionAllowed` both admit on
     /// it; the same reservation the leader writes when it provisions a node itself), so there is no window with a pairing and no
     /// intent, or the reverse. A CTM replacement is admitted by its own provisioning reservation, so it commits the record alone.
     ///

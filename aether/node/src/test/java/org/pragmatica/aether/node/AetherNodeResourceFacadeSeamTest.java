@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.node.assembly.SliceRuntimeAssembly;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.config.ConfigService;
@@ -50,7 +51,7 @@ class AetherNodeResourceFacadeSeamTest {
 
     @AfterEach
     void tearDown() {
-        // Process-wide singletons set by AetherNode.createResourceProviderFacade.
+        // Process-wide singletons set by SliceRuntimeAssembly.createResourceProviderFacade.
         ConfigService.clear();
         ResourceProvider.clear();
     }
@@ -62,7 +63,7 @@ class AetherNodeResourceFacadeSeamTest {
                                                   .build();
         var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), configProvider, tempDir);
 
-        var method = AetherNode.class.getDeclaredMethod("createResourceProviderFacade", AetherNodeConfig.class);
+        var method = SliceRuntimeAssembly.class.getDeclaredMethod("createResourceProviderFacade", AetherNodeConfig.class);
 
         method.setAccessible(true);
 

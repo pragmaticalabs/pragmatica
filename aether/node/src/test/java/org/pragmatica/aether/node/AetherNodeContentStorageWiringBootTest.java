@@ -64,7 +64,7 @@ class AetherNodeContentStorageWiringBootTest {
                 .onFailure(cause -> {});
         }
 
-        // Process-wide singletons set by AetherNode.createResourceProviderFacade -- cleared so this
+        // Process-wide singletons set by SliceRuntimeAssembly.createResourceProviderFacade -- cleared so this
         // fixture never bleeds into another test class in the same surefire fork.
         ConfigService.clear();
         ResourceProvider.clear();
@@ -93,7 +93,7 @@ class AetherNodeContentStorageWiringBootTest {
                                    .isNotSameAs(artifactsInstance);
 
         var spi = ResourceProvider.instance()
-                                  .fold(() -> fail("AetherNode.createResourceProviderFacade installs the SPI provider as "
+                                  .fold(() -> fail("SliceRuntimeAssembly.createResourceProviderFacade installs the SPI provider as "
                                                    + "the process-wide ResourceProvider whenever a configProvider is "
                                                    + "present -- this config supplies one"),
                                         provider -> provider);

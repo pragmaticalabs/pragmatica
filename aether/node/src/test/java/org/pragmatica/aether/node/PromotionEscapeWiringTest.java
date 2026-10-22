@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.netty.buffer.ByteBuf;
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -43,7 +44,7 @@ import static org.awaitility.Awaitility.await;
 /// #2080 (T1d, wiring; F8): the helper takes the node's KV store and builds the committed-ISR reader itself, so no call site can hand it a
 /// different source. Replacing that reader by one that names nobody turns the first test red.
 ///
-/// #2080 (T1d, wiring): the node binds the replica promotion contest's escape through `AetherNode#bindPromotionAlarm` -- the code the
+/// #2080 (T1d, wiring): the node binds the replica promotion contest's escape through `StreamAssembly#bindPromotionAlarm` -- the code the
 /// production assembly calls. Driven end to end over a real backfill and registry: with the committed in-sync set naming this node the
 /// contest escapes a silent co-replica and the OPERATOR EVENT reaches the sink; with the record naming another node, or no record at
 /// all, it does not. Deleting either binding (the alarm or the in-sync reader) turns the first test red.
@@ -85,7 +86,7 @@ class PromotionEscapeWiringTest {
                                                            List::of,
                                                            CommittedStreamOwnerSource.none());
 
-        AetherNode.bindPromotionAlarm(backfill, sink, kvStoreHolding(record), BOUND);
+        StreamAssembly.bindPromotionAlarm(backfill, sink, kvStoreHolding(record), BOUND);
         // rounds 100 ms apart (closer than the 150 ms source wait, so each peer's silence is one observed run): the source wait arms, the
         // contest starts and sees the silent peer, and 150 ms later the escape bound is met
         for (var round = 0; round < 7; round++) {

@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// batch — bounding the reshuffle fan-out (the promise #265 makes good). This test proves, without a live
 /// cluster:
 ///   1. the moved partitions are applied as a SINGLE apply call carrying one Put per moved partition
-///      (observed via a recording applier — the same `Function` seam `AetherNode.driveStreamOwnership` uses);
+///      (observed via a recording applier — the same `Function` seam `StreamAssembly.driveStreamOwnership` uses);
 ///   2. that one batch, applied through a REAL [KVStore], delivers a per-entry `ValuePut` notification for
 ///      every command, so every moved partition's [OwnershipEpochHighWater] domain advances (Q4: a batch is
 ///      NOT collapsed into a single notification — [KVStore#process] routes one `ValuePut` per `Put`);

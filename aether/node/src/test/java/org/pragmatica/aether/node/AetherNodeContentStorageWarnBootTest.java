@@ -97,7 +97,7 @@ class AetherNodeContentStorageWarnBootTest {
                 .onFailure(cause -> {});
         }
 
-        // AetherNode.createResourceProviderFacade sets these as process-wide static singletons
+        // SliceRuntimeAssembly.createResourceProviderFacade sets these as process-wide static singletons
         // when a configProvider is present (required here to reach the SPI/content-storage branch
         // where the WARN fires) -- clear them so this test's fixture never bleeds into another test
         // class sharing the same surefire fork.

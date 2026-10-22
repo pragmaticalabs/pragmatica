@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
+import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -27,7 +28,7 @@ class RetirementIndexRestoreTest {
         Map<?, ?> snapshot = Map.of(LeaderKey.INSTANCE, leader,
             new AetherKey.CommunityPlacementOperationKey("community"), operation);
         var index = CommunityRetirementIndex.communityRetirementIndex();
-        AetherNode.restoreRetirementIndex(snapshot, index);
+        TopologyAssembly.restoreRetirementIndex(snapshot, index);
         assertThat(index.including(Set.of())).containsExactly(oldWorker);
     }
 }

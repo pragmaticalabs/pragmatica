@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.environment.*;
+import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodePlacementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -25,7 +26,7 @@ class AetherNodeSourceRoutingTest {
 
     @Test
     void committedPlacementTakesPrecedenceOverMemberLabelsAndUnknownIsRefused() {
-        assertThat(AetherNode.computeSource(NODE,
+        assertThat(TopologyAssembly.computeSource(NODE,
                                             _ -> Option.some(new NodePlacementValue("west",
                                                                                     Option.none(),
                                                                                     "instance")),
@@ -34,15 +35,15 @@ class AetherNodeSourceRoutingTest {
                                                                                   "east")))
                              .unwrap()
                              .value()).isEqualTo("west");
-        assertThat(AetherNode.computeSource(NODE,
+        assertThat(TopologyAssembly.computeSource(NODE,
                                             _ -> Option.none(),
                                             _ -> Option.some(new MemberDescriptor(Option.none(),
                                                                                   "core",
                                                                                   "east")))
                              .unwrap()
                              .value()).isEqualTo("east");
-        assertThat(AetherNode.computeSource(NODE, _ -> Option.none(), _ -> Option.none()).isFailure()).isTrue();
-        assertThat(AetherNode.computeSource(NODE,
+        assertThat(TopologyAssembly.computeSource(NODE, _ -> Option.none(), _ -> Option.none()).isFailure()).isTrue();
+        assertThat(TopologyAssembly.computeSource(NODE,
                                             _ -> Option.none(),
                                             _ -> Option.some(new MemberDescriptor(Option.none(),
                                                                                   "",
@@ -53,7 +54,7 @@ class AetherNodeSourceRoutingTest {
     @Test
     void explicitLocalEnvironmentCanProvisionBeforeConfigButGenericComputeCannot() {
         var local = new RecordingCompute();
-        var localManager = AetherNode.sourceLifecycleManager(Option.some(EnvironmentIntegration.withLocalCompute(local)), Option.none(),
+        var localManager = TopologyAssembly.sourceLifecycleManager(Option.some(EnvironmentIntegration.withLocalCompute(local)), Option.none(),
                                                              Option.none(),
                                                              Option.none(),
                                                              Option::none,
@@ -63,7 +64,7 @@ class AetherNodeSourceRoutingTest {
         assertThat(localManager.provisionNode(spec()).await().isSuccess()).isTrue();
         assertThat(local.creates).isEqualTo(1);
         var unbound = new RecordingCompute();
-        var cloudManager = AetherNode.sourceLifecycleManager(Option.some(EnvironmentIntegration.withCompute(unbound)), Option.none(),
+        var cloudManager = TopologyAssembly.sourceLifecycleManager(Option.some(EnvironmentIntegration.withCompute(unbound)), Option.none(),
                                                              Option.none(),
                                                              Option.none(),
                                                              Option::none,

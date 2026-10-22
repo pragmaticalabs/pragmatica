@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -17,7 +18,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// `AetherNode.routeConnectionEstablished`: what a QUIC `ConnectionEstablished` feeds to the membership FSM and to
+/// `MembershipAssembly.routeConnectionEstablished`: what a QUIC `ConnectionEstablished` feeds to the membership FSM and to
 /// the SWIM health detector. Two obligations, one per sink: the Hello's role reaches the FSM descriptor
 /// whenever the transport attached it, and the SWIM feed keeps its established source order (the topology's own
 /// `NodeInfo` first, the Hello's only for a peer topology does not know, the bare id otherwise).
@@ -70,7 +71,7 @@ class AetherNodeConnectionRoutingTest {
     }
 
     private void route(ConnectionEstablished connection, Option<NodeInfo> topologyView) {
-        AetherNode.routeConnectionEstablished(connection, _ -> topologyView, descriptor::add, swimInfo::add, swimId::add);
+        MembershipAssembly.routeConnectionEstablished(connection, _ -> topologyView, descriptor::add, swimInfo::add, swimId::add);
     }
 
     private static NodeInfo info(String host, Map<String, String> labels) {

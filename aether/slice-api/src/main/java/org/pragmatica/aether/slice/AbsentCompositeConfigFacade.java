@@ -27,7 +27,7 @@ import org.pragmatica.lang.utils.Causes;
 /// The composite is absent in FOUR load-time conditions, and the wording is true in every one of
 /// them — the first draft named only the first and was wrong in the other three (review S1):
 ///
-///   - the node runs without a configuration provider (`AetherNode.createResourceProviderFacade`);
+///   - the node runs without a configuration provider (`SliceRuntimeAssembly.createResourceProviderFacade`);
 ///   - the node has one but node.toml secret resolution failed at boot (same method, second arm);
 ///   - the slice's `META-INF/resources.toml` failed to parse (`SliceStore#parseToFlatMap`);
 ///   - one of that file's `${secrets:...}` placeholders failed to resolve

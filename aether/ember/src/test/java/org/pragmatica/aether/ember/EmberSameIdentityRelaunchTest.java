@@ -311,7 +311,7 @@ class EmberSameIdentityRelaunchTest {
         assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
         // The survivor must have registered the original's death before the same NodeId reappears. Its record is demoted by the
         // organic close of the original's QUIC link; a relaunch that connects first supersedes that link, and the retirement that
-        // follows is a death-path removal, which by design feeds the membership FSM nothing (AetherNode.connectivityWiring), so
+        // follows is a death-path removal, which by design feeds the membership FSM nothing (MembershipAssembly.connectivityWiring), so
         // the record can stay MEMBER for good. That race is a separate product defect, not this test's subject.
         awaitDemoted(survivor, killedId, HEAL_BOUND_MS);
         if (sameAddress) {

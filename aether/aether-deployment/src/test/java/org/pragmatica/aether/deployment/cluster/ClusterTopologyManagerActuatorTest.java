@@ -1247,7 +1247,7 @@ class ClusterTopologyManagerActuatorTest {
 
     /// The same grace path over REAL producers: a boot-seeded [MembershipFsm] whose DRAIN routing mirrors
     /// `DrainAssembly.requestDrainThroughFsm`, read through its counted and tracked projections as
-    /// `AetherNode.drainGraceLiveness` reads them, and a synchronous `MembershipDeltaProjector` feeding
+    /// `TopologyAssembly.drainGraceLiveness` reads them, and a synchronous `MembershipDeltaProjector` feeding
     /// `onMembershipDecision`. Raw SWIM liveness is the `swimAliveNodes` field, since no SWIM detector runs
     /// here. The FSM's own DEPARTING timeout (#1054) is set to an hour, so it cannot reap inside a test and mask
     /// what the backstop did.
@@ -1412,7 +1412,7 @@ class ClusterTopologyManagerActuatorTest {
         }
     }
 
-    /// The evidence as `AetherNode.drainGraceLiveness` builds it over a real FSM; raw SWIM and transport come
+    /// The evidence as `TopologyAssembly.drainGraceLiveness` builds it over a real FSM; raw SWIM and transport come
     /// from the stub fields.
     private MembershipLiveness realMembershipLiveness(MembershipFsm membershipFsm) {
         return MembershipLiveness.membershipLiveness(membershipFsm::coreCountedMembers,

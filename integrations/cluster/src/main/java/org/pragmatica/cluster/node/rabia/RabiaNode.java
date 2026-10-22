@@ -630,7 +630,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
         // R5: transport never mutates topology projection. ConnectionFailed/Established
         // are forwarded to SWIM via QuicClusterNetwork's peer-state listener
-        // (AetherNode.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
+        // (MembershipAssembly.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
         // The router routes are retained only to satisfy sealed-hierarchy coverage.
         route(ConnectionFailed.class,
               _ -> {}),
