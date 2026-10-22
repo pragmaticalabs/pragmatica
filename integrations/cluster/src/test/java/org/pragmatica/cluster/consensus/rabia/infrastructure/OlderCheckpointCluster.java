@@ -71,6 +71,12 @@ public final class OlderCheckpointCluster {
     /// A `KVStore` that records every committed batch. Recording at `processCommitted` is the position the real ring appends at.
     public static final class RecordingStore extends KVStore<StringKey, String> {
         private final List<Applied> applied = new CopyOnWriteArrayList<>();
+        private volatile Consumer<Applied> afterCommit = _ -> {};
+
+        /// Called from inside `processCommitted`, after the batch is recorded: the position a ring appends at.
+        public void onCommitted(Consumer<Applied> listener) {
+            afterCommit = listener;
+        }
 
         RecordingStore(MessageRouter router, SliceCodec codec) {
             super(router, codec, codec);
@@ -78,9 +84,14 @@ public final class OlderCheckpointCluster {
 
         @Override
         public <R> List<R> processCommitted(Batch<KVCommand<StringKey>> batch, long nextSlot) {
-            applied.add(new Applied(nextSlot - 1, batch.id().toString(), batch.commands()));
+            var entry = new Applied(nextSlot - 1, batch.id().toString(), batch.commands());
 
-            return super.processCommitted(batch, nextSlot);
+            applied.add(entry);
+            var results = super.<R>processCommitted(batch, nextSlot);
+
+            afterCommit.accept(entry);
+
+            return results;
         }
 
         public List<Applied> applied() {
