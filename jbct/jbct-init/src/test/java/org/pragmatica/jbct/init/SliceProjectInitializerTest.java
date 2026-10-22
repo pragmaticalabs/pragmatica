@@ -166,6 +166,15 @@ class SliceProjectInitializerTest {
                   .isTrue();
     }
 
+    @Test
+    void sliceProjectInitializer_blankArtifactId_returnsFailure() {
+        var projectDir = tempDir.resolve("blank-artifact");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "  ", null, "1.0.0", "1.0.0", "1.0.0");
+        assertThat(result.isFailure())
+                  .isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).isEqualTo("artifactId must not be null or empty"));
+    }
+
     /// A blank explicit slice name is treated as absent: the name is derived from the artifact ID.
     @Test
     void initialize_blankSliceName_derivesNameFromArtifactId() {
