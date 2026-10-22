@@ -20,6 +20,18 @@ class EmberConfigForgePortTest {
         assertThat(EmberConfig.loadFromString("[cluster]\nforge_port = 8988\n").unwrap().forgePort()).isEqualTo(8988);
     }
 
+    /// The invalid LB port is a backstop: were `withForgePort` to drop its value, validation would stop on `lb_port`
+    /// instead, so neither outcome starts a cluster.
+    @Test
+    void ember_withForgePort_isTheForgePortThatIsValidated() {
+        Ember.cluster(1)
+             .withForgePort(0)
+             .withLb(0)
+             .start()
+             .onSuccess(instance -> fail("forge port 0 must refuse the start, started " + instance))
+             .onFailure(cause -> assertThat(cause.message()).contains("forge_port"));
+    }
+
     @Test
     void loadFromString_forgePortAbsent_defaultsTo8888() {
         assertThat(EmberConfig.loadFromString("[cluster]\nnodes = 3\n").unwrap().forgePort()).isEqualTo(8888);
