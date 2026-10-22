@@ -69,7 +69,8 @@ public sealed interface JavaTypeAccessor {
                                                       Map.entry("java.time.Duration",
                                                                 AccessorInfo.object("java.time.Duration")),
                                                       Map.entry("java.util.UUID", AccessorInfo.object("java.util.UUID")),
-                                                      Map.entry(ColumnRepr.JSON_TEXT, AccessorInfo.object(ColumnRepr.JSON_TEXT)));
+                                                      Map.entry(ColumnRepr.JSON_TEXT,
+                                                                AccessorInfo.object(ColumnRepr.JSON_TEXT)));
 
     static AccessorInfo forField(String javaTypeName) {
         if (javaTypeName.endsWith("[]") && !javaTypeName.equals("byte[]")) {

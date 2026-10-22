@@ -529,12 +529,14 @@ public final class FactoryGenerator {
     private static boolean hasValueObjectColumn(MethodInfo method) {
         return method.mapperColumns.stream()
                                    .anyMatch(MapperColumn::hasLift) || method.documentColumn.filter(MapperColumn::hasLift)
-                                                                                           .isPresent();
+                                                                                            .isPresent();
     }
 
     /// One constant per `@Jsonb` type, taken from the generated codec holder by class. The holder's codec map is
     /// keyed by exact class, so the cast is sound.
-    private static void appendJsonCodecs(StringBuilder sb, List<JsonbCodecs.CodecField> codecFields, String holderName) {
+    private static void appendJsonCodecs(StringBuilder sb,
+                                         List<JsonbCodecs.CodecField> codecFields,
+                                         String holderName) {
         if (codecFields.isEmpty()) {
             return;
         }

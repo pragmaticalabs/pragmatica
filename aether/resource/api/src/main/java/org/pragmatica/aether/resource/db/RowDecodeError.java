@@ -41,7 +41,8 @@ public sealed interface RowDecodeError extends Cause {
     /// `Option<T>` component that needs a `lift` (a value object or a `@Jsonb` document).
     static <P, T> Result<Option<T>> liftOptional(Option<P> raw, Fn1<Result<T>, P> lift) {
         return raw.map(lift)
-                  .fold(() -> success(none()), RowDecodeError::present);
+                  .fold(() -> success(none()),
+                        RowDecodeError::present);
     }
 
     private static <T> Result<Option<T>> present(Result<T> decoded) {

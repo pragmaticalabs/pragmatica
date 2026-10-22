@@ -43,10 +43,11 @@ final class JsonbCodecs {
 
     /// The factory constant holding the codec of `type`, or why `type` cannot be stored as a document.
     Result<String> field(TypeMirror type) {
-        if (!(type instanceof DeclaredType declared) || !(declared.asElement() instanceof TypeElement element)
-            || !isRecordOrEnum(element) || !declared.getTypeArguments().isEmpty()) {
+        if (! (type instanceof DeclaredType declared) || !(declared.asElement() instanceof TypeElement element) || !isRecordOrEnum(element) || !declared.getTypeArguments()
+                                                                                                                                                        .isEmpty()) {
             return cause(type + " is not a record or enum type").result();
         }
+
         var qualified = element.getQualifiedName().toString();
         var known = fields.get(qualified);
 
@@ -81,6 +82,7 @@ final class JsonbCodecs {
         for (var n = 2; !fieldNames.add(name); n++) {
             name = base + n;
         }
+
         fields.put(qualified, new CodecField(name, qualified));
 
         return name;

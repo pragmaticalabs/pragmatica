@@ -11,13 +11,10 @@ import org.pragmatica.lang.Option;
 public sealed interface ColumnRepr permits ValueMappingResolver.Binding, ColumnRepr.JsonDocument, ColumnRepr.Nullable {
     /// The qualified name of the `JsonText` column representation.
     String JSON_TEXT = "org.pragmatica.aether.resource.db.JsonText";
-
     /// The column-side type, the one checked against the schema.
     String pTypeName();
-
     /// Bind expression turning `valueExpr` into the column value.
     String lowerExpr(String valueExpr);
-
     /// Row read of the column-side value.
     JavaTypeAccessor.AccessorInfo pAccessor();
 
@@ -61,8 +58,7 @@ public sealed interface ColumnRepr permits ValueMappingResolver.Binding, ColumnR
 
         @Override
         public String lowerExpr(String valueExpr) {
-            var lowered = element.map(repr -> ".map(" + PRESENT + " -> " + repr.lowerExpr(PRESENT) + ")")
-                                 .or("");
+            var lowered = element.map(repr -> ".map(" + PRESENT + " -> " + repr.lowerExpr(PRESENT) + ")").or("");
 
             return valueExpr + lowered + ".toOptional().orElse(null)";
         }
