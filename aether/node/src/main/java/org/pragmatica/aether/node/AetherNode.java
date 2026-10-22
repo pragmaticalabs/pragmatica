@@ -56,8 +56,6 @@ import org.pragmatica.aether.deployment.cluster.UpgradeRunService;
 import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.backup.BackupPreflight;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
-import org.pragmatica.aether.node.backup.BackupWarning;
-import org.pragmatica.aether.node.backup.GitBackupRepository;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
@@ -108,7 +106,6 @@ import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.deployment.generation.BootstrapModule;
 import org.pragmatica.aether.deployment.generation.PresenceGenerationSnapshotSource;
-import org.pragmatica.aether.deployment.generation.SwimHintsRegistry;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.ClusterSyncScheduler;
@@ -147,7 +144,6 @@ import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -227,6 +223,7 @@ import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.node.assembly.EntityAssembly;
 import org.pragmatica.aether.node.assembly.DhtAssembly;
 import org.pragmatica.aether.node.assembly.ClusterSyncAssembly;
+import org.pragmatica.aether.node.assembly.ClusterBootstrapAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.Server;
@@ -247,7 +244,6 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -784,7 +780,7 @@ public interface AetherNode extends ManageableNode {
 
     /// `[backup]` enabled with a path — the one condition for the backup service, its restore source, and
     /// the restore gate on this node's submit path.
-    private static Option<BackupConfig> enabledBackup(AetherNodeConfig config) {
+    static Option<BackupConfig> enabledBackup(AetherNodeConfig config) {
         return config.backupConfig()
                      .filter(BackupConfig::enabled)
                      .filter(backup -> !backup.path()
@@ -799,39 +795,6 @@ public interface AetherNode extends ManageableNode {
         enabledBackup(config).onPresent(_ -> clusterNode.installSubmitGuard(RestoreGate.restoreGate(kvStore)));
 
         return clusterNode;
-    }
-
-    /// #1532 — the change-triggered KV backup, present only when `[backup] enabled = true` with a path. Its
-    /// repository is `<path>/kv-backup`, apart from anything else written under `[backup] path`.
-    private static Option<KvBackupService> createKvBackupService(AetherNodeConfig config,
-                                                                 KVStore<AetherKey, AetherValue> kvStore,
-                                                                 SliceCodec nodeCodec,
-                                                                 BackupWarning.Sink warnings) {
-        return enabledBackup(config).map(backup -> KvBackupService.kvBackupService(kvStore,
-                                                                                   BackupEntryCodec.backupEntryCodec(nodeCodec),
-                                                                                   kvBackupRepository(backup),
-                                                                                   warnings));
-    }
-
-    /// #1533 — the restore source, when this node backs up: the service and the configured restore mode.
-    private static Option<BackupRestoreCoordinator.Source> restoreSource(AetherNodeConfig config,
-                                                                         Option<KvBackupService> kvBackupService) {
-        return Option.all(kvBackupService, enabledBackup(config)).map((service, backup) -> BackupRestoreCoordinator.Source.source(service,
-                                                                                                                                  backup.restore()));
-    }
-
-    private static GitBackupRepository kvBackupRepository(BackupConfig backup) {
-        return GitBackupRepository.gitBackupRepository(Path.of(backup.path()).resolve("kv-backup"),
-                                                       Option.option(backup.remote()),
-                                                       "kv-backup",
-                                                       GitBackupRepository.DEFAULT_TIMEOUT);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static void routeKvBackup(List<MessageRouter.Entry<?>> allEntries, KvBackupService service) {
-        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
-        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, service::onValueRemove));
-        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, service::onLeaderChange));
     }
 
     /// Re-evaluate the quorum-loss detector on the two input changes that carry no FSM transition record
@@ -2977,32 +2940,15 @@ public interface AetherNode extends ManageableNode {
         var nttConnectTap = membershipEdgesOut.nttConnectTap();
         var nttDisconnectTap = membershipEdgesOut.nttDisconnectTap();
         var prefetchChannel = membershipEdgesOut.prefetchChannel();
-        Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
-        // Membership-FSM unification (Wave D, consumer #4): the cluster-quiescence gate's health
-        // source is the authoritative MembershipFsm (healthHints()). The SwimHintsRegistry tap stays
-        // wired (peer-health observability) but no longer feeds any consumer; the FSM is the single
-        // membership-health authority.
-        var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal()
-                                                                                              .swimHintsTtl()
-                                                                                              .millis()),
-                                                            () -> {});
-
-        peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
-        // Wave 2 call-site audit: BootstrapModule's `coreMembersSupplier` seeds the DHT "core"
-        // partition — core-scoped by NAME and intent, so it reads coreCountedMembers() (the
-        // role-blind countedMembers() previously wired here could seed a worker as a DHT core
-        // partition member).
-        var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
-                                                              epochSources.generationEpoch(),
-                                                              () -> isLeaderSupplier.getAsBoolean()
-                                                                    ? Option.some(leaderTerm.current())
-                                                                    : Option.<Long> none(),
-                                                              hlcClock,
-                                                              membershipFsm::coreCountedMembers,
-                                                              kvStore::snapshot,
-                                                              config::self,
-                                                              configBaselineSupplier,
-                                                              clusterNode);
+        var bootstrapModule = ClusterBootstrapAssembly.bootstrapModule(new ClusterBootstrapAssembly.BootstrapModuleInputs(config,
+                                                                                                                          kvStore,
+                                                                                                                          clusterNode,
+                                                                                                                          leaderTerm,
+                                                                                                                          epochSources,
+                                                                                                                          hlcClock,
+                                                                                                                          peerObservationStore,
+                                                                                                                          isLeaderSupplier,
+                                                                                                                          membershipFsm));
 
         MembershipAssembly.quicReporters(new MembershipAssembly.QuicReportersInputs(clusterNode,
                                                                                     epochSources,
@@ -3013,72 +2959,21 @@ public interface AetherNode extends ManageableNode {
                                                                                     membershipFsm,
                                                                                     nttConnectTap,
                                                                                     nttDisconnectTap));
-        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 change -> onLeaderChangeForPublisher(change,
-                                                                                      leaderTerm,
-                                                                                      bootstrapModule)));
-        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                                 notification -> onLeaderKeyCommit(notification, leaderTerm)));
-        // RC1 Step 2: snapshot-then-tail wiring. BootstrapModule consumes the current KV snapshot
-        // via its `kvSnapshotSupplier` at the time of `projectFromCommittedAtoms`. The route attached
-        // below provides the "tail" — every MembershipDecision variant routed by the
-        // MembershipDeltaProjector (single canonical emitter, Wave 4) signals bootstrap retry.
-        // Membership derives from the authoritative MembershipFsm delta edge; there is no
-        // node-state KV listener.
-        wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
-        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                 .onPut(AetherKey.SpokesmanKey.class,
-                                                        _ -> bootstrapModule.retryIfNeeded())
-                                                 // #1533: the ONE restore-commit hook — see onRestoreDecision.
-                                                 .onPut(AetherKey.BackupRestoreKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
-                                                                                                                                                                            bootstrapModule,
-                                                                                                                                                                            deploymentManager,
-                                                                                                                                                                            abTestManager))
-                                                 .onPut(AetherKey.ClusterConfigKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
-                                                                                                                                                                             clusterTopologyManager,
-                                                                                                                                                                             leaderReconciler))
-                                                 // #1777 track 1: a committed `[replication]` change re-places the DHT live; R1b: the
-                                                 // leader commits the change record it carries
-                                                 .onPut(AetherKey.ClusterConfigKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> {
-                                                            resolveDhtReplication(Option.some(put.cause().value()),
-                                                                                  dhtNode,
-                                                                                  config,
-                                                                                  cacheDhtConfig,
-                                                                                  dhtSettlement);
-                                                            dhtSettlement.onConfigCommitted(put.cause().value());
-                                                        })
-                                                 // #1777 R1b: every node follows the committed change; the leader advances it on reports
-                                                 .onPut(AetherKey.DhtReplicationChangeKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.DhtReplicationChangeKey, AetherValue.DhtReplicationChangeValue> put) -> dhtSettlement.onChangeCommitted(put.oldValue(),
-                                                                                                                                                                                                        put.cause()
-                                                                                                                                                                                                           .value()))
-                                                 .onPut(AetherKey.DhtReplicationReportKey.class,
-                                                        _ -> dhtSettlement.evaluate())
-                                                 .build();
-
-        allEntries.addAll(healthKvRouter.asRouteEntries());
-        var spokesmanPingLoop = SpokesmanPingLoop.spokesmanPingLoop(config.self(),
-                                                                    clusterNode.network(),
-                                                                    config.timeouts().cluster().pingInterval(),
-                                                                    rabiaTermSupplier,
-                                                                    metricsCollector::allObservations,
-                                                                    communityId -> lookupGovernor(kvStore, communityId),
-                                                                    SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
-
-        spokesmanPingLoop.start();
-        metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
-        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                    .onPut(AetherKey.SpokesmanKey.class,
-                                                           spokesmanPingLoop::onSpokesmanPut)
-                                                    .onRemove(AetherKey.SpokesmanKey.class,
-                                                              spokesmanPingLoop::onSpokesmanRemove)
-                                                    .build();
-
-        allEntries.addAll(spokesmanKvRouter.asRouteEntries());
-        metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
+        var spokesmanPingLoop = ClusterBootstrapAssembly.bootstrapRouting(new ClusterBootstrapAssembly.BootstrapRoutingInputs(config,
+                                                                                                                              kvStore,
+                                                                                                                              clusterNode,
+                                                                                                                              dhtNode,
+                                                                                                                              leaderTerm,
+                                                                                                                              cacheDhtConfig,
+                                                                                                                              dhtSettlement,
+                                                                                                                              metricsCollector,
+                                                                                                                              rabiaTermSupplier,
+                                                                                                                              clusterTopologyManager,
+                                                                                                                              deploymentManager,
+                                                                                                                              abTestManager,
+                                                                                                                              allEntries,
+                                                                                                                              leaderReconciler,
+                                                                                                                              bootstrapModule));
         var streamReplicationOut = StreamAssembly.streamReplication(new StreamAssembly.StreamReplicationInputs(config,
                                                                                                                delegateRouter,
                                                                                                                kvStore,
@@ -3216,43 +3111,15 @@ public interface AetherNode extends ManageableNode {
                                                                                                           streamPartitionManager,
                                                                                                           clusterEventsStreamConfig,
                                                                                                           streamNamespacesService));
-        // #290: cluster-formation bootstrap admin API key. On first leadership, if no admin key is yet
-        // present in the KV store, register one cluster-wide and print the plaintext once. Self-healing
-        // and idempotent (mirrors SystemStreamRegistrar); the leg uses the same clusterNode.apply
-        // consensus path as the API-key routes and the same KV store the validator reads.
-        // #980: the key is DERIVED from the cluster secret rather than randomised, so the bootstrap
-        // CLI — which minted that secret six phases earlier — can authenticate its own quorum poll.
-        // Registration is unchanged, which is what keeps the key enumerable, revocable and audited.
-        var bootstrapAdminKeyRegistrar = BootstrapAdminKeyRegistrar.bootstrapAdminKeyRegistrar(BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore,
-                                                                                                                                         isLeaderSupplier::getAsBoolean,
+        var bootstrapRegistrarsOut = ClusterBootstrapAssembly.bootstrapRegistrars(new ClusterBootstrapAssembly.BootstrapRegistrarsInputs(config,
+                                                                                                                                         kvStore,
+                                                                                                                                         nodeCodec,
+                                                                                                                                         isLeaderSupplier,
                                                                                                                                          clusterCommandApplier,
-                                                                                                                                         config.clusterSecret()));
-
-        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 bootstrapAdminKeyRegistrar::onLeaderChange));
-        // #1529 part 1: the leader mints the cluster lineage/incarnation at genesis if absent. Same
-        // self-healing, leader-armed shape as the bootstrap admin key; a restored value is left alone.
-        var clusterIncarnationRegistrar = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
-                                                                                                                                         clusterCommandApplier));
-
-        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 clusterIncarnationRegistrar::onLeaderChange));
-        // #1532: change-triggered, leader-only KV backup — only when [backup] is enabled with a path.
-        // #1533 × #1617: the restore-blocked, dropped-checkpoints and forked conditions are also cluster events.
-        var backupWarnings = BackupWarning.Sink.operatorWarnings(operatorWarningSink);
-        var kvBackupService = createKvBackupService(config, kvStore, nodeCodec, backupWarnings);
-
-        kvBackupService.onPresent(service -> routeKvBackup(allEntries, service));
-        // #1533: the restore decision precedes every cluster-state seeder — on EVERY node, so a leader
-        // without [backup] still commits DISABLED and opens the gate its backup-enabled peers hold closed.
-        var backupRestoreCoordinator = BackupRestoreCoordinator.backupRestoreCoordinator(kvStore,
-                                                                                         clusterCommandApplier,
-                                                                                         restoreSource(config,
-                                                                                                       kvBackupService),
-                                                                                         backupWarnings);
-
-        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 backupRestoreCoordinator::onLeaderChange));
+                                                                                                                                         operatorWarningSink,
+                                                                                                                                         allEntries));
+        var kvBackupService = bootstrapRegistrarsOut.kvBackupService();
+        var backupRestoreCoordinator = bootstrapRegistrarsOut.backupRestoreCoordinator();
         var streamWriteRouter = StreamAssembly.streamWriteRouter(new StreamAssembly.StreamWriteRouterInputs(config,
                                                                                                             streamPartitionManager,
                                                                                                             streamForwardClient,
@@ -3634,27 +3501,6 @@ public interface AetherNode extends ManageableNode {
                      resolved.writeQuorum(),
                      resolved.readQuorum());
         }
-    }
-
-    /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —
-    /// H1 / #257 (cluster-topology-overhaul Wave 8 item 1, pulled forward) — the leader's
-    /// reconciler is triggered with `trigger=CONFIG_CHANGE`: a committed config-driven target
-    /// change (scale up/down, restore-to-N) must produce a reconcile pass within the debounce
-    /// window instead of waiting for unrelated SWIM churn (live-confirmed: a 2-core deficit
-    /// sat 10 minutes unhealed because no reconcile ever fired). `onConfigChange` is
-    /// leader-gated and rides the reconciler's standard CAS-debounce machinery.
-    ///
-    /// Desired core capacity does not change voting authority. The installed voter configuration
-    /// changes only after a consensus handoff has established its successor electorate.
-    @Contract
-    private static void onClusterConfigPut(ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put,
-                                           ClusterTopologyManager clusterTopologyManager,
-                                           LeaderReconciler leaderReconciler) {
-        clusterTopologyManager.onClusterConfigChanged();
-        // RFC-0017 stage 5 — every committed config change (scale, apply, restore) converges worker
-        // topology through ONE trigger source. Leader-gated and serialized inside the CTM.
-        clusterTopologyManager.reconcileWorkerTopology();
-        leaderReconciler.onConfigChange();
     }
 
     /// The node reports ready: lifecycle first, then cross-node block prefetching wakes (it gossips hints and acts on
@@ -4182,58 +4028,6 @@ public interface AetherNode extends ManageableNode {
     /// The connectivity reporter and its `ObservedEpochSupplier` adapter, which the transport calls when it
     /// reports a peer connecting or leaving (#1529).
     record ConnectivityWiring(PeerConnectivityReporter reporter, QuicClusterNetwork.ObservedEpochSupplier epoch) {}
-
-    private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {
-        return kvStore.get(AetherKey.GovernorAnnouncementKey.forCommunity(communityId))
-                      .filter(v -> v instanceof AetherValue.GovernorAnnouncementValue)
-                      .map(v -> ((AetherValue.GovernorAnnouncementValue) v).governorId());
-    }
-
-    /// Project the node's static cluster configuration into the bootstrap-seed baseline used to
-    /// seed `ClusterConfigKey.CURRENT` on leader gain when absent. Sourced from `TopologyConfig`
-    /// (configured cluster size / core bounds) rather than the live committed-topology member
-    /// count, so a freshly-elected leader can seed a faithful baseline on the non-bootstrap and
-    /// restart-with-empty-KV paths before presence-derived membership has converged.
-    private static BootstrapModule.ClusterConfigBaseline clusterConfigBaseline(TopologyConfig topology) {
-        return new BootstrapModule.ClusterConfigBaseline(topology.clusterSize(), topology.coreMin(), topology.coreMax());
-    }
-
-    /// #1533 — the ONE restore-commit hook. On a fresh cluster a component that loads cluster state once —
-    /// at leader gain or on its task-group activation — does so BEFORE the restore lands, and sees an empty
-    /// KV. A terminal restore decision re-drives each such component that has no put listener of its own
-    /// for the keys it loaded: the bootstrap config seed (refused by the restore gate), the rollout manager
-    /// (`DeploymentKey`) and the A/B test manager (`AbTestKey`). Components that listen for puts of their
-    /// restored keys are covered by those listeners, because the restore's writes publish ordinary puts.
-    @Contract
-    static void onRestoreDecision(KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put,
-                                  BootstrapModule bootstrapModule,
-                                  DeploymentManager deploymentManager,
-                                  AbTestManager abTestManager) {
-        if (put.cause().value().outcome().isTerminal()) {
-            bootstrapModule.retryIfNeeded();
-            deploymentManager.reloadRestoredState();
-            abTestManager.reloadRestoredState();
-        }
-    }
-
-    /// #1797: a committed `LeaderKey` naming this node raises the held term even without a leader-gain edge.
-    @Contract
-    static void onLeaderKeyCommit(KVStoreNotification.ValuePut<?, ?> notification, LeaderTerm leaderTerm) {
-        if (notification.cause().key() instanceof LeaderKey) {
-            leaderTerm.onLeaderKeyCommitted();
-        }
-    }
-
-    private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,
-                                                   LeaderTerm leaderTerm,
-                                                   BootstrapModule bootstrap) {
-        if (change.localNodeIsLeader()) {
-            leaderTerm.onLeaderGained();
-            bootstrap.onLeaderGained();
-        } else {
-            bootstrap.onLeaderLost();
-        }
-    }
 
     @SuppressWarnings("JBCT-RET-01")
     private static void toggleCtmOnLeaderChange(LeaderNotification.LeaderChange change, ClusterTopologyManager ctm) {

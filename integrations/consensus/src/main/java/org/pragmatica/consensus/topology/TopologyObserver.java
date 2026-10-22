@@ -992,7 +992,7 @@ public interface TopologyObserver extends TopologyManager {
             /// **One quorum denominator (cluster-topology-overhaul Wave 9 item 1).**
             /// `ClusterConfigKey.coreCount` is the single SOURCE of truth for the cluster's
             /// core-count denominator; this `effectiveClusterSize` atomic is a DERIVED cell. In
-            /// production the aether-side `ClusterConfigKey` subscription (`AetherNode.onClusterConfigPut`)
+            /// production the aether-side `ClusterConfigKey` subscription (`ClusterBootstrapAssembly.onClusterConfigPut`)
             /// drives THIS method with the committed `coreCount` on every config commit — the
             /// observer is consensus-side and cannot read aether KV directly, so this is the
             /// single bridge from KV → the atomic. §3.1: this remains exactly one of
