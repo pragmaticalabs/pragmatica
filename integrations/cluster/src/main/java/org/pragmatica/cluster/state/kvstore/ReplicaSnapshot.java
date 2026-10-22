@@ -5,6 +5,7 @@ package org.pragmatica.cluster.state.kvstore;
 
 import java.util.List;
 
+
 /// A filtered image of the store taken under ONE store monitor: the encoded map, the incarnation tag, the revision and the anchor are
 /// mutually consistent. The image holds exactly the filtered effects of batches with `slot < revision`.
 public record ReplicaSnapshot(byte[] bytes, IncarnationTag tag, long revision, List<AnchorPair> anchor) {}

@@ -36,6 +36,7 @@ import org.slf4j.LoggerFactory;
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
     private static final Logger log = LoggerFactory.getLogger(KVStore.class);
+
     private static final Cause NOT_A_PLAIN_EFFECT = Causes.cause("a replica entry may carry only Put and Remove effects");
 
     /// How often a burst of repeated refusals is summarised in the log.
@@ -82,7 +83,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     public KVStore(MessageRouter router, Serializer serializer, Deserializer deserializer) {
-        this(router, serializer, deserializer, ReplicaKeyFilter.includeAll(), IncarnationSource.none(), CommitRing.DEFAULT_BUDGET_BYTES);
+        this(router,
+             serializer,
+             deserializer,
+             ReplicaKeyFilter.includeAll(),
+             IncarnationSource.none(),
+             CommitRing.DEFAULT_BUDGET_BYTES);
     }
 
     /// A store that feeds a worker replica: `replicaFilter` is the exclusion set of the ring and the replica snapshot, `incarnation` tells the
@@ -127,7 +133,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             List<R> results = processCommands(batch);
 
             committedRevision = nextSlot;
-            recordBatch(before, batch.id().id(), nextSlot - 1, nextSlot, effects);
+            recordBatch(before,
+                        batch.id().id(),
+                        nextSlot - 1,
+                        nextSlot,
+                        effects);
 
             return results;
         });
@@ -152,7 +162,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Entries are network-decoded, so anything other than `Put` and `Remove` refuses the whole entry and changes nothing.
     @SuppressWarnings("unchecked")
     public Result<Unit> applyEffects(ReplicaEntry entry) {
-        return entry.effects().stream().allMatch(effect -> effect instanceof Put<?, ?> || effect instanceof Remove<?>)
+        return entry.effects()
+                    .stream()
+                    .allMatch(effect -> effect instanceof Put<?, ?> || effect instanceof Remove<?>)
                ? mutate(() -> applyPlainEffects(entry))
                : NOT_A_PLAIN_EFFECT.result();
     }
@@ -205,8 +217,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         });
 
         return Result.lift(Causes::fromThrowable,
-                           () -> serializer.canonical().encode(filtered))
-                     .map(bytes -> new ReplicaSnapshot(bytes, readTag(), committedRevision, ring.anchor()));
+                           () -> serializer.canonical()
+                                           .encode(filtered))
+                     .map(bytes -> new ReplicaSnapshot(bytes,
+                                                       readTag(),
+                                                       committedRevision,
+                                                       ring.anchor()));
     }
 
     /// The tag as storage holds it now: the store's own key lookup, so it is read under the store monitor by the writer, before the ring lock.
@@ -229,7 +245,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     /// End of a committed batch (or an applied entry): a batch that touched an incarnation key, or changed the tag, clears the ring and is NOT
     /// delivered; otherwise the effects the replica filter lets through are appended, or the frontier just advances.
-    private void recordBatch(IncarnationTag before, String batchId, long slot, long nextSlot, List<KVCommand<?>> effects) {
+    private void recordBatch(IncarnationTag before,
+                             String batchId,
+                             long slot,
+                             long nextSlot,
+                             List<KVCommand<?>> effects) {
         var after = readTag();
         var touched = effects.stream().anyMatch(this::touchesIncarnation);
 
@@ -240,7 +260,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             return;
         }
 
-        ring.append(after, slot, batchId, effects.stream().filter(effect -> !excludedEffect(effect)).toList(), nextSlot);
+        ring.append(after,
+                    slot,
+                    batchId,
+                    effects.stream().filter(effect -> !excludedEffect(effect)).toList(),
+                    nextSlot);
     }
 
     private boolean touchesIncarnation(KVCommand<?> effect) {
@@ -262,7 +286,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @Override
     public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
         return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot)
-                                                     .onSuccess(_ -> ring.invalidate(readTag(), nextSlot)));
+                                           .onSuccess(_ -> ring.invalidate(readTag(),
+                                                                           nextSlot)));
     }
 
     private <T> T mutate(java.util.function.Supplier<T> mutation) {
@@ -394,8 +419,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private void applyMutation(KVCommand.Mutation<K, V> mutation) {
-        mutation.replacement().fold(() -> removeRecorded(mutation.key()),
-                                    value -> putRecorded(mutation.key(), value));
+        mutation.replacement().fold(() -> removeRecorded(mutation.key()), value -> putRecorded(mutation.key(), value));
     }
 
     private V putRecorded(K key, V value) {

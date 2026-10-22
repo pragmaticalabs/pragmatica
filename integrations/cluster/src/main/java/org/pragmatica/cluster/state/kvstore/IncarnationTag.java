@@ -19,6 +19,8 @@ public record IncarnationTag(long incarnation, String incarnationId) {
 
     /// True only when neither tag is [#NONE] and both parts are equal.
     public boolean matches(IncarnationTag other) {
-        return !isNone() && !other.isNone() && equals(other);
+        return ! isNone()
+               && !other.isNone()
+               && equals(other);
     }
 }

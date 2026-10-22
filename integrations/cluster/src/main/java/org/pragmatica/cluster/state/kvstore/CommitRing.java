@@ -17,6 +17,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 
+
 /// The commit ring of the worker replica feed: the effects of recently committed batches, in apply order, byte-bounded, with the position
 /// bookkeeping a subscriber needs to resume (floor, frontier, incarnation tag, the last [#ANCHOR_PAIRS] effect pairs).
 ///
@@ -36,9 +37,19 @@ public final class CommitRing {
     static final int EFFECT_OVERHEAD_BYTES = 16;
     static final int DEFAULT_VALUE_BYTES = 256;
 
-    public enum RefusalReason { EVICTED, INCARNATION_MISMATCH, AHEAD, BUSY, NOT_SERVING }
+    public enum RefusalReason {
+        EVICTED,
+        INCARNATION_MISMATCH,
+        AHEAD,
+        BUSY,
+        NOT_SERVING
+    }
 
-    public enum CloseReason { EVICTED, INCARNATION_MISMATCH, OVERFLOW }
+    public enum CloseReason {
+        EVICTED,
+        INCARNATION_MISMATCH,
+        OVERFLOW
+    }
 
     public sealed interface Subscribe permits Granted, Refused {}
 
@@ -159,6 +170,7 @@ public final class CommitRing {
     private long floor;
     private long nextSlot;
     private long coveredTo;
+
     private Runnable betweenBumpAndOffer = () -> {};
 
     private CommitRing(long budgetBytes, ToIntFunction<Object> valueSizer, Executor closer) {
@@ -191,12 +203,15 @@ public final class CommitRing {
     }
 
     // ---- writer side (called by the store inside its mutation; store monitor held, ring lock taken here) ----
-
     /// Appends the effects of one committed batch at `slot` and moves the frontier to `nextSlot`; offers the entry to every subscriber inside the
     /// same critical section. A `NONE` tag records nothing. A tag different from the cached one clears the ring and the batch is NOT delivered
     /// (the bump batch: every subscriber re-snapshots under the new tag). An empty effect list only extends the open trailing range.
     @Contract
-    public void append(IncarnationTag current, long slot, String batchId, List<KVCommand<?>> effects, long newNextSlot) {
+    public void append(IncarnationTag current,
+                       long slot,
+                       String batchId,
+                       List<KVCommand<?>> effects,
+                       long newNextSlot) {
         underLockDo(closes -> appendLocked(closes, current, slot, batchId, effects, newNextSlot));
     }
 
@@ -221,10 +236,12 @@ public final class CommitRing {
     }
 
     // ---- reader side ----
-
     /// One call under the ring lock: verifies the position, returns the entries after it, registers the subscription. Returns exactly one of
     /// the entries or one explicit refusal.
-    public Subscribe subscribeFrom(IncarnationTag replicaTag, long applied, List<AnchorPair> pairs, Subscription subscription) {
+    public Subscribe subscribeFrom(IncarnationTag replicaTag,
+                                   long applied,
+                                   List<AnchorPair> pairs,
+                                   Subscription subscription) {
         return underLock(closes -> subscribeLocked(closes, replicaTag, applied, pairs, subscription));
     }
 
@@ -269,8 +286,12 @@ public final class CommitRing {
     }
 
     // ---- locked bodies ----
-
-    private void appendLocked(Closes closes, IncarnationTag current, long slot, String batchId, List<KVCommand<?>> effects, long newNextSlot) {
+    private void appendLocked(Closes closes,
+                              IncarnationTag current,
+                              long slot,
+                              String batchId,
+                              List<KVCommand<?>> effects,
+                              long newNextSlot) {
         if (!current.equals(tag)) {
             resetLocked(closes, current, newNextSlot);
 
@@ -378,7 +399,7 @@ public final class CommitRing {
         }
 
         return verifyAnchor(pairs).<Subscribe> map(refusal -> refusal)
-                                  .or(() -> grant(closes, applied, subscription));
+                           .or(() -> grant(closes, applied, subscription));
     }
 
     private Subscribe grant(Closes closes, long applied, Subscription subscription) {
@@ -390,15 +411,14 @@ public final class CommitRing {
 
     /// Every pair at or above the floor must be present with an equal batch id, at least one pair must be verifiable. Empty means verified.
     private Option<Refused> verifyAnchor(List<AnchorPair> pairs) {
-        var verifiable = pairs.stream()
-                              .filter(pair -> pair.slot() >= floor)
-                              .toList();
+        var verifiable = pairs.stream().filter(pair -> pair.slot() >= floor).toList();
 
         if (verifiable.isEmpty()) {
             return Option.some(new Refused(RefusalReason.EVICTED, floor, tag));
         }
 
-        return verifiable.stream().allMatch(this::presentWithEqualId)
+        return verifiable.stream()
+                         .allMatch(this::presentWithEqualId)
                ? Option.none()
                : Option.some(new Refused(RefusalReason.AHEAD, floor, tag));
     }
@@ -406,7 +426,8 @@ public final class CommitRing {
     private boolean presentWithEqualId(AnchorPair pair) {
         var present = effectEntriesBySlot.get(pair.slot());
 
-        return present != null && present.batchId().equals(pair.batchId());
+        return present != null && present.batchId()
+                                         .equals(pair.batchId());
     }
 
     private List<ReplicaEntry> entriesFrom(long applied) {
@@ -464,7 +485,6 @@ public final class CommitRing {
     }
 
     // ---- estimate ----
-
     /// Heap-byte estimate of an entry: a fixed overhead, then per effect the key's text, a fixed overhead and the value estimate. Never an encode.
     static int estimatedBytes(ReplicaEntry entry, ToIntFunction<Object> valueSizer) {
         var total = ENTRY_OVERHEAD_BYTES;
@@ -485,7 +505,6 @@ public final class CommitRing {
     }
 
     // ---- locking ----
-
     /// Collects the transport closes decided under the lock; they run after it is released.
     private static final class Closes {
         private final List<Runnable> pending = new ArrayList<>();
