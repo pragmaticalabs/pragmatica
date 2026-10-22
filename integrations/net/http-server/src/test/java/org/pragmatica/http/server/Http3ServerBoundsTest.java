@@ -35,12 +35,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// - body limit 1 KiB (default 64 KiB): a 4 KiB body is answered 413, where the default dispatches it;
 /// - read timeout 1 s (default 60 s): a body that stalls is answered 408, where the default leaves it to QUIC's 5 s idle
 ///   close, which answers nothing;
-/// - minimum rate 100 kB/s after a 1 s grace (default 1 KiB/s after 10 s): a body trickled at 100 B/s is answered 408
-///   within about a second, where the default dispatches it before its grace ends.
+/// - minimum rate 100 kB/s after a 2 s grace (default 1 KiB/s after 10 s): a body trickled at 100 B/s is answered 408
+///   at about 2 s, where the default dispatches it before its grace ends. The grace is longer than the read timeout so
+///   that a stalled body meets the read timeout first.
 class Http3ServerBoundsTest {
     private static final int LIMIT = 1024;
     private static final int TRICKLE_CHUNK = 20;
-    private static final int TRICKLE_CHUNKS = 12;
+    private static final int TRICKLE_CHUNKS = 15;
     private static final long TRICKLE_INTERVAL_MS = 200;
 
     private Http3Server server;
@@ -52,7 +53,7 @@ class Http3ServerBoundsTest {
                                      .withMaxContentLength(LIMIT)
                                      .withReadTimeout(timeSpan(1).seconds())
                                      .withBodyRateLimit(BodyRateLimit.bodyRateLimit(100_000,
-                                                                                    timeSpan(1).seconds(),
+                                                                                    timeSpan(2).seconds(),
                                                                                     timeSpan(1).seconds()));
 
         server = Http3Server.create(config,
@@ -112,7 +113,7 @@ class Http3ServerBoundsTest {
         stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[16])));
     }
 
-    /// 240 bytes over 2.4 s, one frame every 200 ms: inside the limit, never idle for the read timeout, past the
+    /// 300 bytes over 3 s, one frame every 200 ms: inside the limit, never idle for the read timeout, past the
     /// configured grace and well inside the default one.
     private void trickle(QuicStreamChannel stream) throws InterruptedException {
         stream.writeAndFlush(Http3TestClient.postHeaders(port));
