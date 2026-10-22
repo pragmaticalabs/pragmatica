@@ -25,6 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ReplicaWireBaselineTripwireTest {
     private static final String BASELINE_RESOURCE = "/wire-assignment-baseline.txt";
     private static final String PROJECTION = "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage";
+    /// A replica-feed type: a simple name that STARTS with `Replica` and continues in upper case (`ReplicaSubscribe`); the unrelated `DhtReplicationSettled` does not match.
+    private static final java.util.regex.Pattern REPLICA_TYPE = java.util.regex.Pattern.compile("[.$]Replica[A-Z]");
     private static final List<String> RETIRED_TAGS = List.of("1695", "1696", "1697", "1698", "1699", "2119");
 
     private static List<String> baselineLines() {
@@ -50,7 +52,7 @@ class ReplicaWireBaselineTripwireTest {
         assertThat(live).as("TW-O10: the six projection message types are live TAG lines of the baseline today").hasSize(6);
         assertThat(RETIRED_TAGS).as("and they carry exactly the tags the design retires")
                                 .allSatisfy(tag -> assertThat(live).anyMatch(line -> line.endsWith(" " + tag)));
-        assertThat(baselineLines()).as("no replica-feed tag exists yet").noneMatch(line -> line.startsWith("TAG ") && line.contains("Replica"));
+        assertThat(baselineLines()).as("no replica-feed tag exists yet").noneMatch(line -> line.startsWith("TAG ") && REPLICA_TYPE.matcher(line).find());
     }
 
     @Disabled("W2/W5: enable when the projection tags are RETIRED pins and the replica feed's tags are recorded; the exact retired-section layout is decided by the PR that introduces it")
@@ -61,6 +63,6 @@ class ReplicaWireBaselineTripwireTest {
         assertThat(liveProjectionTags()).as("no projection message remains a live assignment").isEmpty();
         assertThat(RETIRED_TAGS).as("each retired tag is kept as a RETIRED pin so it is never reused")
                                 .allSatisfy(tag -> assertThat(lines).anyMatch(line -> line.startsWith("#") && line.contains("RETIRED") && line.contains(tag)));
-        assertThat(lines).as("the replica feed's messages are recorded").anyMatch(line -> line.startsWith("TAG ") && line.contains("Replica"));
+        assertThat(lines).as("the replica feed's messages are recorded").anyMatch(line -> line.startsWith("TAG ") && REPLICA_TYPE.matcher(line).find());
     }
 }

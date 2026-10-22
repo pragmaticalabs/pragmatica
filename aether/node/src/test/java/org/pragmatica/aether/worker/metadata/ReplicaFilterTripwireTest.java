@@ -88,7 +88,7 @@ class ReplicaFilterTripwireTest {
 
         // Positive control: the instrument CAN see a scoped key. A scoped put raises the index revision and the key
         // lands in the worker's view; without this, "revision did not move" would also hold for a dead index.
-        var control = new AetherKey.SliceTargetKey(ARTIFACT_BASE);
+        var control = new AetherKey.LogLevelKey("org.example");
 
         index.put(control, OPAQUE);
         assertThat(index.revision()).as("control: a scoped key moves the revision").isPositive();
