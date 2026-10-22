@@ -336,6 +336,35 @@ class JsonbMappingTest {
         }
 
         @Test
+        void componentTypeTheCodecGeneratorCannotHandle_isCompileErrorWithItsReason() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Task(Runnable action) {}
+
+                record TaskRow(long id, @Jsonb Task profile) {}
+
+                @PgSql
+                public interface TaskRowRepo {
+                    @Query("SELECT id, profile FROM documents WHERE id = :id")
+                    Promise<Option<TaskRow>> find(long id);
+                }
+                """;
+
+            var result = compile(source, "test/TaskRowRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("@Jsonb target 'profile' has type 'test.Task'")
+                                            .contains("component action: neither a record nor an enum");
+        }
+
+        @Test
         void markedTypeThatIsNoRecordOrEnum_isCompileError() throws Exception {
             var source = """
                 package test;
