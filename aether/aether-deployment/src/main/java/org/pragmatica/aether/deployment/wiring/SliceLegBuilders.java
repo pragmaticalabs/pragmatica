@@ -42,6 +42,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.KvBackedStreamRegistry;
@@ -103,7 +104,7 @@ final class SliceLegBuilders {
         }
     }
 
-    private record SubscriptionEntry(ResourceAddress address, MethodName methodName) {}
+    private record SubscriptionEntry(ResourceAddress address, MethodName methodName, TopicTier tier) {}
 
     private record ScheduledEntry(String configSection, MethodName methodName) {}
 
@@ -230,7 +231,7 @@ final class SliceLegBuilders {
                                                             sources.self());
 
         return new KVCommand.Put<>(key,
-                                   TopicSubscriptionValue.topicSubscriptionValue(sources.self()));
+                                   TopicSubscriptionValue.topicSubscriptionValue(sources.self(), entry.tier()));
     }
 
     private List<LegCommand> topicRemovals(Artifact artifact, Slice slice) {
@@ -249,13 +250,22 @@ final class SliceLegBuilders {
                                                                                 sources.self()));
     }
 
+    /// #1337: the manifest's `context=message` marker (#386 D5) is the only thing that makes a handler need the durable tier; derived exactly as the
+    /// legacy `NodeDeploymentState` derives it, so the row this leg writes equals the legacy row.
+    private static TopicTier requiredTier(ReactiveEntry entry) {
+        return "message".equals(entry.property("context"))
+               ? TopicTier.DURABLE
+               : TopicTier.ANY;
+    }
+
     private List<SubscriptionEntry> subscriptionEntries(Artifact artifact, Slice slice) {
         var result = new ArrayList<SubscriptionEntry>();
 
         for (var entry : reactiveBindings(artifact, slice)) {
             if ("subscription".equals(entry.category())) {
                 subscriptionAddress(artifact, entry).flatMap(address -> MethodName.methodName(entry.method()).map(method -> new SubscriptionEntry(address,
-                                                                                                                                                  method)))
+                                                                                                                                                  method,
+                                                                                                                                                  requiredTier(entry))))
                                    .option()
                                    .onPresent(result::add);
             }
