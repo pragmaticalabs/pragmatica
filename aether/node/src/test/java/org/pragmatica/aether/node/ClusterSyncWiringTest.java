@@ -8,10 +8,12 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Wiring pins for the cluster sync assembly (`ClusterSyncAssembly`). Removing any of these lines left every
-/// behavioural test in `aether/node` and `aether/ember` green (measured while splitting the assembly: 86 boot testcases
-/// and ten Ember classes, 0 red); only the assembly trace noticed. Following `ClusterEventRedeliveryWiringTest`, each
-/// pin reads the assembly source with comments stripped and whitespace removed and must match exactly once.
+/// Wiring pins for the cluster sync assembly (`ClusterSyncAssembly`). These lines are not guarded by the boot tests in
+/// `aether/node`: deleting one of them left the 38 boot-test classes green. Some are guarded elsewhere by the Ember
+/// tests (deleting `metricsScheduler.setDrainTargets(..)` turns `EmberNodeReplacementTest` and
+/// `EmberPlannedDepartureAlertsTest` red), but not every line is, and an Ember run is far slower than a source read.
+/// Following `ClusterEventRedeliveryWiringTest`, each pin reads the assembly source with comments stripped and
+/// whitespace removed and must match exactly once; it pins that the wiring expression is present, not that it works.
 class ClusterSyncWiringTest {
     /// The collector is published to the holder the consensus node's leader-lease predicate reads.
     @Test
