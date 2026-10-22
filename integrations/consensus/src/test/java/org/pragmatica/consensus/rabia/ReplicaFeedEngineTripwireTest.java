@@ -26,6 +26,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequ
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -39,10 +40,8 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 ///   serving state. The replica feed applies outside the engine (W3), so this must remain true; it fails if the
 ///   apply path is ever routed through the engine on a worker. There is no real-assertion twin: the design
 ///   asserts the same thing.
-/// - TW-O8 (engine half): the state machine is told about batches that commit a non-empty V1 decision and nothing
-///   else, so a V0 or empty slot advances the engine phase without the state machine learning of it. W1 adds
-///   `StateMachine.onPhaseCompleted(long nextSlot)` for exactly this gap; the `KVStore` half is
-///   `KVStoreEffectReplayTest`.
+/// - TW-O8 (engine half, flipped by W1): `StateMachine.onPhaseCompleted(long nextSlot)` is called after every completed slot, V0 and
+///   empty ones included, and at the tail of a state restore; the `KVStore` half is `KVStoreEffectReplayTest`.
 class ReplicaFeedEngineTripwireTest {
     private static final NodeId WORKER = nodeId("worker-1").unwrap();
     private static final NodeId CORE_1 = nodeId("core-1").unwrap();
@@ -60,6 +59,14 @@ class ReplicaFeedEngineTripwireTest {
     /// A state machine that records what the engine tells it, beyond what `TestStateMachine` keeps.
     private static final class CountingStateMachine extends TestStateMachine {
         final AtomicInteger committedBatches = new AtomicInteger();
+        final List<Long> phaseFrontiers = new CopyOnWriteArrayList<>();
+
+        @Override
+        public Unit onPhaseCompleted(long nextSlot) {
+            phaseFrontiers.add(nextSlot);
+
+            return Unit.unit();
+        }
 
         @Override
         public <R> List<R> processCommitted(Batch<TestCommand> batch, long nextSlot) {
@@ -207,7 +214,7 @@ class ReplicaFeedEngineTripwireTest {
     }
 
     @Test
-    void emptyDecision_advancesTheEnginePhase_withoutTheStateMachineLearningOfIt() {
+    void everyCompletedSlot_reachesTheStateMachineAsAFrontier_V0AndEmptyIncluded() {
         var machine = new CountingStateMachine();
         var active = activeEngine(machine);
 
@@ -218,28 +225,27 @@ class ReplicaFeedEngineTripwireTest {
         active.processDecision(empty(2));
         await(() -> active.currentPhaseForTesting().equals(Phase.phase(3)));
 
-        assertThat(machine.committedBatches.get()).as("TW-O8: the engine is at phase 3 but the state machine was told of one batch only (slot 0); the two V0 slots are invisible to it, so a store's revision cannot be the engine phase")
-                                                  .isEqualTo(1);
+        assertThat(machine.committedBatches.get()).as("TW-O8: processCommitted is still told of the one batch only").isEqualTo(1);
+        assertThat(machine.phaseFrontiers).as("TW-O8 / NT-O48: the state machine is told 1, 2, 3, the two V0 slots included (mutation: drop the call in advancePhase)")
+                                          .containsSequence(1L, 2L, 3L);
     }
 
     @Test
-    void stateMachinePhaseHook_doesNotExistYet_today() {
-        assertThat(phaseHook()).as("W1 landed StateMachine.onPhaseCompleted(long): enable stateMachine_isToldTheNewFrontier_afterEveryCompletedSlot (TW-O8 engine half) together with KVStoreEffectReplayTest#revision_equalsTheEnginePhase_afterV0AndEmptySlots (TW-O8 store half), and delete this test").isNull();
-    }
+    void aStateRestore_reportsItsPhaseToTheStateMachine_evenWithAnEmptySnapshot() {
+        var machine = new CountingStateMachine();
+        var active = engine(CORE_1, machine, false);
 
-    @Disabled("W1 (Q-E phase hook): enable when StateMachine.onPhaseCompleted(long) exists and the engine calls it for every completed slot, V0 and empty included")
-    @Test
-    void stateMachine_isToldTheNewFrontier_afterEveryCompletedSlot() {
-        throw new AssertionError((phaseHook() != null ? "W1 StateMachine.onPhaseCompleted(long) landed: replace this body with the real check, which is: " : "W1 StateMachine.onPhaseCompleted(long) is not there yet; the property to check once it is: ")
-                                 + "drive the same three decisions as emptyDecision_advancesTheEnginePhase_withoutTheStateMachineLearningOfIt with a recording StateMachine and assert the hook received nextSlot 1, 2, 3 (the V0 slots included), and once more at the tail of applyRestoredState");
+        active.clusterState(ClusterStateNotification.active());
+        await(() -> network.getMessages().stream().anyMatch(SyncRequest.class::isInstance));
+        active.processSyncResponse(new SyncResponse<>(CORE_2, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
+        active.processSyncResponse(new SyncResponse<>(CORE_3, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
+        await(active::isActive);
+
+        assertThat(machine.phaseFrontiers).as("NT-O48 (mutation: drop the applyRestoredState call): the restored phase is reported before any decision").contains(5L);
     }
 
     private static Method clearingSetter() {
         return methodOrNull(RabiaEngine.class, "setPassiveClientReady", boolean.class);
-    }
-
-    private static Method phaseHook() {
-        return methodOrNull(StateMachine.class, "onPhaseCompleted", long.class);
     }
 
     private static Method methodOrNull(Class<?> type, String name, Class<?>... parameters) {

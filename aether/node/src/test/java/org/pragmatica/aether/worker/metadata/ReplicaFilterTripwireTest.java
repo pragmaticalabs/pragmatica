@@ -13,10 +13,10 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
-import org.pragmatica.aether.node.ReplicaSeam;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -40,7 +40,6 @@ class ReplicaFilterTripwireTest {
     private static final ArtifactBase ARTIFACT_BASE = ArtifactBase.artifactBase("org.example:orders").unwrap();
     private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.example:blueprint:1.0.0").unwrap();
     private static final String OPAQUE = "opaque value: the unscoped arms of the projection never read it";
-    private static final String REPLICA_FILTER = "ReplicaFilter";
 
     /// The 20 `AetherKey` classes the projection gives NO scope (`WorkerMetadataIndex.scopesFor`, the arm that
     /// returns `Set.of()`), keyed by class name. `ClusterConfigKey` is the one the design keeps EXCLUDED.
@@ -158,22 +157,22 @@ class ReplicaFilterTripwireTest {
                         .anyMatch(key -> key instanceof AetherKey.StreamRegistrationKey);
     }
 
+    /// TW-O15, flipped by W1. The filter is an exhaustive `switch` over the sealed `AetherKey` with no default, so a new key class does not
+    /// compile until it is classified: that property is the compiler's, and a reflection test cannot add to it. What the test pins is the
+    /// classification itself, on the classes the worker projection never saw (the 20 that had no scope) plus the excluded ones, and the
+    /// fail-closed rule for a key type the filter does not know.
     @Test
-    void typeProbe_findsAnExistingType() {
-        assertThat(ReplicaSeam.typeExists("WorkerMetadataIndex")).as("control: the probe sees a type that is on the classpath, so its 'absent' answers below mean something").isTrue();
-    }
+    void theFilterClassifiesTheKeyClasses_andFailsClosedOnAnUnknownKeyType() {
+        var filter = ReplicaFilter.replicaFilter();
+        var excluded = unscopedKeys().entrySet().stream().filter(entry -> filter.excludes(entry.getValue())).map(Map.Entry::getKey).toList();
 
-    @Test
-    void noReplicaFilterExistsToClassifyAKeyClass_today() {
-        assertThat(ReplicaSeam.typeExists(REPLICA_FILTER)).as("TW-O15: W1 landed %s: enable theFilterClassifiesEveryAetherKeyClass with its reflection body, and delete this test", REPLICA_FILTER)
-                                               .isFalse();
-    }
+        assertThat(excluded).as("of the 20 classes the projection left unscoped only the cluster configuration is EXCLUDED (credentials in its TOML)").containsExactly("ClusterConfigKey");
+        assertThat(filter.excludes(new AetherKey.StreamCursorCheckpointKey("orders", 0, "billing"))).as("cursor checkpoints are EXCLUDED").isTrue();
+        assertThat(filter.excludes(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE)).as("the leader key is INCLUDED").isFalse();
 
-    @Disabled("W1 (ReplicaFilter): enable when ReplicaFilter exists and replace the body with the reflection test over AetherKey.class.getPermittedSubclasses()")
-    @Test
-    void theFilterClassifiesEveryAetherKeyClass() {
-        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists(REPLICA_FILTER),
-                                     "W1 ReplicaFilter",
-                                     "every concrete class in the AetherKey.class.getPermittedSubclasses() hierarchy is classified INCLUDE or EXCLUDE by ReplicaFilter (and the filter's switch has no default, so a new key class fails to compile)");
+        var before = filter.foreignKeyExclusions();
+
+        assertThat(filter.excludes(new StructuredKey() {})).as("a key family the filter does not know is EXCLUDED").isTrue();
+        assertThat(filter.foreignKeyExclusions()).as("and counted").isEqualTo(before + 1);
     }
 }
