@@ -841,7 +841,7 @@ public final class PartitionBackfill {
                        .anyMatch(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP);
     }
 
-    /// Partitions the periodic re-drive ({@code AetherNode.redriveIncompleteBackfills}) should re-attempt
+    /// Partitions the periodic re-drive ({@code StreamAssembly.redriveIncompleteBackfills}) should re-attempt
     /// `backfill` for: every partition where self is a registered, not-yet-CAUGHT_UP replica, PLUS the
     /// #333 write-idle residual case — a CAUGHT_UP replica that is NOT the HRW owner and whose
     /// `confirmedOffset` has moved since, or which has not been re-verified against the owner within the
@@ -1414,7 +1414,7 @@ public final class PartitionBackfill {
     /// local ring HRW-ranks self owner while the authoritative committed record names someone else (the m1
     /// self-election loop). {@link Option#none} (no record committed yet — cold start / legacy / unowned)
     /// returns FALSE so pure-HRW self-election is preserved and the cold-start deadlock-break stays intact.
-    /// This is the INVERSE of `AetherNode.committedOwnerElsewhere`'s release semantics: that guard treats
+    /// This is the INVERSE of `StreamAssembly.committedOwnerElsewhere`'s release semantics: that guard treats
     /// none() as releasable (`.or(true)`); this one treats none() as still-HRW-eligible (`.or(false)`).
     /// Strict equality (blocking whenever committed != self) would starve a just-promoted owner by one commit.
     private boolean committedOwnerIsOther(String streamName, int partition) {

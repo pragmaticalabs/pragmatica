@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.node.assembly.MembershipAssembly;
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -92,7 +93,7 @@ class AetherNodeReplicaSetTriggersTest {
 
         controller = ReplicaSetController.replicaSetController(registry,
                                                               A,
-                                                              AetherNode.livePlacementMembers(voters::get, fsm),
+                                                              StreamAssembly.livePlacementMembers(voters::get, fsm),
                                                               () -> voters.get().size(),
                                                               () -> List.of(new StreamCatalog.StreamSpec(STREAM,
                                                                                                        1,
@@ -103,7 +104,7 @@ class AetherNodeReplicaSetTriggersTest {
                                                               Runnable::run);
         controllerRef.set(controller);
         controller.committedOwnerSource((_, _) -> committedOwner.get());
-        AetherNode.wireReplicaSetInputTriggers(entries, controller::reconcile, this::voterSource);
+        StreamAssembly.wireReplicaSetInputTriggers(entries, controller::reconcile, this::voterSource);
         fsm.onTransition(record -> MembershipAssembly.reconcileReplicaSetOnCountedBoundary(controllerRef, record));
         controller.reconcile();
     }

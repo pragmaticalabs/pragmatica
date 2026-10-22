@@ -534,7 +534,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     /// The stream ownership driver's exclusion boundary (see the type comment's "Exclusive authority"):
     /// everything in `reconciled` EXCEPT entity arcs. Replica placement for entity logs is untouched —
     /// only the ownership write has exactly one authority.
-    static List<PartitionKey> withoutEntityArcs(List<PartitionKey> reconciled) {
+    public static List<PartitionKey> withoutEntityArcs(List<PartitionKey> reconciled) {
         return reconciled.stream()
                          .filter(partition -> EntityPartitionArc.keyspaceOf(partition.streamName()).isEmpty())
                          .toList();

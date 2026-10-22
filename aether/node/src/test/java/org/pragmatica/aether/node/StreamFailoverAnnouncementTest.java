@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -36,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1730 owner ruling: a stream partition's failover refusal is announced as an operational event on the TRANSITION,
 /// once, and its resolution likewise — never per reconcile. Driven end to end through the production pieces: the
-/// ISR-aware ownership writer and [AetherNode#driveStreamOwnership] write through the real KV applier, whose committed
+/// ISR-aware ownership writer and [StreamAssembly#driveStreamOwnership] write through the real KV applier, whose committed
 /// `ValuePut` notifications feed the production [StreamFailoverAnnouncer] exactly as every node's KV router does.
 class StreamFailoverAnnouncementTest {
     private static final String STREAM = "orders";
@@ -59,7 +60,7 @@ class StreamFailoverAnnouncementTest {
         var retry = AetherNode.StreamOwnershipRetry.streamOwnershipRetry((_, _) -> {}, () -> {});
 
         for (var pass = 0; pass < 3; pass++) {
-            AetherNode.driveStreamOwnership(writer, this::apply, retry, PASS);
+            StreamAssembly.driveStreamOwnership(writer, this::apply, retry, PASS);
         }
 
         assertThat(committed().failoverRefused()).as("the refusal is committed").isTrue();
@@ -75,7 +76,7 @@ class StreamFailoverAnnouncementTest {
 
         live.set(List.of(B, C));
         for (var pass = 0; pass < 3; pass++) {
-            AetherNode.driveStreamOwnership(writer, this::apply, retry, PASS);
+            StreamAssembly.driveStreamOwnership(writer, this::apply, retry, PASS);
         }
 
         assertThat(committed().owner()).as("an ISR member was elected").isEqualTo(B);

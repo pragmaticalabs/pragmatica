@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import java.util.List;
 
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -29,7 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #1873 round 2 (v1873 B4): the node's owner-side lineage commit, run through the REAL applier. `AetherNode.streamLineageCommit` is
+/// #1873 round 2 (v1873 B4): the node's owner-side lineage commit, run through the REAL applier. `StreamAssembly.streamLineageCommit` is
 /// where the owner mints an epoch, so its two properties are pinned here and not only on the writer helper it calls: it BUMPS the
 /// epoch when the ring was rebuilt, and it is a compare-and-set on the exact record the owner read.
 class StreamLineageCommitTest {
@@ -77,7 +78,7 @@ class StreamLineageCommitTest {
 
         seedRecord(failedOverToB);
 
-        var result = AetherNode.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
+        var result = StreamAssembly.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
                                .commit(STREAM, PARTITION, heldByA, 0L, true)
                                .await();
 
@@ -95,7 +96,7 @@ class StreamLineageCommitTest {
 
         seedRecord(moved);
 
-        var result = AetherNode.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
+        var result = StreamAssembly.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
                                .commit(STREAM, PARTITION, held, 2L, true)
                                .await();
 
@@ -125,7 +126,7 @@ class StreamLineageCommitTest {
                                                                                     _ -> org.pragmatica.lang.Unit.unit(),
                                                                                     org.pragmatica.lang.io.TimeSpan.timeSpan(1).hours(),
                                                                                     (_, _) -> 1L,
-                                                                                    AetherNode.streamLineageCommit(() -> Option.some(LEADER),
+                                                                                    StreamAssembly.streamLineageCommit(() -> Option.some(LEADER),
                                                                                                                    commands -> competingThenApplied(competing, commands),
                                                                                                                    HlcClock.hlcClock(A)));
 
@@ -143,7 +144,7 @@ class StreamLineageCommitTest {
     @Test
     void withoutACommittedLeader_theCommitFails_andWritesNothing() {
         var held = record(A, 3L);
-        var result = AetherNode.streamLineageCommit(Option::none, _ -> Promise.success(List.of()), HlcClock.hlcClock(A))
+        var result = StreamAssembly.streamLineageCommit(Option::none, _ -> Promise.success(List.of()), HlcClock.hlcClock(A))
                                .commit(STREAM, PARTITION, held, 0L, true)
                                .await();
 
@@ -153,7 +154,7 @@ class StreamLineageCommitTest {
     }
 
     private void commit(StreamPartitionOwnershipValue current, long start, boolean restarted) {
-        var result = AetherNode.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
+        var result = StreamAssembly.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
                                .commit(STREAM, PARTITION, current, start, restarted)
                                .await();
 

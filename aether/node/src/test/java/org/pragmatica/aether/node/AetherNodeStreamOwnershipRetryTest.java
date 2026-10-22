@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -74,11 +75,11 @@ class AetherNodeStreamOwnershipRetryTest {
         fsm.seed(Set.of(A, B, C));
         var controller = ReplicaSetController.replicaSetController(ReplicaRegistry.replicaRegistry(),
                                                                   A,
-                                                                  AetherNode.livePlacementMembers(() -> Set.of(A, B, C), fsm),
+                                                                  StreamAssembly.livePlacementMembers(() -> Set.of(A, B, C), fsm),
                                                                   () -> 3,
                                                                   () -> List.of(new StreamCatalog.StreamSpec(STREAM, 1, 2, 0)),
                                                                   (_, _) -> {},
-                                                                  (List<PartitionKey> reconciled) -> AetherNode.driveStreamOwnership(writer, applier, retry, reconciled),
+                                                                  (List<PartitionKey> reconciled) -> StreamAssembly.driveStreamOwnership(writer, applier, retry, reconciled),
                                                                   Runnable::run);
         controllerRef.set(controller);
         controller.committedOwnerSource((_, _) -> committedOwner.get());

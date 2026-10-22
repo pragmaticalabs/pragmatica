@@ -56,7 +56,7 @@ import org.slf4j.LoggerFactory;
 ///      no longer matches it, so the node re-runs the gate before acting again (the owner-side epoch fence).
 ///
 /// **An unreachable live member blocks activation** (it may hold a higher watermark). This is bounded by detection: the
-/// member set is the live placement projection (`AetherNode.livePlacementMembers`), from which a member leaves
+/// member set is the live placement projection (`StreamAssembly.livePlacementMembers`), from which a member leaves
 /// once the membership FSM declares it DEAD, shrinking the probe set and unblocking activation within
 /// failure-detection time. Activation never proceeds while a reachable member holds a higher watermark.
 /// Each probe attempt itself times out (the forward-read timeout) and the next demand retries. A member that keeps its
