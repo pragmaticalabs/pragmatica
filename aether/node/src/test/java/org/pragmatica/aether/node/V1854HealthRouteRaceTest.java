@@ -20,6 +20,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -52,7 +53,7 @@ class V1854HealthRouteRaceTest {
     private final AtomicReference<MembershipFsm> fsmRef = new AtomicReference<>(fsm);
     private final QuorumLossDetector detector = QuorumLossDetector.quorumLossDetector(membershipConfig(),
                                                                                        () -> voters.get().map(v -> v.members().size()).or(0),
-                                                                                       () -> AetherNode.derivedMemberCount(Option.option(fsmRef.get()),
+                                                                                       () -> MembershipAssembly.derivedMemberCount(Option.option(fsmRef.get()),
                                                                                                                            SELF,
                                                                                                                            voters.get()),
                                                                                        TimeSource.system(),
@@ -64,11 +65,11 @@ class V1854HealthRouteRaceTest {
         detector.setQuorumLossListener(intents::add);
         fsm.seed(Set.copyOf(CORES));
         var journal = TransitionJournal.transitionJournal();
-        fsm.onTransition(record -> AetherNode.onFsmTransition(journal, detectorRef, record));
+        fsm.onTransition(record -> MembershipAssembly.onFsmTransition(journal, detectorRef, record));
         AetherNode.wireQuorumCountTriggers(detector, fsm, this::voterSource);
 
         CORES.subList(1, 5).forEach(peer -> fsm.onSwimHealthy(peer, 1L));
-        AetherNode.onNttReconcile(detectorRef, new AtomicReference<>());
+        MembershipAssembly.onNttReconcile(detectorRef, new AtomicReference<>());
         assertThat(detector.isArmed()).as("pre-install: empty electorate").isFalse();
 
         var configuration = VoterConfiguration.voterConfiguration(0, CORES).unwrap();

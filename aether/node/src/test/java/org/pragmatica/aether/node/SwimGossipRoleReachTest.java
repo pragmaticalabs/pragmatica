@@ -11,6 +11,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
@@ -36,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Since #1390 a member counts as a core only with a literal `role=core` label, so the gossip has to
 /// carry that label: without it the replacement is present and healthy on this node, uncounted by the
 /// leader's `coreCountedMembers`, and the leader provisions a phantom extra core. The chain here is the
-/// real one — `SwimProtocol` → its observation stream → `AetherNode.routeSwimEdgeToMembershipFsm` →
+/// real one — `SwimProtocol` → its observation stream → `MembershipAssembly.routeSwimEdgeToMembershipFsm` →
 /// `MembershipFsm` — nothing between the gossip and the core count is stubbed.
 class SwimGossipRoleReachTest {
     private static final NodeId SELF = new NodeId("node-self");
@@ -60,7 +61,7 @@ class SwimGossipRoleReachTest {
                                                     TimeSpan.timeSpan(1).hours());
         protocol = SwimProtocol.swimProtocol(SwimConfig.swimConfig(), new NullTransport(), new NullListener(), SELF, SELF_ADDR)
                                .unwrap();
-        protocol.addObservationListener(observation -> AetherNode.routeSwimEdgeToMembershipFsm(observation, membershipFsm));
+        protocol.addObservationListener(observation -> MembershipAssembly.routeSwimEdgeToMembershipFsm(observation, membershipFsm));
     }
 
     @Test

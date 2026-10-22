@@ -15,6 +15,7 @@ import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -103,7 +104,7 @@ class AetherNodeReplicaSetTriggersTest {
         controllerRef.set(controller);
         controller.committedOwnerSource((_, _) -> committedOwner.get());
         AetherNode.wireReplicaSetInputTriggers(entries, controller::reconcile, this::voterSource);
-        fsm.onTransition(record -> AetherNode.reconcileReplicaSetOnCountedBoundary(controllerRef, record));
+        fsm.onTransition(record -> MembershipAssembly.reconcileReplicaSetOnCountedBoundary(controllerRef, record));
         controller.reconcile();
     }
 
@@ -242,13 +243,13 @@ class AetherNodeReplicaSetTriggersTest {
 
     @Test
     void crossesCountedBoundary_isTrueOnlyWhenCountedFlips() {
-        assertThat(AetherNode.crossesCountedBoundary(transition("Observed", "Member"))).isTrue();
-        assertThat(AetherNode.crossesCountedBoundary(transition("Member", "Departing"))).isTrue();
-        assertThat(AetherNode.crossesCountedBoundary(transition("Departing", "Member"))).isTrue();
-        assertThat(AetherNode.crossesCountedBoundary(transition("Suspect", "Dead"))).isTrue();
-        assertThat(AetherNode.crossesCountedBoundary(transition("Member", "Suspect"))).as("SUSPECT still counts").isFalse();
-        assertThat(AetherNode.crossesCountedBoundary(transition("Suspect", "Member"))).isFalse();
-        assertThat(AetherNode.crossesCountedBoundary(transition("Dead", "Observed"))).isFalse();
+        assertThat(MembershipAssembly.crossesCountedBoundary(transition("Observed", "Member"))).isTrue();
+        assertThat(MembershipAssembly.crossesCountedBoundary(transition("Member", "Departing"))).isTrue();
+        assertThat(MembershipAssembly.crossesCountedBoundary(transition("Departing", "Member"))).isTrue();
+        assertThat(MembershipAssembly.crossesCountedBoundary(transition("Suspect", "Dead"))).isTrue();
+        assertThat(MembershipAssembly.crossesCountedBoundary(transition("Member", "Suspect"))).as("SUSPECT still counts").isFalse();
+        assertThat(MembershipAssembly.crossesCountedBoundary(transition("Suspect", "Member"))).isFalse();
+        assertThat(MembershipAssembly.crossesCountedBoundary(transition("Dead", "Observed"))).isFalse();
     }
 
     private static MembershipTransitionRecord transition(String from, String to) {

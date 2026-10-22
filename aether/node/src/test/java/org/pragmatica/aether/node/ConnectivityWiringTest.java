@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -70,7 +71,7 @@ class ConnectivityWiringTest {
         sources.incarnation()
                .routeEntries()
                .forEach(this::register);
-        wiring = AetherNode.connectivityWiring(buffer, sources.incarnation(), sources.leaderEpoch(), _ -> {}, _ -> {});
+        wiring = MembershipAssembly.connectivityWiring(buffer, sources.incarnation(), sources.leaderEpoch(), _ -> {}, _ -> {});
     }
 
     /// Another thread holds the `KVStore` monitor, as `restoreCommittedSnapshot` does for a whole install.

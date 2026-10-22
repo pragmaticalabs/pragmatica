@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.cluster.metrics.MetricObservation;
 
@@ -33,7 +34,7 @@ class SwimHintWiringTest {
 
     @Test
     void quicPeerStateListener_onPeerLeft_sendsLinkLostPeerLeftHint() {
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerLeft(PEER);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerLeft(PEER);
 
         assertThat(hints).hasSize(1);
         var hint = (TransportObservation.PeerUnreachable) hints.getFirst();
@@ -47,7 +48,7 @@ class SwimHintWiringTest {
 
     @Test
     void quicPeerStateListener_onPeerReconnected_startsLinkEpochAndSendsReachable() {
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerReconnected(PEER);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerReconnected(PEER);
 
         assertThat(linkEpochs)
             .as("A reconnect discards ClusterSync misses counted against the previous link (R-a)")
@@ -57,7 +58,7 @@ class SwimHintWiringTest {
 
     @Test
     void quicPeerStateListener_onPeerJoined_startsLinkEpochAndSendsReachable() {
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerJoined(PEER);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerJoined(PEER);
 
         assertThat(linkEpochs).containsExactly(PEER);
         assertThat(hints).containsExactly(new TransportObservation.PeerReachable(PEER));
@@ -67,7 +68,7 @@ class SwimHintWiringTest {
     void quicPeerStateListener_onPeerIdentityRefuted_refutesTheDialedIdentityOnly() {
         var claimant = new NodeId("node-claimant");
 
-        AetherNode.quicPeerStateListener(hints::add, linkEpochs::add).onPeerIdentityRefuted(PEER, claimant);
+        MembershipAssembly.quicPeerStateListener(hints::add, linkEpochs::add).onPeerIdentityRefuted(PEER, claimant);
 
         assertThat(hints)
             .as("#1830: the dialed identity is refuted; the node answering at its address is only named")

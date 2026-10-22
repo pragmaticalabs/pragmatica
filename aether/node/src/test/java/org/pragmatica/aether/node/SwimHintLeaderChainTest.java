@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.aether.node.assembly.SwimAssembly;
 import org.pragmatica.cluster.metrics.MetricObservation;
 
@@ -60,7 +61,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// wiring: `SwimProtocol`, `ClusterSyncScheduler` + `ClusterSyncCollector` wired exactly as
 /// `AetherNode.assembleNode` wires them (pong listener → scheduler, `SwimAssembly.pingTimeoutReporter`,
 /// `SwimAssembly.pongResponsiveReporter`), and the QUIC peer-state listener from
-/// `AetherNode.quicPeerStateListener`. Only the QUIC link itself is modelled: a connected-peers set
+/// `MembershipAssembly.quicPeerStateListener`. Only the QUIC link itself is modelled: a connected-peers set
 /// plus the listener callbacks a `QuicClusterNetwork` view change fires. Every assertion states the
 /// SAFE outcome. Adapted from the review's `Verify1065ChainProbeTest`.
 class SwimHintLeaderChainTest {
@@ -221,7 +222,7 @@ class SwimHintLeaderChainTest {
         collector.addPongListener(SwimAssembly.pongResponsiveReporter(SELF, this::deliver));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(VICTIM, List.of(SELF, VICTIM)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
-        return new Wiring(collector, scheduler, AetherNode.quicPeerStateListener(this::deliver, scheduler::onLinkEstablished));
+        return new Wiring(collector, scheduler, MembershipAssembly.quicPeerStateListener(this::deliver, scheduler::onLinkEstablished));
     }
 
     private void deliver(TransportObservation hint) {
