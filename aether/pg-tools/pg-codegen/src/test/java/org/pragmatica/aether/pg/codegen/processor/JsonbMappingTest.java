@@ -446,6 +446,36 @@ class JsonbMappingTest {
         }
 
         @Test
+        void markedComponentOfInsertedRecordOnTextColumn_isCompileError() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.pg.codegen.annotation.Table;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                record Title(String text) {}
+
+                record Profile(String name) {}
+
+                record DocumentRow(long id, @Jsonb Profile profile, @Jsonb Profile legacy, @Jsonb Title title) {}
+
+                @PgSql
+                public interface TitleInsertRepo {
+                    @Table(DocumentRow.class)
+                    Promise<Unit> insert(DocumentRow row);
+                }
+                """;
+
+            var result = compile(source, "test/TitleInsertRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("@Jsonb target 'title' maps to column 'documents.title' of type text");
+        }
+
+        @Test
         void markedParamOnTextColumn_isCompileError() throws Exception {
             var source = """
                 package test;
