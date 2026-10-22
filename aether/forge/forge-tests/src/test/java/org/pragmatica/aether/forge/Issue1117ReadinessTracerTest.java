@@ -691,8 +691,12 @@ class Issue1117ReadinessTracerTest {
 
     // --- log capture for (b) -------------------------------------------------------------------------------------
 
-    /// Captures WARN lines of the node-deployment FSM package without changing what the run logs: the logger config is
-    /// additive and keeps the level it inherits.
+    /// Captures the remediation WARN lines of the node-deployment FSM package. The shared `LogCapture` installs that logger's config at
+    /// the capture threshold, the inherited level raised to WARN, so for the life of this class the package's INFO and DEBUG lines are
+    /// suppressed: they reach neither the capture nor the run log (under forge-core's log4j2.xml the package inherits the root's INFO).
+    /// Its WARN and worse lines still reach the console (the config is additive). No forge-tests assertion reads those INFO lines: this
+    /// class asserts on the captured WARN lines, the KV and the nodes' FSM state, and FSM2 mode reads its sensor lines through
+    /// `Fsm2Sensors`, whose loggers are other packages.
     private void installCapture() {
         capture = LogCapture.capture(CAPTURE_LOGGER, captureThreshold(), true, this::collectRemediationLine);
     }

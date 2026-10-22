@@ -22,7 +22,7 @@ import org.pragmatica.testlogging.LogCapture;
 /// the checked-in expected-WARN list of the scenario (`fsm2/expected-warns-*.txt`). Shared by T and E-01, so both read the same sensors the same way.
 ///
 /// An entry is `warn` (a regex on a WARN-or-worse line, an occurrence range), `line` (an INFO sensor line naming a node) or `metric` (a
-/// `submissions_total` outcome arm of a node). The log capture is additive: it keeps the level each logger inherits.
+/// `submissions_total` outcome arm of a node). The log capture is additive; each logger runs at its inherited level with an INFO floor (see `capture()`).
 final class Fsm2Sensors implements AutoCloseable {
     private static final List<String> LOGGERS = List.of("org.pragmatica.aether.deployment.fsm.node",
                                                         "org.pragmatica.aether.deployment.fsm.cluster",
@@ -48,8 +48,9 @@ final class Fsm2Sensors implements AutoCloseable {
 
     private Fsm2Sensors() {}
 
-    /// Starts capturing the FSM loggers; `close()` stops it. Each logger keeps the level it inherits (an INFO floor, as the capture reads INFO and
-    /// up), its events go on to the console, and all of them land in one list in arrival order.
+    /// Starts capturing the FSM loggers; `close()` stops it. Each logger's config is installed at its inherited level with an INFO floor: one
+    /// that inherits INFO or coarser (all four do under forge-core's log4j2.xml) logs exactly as before, one configured finer would be raised to
+    /// INFO while captured. Its events go on to the console, and all of them land in one list in arrival order.
     static Fsm2Sensors capture() {
         var sensors = new Fsm2Sensors();
 
