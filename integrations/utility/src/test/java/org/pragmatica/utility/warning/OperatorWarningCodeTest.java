@@ -21,7 +21,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,7 +80,9 @@ class OperatorWarningCodeTest {
     /// Every operator-attention event has a recovery event (owner rule, 2026-10-03/05). A WARNING or CRITICAL code that is
     /// not itself a recovery must therefore be closed by some recovery code. The codes in [#UNCLOSED_BEFORE_THE_RULE] were
     /// shipped as point events before the rule was enforced: the list is frozen, so a NEW unclosed code fails here and must
-    /// either gain a recovery or be added to the list on purpose, in review.
+    /// either gain a recovery or be added to the list on purpose, in review. The codes in
+    /// [#FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER] are the other frozen list: written after the rule, for an engine that is not
+    /// active yet.
     @Test
     void everyWarningOrCriticalCode_hasARecovery_unlessListedAsUnclosedBeforeTheRule() {
         var closed = Arrays.stream(OperatorWarningCode.values())
@@ -91,7 +95,9 @@ class OperatorWarningCodeTest {
                              .collect(Collectors.toSet());
 
         assertThat(unclosed).as("WARNING/CRITICAL codes without a recovery code that are not on the frozen list")
-                            .isSubsetOf(UNCLOSED_BEFORE_THE_RULE);
+                            .isSubsetOf(Stream.concat(UNCLOSED_BEFORE_THE_RULE.stream(),
+                                                      FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER.stream())
+                                              .collect(Collectors.toSet()));
     }
 
     /// The frozen list may only shrink: a listed code that has gained a recovery (or been removed) must leave the list.
@@ -103,6 +109,36 @@ class OperatorWarningCodeTest {
 
         assertThat(UNCLOSED_BEFORE_THE_RULE).noneMatch(closed::contains);
         assertThat(UNCLOSED_BEFORE_THE_RULE).noneMatch(code -> code.level() == WarningLevel.INFO);
+    }
+
+    /// The FSM2 list may only shrink, as the list above: a listed code that has gained a recovery (or been removed, or
+    /// re-levelled to INFO) must leave the list.
+    @Test
+    void fsm2AwaitingRecovery_listsOnlyCodesThatAreStillUnclosed() {
+        var closed = Arrays.stream(OperatorWarningCode.values())
+                           .flatMap(code -> code.recoveryOf().stream())
+                           .collect(Collectors.toSet());
+
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).noneMatch(closed::contains);
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).noneMatch(code -> code.level() == WarningLevel.INFO);
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("the two frozen lists are disjoint").doesNotContainAnyElementsOf(UNCLOSED_BEFORE_THE_RULE);
+    }
+
+    /// FSM2 cutover tripwire: while any FSM2 code lacks a recovery this stays green and the test beside it is disabled. When the
+    /// list is empty this goes red: enable [#fsm2CutoverUnblocked_everyFsm2CodeHasARecovery] and delete this one.
+    @Test
+    void fsm2CutoverBlocked_whileAnFsm2CodeLacksARecovery() {
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("FSM2 cutover blocked: %d codes lack a recovery",
+                                                              FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER.size())
+                                                          .isNotEmpty();
+    }
+
+    @Disabled("FSM2 cutover blocked: the FSM2 warning codes lack a recovery")
+    @Test
+    void fsm2CutoverUnblocked_everyFsm2CodeHasARecovery() {
+        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("FSM2 cutover blocked: %d codes lack a recovery",
+                                                              FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER.size())
+                                                          .isEmpty();
     }
 
     /// #2306: the observer lag warning is closed by an INFO recovery of its own subsystem.
@@ -181,6 +217,35 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
         OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT,
         OperatorWarningCode.SWIM_MEMBER_IDENTITY_CONFLICT);
+
+    /// The deployment FSM rewrite's WARNING codes that have no recovery yet (phase-3 design 4.2, 5.2, 8.2). They were written after
+    /// the recovery rule, so they are NOT on [#UNCLOSED_BEFORE_THE_RULE]: FSM2 is not the active deployment engine in rc5, and each
+    /// of these must gain a recovery, be re-levelled, or be removed before the FSM2 cutover. Frozen and shrink-only, like the list
+    /// above; [#fsm2CutoverBlocked_whileAnFsm2CodeLacksARecovery] keeps the cutover blocked while it is not empty.
+    private static final Set<OperatorWarningCode> FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER = Set.of(
+        OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH,
+        OperatorWarningCode.ACTIVATION_UNPERMITTED,
+        OperatorWarningCode.BLUEPRINT_DELETE_REFUSED,
+        OperatorWarningCode.BLUEPRINT_REJECTED,
+        OperatorWarningCode.BOOT_TOKEN_ABSENT,
+        OperatorWarningCode.DEPARTURE_INFERRED,
+        OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
+        OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED,
+        OperatorWarningCode.IDENTITY_PROCESS_MISMATCH,
+        OperatorWarningCode.INVALID_PLACEMENT,
+        OperatorWarningCode.JOIN_REFUSED_PROCESS,
+        OperatorWarningCode.JOIN_REFUSED_SUPERSEDED,
+        OperatorWarningCode.JOIN_UNMATCHED,
+        OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
+        OperatorWarningCode.SCHEMA_HOLD,
+        OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+        OperatorWarningCode.SCHEMA_STATUS_UNKNOWN,
+        OperatorWarningCode.SLICE_UNRESPONSIVE,
+        OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+        OperatorWarningCode.STRAY_INSTANCE,
+        OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,
+        OperatorWarningCode.WORKER_NO_COMMUNITY_POLICY,
+        OperatorWarningCode.WORKER_READMITTED_ON_EVIDENCE);
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.
