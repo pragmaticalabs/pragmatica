@@ -37,6 +37,8 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.NodeState;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -133,9 +135,9 @@ public final class OlderCheckpointCluster {
     private final Map<NodeId, MessageRouter.MutableRouter> routers = new LinkedHashMap<>();
 
     private OlderCheckpointCluster(Map<NodeId, Option<SavedState<KVCommand<StringKey>>>> seeds) {
-        var topology = new TestTopologyManager(SIZE, NodeInfo.nodeInfo(NodeId.randomNodeId(), nodeAddress("localhost", 8090).unwrap()));
-
-        network = new LocalNetwork(topology, routers, new FaultInjector());
+        network = new LocalNetwork(topology(NodeInfo.nodeInfo(NodeId.randomNodeId(), nodeAddress("localhost", 8090).unwrap())),
+                                   routers,
+                                   new FaultInjector());
         for (var i = 1; i <= SIZE; i++) {
             var id = NodeId.nodeId("node-" + i).unwrap();
 
@@ -158,13 +160,70 @@ public final class OlderCheckpointCluster {
         return new OlderCheckpointCluster(seeds);
     }
 
+    /// All three nodes are core members. The stock `TestTopologyManager` reports only itself as a core node, which makes every engine a
+    /// one-voter electorate that decides alone; a cluster that is to agree needs the electorate to be the three of them.
+    private static TopologyManager topology(NodeInfo self) {
+        var ids = java.util.stream.IntStream.rangeClosed(1, SIZE).mapToObj(index -> NodeId.nodeId("node-" + index).unwrap()).toList();
+
+        return new TopologyManager() {
+            @Override
+            public NodeInfo self() {
+                return self;
+            }
+
+            @Override
+            public Option<NodeInfo> get(NodeId id) {
+                return Option.some(NodeInfo.nodeInfo(id, nodeAddress("localhost", 8090).unwrap()));
+            }
+
+            @Override
+            public int clusterSize() {
+                return SIZE;
+            }
+
+            @Override
+            public Option<NodeId> reverseLookup(java.net.SocketAddress socketAddress) {
+                return Option.none();
+            }
+
+            @Override
+            public org.pragmatica.lang.Promise<Unit> start() {
+                return org.pragmatica.lang.Promise.unitPromise();
+            }
+
+            @Override
+            public org.pragmatica.lang.Promise<Unit> stop() {
+                return org.pragmatica.lang.Promise.unitPromise();
+            }
+
+            @Override
+            public org.pragmatica.lang.io.TimeSpan pingInterval() {
+                return timeSpan(1).seconds();
+            }
+
+            @Override
+            public org.pragmatica.lang.io.TimeSpan helloTimeout() {
+                return timeSpan(5).seconds();
+            }
+
+            @Override
+            public Option<NodeState> getState(NodeId id) {
+                return Option.some(NodeState.discovered(self, java.time.Instant.now()));
+            }
+
+            @Override
+            public List<NodeId> topology() {
+                return ids;
+            }
+        };
+    }
+
     private void addNode(NodeId id, Option<SavedState<KVCommand<StringKey>>> seed) {
         var router = MessageRouter.mutable();
         var codec = codec();
         var store = new RecordingStore(router, codec);
         var persistence = new SeededPersistence(seed);
-        var topology = new TestTopologyManager(SIZE, NodeInfo.nodeInfo(id, nodeAddress("localhost", 8090).unwrap()));
-        var engine = new RabiaEngine<>(topology,
+        var engine = new RabiaEngine<>(topology(NodeInfo.nodeInfo(id, nodeAddress("localhost", 8090).unwrap())),
                                        network,
                                        store,
                                        ProtocolConfig.testConfig(),
