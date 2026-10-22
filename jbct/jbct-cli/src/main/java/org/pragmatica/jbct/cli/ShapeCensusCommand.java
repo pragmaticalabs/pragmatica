@@ -7,7 +7,6 @@ import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.lint.cst.shape.MethodShape;
 import org.pragmatica.jbct.lint.cst.shape.ShapeCensus;
 import org.pragmatica.jbct.parser.Java25Parser;
@@ -62,7 +61,13 @@ public class ShapeCensusCommand implements Callable<Integer> {
             return USAGE_ERROR;
         }
 
-        var config = ConfigLoader.load(Option.option(configPath), Option.none());
+        var loadedConfig = CliConfig.load(Option.option(configPath));
+
+        if (loadedConfig.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        var config = loadedConfig.unwrap();
         var files = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
 
         if (files.isEmpty()) {

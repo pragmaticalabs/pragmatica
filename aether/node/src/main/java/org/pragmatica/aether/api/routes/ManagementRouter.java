@@ -14,6 +14,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
+import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
@@ -194,6 +195,11 @@ public final class ManagementRouter {
         @Override
         public org.pragmatica.http.Headers headers() {
             return serverCtx.headers();
+        }
+
+        @Override
+        public Headers trailers() {
+            return serverCtx.trailers();
         }
 
         @Override

@@ -75,7 +75,20 @@ public sealed interface QuicClusterClient {
     /// @param peerId  the target peer's node identity
     /// @param address the target peer's UDP address
     /// @return promise resolving to the established peer connection
-    Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address);
+    default Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address) {
+        return connect(peerId, address, 0L);
+    }
+
+    /// Connect to a peer, announcing the dialer's link `generation` on the CONTROL preamble so both ends rank
+    /// this link against any other link of the pair identically (see [LinkRank]). A generation outside
+    /// `[1, LinkRank.MAX_GENERATION]` — the two-argument form passes 0 — sends the bare one-byte preamble of an
+    /// earlier node, and the link is arbitrated by the legacy rule.
+    ///
+    /// @param peerId     the target peer's node identity
+    /// @param address    the target peer's UDP address
+    /// @param generation the link generation chosen by [PeerState#nextDialGeneration], or 0 for none
+    /// @return promise resolving to the established peer connection
+    Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address, long generation);
     /// Resolve a hostname to an [InetAddress] **non-blocking**, on the client's Netty event loop
     /// (via [io.netty.resolver.DefaultNameResolver]). Used by the dialer to defer DNS resolution to
     /// dial time — a stale hostname that fails to resolve fails the returned promise cleanly instead
@@ -162,7 +175,7 @@ public sealed interface QuicClusterClient {
 
     record Unused() implements QuicClusterClient {
         @Override
-        public Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address) {
+        public Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address, long generation) {
             return UNEXPECTED_MESSAGE.promise();
         }
 
@@ -259,10 +272,14 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     /// (before any Hello is sent), or to ABANDONED — the compare-and-set makes the two mutually exclusive, so
     /// an attempt is never abandoned after its Hello can have gone out.
     private record DialAttempt(Promise<QuicPeerConnection> promise,
+                               long generation,
                                AtomicReference<DialStage> stage,
                                AtomicReference<Channel> datagram) {
-        static DialAttempt dialAttempt(Promise<QuicPeerConnection> promise) {
-            return new DialAttempt(promise, new AtomicReference<>(DialStage.PENDING), new AtomicReference<>());
+        static DialAttempt dialAttempt(Promise<QuicPeerConnection> promise, long generation) {
+            return new DialAttempt(promise,
+                                   generation,
+                                   new AtomicReference<>(DialStage.PENDING),
+                                   new AtomicReference<>());
         }
 
         boolean establish() {
@@ -303,8 +320,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     @Override
-    public Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address) {
-        return Promise.promise(promise -> initiateConnection(peerId, address, promise));
+    public Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address, long generation) {
+        return Promise.promise(promise -> initiateConnection(peerId, address, generation, promise));
     }
 
     @Override
@@ -359,7 +376,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Netty bootstrap bind
-    private void initiateConnection(NodeId peerId, InetSocketAddress address, Promise<QuicPeerConnection> promise) {
+    private void initiateConnection(NodeId peerId,
+                                    InetSocketAddress address,
+                                    long generation,
+                                    Promise<QuicPeerConnection> promise) {
         // Guard against an unresolved/null peer address (e.g. a stale or unknown DNS name).
         // Handing such an address to Netty's QUIC SockaddrIn would dereference a null
         // InetAddress and crash the node with an NPE. Instead fail the dial cleanly down the
@@ -383,7 +403,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             stale.close();
         }
 
-        var attempt = DialAttempt.dialAttempt(promise);
+        var attempt = DialAttempt.dialAttempt(promise, generation);
 
         pendingDials.put(peerId, attempt);
         promise.onResultRun(() -> pendingDials.remove(peerId, attempt));
@@ -506,11 +526,14 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             return;
         }
 
-        openStreamAndHandshake(quicChannel, peerId, promise);
+        openStreamAndHandshake(quicChannel, peerId, attempt.generation(), promise);
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "unchecked"})  // Netty stream creation
-    private void openStreamAndHandshake(QuicChannel quicChannel, NodeId peerId, Promise<QuicPeerConnection> promise) {
+    private void openStreamAndHandshake(QuicChannel quicChannel,
+                                        NodeId peerId,
+                                        long generation,
+                                        Promise<QuicPeerConnection> promise) {
         // QUIC streams are byte-oriented — need framing to delimit messages
         var streamInitializer = new ChannelInitializer<QuicStreamChannel>() {
             @Override
@@ -519,16 +542,17 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                 ch.pipeline()
                   .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                   .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                  .addLast(new ClientHelloHandler(peerId, quicChannel, promise));
+                  .addLast(new ClientHelloHandler(peerId, quicChannel, generation, promise));
             }
         };
 
         quicChannel.createStream(QuicStreamType.BIDIRECTIONAL, streamInitializer)
-                   .addListener(future -> handleStreamCreated(peerId, promise, future));
+                   .addListener(future -> handleStreamCreated(peerId, generation, promise, future));
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "unchecked"})  // Netty future callback
     private void handleStreamCreated(NodeId peerId,
+                                     long generation,
                                      Promise<QuicPeerConnection> promise,
                                      io.netty.util.concurrent.Future<?> future) {
         if (!future.isSuccess()) {
@@ -539,14 +563,14 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
         var streamChannel = (QuicStreamChannel) future.getNow();
 
-        sendHello(streamChannel, peerId);
+        sendHello(streamChannel, peerId, generation);
     }
 
-    private void sendHello(QuicStreamChannel streamChannel, NodeId peerId) {
-        // The handshake stream is now the CONTROL lane. Write the 1-byte lane preamble first
-        // (its own framed message), then the Hello frame, so the acceptor attributes this
-        // stream to CONTROL before reading the Hello.
-        var preamble = new byte[]{(byte) StreamType.CONTROL.streamIndex()};
+    private void sendHello(QuicStreamChannel streamChannel, NodeId peerId, long generation) {
+        // The handshake stream is now the CONTROL lane. Write the lane preamble first (its own framed
+        // message: the lane byte, then the link generation, #2138), then the Hello frame, so the acceptor
+        // attributes this stream to CONTROL — and ranks this link — before reading the Hello.
+        var preamble = PeerOpenedLaneRouter.controlPreamble(generation);
 
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
         // #726: PAYLOAD bytes at the lane boundary — the handshake preamble is a real frame
@@ -689,12 +713,17 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private class ClientHelloHandler extends SimpleChannelInboundHandler<ByteBuf> {
         private final NodeId peerId;
         private final QuicChannel quicChannel;
+        private final long generation;
         private final Promise<QuicPeerConnection> promise;
         private volatile boolean helloReceived;
 
-        ClientHelloHandler(NodeId peerId, QuicChannel quicChannel, Promise<QuicPeerConnection> promise) {
+        ClientHelloHandler(NodeId peerId,
+                           QuicChannel quicChannel,
+                           long generation,
+                           Promise<QuicPeerConnection> promise) {
             this.peerId = peerId;
             this.quicChannel = quicChannel;
+            this.generation = generation;
             this.promise = promise;
         }
 
@@ -859,7 +888,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // VERIFIED identity, consistent with `datagramChannels` (keyed by the dialed peerId
             // at bind time) — eviction closes the right channel, and no code path can register
             // a connection under an unverified id.
-            var peerConnection = quicPeerConnection(peerId, selfId, quicChannel);
+            var peerConnection = quicPeerConnection(peerId, selfId, generation, quicChannel);
             // The handshake stream is the CONTROL lane.
             var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // #1578: stamp the VERIFIED connection so a lane the acceptor opens finds it (the acceptor

@@ -249,10 +249,10 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                      .findFirst()
                      .map(entry -> switch (entry.getValue()
                                                 .type()) {
-            case SSH -> "ssh";
-            case FORGE -> "forge";
-            case CLOUD, DOCKER -> "";
-        })
+                              case SSH -> "ssh";
+                              case FORGE -> "forge";
+                              case CLOUD, DOCKER -> "";
+                          })
                      .orElse("");
     }
 

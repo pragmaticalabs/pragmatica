@@ -145,10 +145,10 @@ class EmberForwardedMavenPushTest {
         return exchange(mgmtPort, path, DERIVED_KEY, HttpRequest.BodyPublishers.ofString(POM), "PUT");
     }
 
-    /// What a client pushes for one artifact, per group shape, and the exact status every node must answer. A single-segment
-    /// group matches `ARTIFACT_PUT` and is task-group routed, so a non-owner FORWARDS it (the #1983 case); a slashed group
-    /// does not match that route's single-segment parameter and is answered on the node that took it (#1985 is about that
-    /// routing). Each path is pushed through every node.
+    /// What a client pushes for one artifact, per group shape, and the exact status every node must answer. Since #1986 a
+    /// Maven path is routed by its coordinate, not its segment count, so every group shape resolves to `ARTIFACT_PUT` (or
+    /// `MAVEN_METADATA`) and is task-group routed: a non-owner FORWARDS it (the #1983 case). Each path is pushed through
+    /// every node.
     private static final java.util.Map<String, Integer> EXPECTED_STATUS = new java.util.LinkedHashMap<>(java.util.Map.of());
     static {
         EXPECTED_STATUS.put("/repository/probe1983/probe/1.0.0/probe-1.0.0.pom", 400);

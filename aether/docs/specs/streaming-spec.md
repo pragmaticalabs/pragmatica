@@ -8,13 +8,13 @@
 > **⚠️ NOT EVERY KEY IN THIS SPEC IS WIRED, AND THE UNWIRED ONES ARE REJECTED.** The
 > "Implementation-Ready" status above describes the DESIGN. Several `[streams.X]` configuration keys
 > documented below — the whole per-consumer tuning family in §3.2/§3.3, plus `compression` and a
-> non-default `encryption-key-id` — are read by nothing at runtime, and since **#576** a blueprint
+> non-default `encryption_key_id` — are read by nothing at runtime, and since **#576** a blueprint
 > declaring them is **refused by blueprint validation** rather than silently accepted. **That refusal
 > does not block the publish today** — `BlueprintService.streamBindings` discards it and writes empty
 > stream bindings — so copying an example from those sections into a real `resources.toml` does NOT
 > fail the deployment; it publishes, and any slice consuming the aliased stream then fails with
 > `StreamAddressError.UnboundStreamAlias`. Every such key is flagged in place. **#677 descoped them for 1.0** (2026-09-14): they
-> stay rejected, `encryption-key-id` waits on #253's production key source, and compression plus the
+> stay rejected, `encryption_key_id` waits on #253's production key source, and compression plus the
 > per-consumer tuning family are a post-GA epic — a design target, not a 1.0 promise. The
 > authoritative per-operation statement of what streaming actually guarantees is
 > [`../reference/guarantees.md`](../reference/guarantees.md) §4, which is honest about these keys.
@@ -126,7 +126,7 @@ package org.pragmatica.aether.slice;
 /// - **Single event:** method takes `T` — called once per event.
 /// - **Batch:** method takes `List<T>` — called with a batch of events.
 ///
-/// Batch size is configurable per consumer group in TOML (`batch-size`).
+/// Batch size is configurable per consumer group in TOML (`batch_size`).
 ///
 /// The method must return `Promise<Unit>`.
 ///
@@ -366,8 +366,8 @@ Streams are declared in the blueprint's `resources.toml` alongside other resourc
 [streams.order-events]
 partitions = 6                    # Number of partitions (default: 4)
 retention = "time"                # "time", "count", "size" or "compound" (default: "count")
-retention-value = "5m"            # Duration for time, integer for count, size string for size
-max-event-size = "64KB"           # Maximum serialized event size (default: "1MB")
+retention_value = "5m"            # Duration for time, integer for count, size string for size
+max_event_size = "64KB"           # Maximum serialized event size (default: "1MB")
 ```
 
 Since #1549 every key above reaches the runtime through the same parser that validates it, and a key the parser does not read
@@ -383,7 +383,7 @@ Consumer groups are configured inline under the stream section. Each consumer gr
 > per-consumer tuning keys below is read at runtime, and `StreamResourceValidator.guardInertConfig`
 > fails them as inert configuration — but that verdict does not block the publish today (it is dropped
 > by `BlueprintService.streamBindings`), so the blueprint DOES deploy, with empty stream bindings. The block is
-> retained as a post-GA DESIGN target (descoped from 1.0 in #677), not as a working example. `auto-offset-reset` is the sharpest
+> retained as a post-GA DESIGN target (descoped from 1.0 in #677), not as a working example. `auto_offset_reset` is the sharpest
 > case: the only value the validator accepts is `"earliest"`, because a never-committed consumer always
 > starts at offset 0 **by the #478 ruling, permanently** — so the `"latest"` shown here (and named as
 > the default) is precisely the value that will be refused.
@@ -391,19 +391,19 @@ Consumer groups are configured inline under the stream section. Each consumer gr
 ```toml
 # DESIGN TARGET — every key below is refused as inert (#576, #677); that refusal does not block the publish today.
 [streams.order-events.consumers.analytics]
-auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
-checkpoint-interval = "1s"       # REJECTED as inert: not read at runtime
-batch-size = 100                 # REJECTED as inert
+auto_offset_reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
+checkpoint_interval = "1s"       # REJECTED as inert: not read at runtime
+batch_size = 100                 # REJECTED as inert
 processing = "ordered"           # REJECTED as inert
-on-failure = "retry"             # REJECTED as inert
-max-retries = 3                  # REJECTED as inert
-dead-letter = "order-events-dlq" # REJECTED as inert
+on_failure = "retry"             # REJECTED as inert
+max_retries = 3                  # REJECTED as inert
+dead_letter = "order-events-dlq" # REJECTED as inert
 
 [streams.order-events.consumers.audit]
-auto-offset-reset = "earliest"   # the one accepted value
-checkpoint-interval = "5s"       # REJECTED as inert
+auto_offset_reset = "earliest"   # the one accepted value
+checkpoint_interval = "5s"       # REJECTED as inert
 processing = "ordered"           # REJECTED as inert
-on-failure = "stall"             # REJECTED as inert
+on_failure = "stall"             # REJECTED as inert
 ```
 
 ### 3.3 Configuration Reference
@@ -413,9 +413,9 @@ on-failure = "stall"             # REJECTED as inert
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `partitions` | int | `4` | Number of partitions. Immutable after creation (Phase 1). |
-| `retention` | string | `"count"` | Retention mode: `"time"`, `"count"`, `"size"` or `"compound"` (`max-age`, `max-count`, `max-bytes`, `retention-mode` = `any`/`all`). **`time`/`size` retention also cap at the default count/bytes unless declared; eviction at whichever limit is hit first** (#1549) — `time` keeps the default 100,000 events and 256 MB, `size` the default 100,000 events and 24 h, and `compound` the default for any of `max-count`/`max-bytes`/`max-age` it omits (under `retention-mode = "all"` a partition is evicted only once every limit is exceeded). The ring's index is sized from the count, so it can never be unbounded; a count it cannot index is refused (`RetentionCountUnindexable`). `count` keeps no byte or age cap. |
-| `retention-value` | string/int | `"100000"` (count) | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
-| `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. A value above the one-frame ceiling (32 MiB transport frame, less its transfer reserve, less a 4 KiB message envelope: 33,484,800 bytes) is refused at config validation, because a single event travels alone in one replication or catch-up frame (#1937). |
+| `retention` | string | `"count"` | Retention mode: `"time"`, `"count"`, `"size"` or `"compound"` (`max_age`, `max_count`, `max_bytes`, `retention_mode` = `any`/`all`). **`time`/`size` retention also cap at the default count/bytes unless declared; eviction at whichever limit is hit first** (#1549) — `time` keeps the default 100,000 events and 256 MB, `size` the default 100,000 events and 24 h, and `compound` the default for any of `max_count`/`max_bytes`/`max_age` it omits (under `retention_mode = "all"` a partition is evicted only once every limit is exceeded). The ring's index is sized from the count, so it can never be unbounded; a count it cannot index is refused (`RetentionCountUnindexable`). `count` keeps no byte or age cap. |
+| `retention_value` | string/int | `"100000"` (count) | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
+| `max_event_size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. A value above the one-frame ceiling (32 MiB transport frame, less its transfer reserve, less a 4 KiB message envelope: 33,484,800 bytes) is refused at config validation, because a single event travels alone in one replication or catch-up frame (#1937). |
 | `backpressure` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"block"`, `"drop-oldest"`, `"reject"`). |
 | `storage` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"memory"` or `"persistent"`, AHSE-backed). |
 | `storage-instance` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: AHSE instance name, see [AHSE spec](future/hierarchical-storage-spec.md)). |
@@ -430,13 +430,13 @@ descoped the wiring from 1.0), not current behaviour.
 
 | Property | Type | Default | Status today | Description |
 |----------|------|---------|--------------|-------------|
-| `auto-offset-reset` | string | `"latest"` | **Only `"earliest"` accepted** — anything else rejected (#576). A never-committed consumer always starts at offset 0, permanently, by the **#478 ruling**; wiring this key means reopening #478. Note `StreamConfig.DEFAULT` still declares `"latest"`, a value the validator refuses. | Start position for new consumers: `"latest"` or `"earliest"`. |
-| `checkpoint-interval` | string | `"1s"` | **Rejected as inert** for declarative streams. Honoured only for programmatically built consumers; durable-topic groups get 500 ms from `DurableGroupIdentity`. | How often cursors are checkpointed to consensus. |
-| `batch-size` | int | `1` | **Rejected as inert** (#576). | Number of events per delivery for batch consumers. Ignored for single-event consumers. |
+| `auto_offset_reset` | string | `"latest"` | **Only `"earliest"` accepted** — anything else rejected (#576). A never-committed consumer always starts at offset 0, permanently, by the **#478 ruling**; wiring this key means reopening #478. Note `StreamConfig.DEFAULT` still declares `"latest"`, a value the validator refuses. | Start position for new consumers: `"latest"` or `"earliest"`. |
+| `checkpoint_interval` | string | `"1s"` | **Rejected as inert** for declarative streams. Honoured only for programmatically built consumers; durable-topic groups get 500 ms from `DurableGroupIdentity`. | How often cursors are checkpointed to consensus. |
+| `batch_size` | int | `1` | **Rejected as inert** (#576). | Number of events per delivery for batch consumers. Ignored for single-event consumers. |
 | `processing` | string | `"ordered"` | **Rejected as inert** (#576). | `"ordered"`: sequential within partition. `"parallel"`: virtual thread per partition. |
-| `on-failure` | string | `"retry"` | **Rejected as inert** (#576). | `"retry"`: retry with backoff. `"skip"`: skip failed event. `"stall"`: stop consuming until manual intervention. |
-| `max-retries` | int | `3` | **Rejected as inert** (#576). | Maximum retry attempts before dead-letter or skip. Only applies when `on-failure = "retry"`. |
-| `dead-letter` | string | (none) | **Rejected as inert** (#576) for declarative streams. Durable TOPICS get a DLQ unconditionally (`topic:<address>.dlq`, durable-pubsub-spec §9) — that path does not read this key. | Stream name to publish failed events to. If omitted and retries exhausted, event is logged and skipped. |
+| `on_failure` | string | `"retry"` | **Rejected as inert** (#576). | `"retry"`: retry with backoff. `"skip"`: skip failed event. `"stall"`: stop consuming until manual intervention. |
+| `max_retries` | int | `3` | **Rejected as inert** (#576). | Maximum retry attempts before dead-letter or skip. Only applies when `on_failure = "retry"`. |
+| `dead_letter` | string | (none) | **Rejected as inert** (#576) for declarative streams. Durable TOPICS get a DLQ unconditionally (`topic:<address>.dlq`, durable-pubsub-spec §9) — that path does not read this key. | Stream name to publish failed events to. If omitted and retries exhausted, event is logged and skipped. |
 | `consumer-group` | string | auto-generated | Wired. Durable-topic groups are version-stable (`groupId:artifactId#method`). | Override the consumer group name. Default: `{sliceName}-{methodName}`. |
 
 ### 3.4 Duration and Size String Formats
@@ -1354,7 +1354,7 @@ stream.fetch(partition, fromOffset, maxEvents)
 - Natural backpressure: next event is not delivered until the handler's `Promise<Unit>` completes.
 
 **Batch mode** (method takes `List<T>`):
-- Runtime accumulates up to `batch-size` events before invoking the handler.
+- Runtime accumulates up to `batch_size` events before invoking the handler.
 - If fewer events are available, the runtime delivers what it has after a short timeout (100ms).
 - Batch delivery is still sequential within a partition (one batch at a time).
 
@@ -1384,7 +1384,7 @@ for (var partition : assignedPartitions) {
 
 ### 9.5 Error Handling
 
-#### `on-failure = "retry"` (default)
+#### `on_failure = "retry"` (default)
 
 ```
 Event processing failed
@@ -1405,23 +1405,23 @@ Max retries exceeded?
 
 Retry backoff: `100ms * 2^(attempt - 1)`, capped at 10 seconds.
 
-#### `on-failure = "skip"`
+#### `on_failure = "skip"`
 
 Failed event is logged and skipped immediately. Cursor advances.
 
-#### `on-failure = "stall"`
+#### `on_failure = "stall"`
 
 Consumer stops processing. Event remains at the head of the consumer's queue. Manual intervention required (via Management API: reset cursor or skip event).
 
 ### 9.6 Dead-Letter Stream
 
-When `dead-letter` is configured, the dead-letter stream must be declared in the same blueprint:
+When `dead_letter` is configured, the dead-letter stream must be declared in the same blueprint:
 
 ```toml
 [streams.order-events-dlq]
 partitions = 1
 retention = "time"
-retention-value = "24h"
+retention_value = "24h"
 ```
 
 Failed events are published to the DLQ stream with metadata headers:
@@ -1464,7 +1464,7 @@ Consumer processes events, ACKs to governor
 Governor tracks lastAcknowledgedOffset in memory
   |
   v
-Checkpoint timer fires (configured by checkpoint-interval)
+Checkpoint timer fires (configured by checkpoint_interval)
   |
   v
 If lastAcknowledgedOffset > lastCheckpointedOffset:
@@ -1499,7 +1499,7 @@ When a governor fails and a new governor takes over:
 3. Events between last checkpoint and failure are redelivered (at-least-once). The checkpoint window bounds this only while the partition keeps receiving events: the shipped consumer evaluates the checkpoint trigger on delivery (a dead letter and one catch-up commit after a rewound resume also request one; timers only retry or follow up a commit already requested), so a partition that goes quiet within its first interval after attach has no checkpoint and replays from offset 0 (#1385; the timer-driven diagram in §10.2 is the design, the trailing commit is not yet implemented).
 4. Consumer handlers must be idempotent; the checkpoint window bounds redelivery only while the partition keeps receiving events (see item 3).
 
-**Phase 1 limitation:** Ring buffer data is lost on governor failure (no replication). Consumers resume from checkpoint offset but events between checkpoint and failure are gone. Consumers receive `CURSOR_EXPIRED` if the new governor's buffer does not contain the checkpointed offset, and fall back to `auto-offset-reset` policy.
+**Phase 1 limitation:** Ring buffer data is lost on governor failure (no replication). Consumers resume from checkpoint offset but events between checkpoint and failure are gone. Consumers receive `CURSOR_EXPIRED` if the new governor's buffer does not contain the checkpointed offset, and fall back to `auto_offset_reset` policy.
 
 **Phase 2 improvement (AHSE):** With hierarchical storage, sealed segments are persisted to AHSE local disk tier. On governor failover, the new governor loads sealed segments from AHSE — only the current unsealed segment (events since last seal) requires replica recovery. Data loss is bounded to one segment rather than the entire partition.
 
@@ -1516,7 +1516,7 @@ Replication durability is governed by two independent stream-level knobs. Both c
 
 **Breaking default (#1564).** A stream that declared no factor used to ack on the owner alone (the old `min-sync-replicas` default 0). CF now defaults to 2, so a publish needs one registered peer. A cluster whose desired core count is below 3 cannot take the default RF (it exceeds the core count), so its streams declare their factors.
 
-**One parse, deploy and runtime (#1549).** A `[streams.X]` section is parsed by `StreamConfigParser` both when the blueprint is validated and when the slice's stream resources are provisioned, so the committed config carries every declared key. Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy. The accepted keys are exactly `version`, `source`, `role`, `partitions`, `retention`, `retention-value`, `retention-mode`, `max-age`, `max-count`, `max-bytes`, `auto-offset-reset`, `max-event-size`, `consistency`, `replication_factor`, `confirmation_factor`, `compression` and `encryption-key-id`; any other key directly in the section (a record-component name such as `max_event_size_bytes`, or a removed #1564 key — `replicas`, `min-sync-replicas`, `min_sync_replicas` — which is refused naming its replacement, with no alias) is refused under `unknown-stream-key`, naming the key it resembles, and a non-integer value for `partitions`, `replication_factor` or `confirmation_factor` under `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value). Before #1549 the provisioning path used the generic record binder, which read snake_case component names and silently resolved everything else from `StreamConfig.DEFAULT`: the then write-ack floor (`min-sync-replicas`, superseded by #1564) was provisioned as 0 and `max-event-size`, `retention*`, `auto-offset-reset`, `consistency`, `compression` and `encryption-key-id` as their defaults, whatever the blueprint declared.
+**One parse, deploy and runtime (#1549).** A `[streams.X]` section is parsed by `StreamConfigParser` both when the blueprint is validated and when the slice's stream resources are provisioned, so the committed config carries every declared key. Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy. The accepted keys are exactly `version`, `source`, `role`, `partitions`, `retention`, `retention_value`, `retention_mode`, `max_age`, `max_count`, `max_bytes`, `auto_offset_reset`, `max_event_size`, `consistency`, `replication_factor`, `confirmation_factor`, `compression` and `encryption_key_id`; any other key directly in the section (a record-component name such as `max_event_size_bytes`, or a removed #1564 key — `replicas`, `min-sync-replicas`, `min_sync_replicas` — which is refused naming its replacement, with no alias) is refused under `unknown-stream-key`, naming the key it resembles, and a non-integer value for `partitions`, `replication_factor` or `confirmation_factor` under `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value). Before #1549 the provisioning path used the generic record binder, which read snake_case component names and silently resolved everything else from `StreamConfig.DEFAULT`: the then write-ack floor (`min-sync-replicas`, superseded by #1564) was provisioned as 0 and `max_event_size`, `retention*`, `auto_offset_reset`, `consistency`, `compression` and `encryption_key_id` as their defaults, whatever the blueprint declared.
 
 **Durability guarantee (storage):** a write that has been client-acked is held by CF distinct copies before the ack returns, so the *data* survives up to `CF − 1` simultaneous replica failures (owner included) `[design intent — unverified]`. Whether a *promotion* recovers all of it is scoped below. With `confirmation_factor = replication_factor` every follower is caught up to the last acked offset, so any of them can be promoted with zero loss.
 
@@ -1671,7 +1671,7 @@ A thin adapter that bridges KV-Store change notifications to a typed stream. Whe
 [streams.kv-changes]
 partitions = 4
 retention = "time"
-retention-value = "1h"
+retention_value = "1h"
 
 [cdc.kv-to-stream]
 source = "kv-store"
@@ -1831,7 +1831,7 @@ aether-stream (runtime implementation)
 - Governor-push replication to worker replicas
 - Governor failover recovery from replicas
 - Strong consistency (Rabia produce path)
-- Consumer read-preference (leader vs replica)
+- Consumer read_preference (leader vs replica)
 - AHSE integration: sealed ring buffer segments stored as content-addressed blocks through `storage.stream-events` instance (ring buffer becomes read cache)
 - Tier-aware retention: memory + disk + S3 retention configured independently per AHSE storage instance
 
@@ -1877,7 +1877,7 @@ aether-stream (runtime implementation)
 | `consumerGroup_multipleConsumers_partitionsDistributed` | Deploy multiple consumer instances. Verify each gets a subset of partitions. |
 | `consumerRebalance_consumerLeaves_partitionsReassigned` | Remove a consumer instance. Verify orphaned partitions reassigned. |
 | `cursorCheckpoint_governorRestart_consumeResumesFromCheckpoint` | Checkpoint cursors, restart governor, verify consumption resumes from checkpoint. |
-| `batchConsumer_batchSize10_eventsDeliveredInBatches` | Configure batch-size=10, verify handler receives lists of 10. |
+| `batchConsumer_batchSize10_eventsDeliveredInBatches` | Configure batch_size=10, verify handler receives lists of 10. |
 | `retention_timeBasedEviction_oldEventsRemoved` | Publish events, wait for retention window, verify old events are evicted. |
 | `errorHandling_retryExhausted_eventSentToDeadLetter` | Configure retry + DLQ, fail processing, verify event appears in DLQ stream. |
 

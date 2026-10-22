@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
+import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 import org.pragmatica.aether.node.health.WorkerEndpointDirectory;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -30,7 +32,7 @@ class HierarchyDialTargetsTest {
         var seeds = java.util.List.of(NodeInfo.nodeInfo(self, address),
             NodeInfo.nodeInfo(current, address, Map.of(NodeInfo.LABEL_ROLE, "core")),
             NodeInfo.nodeInfo(workerPeer, address, Map.of(NodeInfo.LABEL_ROLE, "worker")));
-        assertThat(AetherNode.workerBootstrapCores(self, seeds)).containsExactly(current);
+        assertThat(WorkerHierarchyAssembly.workerBootstrapCores(self, seeds)).containsExactly(current);
     }
 
     @Test
@@ -54,7 +56,7 @@ class HierarchyDialTargetsTest {
         }
 
         var allowed = Set.of(core, governor, pending);
-        var targets = AetherNode.desiredDialTargets(membership,
+        var targets = MembershipAssembly.desiredDialTargets(membership,
                                                     WorkerEndpointDirectory.workerEndpointDirectory(),
                                                     allowed::contains);
 

@@ -43,9 +43,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// The generator and the production Jackson mapper apply one value-object rule (owner ruling: value objects are
-/// unwrapped everywhere on slice HTTP, one wire form). For every fixture in [ValueObjectFixtures] both sides give
-/// the same verdict, the verdict is the expected one, and the bytes agree both ways.
+/// The generator and the production Jackson mapper apply one value-object rule (owner rulings: value objects are
+/// unwrapped when nested, and a value object document is the object of its component; one wire form). For every
+/// fixture in [ValueObjectFixtures] both sides give the same verdict, the verdict is the expected one, and the
+/// bytes of the fixture as a whole document agree both ways.
 class ValueObjectRuleAgreementTest {
     record Fixture(String name, Object sample, boolean valueObject) {
         @Override

@@ -345,11 +345,11 @@ public final class WorkerMetadataClient {
         return Result.lift(Causes::fromThrowable,
                            () -> codec.decode(verified.get(scope.hash())))
                      .flatMap(decoded -> switch (scope.scope()) {
-            case WorkerMetadataIndex.DIRECTORY -> decodeDirectory(decoded, peers);
-            case WorkerMetadataIndex.ENDPOINT_DIRECTORY -> decodeDirectory(decoded, endpoints);
-            case WorkerMetadataIndex.DHT_REPLICATION -> decodeDhtReplication(decoded, replication);
-            default -> decodeEntries(decoded, entries);
-        });
+                                  case WorkerMetadataIndex.DIRECTORY -> decodeDirectory(decoded, peers);
+                                  case WorkerMetadataIndex.ENDPOINT_DIRECTORY -> decodeDirectory(decoded, endpoints);
+                                  case WorkerMetadataIndex.DHT_REPLICATION -> decodeDhtReplication(decoded, replication);
+                                  default -> decodeEntries(decoded, entries);
+                              });
     }
 
     private static Result<Unit> decodeDhtReplication(Object decoded,
@@ -417,8 +417,8 @@ public final class WorkerMetadataClient {
                                                    assignedWorker = projection.entries()
                                                                               .get(new AetherKey.ActivationDirectiveKey(self)) instanceof AetherValue.ActivationDirectiveValue directive && AetherValue.ActivationDirectiveValue.WORKER.equals(directive.role());
                                                    if (assignedWorker) {
-                                                   projectionReady.run();
-                                               }
+                                                       projectionReady.run();
+                                                   }
 
                                                    store.replayNotifications();
                                                });

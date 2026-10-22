@@ -15,7 +15,7 @@ Two container images are available:
 | Image | Description | Port |
 |-------|-------------|------|
 | `aether-node` | Runtime node for Aether cluster | 8080 (API), 8090 (cluster) |
-| `aether-forge` | Testing simulator with dashboard | 8888 |
+| `aether-forge` | Testing simulator (load and chaos REST API) | 8888 |
 
 ## Quick Start
 
@@ -78,7 +78,7 @@ docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
 docker compose --profile forge up --build
 ```
 
-Access Forge dashboard at http://localhost:8888
+Forge's REST API is at http://localhost:8888
 
 ## Docker Compose Configuration
 
@@ -150,7 +150,7 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FORGE_PORT` | 8888 | Dashboard port |
+| `FORGE_PORT` | 8888 | Forge API port |
 | `CLUSTER_SIZE` | 5 | Simulated cluster size |
 | `LOAD_RATE` | 1000 | Requests per second |
 | `JAVA_OPTS` | `-Xmx1g -XX:+UseZGC` | JVM options |
@@ -234,6 +234,31 @@ volumes:
   aether-data-1:
   aether-config-1:
 ```
+
+### Node state directory (volume sentinels)
+
+The node keeps a small state directory, `/var/lib/aether` in the image (override with `AETHER_STATE_DIR` or
+`-Daether.state.dir`), on the **boot filesystem, not under `/data`**. It holds one sentinel file per guarded
+data volume, which is how a node tells an unmounted data volume from a genuine first boot: with a sentinel
+present and the volume's marker missing, it refuses to start on empty metadata and names the path.
+
+It guards only while it outlives the data volume. Recommended: give it a small separate volume or a bind
+mount, which survives container recreation:
+
+```yaml
+services:
+  aether-node-1:
+    volumes:
+      - aether-data-1:/data
+      - aether-state-1:/var/lib/aether
+
+volumes:
+  aether-state-1:
+```
+
+With **no mount** the state directory lives in the container layer and covers restarts only: a recreated
+container has no sentinel and reads an empty `/data` as a first boot. If the state directory is on the same
+filesystem as a guarded volume, the node logs one WARN at boot that the guard is inactive, naming both paths.
 
 ### TLS Configuration
 
@@ -401,6 +426,6 @@ jobs:
 
 | Port | Protocol | Usage |
 |------|----------|-------|
-| 8080 | HTTP | Management API, Dashboard |
+| 8080 | HTTP | Management API |
 | 8090 | TCP | Cluster communication |
-| 8888 | HTTP | Forge dashboard |
+| 8888 | HTTP | Forge REST API |

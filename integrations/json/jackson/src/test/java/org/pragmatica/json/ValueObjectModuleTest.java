@@ -13,8 +13,9 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// A JBCT value object travels as its bare component through [ValueObjectModule] and is read back through its
-/// factory; the default mapper, shared by non-slice code, keeps the record shape.
+/// A JBCT value object nested in another value travels as its bare component through [ValueObjectModule], as the
+/// whole document it is the object of its component, and either way it is read back through its factory; the default
+/// mapper, shared by non-slice code, keeps the record shape.
 class ValueObjectModuleTest {
     private static final JsonMapper VALUE_OBJECTS = JsonMapper.valueObjectJsonMapper();
 
@@ -29,6 +30,13 @@ class ValueObjectModuleTest {
     record Quantity(int value) {
         static Result<Quantity> quantity(int value) {
             return Result.success(new Quantity(value));
+        }
+    }
+
+    /// Its factory accepts `null`, so only the module's own refusal stands between `{"value":null}` and a value.
+    record Count(Integer value) {
+        public static Result<Count> count(Integer value) {
+            return Result.success(new Count(value));
         }
     }
 
@@ -56,6 +64,46 @@ class ValueObjectModuleTest {
         assertThat(write(new Signup(new Email("a@b.c"), new Quantity(3), Option.none())))
             .isEqualTo("{\"email\":\"a@b.c\",\"quantity\":3,\"backup\":null}");
         assertThat(write(List.of(new Email("a@b.c")))).isEqualTo("[\"a@b.c\"]");
+    }
+
+    @Test
+    void valueObjectDocument_isTheObjectOfItsComponent_bothWays() {
+        assertThat(write(new Email("a@b.c"))).isEqualTo("{\"value\":\"a@b.c\"}");
+        assertThat(write(new Quantity(3))).isEqualTo("{\"value\":3}");
+        assertThat(write(Option.some(new Email("a@b.c")))).isEqualTo("{\"value\":\"a@b.c\"}");
+        assertThat(read("{\"value\":\"a@b.c\"}", new TypeToken<Email>() {})).isEqualTo(new Email("a@b.c"));
+        assertThat(read("{\"extra\":[1,{}],\"value\":\"a\",\"value\":\"a@b.c\"}", new TypeToken<Email>() {}))
+            .isEqualTo(new Email("a@b.c"));
+        assertThat(read("{\"value\":3}", new TypeToken<Quantity>() {})).isEqualTo(new Quantity(3));
+        assertThat(read("{\"value\":\"a@b.c\"}", new TypeToken<Option<Email>>() {})).isEqualTo(Option.some(new Email("a@b.c")));
+    }
+
+    @Test
+    void valueObjectDocument_refusesTheBareForm_aMissingOrNullComponent_andWhatTheFactoryRefuses() {
+        assertRefused("\"a@b.c\"", new TypeToken<Email>() {}, "");
+        assertRefused("[\"a@b.c\"]", new TypeToken<Email>() {}, "");
+        assertRefused("{}", new TypeToken<Email>() {}, "Email");
+        assertRefused("{\"value\":null}", new TypeToken<Email>() {}, "Email");
+        assertRefused("{\"value\":\"nope\"}", new TypeToken<Email>() {}, "not an email: nope");
+    }
+
+    @Test
+    void valueObjectDocument_refusesANullComponent_evenWhereTheFactoryWouldAcceptIt() {
+        assertThat(read("{\"value\":3}", new TypeToken<Count>() {})).isEqualTo(new Count(3));
+        assertRefused("{\"value\":null}", new TypeToken<Count>() {}, "expected Count");
+    }
+
+    // Nested is decided by the value's own position, so a value object stays bare as a map value or an element of a
+    // root container, and its object form is refused there.
+    @Test
+    void valueObjectNestedUnderARootContainer_staysBare_bothWays() {
+        var aliases = Map.of(new Email("a@b.c"), new Email("x@y.z"));
+
+        assertThat(write(aliases)).isEqualTo("{\"a@b.c\":\"x@y.z\"}");
+        assertThat(read("{\"a@b.c\":\"x@y.z\"}", new TypeToken<Map<Email, Email>>() {})).isEqualTo(aliases);
+        assertRefused("{\"a@b.c\":{\"value\":\"x@y.z\"}}", new TypeToken<Map<Email, Email>>() {}, "");
+        assertRefused("[{\"value\":\"a@b.c\"}]", new TypeToken<List<Email>>() {}, "");
+        assertThat(read("[\"a@b.c\"]", new TypeToken<List<Email>>() {})).isEqualTo(List.of(new Email("a@b.c")));
     }
 
     @Test
@@ -109,6 +157,17 @@ class ValueObjectModuleTest {
         assertThat(JsonMapper.defaultJsonMapper()
                              .writeAsString(new Email("a@b.c"))
                              .unwrap()).isEqualTo("{\"value\":\"a@b.c\"}");
+    }
+
+    private static <T> T read(String json, TypeToken<T> type) {
+        return VALUE_OBJECTS.readString(json, type)
+                            .unwrap();
+    }
+
+    private static <T> void assertRefused(String json, TypeToken<T> type, String message) {
+        VALUE_OBJECTS.readString(json, type)
+                     .onSuccess(value -> fail("accepted " + value + " from " + json))
+                     .onFailure(cause -> assertThat(cause.message()).contains(message));
     }
 
     private static String write(Object value) {

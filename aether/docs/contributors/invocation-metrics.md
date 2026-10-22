@@ -248,7 +248,7 @@ ThresholdStrategy.composite(
                                                         │
                                                         v
 ┌──────────────┐     ┌────────────────────┐     ┌──────────────────┐
-│ Dashboard/   │<────│ MetricsScheduler   │<────│ snapshot()       │
+│ Operators/   │<────│ MetricsScheduler   │<────│ snapshot()       │
 │ Monitoring   │     │ (publishes)        │     │ (resets)         │
 └──────────────┘     └────────────────────┘     └──────────────────┘
 ```

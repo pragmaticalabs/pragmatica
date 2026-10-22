@@ -56,6 +56,12 @@ public final class SliceRequestContext implements RequestContext {
         return httpContext;
     }
 
+    /// The codec the router decodes this request's body with, so a context rebuilt around the same request (Terra's,
+    /// after authentication) reads the body in the same wire form the router writes responses in.
+    public JsonCodec jsonCodec() {
+        return jsonCodec;
+    }
+
     public SecurityContext security() {
         return httpContext.security();
     }
@@ -103,6 +109,12 @@ public final class SliceRequestContext implements RequestContext {
     @Override
     public Headers headers() {
         return Headers.headers(httpContext.headers());
+    }
+
+    /// #2310: the trailer fields the request carried, locally received or forwarded.
+    @Override
+    public Headers trailers() {
+        return Headers.trailers(httpContext.trailers());
     }
 
     @Override

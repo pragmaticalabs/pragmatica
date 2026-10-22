@@ -18,7 +18,7 @@
         <maven.compiler.release>25</maven.compiler.release>
         <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
-        <platform.version>1.0.0-rc4</platform.version>
+        <platform.version>1.0.0-rc5</platform.version>
     </properties>
 
     <dependencies>
@@ -58,6 +58,12 @@
             <version>${platform.version}</version>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <version>${platform.version}</version>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -76,6 +82,11 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
+                            <version>${platform.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>jbct-async-check</artifactId>
                             <version>${platform.version}</version>
                         </path>
                     </annotationProcessorPaths>

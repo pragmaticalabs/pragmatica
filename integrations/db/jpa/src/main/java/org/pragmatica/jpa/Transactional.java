@@ -62,7 +62,7 @@ public interface Transactional {
             var tx = em.getTransaction();
 
             return beginTransaction(errorMapper, tx, input).flatMap(operation)
-                                   .onFailure(_ -> handleRollback(tx))
+                                   .withFailure(_ -> handleRollback(tx))
                                    .flatMap(result -> handleCommit(errorMapper, tx, result));
         };
     }

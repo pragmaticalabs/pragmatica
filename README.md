@@ -2,7 +2,7 @@
 
 A monorepo for building reliable Java backends with functional programming patterns and a unified application runtime.
 
-**Current release branch: `release-1.0.0-rc4`.** Development integrates here and pull requests target this branch, not `main`; once the release ships, find the current one with `git ls-remote origin 'release-*'`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+**Current release branch: `release-1.0.0-rc5`.** Development integrates here and pull requests target this branch, not `main`; once the release ships, find the current one with `git ls-remote origin 'release-*'`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Pre-GA release candidate — not production-ready.** Read the [Aether known limitations](aether/docs/reference/known-limitations.md) before evaluating.
 
@@ -15,6 +15,8 @@ A monorepo for building reliable Java backends with functional programming patte
 **[JBCT Tools](jbct/README.md)** — CLI and Maven plugin for Java Backend Coding Technology: code formatting, linting, slice annotation processing, project scaffolding.
 
 **[Aether Runtime](aether/README.md)** — Unified Application Runtime for Java. Deploy services as slices, scale transparently, no microservices boilerplate. Consensus-based state, automatic topology management, built-in observability.
+
+**[Terra Runtime](terra/README.md)** — Standalone compilation target for the same slice sources. Initial support includes blueprint-selected composition, scoped resources, local interceptors, in-process pub-sub, and shared database migrations.
 
 ## Prerequisites
 
@@ -79,14 +81,14 @@ mvn test                   # Run tests after build
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </dependency>
 
 <!-- Aether Slice API (for writing slices) -->
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-api</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
     <scope>provided</scope>
 </dependency>
 
@@ -94,7 +96,7 @@ mvn test                   # Run tests after build
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>1.0.0-rc4</version>
+    <version>1.0.0-rc5</version>
 </plugin>
 ```
 
@@ -107,7 +109,7 @@ mvn test                   # Run tests after build
 
 ## License
 
-- Apache License 2.0 everywhere by default: core, integrations, JBCT, and the Aether slice API, resources, CLI and tooling
+- Apache License 2.0 everywhere by default: core, integrations, JBCT, Terra, and the Aether slice API, resources, CLI and tooling
 - Business Source License 1.1 (converts to Apache 2.0 on January 1, 2030) for the Aether runtime modules listed in [LICENSE](LICENSE): `node`, `aether-deployment`, `aether-control`, `aether-ttm`, `aether-ttm-onnx`, `aether-stream`, `aether-invoke`, `ember`, `forge-api`, `forge-core` (and the `forge-tests` harness)
 
 Each BSL module carries its own `LICENSE` file. No Apache-2.0 module depends on a BSL module; `tools/check-licence-closure.py` enforces that in CI.

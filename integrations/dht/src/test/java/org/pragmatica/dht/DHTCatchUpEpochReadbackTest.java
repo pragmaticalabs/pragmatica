@@ -75,9 +75,12 @@ class DHTCatchUpEpochReadbackTest {
 
         switch (message) {
             case DHTMessage.DigestRequest r -> node.handleDigestRequest(r, resp -> route(nodes, antiEntropies, r.sender(), resp));
+            case DHTMessage.StampDigestRequest r -> node.handleStampDigestRequest(r, resp -> route(nodes, antiEntropies, r.sender(), resp));
             case DHTMessage.DigestResponse r -> antiEntropy.onDigestResponse(r);
             case DHTMessage.MigrationDataRequest r -> node.handleMigrationDataRequest(r, resp -> route(nodes, antiEntropies, r.sender(), resp));
+            case DHTMessage.MigrationPageRequest r -> node.handleMigrationPageRequest(r, resp -> route(nodes, antiEntropies, r.sender(), resp));
             case DHTMessage.MigrationDataResponse r -> antiEntropy.onMigrationDataResponse(r);
+            case DHTMessage.MigrationPageResponse r -> antiEntropy.onMigrationPageResponse(r);
             default -> {}
         }
     }

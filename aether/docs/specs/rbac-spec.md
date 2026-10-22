@@ -243,11 +243,9 @@ Format: semicolon-separated entries, each entry is `keyValue:name:comma-separate
 ```toml
 [management]
 port = 8080
-# When app-http.api-keys is configured, management API requires
-# API key by default. This flag overrides that behavior.
-# security = "inherit"  # default: use app-http.api-keys
-# security = "disabled" # explicitly disable for management
-# security = "required" # always require, even if app-http has no keys
+# Optional (#962): "api-key" or "none". Absent, the management plane inherits [app-http] security_mode.
+# Any other value (including "jwt") is refused at load. See management-api.md, "Management security mode and the shared keys".
+# security_mode = "api-key"
 ```
 
 ---
@@ -668,8 +666,7 @@ InvocationContext.runWithContext(requestId, 1, false, principal, originNode, () 
 |----------|-------------|----------------------------------------|----------------------------------|
 | **Health** | `/health/*`, `/readiness/*`, `/liveness/*` | `Public` | `Public` |
 | **Management API** | `/api/*`, `/status`, `/nodes`, `/slices`, `/metrics`, `/scale`, `/repository/*`, `/alerts/*`, `/thresholds/*`, `/deploy/*`, `/invocation-metrics/*`, `/controller/*` | `Public` | `ApiKeyRequired` |
-| **Dashboard** | `/dashboard`, `/dashboard/*` | `Public` | `ApiKeyRequired` |
-| **WebSocket** | `/ws/dashboard`, `/ws/status`, `/ws/events` | `Public` | `ApiKeyRequired` |
+| **WebSocket** | `/ws/status`, `/ws/events` | `Public` | `ApiKeyRequired` |
 | **Application routes** | Slice-defined paths | `Public` (or slice-declared) | `Public` (or slice-declared) |
 
 ### 7.2 Rationale
@@ -768,6 +765,10 @@ Error: Invalid API key. Check your --api-key value or AETHER_API_KEY environment
 ---
 
 ## 9. Dashboard and WebSocket Authentication
+
+> **Removed in 1.0.0-rc5:** the built-in dashboard, `/dashboard` and `/ws/dashboard` (§9.1 and every
+> `DashboardWebSocketHandler` reference below are kept as the design record of the removed code). The
+> WebSocket authentication flow of §9.2 still governs the surviving feeds `/ws/status` and `/ws/events`.
 
 ### 9.1 HTTP Dashboard
 

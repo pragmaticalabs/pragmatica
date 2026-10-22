@@ -5,7 +5,7 @@
     <parent>
         <artifactId>serialization</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>1.0.0-rc4</version>
+        <version>1.0.0-rc5</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -70,6 +70,13 @@
                     <compilerArgs>
                         <arg>-proc:none</arg>
                     </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
                 </configuration>
             </plugin>
         </plugins>

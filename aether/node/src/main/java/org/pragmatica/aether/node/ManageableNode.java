@@ -20,6 +20,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.journal.TransitionJournal;
+import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
 import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -81,6 +82,18 @@ public interface ManageableNode {
 
     default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
         return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
+    }
+
+    /// Why this node's own persisted consensus history could not be restored, while that fences it from
+    /// activating (#1468). `OwnRestoreWatchdog` bounds the stop this causes.
+    default Option<org.pragmatica.lang.Cause> ownRestoreFailure() {
+        return Option.none();
+    }
+
+    /// Why the re-persist of a restored or adopted state failed, while that fences this node from activating
+    /// (#1516). `OwnRestoreWatchdog` bounds the stop this causes.
+    default Option<org.pragmatica.lang.Cause> restoredStateSaveFailure() {
+        return Option.none();
     }
 
     /// Workers retain a scoped committed projection and must forward cluster-wide reads.
@@ -185,6 +198,12 @@ public interface ManageableNode {
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
+
+    /// The node's prefetch gossip counters; none before SWIM runs, and on a node with no prefetch gossip at all.
+    default Option<PrefetchGossipStats> prefetchGossipStats() {
+        return Option.none();
+    }
+
     Option<ClusterTopologyManager> clusterTopologyManager();
     /// Diagnostic/test observable — the leader `PresenceSampler` peak (monotonic high-water mark
     /// of the debounced stable member-set size ever observed). The NTT `LeaderReconciler` latches
@@ -288,7 +307,7 @@ public interface ManageableNode {
     /// the retired membership FSM snapshot. Cheap to call repeatedly — recomputes on each query.
     org.pragmatica.aether.deployment.membership.view.MembershipView membershipView();
     /// Post-E.8 (spec §7.2): unified `ClusterPhase` accessor that returns the value
-    /// derived by `ClusterPhaseView.compute()`. Status routes and any dashboard consumer
+    /// derived by `ClusterPhaseView.compute()`. Status routes and any other consumer
     /// should call this rather than reading the KV atom directly.
     Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier();
 

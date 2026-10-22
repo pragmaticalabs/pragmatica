@@ -193,7 +193,7 @@ graph TB
 ```mermaid
 graph TB
     subgraph L4["Layer 4: Human"]
-        User["Operator via CLI/Dashboard"]
+        User["Operator via CLI/API"]
     end
 
     subgraph L3["Layer 3: Large LLM (planned)"]

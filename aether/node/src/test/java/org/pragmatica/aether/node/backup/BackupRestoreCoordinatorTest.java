@@ -379,7 +379,7 @@ class BackupRestoreCoordinatorTest {
         }
 
         /// The restore reaches the running cluster's caches only through put notifications: a component that
-        /// loaded before the restore (see `AetherNode.onRestoreDecision`) and keeps current by a put listener
+        /// loaded before the restore (see `ClusterBootstrapAssembly.onRestoreDecision`) and keeps current by a put listener
         /// sees the restored state only if EACH restored key is published as its own `ValuePut`.
         @Test
         void everyRestoredKey_isPublishedAsItsOwnPut() {

@@ -65,11 +65,11 @@ public record CstNavigator(CstNode.NonTerminal node) {
                    .stream()
                    .filter(c -> hasRule(c, ruleName))
                    .flatMap(c -> switch (c) {
-            case CstNode.Token tok -> Stream.of(tok.text());
-            case CstNode.Terminal term -> Stream.of(term.text());
-            case CstNode.NonTerminal nt -> nt.children().stream().flatMap(CstNavigator::leafText);
-            default -> Stream.<String> empty();
-        })
+                                case CstNode.Token tok -> Stream.of(tok.text());
+                                case CstNode.Terminal term -> Stream.of(term.text());
+                                case CstNode.NonTerminal nt -> nt.children().stream().flatMap(CstNavigator::leafText);
+                                default -> Stream.<String> empty();
+                            })
                    .findFirst()
                    .map(Option::present)
                    .orElse(Option.empty());

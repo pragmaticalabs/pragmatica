@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>1.0.0-rc4</version>
+        <version>1.0.0-rc5</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -35,6 +35,17 @@
         <module>xml</module>
         <module>storage</module>
     </modules>
+
+    <dependencies>
+        <!-- JBCT-ASYNC-01 (type-attributed Promise callback check): javac discovers it from the classpath in every module of this
+             tree that has no annotationProcessorPaths; modules that do list jbct-async-check there. Warning level; switch a
+             module off with -Ajbct.async.severity=off. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
 
     <build>
         <plugins>

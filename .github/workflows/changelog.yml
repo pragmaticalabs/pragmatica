@@ -5,8 +5,13 @@ name: Changelog fragment
 # `release-prep` allows the CHANGELOG.md edit.
 on:
   pull_request:
-    branches: [main, release-*]
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
     types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# A newer run on the same PR supersedes the in-progress one.
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   fragment:

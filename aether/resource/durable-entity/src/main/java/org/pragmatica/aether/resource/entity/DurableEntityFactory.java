@@ -45,7 +45,7 @@ import static org.pragmatica.lang.Result.all;
 /// `InMemoryDurableEntity` — a bare map with no fence and no owner routing, now a test-only fixture in
 /// this module's test sources (#1270) — so a five-node cluster gave every node its own private copy of
 /// every key. It now builds the fenced [PartitionFencedDurableEntity] from node-wide SPI extensions
-/// registered by `AetherNode.registerEntityExtensionsOnSpi`, following the `StreamAccessFactory` template.
+/// registered by `EntityAssembly.registerEntityExtensionsOnSpi`, following the `StreamAccessFactory` template.
 ///
 /// The context-free [#provision(DurableEntityConfig)] overload cannot reach those extensions, so it
 /// REFUSES rather than silently rebuilding the unfenced entity — the #345 I1 owner ruling on an absent

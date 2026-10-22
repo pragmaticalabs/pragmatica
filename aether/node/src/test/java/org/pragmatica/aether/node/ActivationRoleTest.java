@@ -6,14 +6,15 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
+import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 
 class ActivationRoleTest {
     @Test
     void committedDirectiveCannotChangeConfiguredNodeRole() {
-        assertThat(AetherNode.activationRoleMatches(true, "WORKER")).isTrue();
-        assertThat(AetherNode.activationRoleMatches(false, "CORE")).isTrue();
-        assertThat(AetherNode.activationRoleMatches(true, "CORE")).isFalse();
-        assertThat(AetherNode.activationRoleMatches(false, "WORKER")).isFalse();
-        assertThat(AetherNode.activationRoleMatches(false, "")).isFalse();
+        assertThat(WorkerHierarchyAssembly.activationRoleMatches(true, "WORKER")).isTrue();
+        assertThat(WorkerHierarchyAssembly.activationRoleMatches(false, "CORE")).isTrue();
+        assertThat(WorkerHierarchyAssembly.activationRoleMatches(true, "CORE")).isFalse();
+        assertThat(WorkerHierarchyAssembly.activationRoleMatches(false, "WORKER")).isFalse();
+        assertThat(WorkerHierarchyAssembly.activationRoleMatches(false, "")).isFalse();
     }
 }

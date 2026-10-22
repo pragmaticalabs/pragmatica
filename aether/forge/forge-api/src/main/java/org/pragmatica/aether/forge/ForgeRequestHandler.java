@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpRequest;
@@ -22,15 +21,13 @@ public final class ForgeRequestHandler {
     private static final String ACCESS_CONTROL_ALLOW_HEADERS = "Access-Control-Allow-Headers";
 
     private final ForgeApiHandler apiHandler;
-    private final StaticFileHandler staticHandler;
 
-    private ForgeRequestHandler(ForgeApiHandler apiHandler, StaticFileHandler staticHandler) {
+    private ForgeRequestHandler(ForgeApiHandler apiHandler) {
         this.apiHandler = apiHandler;
-        this.staticHandler = staticHandler;
     }
 
-    public static ForgeRequestHandler forgeRequestHandler(ForgeApiHandler apiHandler, StaticFileHandler staticHandler) {
-        return new ForgeRequestHandler(apiHandler, staticHandler);
+    public static ForgeRequestHandler forgeRequestHandler(ForgeApiHandler apiHandler) {
+        return new ForgeRequestHandler(apiHandler);
     }
 
     public void handle(HttpRequest request, ResponseWriter response) {
@@ -47,7 +44,7 @@ public final class ForgeRequestHandler {
             if (path.startsWith("/api/")) {
                 apiHandler.handle(request, withCors(response));
             } else {
-                staticHandler.handle(request, response);
+                response.error(HttpStatus.NOT_FOUND, "Not found: " + path);
             }
         } catch (Exception e) {
             log.error("Error handling request: {}", e.getMessage(), e);

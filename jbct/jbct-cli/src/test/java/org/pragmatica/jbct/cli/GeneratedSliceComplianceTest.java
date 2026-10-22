@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// Kept fast + hermetic (no Maven, no network): the heavy `run-forge.sh → hello` leg lives in
 /// `aether/forge/forge-tests` (GeneratedSliceForgeE2ETest).
 class GeneratedSliceComplianceTest {
-    private static final String VERSION = "1.0.0-rc4";
+    private static final String VERSION = "1.0.0-rc5";
 
     @TempDir
     Path tempDir;
@@ -182,7 +182,7 @@ class GeneratedSliceComplianceTest {
     }
 
     private JbctConfig config() {
-        return ConfigLoader.load(Option.some(tempDir.resolve("hello").resolve("jbct.toml")), Option.none());
+        return ConfigLoader.load(Option.some(tempDir.resolve("hello").resolve("jbct.toml")), Option.none()).unwrap();
     }
 
     private LintContext context(JbctConfig jbctConfig) {

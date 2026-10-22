@@ -34,7 +34,7 @@ import org.pragmatica.swim.SwimHealth;
 /// READY / DRAINING), reported on the metrics pong and surfaced separately by the routes that
 /// need it.
 ///
-/// **RC1 Step 5 — quorum gating.** External readers of the view (HTTP routes, dashboard, CTM)
+/// **RC1 Step 5 — quorum gating.** External readers of the view (HTTP routes, CTM)
 /// MUST NOT trust local SWIM data while the node is non-quorate, otherwise a minority
 /// partition would claim present peers it cannot actually direct work to. The
 /// [#strict(SwimHealthProvider, BooleanSupplier)] factory enforces this: when
@@ -92,7 +92,7 @@ public interface MembershipView {
 
     /// **Strict factory — RC1 Step 5 default for every external reader.**
     ///
-    /// Routes, dashboard, CTM, `/api/cluster/onduty` — all consume this variant. When the
+    /// Routes, CTM, `/api/cluster/onduty` — all consume this variant. When the
     /// `inQuorum` supplier reports `false` the view reports every peer absent: a minority-side
     /// node MUST NOT advertise present peers that the majority has likely re-routed work past.
     ///

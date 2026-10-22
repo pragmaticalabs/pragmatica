@@ -228,12 +228,14 @@ test_no_502_504_after_cleanup() {
     for i in $(seq 1 10); do
         local status
         status=$(http_status "${APP_ENDPOINT}/api/echo/health" -H "X-API-Key: ${API_KEY}")
-        if [ "$status" = "502" ] || [ "$status" = "504" ]; then
+        # 503 too: a failed forward answers 503 since #2244 (know 14a3606152), where it answered 504 before, and a
+        # healthy echo route has no other reason to refuse.
+        if [ "$status" = "502" ] || [ "$status" = "503" ] || [ "$status" = "504" ]; then
             bad_status=$((bad_status + 1))
         fi
         sleep 1
     done
-    assert_eq "$bad_status" "0" "No 502/504 on APP route /api/echo/health after cleanup (${bad_status}/10 bad)"
+    assert_eq "$bad_status" "0" "No 502/503/504 on APP route /api/echo/health after cleanup (${bad_status}/10 bad)"
 }
 
 test_kv_store_routes_clean() {
@@ -252,7 +254,7 @@ run_test "Cluster ready" test_cluster_ready
 run_test "Slices deployed" test_slices_deployed
 run_test "App routes reachable" test_app_routes_reachable
 run_test "Kill node hosting routes" test_kill_node_hosting_routes
-run_test "No 502/504 after cleanup" test_no_502_504_after_cleanup
+run_test "No 502/503/504 after cleanup" test_no_502_504_after_cleanup
 run_test "KV store routes clean" test_kv_store_routes_clean
 run_test "Recovery complete" test_recovery_complete
 print_summary

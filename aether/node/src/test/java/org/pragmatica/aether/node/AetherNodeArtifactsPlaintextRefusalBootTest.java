@@ -71,7 +71,7 @@ class AetherNodeArtifactsPlaintextRefusalBootTest {
                 .onFailure(cause -> {});
         }
 
-        // AetherNode.createResourceProviderFacade sets these as process-wide static singletons only
+        // SliceRuntimeAssembly.createResourceProviderFacade sets these as process-wide static singletons only
         // when configProvider is present; this test supplies Option.none() (the "artifacts" refusal
         // fires long before that branch), but clearing unconditionally costs nothing and keeps this
         // test inert with respect to fixture bleed regardless of future wiring changes.

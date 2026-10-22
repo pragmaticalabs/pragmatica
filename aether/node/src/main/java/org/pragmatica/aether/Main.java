@@ -18,6 +18,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -54,6 +55,8 @@ import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.node.OwnRestoreWatchdog;
+import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
@@ -90,7 +93,7 @@ public record Main(String[] args) {
         new Main(args).run();
     }
 
-    private record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
+    record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
 
     private void run() {
         publishConfigPath();
@@ -113,34 +116,23 @@ public record Main(String[] args) {
         var coreMax = parseCoreMax(aetherConfig);
         var tlsBundle = resolveTls(nodeId, peers, aetherConfig).expect("Failed to resolve TLS configuration at node startup");
         var appHttpTls = aetherConfig.filter(AetherConfig::tlsEnabled).map(_ -> tlsBundle.tls());
-        var config = AetherNodeConfig.builder()
-                                     .self(nodeId)
-                                     .coreNodes(peers)
-                                     .managementPort(managementPort)
-                                     .sliceConfig(sliceConfig)
-                                     // #1777 track 1: placeholder only — the DHT's factors come from the committed
-                                     // `[replication]` section once consensus state is restored
-                                     .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
-                                     .coreMax(coreMax)
-                                     .appHttp(resolveAppHttp(aetherConfig))
-                                     .tls(appHttpTls)
-                                     .quicTls(tlsBundle.tls())
-                                     .certificateProvider(tlsBundle.provider())
-                                     .configProvider(resolveConfigProvider())
-                                     .environment(environment)
-                                     .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
-                                     .storageConfig(resolveStorage(aetherConfig))
-                                     .backupConfig(resolveBackup(aetherConfig))
-                                     .membership(resolveMembership(aetherConfig))
-                                     .streaming(resolveStreaming(aetherConfig))
-                                     .build()
-                                     // #298 — stamp the boot-gated cluster identity onto runtime config.
-                                     // enforceClusterNamePresent() above already aborted the boot if this
-                                     // were missing or malformed, so the value is present and validated.
-                                     .withClusterName(resolveClusterName())
-                                     .withAutoHeal(resolveAutoHeal(aetherConfig))
-                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig))
-                                     .withAlerts(resolveAlertConfig(aetherConfig));
+        var config = nodeConfig(nodeId,
+                                peers,
+                                managementPort,
+                                sliceConfig,
+                                coreMax,
+                                aetherConfig,
+                                appHttpTls,
+                                tlsBundle,
+                                environment,
+                                resolveConfigProvider())
+                               // #298 — stamp the boot-gated cluster identity onto runtime config.
+                               // enforceClusterNamePresent() above already aborted the boot if this
+                               // were missing or malformed, so the value is present and validated.
+                               .withClusterName(resolveClusterName())
+                               .withAutoHeal(resolveAutoHeal(aetherConfig))
+                               .withStorageEncryption(resolveStorageEncryption(aetherConfig))
+                               .withAlerts(resolveAlertConfig(aetherConfig));
 
         config = withResolvedClusterSecret(config, aetherConfig);
         enforceWalDurabilityBootable(config);
@@ -152,10 +144,53 @@ public record Main(String[] args) {
         startNodeAndWait(node, nodeId);
     }
 
-    private static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
+    /// The node's runtime config from the resolved boot inputs, before the boot-gated stamps `run` applies after it.
+    /// Package-visible so a test can pin what each resolver feeds in: the `[app-http]`/`[management]` security
+    /// resolution (#962) is only reachable through here.
+    static AetherNodeConfig nodeConfig(NodeId nodeId,
+                                       List<NodeInfo> peers,
+                                       int managementPort,
+                                       SliceConfig sliceConfig,
+                                       int coreMax,
+                                       Option<AetherConfig> aetherConfig,
+                                       Option<org.pragmatica.net.tcp.TlsConfig> appHttpTls,
+                                       TlsBundle tlsBundle,
+                                       Option<EnvironmentIntegration> environment,
+                                       Option<ConfigurationProvider> configProvider) {
+        return AetherNodeConfig.builder()
+                               .self(nodeId)
+                               .coreNodes(peers)
+                               .managementPort(managementPort)
+                               .sliceConfig(sliceConfig)
+                               // #1777 track 1: placeholder only — the DHT's factors come from the committed
+                               // `[replication]` section once consensus state is restored
+                               .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
+                               .coreMax(coreMax)
+                               .appHttp(resolveAppHttp(aetherConfig))
+                               .tls(appHttpTls)
+                               .quicTls(tlsBundle.tls())
+                               .certificateProvider(tlsBundle.provider())
+                               .configProvider(configProvider)
+                               .environment(environment)
+                               .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
+                               .storageConfig(resolveStorage(aetherConfig))
+                               .backupConfig(resolveBackup(aetherConfig))
+                               .membership(resolveMembership(aetherConfig))
+                               .streaming(resolveStreaming(aetherConfig))
+                               .build();
+    }
+
+    static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::appHttp)
                            .filter(AppHttpConfig::enabled)
-                           .or(AppHttpConfig.appHttpConfig());
+                           .or(() -> disabledAppHttp(aetherConfig));
+    }
+
+    /// A disabled `[app-http]` is replaced whole by the fail-closed default (#573), but the Management API's own
+    /// `[management] security_mode` is not part of the app plane and survives (#962).
+    private static AppHttpConfig disabledAppHttp(Option<AetherConfig> aetherConfig) {
+        return AppHttpConfig.appHttpConfig().withManagementSecurityMode(aetherConfig.flatMap(config -> config.appHttp()
+                                                                                                             .managementSecurityMode()));
     }
 
     /// First-boot consistency gate: compares this container's `aether.cluster` label
@@ -461,10 +496,14 @@ public record Main(String[] args) {
                            .or(HttpProtocol.H1);
     }
 
-    private static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::storage)
-                           .filter(m -> !m.isEmpty())
-                           .or(Map.of());
+    /// #249: the storage map the node is handed, with every shared-only instance's paths derived HERE, once
+    /// ([StorageFactory#derivedStorage]). Every reader in the node -- the instances `StorageFactory.createAll` builds,
+    /// the synthesized `content` placement, the stream segment and WAL directories -- reads this map, so none of
+    /// them can see a shared-only instance's blank paths. A keyring exists exactly when `[storage.encryption]` is
+    /// present (the node refuses to boot when it cannot resolve one), which is the `encrypted` the derivation needs.
+    public static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
+        return StorageFactory.derivedStorage(aetherConfig.map(AetherConfig::storage).or(Map.of()),
+                                             resolveStorageEncryption(aetherConfig).isPresent());
     }
 
     private static Option<StorageEncryptionConfig> resolveStorageEncryption(Option<AetherConfig> aetherConfig) {
@@ -832,11 +871,89 @@ public record Main(String[] args) {
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
+        armOwnRestoreWatchdog(node);
         node.start()
             .onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
             .onFailure(cause -> onStartFailure(cause, this::exitWithError))
             .await();
         waitForInterrupt();
+    }
+
+    /// #1468: `start()` does not resolve while the node cannot restore its own persisted consensus history, so the
+    /// bound on that stop has to be armed BEFORE `start()` is awaited. Production only; in-JVM hosts own their nodes.
+    @Contract
+    private static void armOwnRestoreWatchdog(AetherNode node) {
+        ownRestoreWatchdog(node::ownRestoreFailure,
+                           node::restoredStateSaveFailure,
+                           Main::flushLogs,
+                           Runtime.getRuntime()::halt).arm(OwnRestoreWatchdog.CHECK_INTERVAL);
+    }
+
+    /// The production watchdog with the flush and halt injected, so a test can read its bound and drive its exit
+    /// without killing the JVM. Package-private for that reason only.
+    static OwnRestoreWatchdog ownRestoreWatchdog(Supplier<Option<Cause>> ownRestore,
+                                                 Supplier<Option<Cause>> statePersist,
+                                                 Runnable flushLogs,
+                                                 IntConsumer haltFn) {
+        return OwnRestoreWatchdog.ownRestoreWatchdog(OwnRestoreWatchdog.fence(ownRestore, statePersist),
+                                                     Main::monotonicMillis,
+                                                     OwnRestoreWatchdog.BOUND,
+                                                     cause -> exitFenced(cause, flushLogs, haltFn));
+    }
+
+    static long monotonicMillis() {
+        return nanosToMillis(System.nanoTime());
+    }
+
+    static long nanosToMillis(long nanos) {
+        return nanos / 1_000_000L;
+    }
+
+    /// The exit for either fence: the type of the failure picks the FATAL text and the code. Anything that is not
+    /// the re-persist fence takes the own-restore exit, as before.
+    @Contract
+    static void exitFenced(Cause cause, Runnable flushLogs, IntConsumer haltFn) {
+        switch (cause) {
+            case OwnRestoreWatchdog.Fence.StatePersistFailed persist -> exitConsensusStatePersistFailed(persist,
+                                                                                                        flushLogs,
+                                                                                                        haltFn);
+            default -> exitConsensusRestoreFailed(cause, flushLogs, haltFn);
+        }
+    }
+
+    /// Same shape as [#exitConsensusRestoreFailed]: FATAL first, flush, halt in `finally`. The text differs because the
+    /// guidance does: the fault is the node's storage, and a restart after it is fixed can succeed (code 75).
+    @Contract
+    static void exitConsensusStatePersistFailed(Cause cause, Runnable flushLogs, IntConsumer haltFn) {
+        log.error("FATAL: this node restored consensus state but could not persist it, and stayed JOINING for {}: {}. "
+                 + "It never started on state its disk does not hold. Exiting with code {}; fix the node's storage "
+                 + "(space, permissions, I/O errors) before restarting, and the node will sync again.",
+                  OwnRestoreWatchdog.BOUND,
+                  cause.message(),
+                  AetherNode.EXIT_CONSENSUS_STATE_PERSIST_FAILED);
+        try {
+            flushLogs.run();
+        } finally {
+            haltFn.accept(AetherNode.EXIT_CONSENSUS_STATE_PERSIST_FAILED);
+        }
+    }
+
+    /// `halt`, not `exit`: the node is fenced and holds nothing worth a graceful stop, and `System.exit` from a
+    /// scheduler thread can park on the shutdown hooks (#838). `halt` flushes no appender of its own (see
+    /// [#registerShutdownHook]), so the FATAL line is flushed explicitly first, bounded by [#FLUSH_TIMEOUT]; the halt
+    /// is in `finally` so a throwing flush cannot keep the process alive. The FATAL line names the cause and the exit code.
+    @Contract
+    static void exitConsensusRestoreFailed(Cause cause, Runnable flushLogs, IntConsumer haltFn) {
+        log.error("FATAL: this node could not restore its own persisted consensus history and stayed JOINING for {}: {}. "
+                 + "It never started with partial state. Exiting with code {}; restarting unchanged reads the same snapshot.",
+                  OwnRestoreWatchdog.BOUND,
+                  cause.message(),
+                  AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
+        try {
+            flushLogs.run();
+        } finally {
+            haltFn.accept(AetherNode.EXIT_CONSENSUS_RESTORE_FAILED);
+        }
     }
 
     /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying

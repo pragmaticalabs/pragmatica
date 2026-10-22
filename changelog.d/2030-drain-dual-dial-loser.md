@@ -1,0 +1,4 @@
+### Fixed (2026-10-20 — #2030: the loser of a simultaneous QUIC dial was closed at once and discarded what was written on it)
+- **When two nodes dialed each other at the same moment, the connection that lost the arbitration was closed immediately, discarding lane data that had been written on it but not yet delivered.**
+- That loser is now finished lane by lane (the end marker queues behind every write already on the stream) and closed once every lane has ended, or after 2 s, whichever comes first. A link replaced because its own dialer re-dialed over it (the peer had judged it dead) still closes at once [verified: `QuicLoserDrainTest`: a 4,000-frame burst written just before the drained close arrives in full; routing of both loser shapes; the bound; the early end].
+- Not changed: a fire-and-forget slice invoke is still reported sent at the hand-off and never acknowledged (now stated in `guarantees.md`); the other lane users recover or time out as traced in #2030.

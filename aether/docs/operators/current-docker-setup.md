@@ -95,12 +95,6 @@ docker compose --profile forge up --build
 curl http://localhost:8080/health
 ```
 
-### Dashboard
-
-Open http://localhost:8080/dashboard in browser.
-
-Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
-
 ---
 
 ## Generated Infrastructure

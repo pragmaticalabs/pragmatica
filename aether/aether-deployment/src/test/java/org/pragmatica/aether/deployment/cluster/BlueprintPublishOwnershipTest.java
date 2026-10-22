@@ -13,7 +13,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.jar.Attributes;
@@ -71,18 +70,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -849,14 +839,14 @@ class BlueprintPublishOwnershipTest {
                 [streams.order-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
 
                 [streams.consumer-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
                 """;
 
         /// `consistency_mode` is the record-binder spelling that reached the runtime before #1549. The stream
@@ -866,8 +856,8 @@ class BlueprintPublishOwnershipTest {
                 [streams.order-events]
                 partitions = 1
                 retention = "count"
-                retention-value = "100000"
-                max-event-size = "64KB"
+                retention_value = "100000"
+                max_event_size = "64KB"
                 consistency_mode = "strong"
                 """;
 
@@ -1395,16 +1385,16 @@ class BlueprintPublishOwnershipTest {
                 base_url = [
                 """;
 
-        private FailOpenLogCapture failOpenLogCapture;
+        private LogCapture failOpenLogCapture;
 
         @BeforeEach
         void captureBlueprintServiceLog() {
-            failOpenLogCapture = FailOpenLogCapture.attach(BLUEPRINT_SERVICE_LOGGER_NAME);
+            failOpenLogCapture = LogCapture.capture(BLUEPRINT_SERVICE_LOGGER_NAME, Level.WARN, false);
         }
 
         @AfterEach
         void detachBlueprintServiceLog() {
-            failOpenLogCapture.detach();
+            failOpenLogCapture.close();
         }
 
         @Test
@@ -1445,7 +1435,7 @@ class BlueprintPublishOwnershipTest {
             var result = publishWithComposite(jar, Option.none());
 
             result.onFailure(cause -> Assertions.fail("Fail-open expected when no ConfigurationProvider is wired: " + cause.message()));
-            assertThat(failOpenLogCapture.capturedWarns())
+            assertThat(failOpenLogCapture.messages())
                     .as("fail-open skip must be logged, not silent")
                     .anyMatch(msg -> msg.contains("Config-section pre-flight (#547) SKIPPED")
                                    && msg.contains("1 declared resource section(s)")
@@ -1537,6 +1527,74 @@ class BlueprintPublishOwnershipTest {
             result.onFailure(cause -> Assertions.fail("[payments] is configured in the KV overlay: " + cause.message()));
         }
 
+        /// #1337 wiring: `BlueprintService.validateSliceJars` runs the topic-tier pre-flight, so the refusal reaches the
+        /// `POST /api/v1/blueprints` caller (400, `BlueprintRejected`) with the topic and the subscribing method named. A pre-flight that
+        /// is correct in isolation proves nothing about being called.
+        @Test
+        void publish_isRefused_whenAContextHandlerSubscribesToATopicTheSliceDeclaresEphemeral() throws IOException {
+            var jar = writeSliceJarWithTopicTier("[order-placed]\ntopic_name = \"order-placed\"\n", true);
+            var result = publishDslWithComposite(jar, Option.none());
+
+            result.onSuccess(_ -> Assertions.fail("a context handler on an ephemeral topic must refuse the deploy"))
+                  .onFailure(cause -> {
+                      assertThat(cause).isInstanceOf(BlueprintRejected.class);
+                      assertThat(cause.message()).contains("topic tier mismatch")
+                                                 .contains("order-placed")
+                                                 .contains("onOrderPlaced");
+                  });
+        }
+
+        @Test
+        void publish_isAccepted_whenTheContextHandlersTopicIsDeclaredDurable() throws IOException {
+            var jar = writeSliceJarWithTopicTier("[order-placed]\ntopic_name = \"order-placed\"\ndurability = \"durable\"\n", true);
+
+            publishDslWithComposite(jar, Option.none()).onFailure(cause -> Assertions.fail("a durable topic accepts a context handler: " + cause.message()));
+        }
+
+        @Test
+        void publish_isAccepted_whenTheHandlerIsBareOnAnEphemeralTopic() throws IOException {
+            var jar = writeSliceJarWithTopicTier("[order-placed]\ntopic_name = \"order-placed\"\n", false);
+
+            publishDslWithComposite(jar, Option.none()).onFailure(cause -> Assertions.fail("a bare handler works on an ephemeral topic: " + cause.message()));
+        }
+
+        /// A self-subscribed slice (so the orphan-publisher check does not fire), with the slice's own `resources.toml` and the
+        /// subscription marked `context=message` when `contextual`, exactly as the slice processor generates it.
+        private Path writeSliceJarWithTopicTier(String resourcesToml, boolean contextual) throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, SLICE_CLASS);
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("orders-api-topic-tier-1.0.0.jar");
+            var topology = """
+                    slice.name=orders-api
+                    routes.count=0
+                    dependencies.count=0
+                    resources.count=0
+                    publish.topics.count=1
+                    publish.topic.0.config=order-placed
+                    publish.topic.0.messageType=com.example.OrderPlaced
+                    reactive.count=1
+                    reactive.0.category=subscription
+                    reactive.0.method=onOrderPlaced
+                    reactive.0.config=order-placed
+                    reactive.0.messageType=com.example.OrderPlaced
+                    """ + (contextual ? "reactive.0.context=message\n" : "");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/orders/"));
+                out.closeEntry();
+                writeEntry(out, "META-INF/slice/OrdersApi.manifest", topology);
+                writeEntry(out, "META-INF/resources.toml", resourcesToml);
+            }
+
+            return target;
+        }
+
         private static void assertOnlyPaymentsSectionMissing(Cause cause) {
             assertThat(cause.stream().toList()).as("every aggregated failure is a MissingConfigSection")
                                                .isNotEmpty()
@@ -1566,7 +1624,7 @@ class BlueprintPublishOwnershipTest {
             return BlueprintService.blueprintService(cluster, store, repository, artifactStore(withoutMigrations(PREFLIGHT_COORDS)), nodeComposite);
         }
 
-        /// The node composite exactly as `AetherNode.createResourceProviderFacade` layers it: the operator KV
+        /// The node composite exactly as `SliceRuntimeAssembly.createResourceProviderFacade` layers it: the operator KV
         /// overlay first, the node's own `node.toml` beneath.
         private ConfigurationProvider nodeComposite(ConfigurationProvider kvOverlay, ConfigurationProvider nodeToml) {
             return LayeredConfigProvider.layered(List.of(NamedConfigProvider.namedConfigProvider("KV", kvOverlay),
@@ -1672,68 +1730,6 @@ class BlueprintPublishOwnershipTest {
             }
 
             return target;
-        }
-
-        /// Log4j2 programmatic appender capturing WARN-and-above messages from a named logger for
-        /// assertions — same wiring approach as `ClusterTopologyManagerCasLossLoggingTest` in this
-        /// module, adapted to attach/detach around a single test via `@BeforeEach`/`@AfterEach`
-        /// rather than a standalone test class.
-        private static final class FailOpenLogCapture extends AbstractAppender {
-            private final List<String> messages = new CopyOnWriteArrayList<>();
-            private final LoggerConfig loggerConfig;
-            private final Level originalLevel;
-
-            private FailOpenLogCapture(String name, Layout<?> layout, LoggerConfig loggerConfig, Level originalLevel) {
-                super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-                this.loggerConfig = loggerConfig;
-                this.originalLevel = originalLevel;
-            }
-
-            static FailOpenLogCapture attach(String loggerName) {
-                var ctx = (LoggerContext) LogManager.getContext(false);
-                var configuration = ctx.getConfiguration();
-                var loggerConfig = getOrCreateLoggerConfig(configuration, loggerName);
-                var originalLevel = loggerConfig.getLevel();
-                var capture = new FailOpenLogCapture(loggerName + "-capture", PatternLayout.createDefaultLayout(), loggerConfig, originalLevel);
-
-                capture.start();
-                loggerConfig.addAppender(capture, Level.WARN, null);
-                loggerConfig.setLevel(Level.WARN);
-                ctx.updateLoggers();
-
-                return capture;
-            }
-
-            void detach() {
-                var ctx = (LoggerContext) LogManager.getContext(false);
-
-                loggerConfig.removeAppender(getName());
-                loggerConfig.setLevel(originalLevel);
-                ctx.updateLoggers();
-                stop();
-            }
-
-            List<String> capturedWarns() {
-                return List.copyOf(messages);
-            }
-
-            @Override public void append(LogEvent event) {
-                if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                    messages.add(event.getMessage().getFormattedMessage());
-                }
-            }
-
-            private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration, String loggerName) {
-                var existing = configuration.getLoggerConfig(loggerName);
-
-                if (loggerName.equals(existing.getName())) {
-                    return existing;
-                }
-
-                var fresh = new LoggerConfig(loggerName, Level.WARN, false);
-                configuration.addLogger(loggerName, fresh);
-                return fresh;
-            }
         }
     }
 }

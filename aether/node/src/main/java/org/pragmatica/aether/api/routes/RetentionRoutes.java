@@ -61,9 +61,8 @@ import org.slf4j.LoggerFactory;
 /// Assembled ON REQUEST from the manager's walSnapshot (volatile reads over the live registry), the
 /// sealed-segment index, and committed KV checkpoint pointers — no hot-path accounting, per the
 /// observability-first rule. The [RetentionInvariantWatch] nested helper is the periodic half:
-/// today's alert evaluation only runs while a dashboard client is connected, so a violation nobody
-/// polls for would otherwise stay invisible — the watch re-checks on a slow tick, WARN-logs and
-/// raises an operator alert exactly once per newly-violated partition.
+/// a violation nobody polls for would otherwise stay invisible — the watch re-checks on a slow tick,
+/// WARN-logs and raises an operator alert exactly once per newly-violated partition.
 public final class RetentionRoutes implements RouteSource {
     /// The invariant alert's severity — UPPERCASE, because `AlertManager.isValidSeverity` is an
     /// exact case-sensitive match (review catch: a lowercase literal made every raise fail
@@ -312,7 +311,7 @@ public final class RetentionRoutes implements RouteSource {
 
     /// The entity checkpoint floor for a stream partition: present only for `entity:`-namespaced
     /// streams with a committed [EntityFoldCheckpointValue]. Mirrors the retention wiring's own read
-    /// (`AetherNode.entityRetentionFloor`) — same key, same absent-means-`-1` reading.
+    /// (`StreamAssembly.entityRetentionFloor`) — same key, same absent-means-`-1` reading.
     static long checkpointFloor(KVStore<AetherKey, AetherValue> kvStore, String stream, int partition) {
         return EntityPartitionArc.keyspaceOf(stream)
                                  .flatMap(keyspace -> kvStore.getTyped(EntityCheckpointKey.entityCheckpointKey(keyspace,
@@ -368,8 +367,7 @@ public final class RetentionRoutes implements RouteSource {
 
     /// The periodic half of the #634-4 invariant (owner-ruled: on-read + periodic alert). Re-checks on
     /// a slow tick, and for each NEWLY violated partition WARN-logs and raises ONE operator alert
-    /// through the injection path — the metrics-threshold path is evaluated only while a dashboard
-    /// client is connected, which is exactly the visibility gap this watch closes. A raise needs TWO
+    /// through the injection path. A raise needs TWO
     /// consecutive violated ticks (the join is a non-atomic cut); a partition that leaves violation
     /// is forgotten, so a relapse re-earns its two ticks and alerts again.
     public static final class RetentionInvariantWatch {

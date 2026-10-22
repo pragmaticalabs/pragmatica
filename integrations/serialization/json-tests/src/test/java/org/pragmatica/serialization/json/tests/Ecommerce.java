@@ -29,8 +29,8 @@ import java.util.Map;
 
 /// Shapes copied from `pragmatica/examples/ecommerce` (place-order, pricing, payment, fulfillment, shared).
 ///
-/// Value objects (single-component records with a JBCT factory) travel unwrapped, as their bare component,
-/// so `Map<ProductId, ...>` keys are plain strings too; their factories run on decode.
+/// Value objects (single-component records with a JBCT factory) travel unwrapped when nested, as their bare
+/// component, so `Map<ProductId, ...>` keys are plain strings too; their factories run on decode.
 public interface Ecommerce {
     record ProductId(String value) {
         public static Result<ProductId> productId(String value) {

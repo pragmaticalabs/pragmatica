@@ -2,10 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main, release-*, feature/*]
+    branches: [main, release-*, feature/*, 'overhaul/**', 'rewrite/**']
   pull_request:
-    branches: [main, release-*]
+    # overhaul/** and rewrite/** are long-lived integration branches (#2222): PRs into them get the same gate as release-*
+    branches: [main, release-*, 'overhaul/**', 'rewrite/**']
   workflow_dispatch:
+
+# A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
+# cancelled: each merged commit's own run is evidence.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
@@ -156,7 +163,7 @@ jobs:
           retention-days: 7
 
   # Ember's tests (#1643), split by class across runners. They are serial in one module and took 53 of build-and-test's
-  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 2 shards to 3. The required check
+  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 3 shards to 4. The required check
   # names are ember-shard-1 .. ember-shard-N.
   ember-shard:
     name: ember-shard-${{ matrix.shard }}
@@ -165,7 +172,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     env:
       SHARDS: ${{ strategy.job-total }}
       SHARD: ${{ matrix.shard }}

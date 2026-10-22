@@ -17,7 +17,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
         <jbct.skip>false</jbct.skip>
-        <platform.version>1.0.0-rc4</platform.version>
+        <platform.version>1.0.0-rc5</platform.version>
     </properties>
 
     <dependencies>
@@ -58,6 +58,12 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-async-check</artifactId>
+            <version>${platform.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>pg-codegen</artifactId>
             <version>${platform.version}</version>
@@ -93,6 +99,11 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
+                            <version>${platform.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>jbct-async-check</artifactId>
                             <version>${platform.version}</version>
                         </path>
                         <path>

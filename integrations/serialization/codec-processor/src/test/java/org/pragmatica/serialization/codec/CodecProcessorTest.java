@@ -1396,6 +1396,69 @@ class CodecProcessorTest {
                                                    "Declare it as a top-level or member type");
             assertThat(compilation).hadNoteContaining("Generated JSON codec: Holder_MemberJson");
         }
+
+        // A member type is unseen too when a type enclosing it is local: the check walks the enclosing chain.
+        @Test
+        void memberOfALocalClass_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    public Object make() {
+                        class Box {
+                            @Json
+                            record Point(int x) {}
+                        }
+
+                        return new Box.Point(1);
+                    }
+
+                    @Override
+                    public String toString() {
+                        return "holder";
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Point'",
+                                                   "Declare it as a top-level or member type");
+        }
+
+        // The same for a member of an anonymous class, which is no local class: anonymous nesting is its own case.
+        @Test
+        void memberOfAnAnonymousClass_isOneCleanError() {
+            var compilation = compileWith(JavaFileObjects.forSourceString("com.example.Holder", """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public class Holder {
+                    public Object make() {
+                        return new Object() {
+                            @Json
+                            record Point(int x) {}
+
+                            @Override
+                            public String toString() {
+                                return new Point(1).toString();
+                            }
+                        };
+                    }
+
+                    @Override
+                    public String toString() {
+                        return "holder";
+                    }
+                }
+                """));
+
+            JsonNameClashes.assertSingleCleanError(compilation,
+                                                   "@Json cannot be applied to 'Point'",
+                                                   "Declare it as a top-level or member type");
+        }
     }
 
     /// Generated readers track fields as bits of one long (field i is `1L << i`): 64 components fit, a 65th

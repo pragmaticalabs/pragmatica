@@ -108,7 +108,7 @@ authorization_role = "VIEWER"
 | **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, config, alerts |
 | **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
-When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
+When `authorization_role` is omitted, the key defaults to `VIEWER`; grant `OPERATOR` or `ADMIN` explicitly. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
 ### Commands
 
@@ -1200,7 +1200,7 @@ Run each command in a separate terminal:
 
 ## aether-forge: Testing Simulator
 
-Standalone cluster simulator with visual dashboard for load and chaos testing.
+Standalone cluster simulator with a REST API for load and chaos testing.
 
 ### Usage
 
@@ -1212,7 +1212,7 @@ Standalone cluster simulator with visual dashboard for load and chaos testing.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FORGE_PORT` | Dashboard HTTP port | 8888 |
+| `FORGE_PORT` | Forge REST API port | 8888 |
 | `CLUSTER_SIZE` | Number of simulated nodes | 5 |
 | `LOAD_RATE` | Initial requests per second | 1000 |
 
@@ -1235,33 +1235,20 @@ FORGE_PORT=9999 ./script/aether-forge.sh
 FORGE_PORT=9999 CLUSTER_SIZE=10 LOAD_RATE=5000 ./script/aether-forge.sh
 ```
 
-### Dashboard
-
-After starting, open the dashboard in your browser:
-
-```
-http://localhost:8888
-```
-
-The dashboard provides:
-- Real-time cluster visualization
-- Load generation controls
-- Chaos injection (kill nodes, network partitions)
-- Metrics monitoring
-
 ### REST API
 
-Forge exposes a REST API for automation:
+Forge exposes a REST API on its port for load generation, chaos injection and status (there is no
+web UI; the dashboard was removed in 1.0.0-rc5):
 
 ```bash
 # Get cluster status
-curl http://localhost:8888/api/cluster
+curl http://localhost:8888/api/nodes/status
 
-# Get metrics
-curl http://localhost:8888/api/metrics
+# Get per-node metrics
+curl http://localhost:8888/api/nodes/metrics
 
 # Kill a node
-curl -X POST http://localhost:8888/api/chaos/kill-node/node-3
+curl -X POST http://localhost:8888/api/chaos/kill/node-3
 
 # Set load rate
 curl -X POST http://localhost:8888/api/load/rate/500
@@ -1953,7 +1940,7 @@ reserved for framework topics.
 Unlike streams, pub/sub is an in-process, declaration-driven delivery mechanism: there is **no
 `aether topic` CLI command group** and **no topic management HTTP route**. Operators inspect topic
 wiring (publishers, subscribers, and their resolved `namespace:topic:version` addresses) through the
-topology graph — `GET /api/v1/slices/topology` and the dashboard topology view — where pub→sub edges
+topology graph — `GET /api/v1/slices/topology` — where pub→sub edges
 are matched on the resolved canonical address.
 
 ---
@@ -2281,6 +2268,25 @@ aether cluster communities default:local:0
 `liveMembers` is the leader's instantaneous observation, not committed state, and is `null` when it cannot
 be observed. A worker that fenced itself after losing the core is shown as `DEGRADED`, never `DISSOLVED`;
 see `GET /api/v1/cluster/communities` in the management API reference.
+
+### `aether cluster clear-placement`
+
+Clear ONE parked community placement operation (#241), by community id, after you checked the nodes it names. A placement operation (a worker
+replacement, a scale-down, a community retirement) is parked when its drain acknowledgement never came (`DRAIN_UNCERTAIN`: the previous worker may
+or may not be drained) or when it is `BLOCKED` by a conflict the reconciler cannot resolve and whose target node it has not observed. The cluster raises
+`community-placement-parked` with the command to run. Wraps `POST /api/v1/cluster/communities/placement/clear/{id}`.
+
+```bash
+aether cluster clear-placement stable --reason "old-worker is drained and its instance is gone"
+```
+
+| Option | Description |
+|--------|-------------|
+| `--reason` | What you checked on the nodes before clearing (required; recorded in the audit event) |
+
+The clear closes the operation and nothing else: the previous worker and the replacement are NOT removed, drained or terminated, and the next
+reconcile pass recomputes the community from what is there. Exit codes: 0 cleared, 3 the community has no operation, 1 any other refusal (the
+operation is not parked, or the node is not the leader) or failure, 64 a missing or blank `--reason`.
 
 ### `aether cluster governors`
 
@@ -2687,10 +2693,10 @@ aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--res
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
 | `--resume` | Resume a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below) |
-| `--rollback` | Roll back a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below); even when reached, it lists the recorded resources and destroys nothing |
+| `--rollback` | **Not implemented, see #686**: prints that `--rollback` is not implemented and exits non-zero (1) before reading the file or contacting the cluster; takes precedence over `--resume` |
 | `--full-check` | Run full network pre-flight checks |
 
-**Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
+**Plain `apply` (no `--resume`) actuates scale changes only.** It diffs the config
 file against what's stored and classifies every change: a role's worker/core count going up or
 down is applied immediately as a fenced desired-count write, for which the worker reconciler then
 provisions or drains nodes. Any other kind of change in the same file — adding/removing a source
@@ -2706,18 +2712,18 @@ applicable through `apply` in rc4.** `apply` performs scale-only plans via the l
 desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
 new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
 wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
-through the cloud provider) are entered only through `--resume`/`--rollback`, and they are
+through the cloud provider) are entered only through `--resume`, and they are
 deliberately not wired to plain `apply` — a client-side rollout would be a second actuation
 authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
 is a separate ticket).
 
-**In rc4 `--resume` and `--rollback` have nothing to act on.** Both begin by loading the apply
-state for the cluster and abort without it (`No apply state found for cluster '<name>'. Nothing to
-resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
-rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
-options report that message and the wave executor is unreachable end to end.
+**In rc4 `--resume` has nothing to act on, and `--rollback` is refused outright.** `--resume` begins by loading the apply
+state for the cluster and aborts without it (`No apply state found for cluster '<name>'. Nothing to
+resume.`). That state is written only by the unwired client-side
+rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, `--resume`
+reports that message and the wave executor is unreachable end to end.
 
-**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
 each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
 - `destroyed`: gone, nothing to do;
 - `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
@@ -2959,6 +2965,10 @@ with `--node <id>` it returns that node's local detail (`GET /api/v1/storage/{na
 
 Options:
 - `--node <id>` — target a specific node's local view instead of the cluster rollup.
+
+The per-node view (`--node`) also carries the instance's `maintenance` block: whether demotion, promotion and GC are
+running on that node, and their counters (`promotion.failed` rising with `blocksPromoted` flat is the signal behind the
+`storage-promotion-stalled` event). The cluster rollup does not include it.
 
 ```bash
 aether storage status content

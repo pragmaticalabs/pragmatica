@@ -152,8 +152,80 @@ class PartialConfigTest {
                      .map(PartialConfig::mergeWith);
     }
 
+    /// #1455: a key present with the wrong TOML type was captured as "key not set", so a lower layer or
+    /// the built-in default silently won. Every typed read of the layer is covered: integer, boolean,
+    /// long, string list.
+    @Test
+    void partialConfig_refusesNamingEveryKeyAndValue_whenKeysHaveWrongTypes() {
+        layer("""
+              [format]
+              maxLineLength = "wide"
+              useTabs = "maybe"
+
+              [files]
+              maxFileSize = "big"
+              excludes = "generated"
+
+              [lint]
+              failOnWarning = "yes"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("format.maxLineLength", "wide")
+                                                                 .contains("format.useTabs", "maybe")
+                                                                 .contains("files.maxFileSize", "big")
+                                                                 .contains("files.excludes", "generated")
+                                                                 .contains("lint.failOnWarning", "yes"));
+    }
+
+    @Test
+    void fromToml_refusesAWrongTypedKey_andMaterialisesAWellTypedDocument() {
+        TomlParser.parse("[format]\nindentSize = \"four\"\n")
+                  .flatMap(JbctConfig::fromToml)
+                  .onSuccess(config -> org.junit.jupiter.api.Assertions.fail("must refuse, loaded " + config))
+                  .onFailure(cause -> assertThat(cause.message()).contains("format.indentSize", "four"));
+        assertThat(TomlParser.parse("[format]\nindentSize = 2\n").flatMap(JbctConfig::fromToml).unwrap().formatter().indentSize()).isEqualTo(2);
+    }
+
     private static Result<PartialConfig> layer(String toml) {
         return TomlParser.parse(toml)
-                         .map(PartialConfig::partialConfig);
+                         .flatMap(PartialConfig::partialConfig);
+    }
+
+    /// Invalid VALUES are refused like invalid types (#1455): an unknown severity token left the layer
+    /// silent about that rule, an unknown schema mode fell back to REQUIRED.
+    @Test
+    void partialConfig_refusesUnknownRuleSeverity_namingKeyValueAndAllowed() {
+        layer("""
+              [lint.rules]
+              JBCT-STY-01 = "eror"
+              JBCT-STY-02 = "warn"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.JBCT-STY-01", "eror")
+                                                                 .contains("one of: error, warning (warn), info, off (disabled)")
+                                                                 .doesNotContain("JBCT-STY-02"));
+    }
+
+    @Test
+    void partialConfig_refusesUnknownSchemaMode_namingKeyValueAndAllowed() {
+        layer("[blueprint]\nschema = \"requird\"\n")
+            .onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+            .onFailure(cause -> assertThat(cause.message()).contains("blueprint.schema", "requird")
+                                                           .contains("one of: required, external, optional"));
+        layer("[blueprint]\nschema = \"External\"\n")
+            .onFailure(PartialConfigTest::fail)
+            .onSuccess(layer -> assertThat(layer.blueprint().schema()).isEqualTo(Option.some(BlueprintConfig.SchemaMode.EXTERNAL)));
+    }
+
+    @Test
+    void partialConfig_acceptsEveryDocumentedSeverityToken() {
+        layer("""
+              [lint.rules]
+              A = "error"
+              B = "WARN"
+              C = "warning"
+              D = "info"
+              E = "off"
+              F = "Disabled"
+              """).onFailure(PartialConfigTest::fail)
+                  .onSuccess(layer -> assertThat(layer.lint().rules()).hasSize(6));
     }
 }

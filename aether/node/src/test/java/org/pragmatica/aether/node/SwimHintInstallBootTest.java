@@ -11,19 +11,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +31,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.testlogging.LogCapture;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -84,21 +74,12 @@ class SwimHintInstallBootTest {
     private static final String PONG_RETRACTION = "pong received from " + PEER.id() + " — PEER_UNRESPONSIVE death hint retracted";
 
     private AetherNode node;
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("SwimHintInstallBootCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
         // The hint's origin is logged at DEBUG (`SwimProtocol.applyUnreachableHint`).
-        loggerConfig.addAppender(appender, Level.DEBUG, null);
-        loggerConfig.setLevel(Level.DEBUG);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER_NAME, Level.DEBUG, false);
     }
 
     @AfterEach
@@ -109,11 +90,7 @@ class SwimHintInstallBootTest {
                 .onFailure(cause -> {});
         }
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
         // Process-wide singletons AetherNode may set; cleared as the sibling boot tests do.
         ConfigService.clear();
         ResourceProvider.clear();
@@ -130,7 +107,7 @@ class SwimHintInstallBootTest {
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
 
         await().atMost(SWIM_START_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("control: SWIM is running and the capture on %s sees its lines, or the "
                        + "assertions below examine nothing", LOGGER_NAME)
                    .anyMatch(line -> line.contains(SWIM_STARTED)));
@@ -144,11 +121,11 @@ class SwimHintInstallBootTest {
                .untilAsserted(() -> {
                    // Audience refresh is periodic; preserve real collector ingress for the probe.
                    node.metricsCollector().reportUnreachable(PEER);
-                   assertThat(appender.messages())
+                   assertThat(capture.messages())
                        .as("a ClusterSync missed-pong report must arrive in SWIM as a hint")
                        .anyMatch(line -> line.contains(HINT_RECORDED));
                });
-        assertThat(appender.messages())
+        assertThat(capture.messages())
             .as("the installed reporter is pingTimeoutReporter: the hint's origin is PEER_UNRESPONSIVE")
             .anyMatch(line -> line.contains(HINT_RECORDED + "PEER_UNRESPONSIVE)"))
             .noneMatch(line -> line.contains(HINT_RECORDED + "LINK_LOST)"));
@@ -159,7 +136,7 @@ class SwimHintInstallBootTest {
                                    0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         await().atMost(HINT_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
+               .untilAsserted(() -> assertThat(capture.messages())
                    .as("the installed pong listener is pongResponsiveReporter: the pong retracts the hint")
                    .anyMatch(line -> line.contains(PONG_RETRACTION)));
     }
@@ -186,41 +163,5 @@ class SwimHintInstallBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-
-        if (LOGGER_NAME.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.DEBUG, false);
-
-        configuration.addLogger(LOGGER_NAME, fresh);
-
-        return fresh;
-    }
-
-    /// In-memory log4j2 appender capturing every message the bound logger emits.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> messages() {
-            return List.copyOf(messages);
-        }
     }
 }

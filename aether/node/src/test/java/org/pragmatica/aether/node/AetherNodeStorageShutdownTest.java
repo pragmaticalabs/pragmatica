@@ -7,24 +7,14 @@ package org.pragmatica.aether.node;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,21 +41,11 @@ class AetherNodeStorageShutdownTest {
 
     @TempDir
     Path tempDir;
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
-        appender = CapturingAppender.create("StorageShutdownCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.ALL);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(STORAGE_LOGGER, Level.ALL, false);
     }
 
     @AfterEach
@@ -78,12 +58,7 @@ class AetherNodeStorageShutdownTest {
             stopped.onFailure(cause -> fail("stop failed in teardown: " + cause.message()));
         }
 
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
         ConfigService.clear();
         ResourceProvider.clear();
     }
@@ -110,46 +85,11 @@ class AetherNodeStorageShutdownTest {
     }
 
     private List<String> shutDownNames() {
-        return appender.events()
+        return capture.messages()
                        .stream()
                        .filter(message -> message.startsWith("Storage instance '") && message.endsWith("' shut down"))
                        .map(message -> message.substring("Storage instance '".length(),
                                                          message.length() - "' shut down".length()))
                        .toList();
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(STORAGE_LOGGER);
-
-        if (STORAGE_LOGGER.equals(existing.getName())) {
-            return existing;
-        }
-
-        var fresh = new LoggerConfig(STORAGE_LOGGER, Level.ALL, false);
-
-        configuration.addLogger(STORAGE_LOGGER, fresh);
-
-        return fresh;
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(event.getMessage().getFormattedMessage());
-        }
-
-        List<String> events() {
-            return events;
-        }
     }
 }

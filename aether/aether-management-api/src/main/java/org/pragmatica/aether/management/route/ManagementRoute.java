@@ -58,6 +58,8 @@ public enum ManagementRoute {
     // leader's instantaneous live-member count — LEADER, because only the leader holds that view.
     CLUSTER_COMMUNITIES(GET, "/cluster/communities", List.of(), LEADER),
     CLUSTER_COMMUNITY_GET(GET, "/cluster/communities", List.of("id"), LEADER),
+    // #241: an operator clears ONE parked community placement operation after looking at its nodes; the leader owns the operation.
+    COMMUNITY_PLACEMENT_CLEAR(POST, "/cluster/communities/placement/clear", List.of("id"), LEADER),
     CLUSTER_JOURNAL(GET, "/cluster/journal", List.of(), LOCAL),
     CLUSTER_CONFIG_GET(GET, "/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_PROVISIONING_GET(GET, "/cluster/provisioning", List.of(), taskGroup(DEPLOYMENT)),
@@ -122,7 +124,7 @@ public enum ManagementRoute {
     // GOVERNOR's tcpAddress (GovernorAnnouncementValue), which WORKERS_LIST already serves. Both are
     // answered by NotImplementedRoutes with an honest 501 naming the missing capability, rather than
     // being left unserved (a bare 404 tells the operator nothing) or deleted (worker mode is live —
-    // see AetherNode.activateWorkerMode). Implementing them requires workers to publish health and
+    // see WorkerHierarchyAssembly.activateWorkerMode). Implementing them requires workers to publish health and
     // endpoint facts; that is a feature, not a repair.
     WORKERS_HEALTH(GET, "/workers/health", List.of(), LEADER),
     WORKERS_ENDPOINTS(GET, "/workers/endpoints", List.of(), LEADER),

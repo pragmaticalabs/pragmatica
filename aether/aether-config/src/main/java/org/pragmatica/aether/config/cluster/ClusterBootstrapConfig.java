@@ -11,56 +11,67 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.aether.config.ConfigKeyLive;
 
 
-/// `configVersion` is #693: parsed from the TOML file, but no downstream code reads this accessor — the
-/// live, KV-store-backed `ClusterConfigValue.configVersion()` (a different, unrelated record used by
-/// `ClusterConfigRoutes`/`ClusterTopologyManagerRecord` for the applied/desired topology's own version
-/// fencing) is the one every real consumer actually reads. `@ConfigKeyLive`-suppressed rather than
-/// deleted: #693 owns the fix, not #519's dead-surface guard.
-public record ClusterBootstrapConfig(@ConfigKeyLive("#693: parsed but never read — ClusterConfigValue.configVersion() is the live, unrelated accessor every consumer actually reads") String configVersion,
-                                     ClusterIdentity cluster,
+public record ClusterBootstrapConfig(ClusterIdentity cluster,
                                      CoreTopology coreTopology,
                                      Map<String, SourceProfile> sources,
                                      Map<String, RuntimeProfile> runtimes,
                                      InfrastructureConfig infrastructure,
                                      OperationsConfig operations,
-                                     Map<String, CommunityPlacement> communities) {
+                                     Map<String, CommunityPlacement> communities,
+                                     Option<CommunityPolicy> communityPolicy) {
     public ClusterBootstrapConfig {
         communities = Map.copyOf(communities);
         sources = Map.copyOf(sources);
         runtimes = Map.copyOf(runtimes);
     }
 
-    public static ClusterBootstrapConfig clusterBootstrapConfig(String configVersion,
-                                                                ClusterIdentity cluster,
+    public static ClusterBootstrapConfig clusterBootstrapConfig(ClusterIdentity cluster,
                                                                 CoreTopology coreTopology,
                                                                 Map<String, SourceProfile> sources,
                                                                 Map<String, RuntimeProfile> runtimes,
                                                                 InfrastructureConfig infrastructure,
                                                                 OperationsConfig operations,
                                                                 Map<String, CommunityPlacement> communities) {
-        return new ClusterBootstrapConfig(configVersion,
-                                          cluster,
+        return clusterBootstrapConfig(cluster,
+                                      coreTopology,
+                                      sources,
+                                      runtimes,
+                                      infrastructure,
+                                      operations,
+                                      communities,
+                                      Option.none());
+    }
+
+    public static ClusterBootstrapConfig clusterBootstrapConfig(ClusterIdentity cluster,
+                                                                CoreTopology coreTopology,
+                                                                Map<String, SourceProfile> sources,
+                                                                Map<String, RuntimeProfile> runtimes,
+                                                                InfrastructureConfig infrastructure,
+                                                                OperationsConfig operations,
+                                                                Map<String, CommunityPlacement> communities,
+                                                                Option<CommunityPolicy> communityPolicy) {
+        return new ClusterBootstrapConfig(cluster,
                                           coreTopology,
                                           sources,
                                           runtimes,
                                           infrastructure,
                                           operations,
-                                          communities);
+                                          communities,
+                                          communityPolicy);
     }
 
     public Result<ClusterBootstrapConfig> withClusterName(String newName) {
         return cluster.withName(newName)
-                      .map(updated -> new ClusterBootstrapConfig(configVersion,
-                                                                 updated,
+                      .map(updated -> new ClusterBootstrapConfig(updated,
                                                                  coreTopology,
                                                                  sources,
                                                                  runtimes,
                                                                  infrastructure,
                                                                  operations,
-                                                                 communities));
+                                                                 communities,
+                                                                 communityPolicy));
     }
 
     public int derivedCoreCount() {

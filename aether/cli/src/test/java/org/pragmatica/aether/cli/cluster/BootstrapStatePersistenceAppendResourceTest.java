@@ -125,6 +125,32 @@ class BootstrapStatePersistenceAppendResourceTest {
                                           .isEqualTo("{ this is not valid bootstrap state");
     }
 
+    /// P-8: a ledger holding an entry of a type this CLI does not know must refuse the append and stay
+    /// byte-identical. Before the parser refused, the unknown entry was skipped on load and the append
+    /// re-saved the file without it — an older CLI erasing a newer CLI's handle on a paid resource.
+    @Test
+    @SuppressWarnings("JBCT-EX-01")
+    void appendResource_ledgerWithUnknownResourceType_refusesAndLeavesTheFileByteIdentical() throws Exception {
+        var path = BootstrapStatePersistence.statePath(clusterName);
+        var ledger = """
+            {"clusterName": "%s", "configHash": "h", "startedAt": "2026-10-18T00:00:00Z", "phases": {},
+             "createdResources": [{"type": "FutureThing", "resourceId": "x-9"}],
+             "provisionedNodeIds": [], "collectedAddresses": [], "clusterSecret": ""}
+            """.formatted(clusterName.value());
+
+        Files.createDirectories(path.getParent());
+        Files.writeString(path, ledger);
+
+        BootstrapStatePersistence.appendResource(clusterName, vm("165556365"))
+                                 .onSuccess(_ -> fail("a ledger with an unknown entry must not be re-saved without it"))
+                                 .onFailure(cause -> assertThat(cause.message())
+                                         .as("the refusal must name the unknown type")
+                                         .contains("FutureThing"));
+
+        assertThat(Files.readString(path)).as("the unknown entry is the only handle on its resource — never rewrite the file")
+                                          .isEqualTo(ledger);
+    }
+
     private List<String> recordedVmIds() {
         return BootstrapStatePersistence.read(clusterName)
                                         .or(Option.empty())

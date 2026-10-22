@@ -17,10 +17,10 @@ package org.pragmatica.serialization.json.tests;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.json.JsonError;
 import org.pragmatica.serialization.json.JsonTypeCodec;
 import org.pragmatica.serialization.json.spi.JsonReader;
@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,6 +44,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// bytes the generated holder writes for its component, and for every input the combinator accepts exactly what the
 /// generated holder accepts (with the same value) and refuses what it refuses. Inputs cover nulls, duplicates,
 /// refused elements, malformed and truncated documents.
+///
+/// A value object is the object of its one component as the whole document and its bare component when nested (owner
+/// ruling 2026-10-18); the last section pins that split across the entry point, the combinators, the generated
+/// container code and the production Jackson mapper ([Baseline]).
 class CombinatorAgreementTest {
     private static final Item A = new Item("a", Option.some(1L));
     private static final Item B = new Item("b \"q\" é", Option.none());
@@ -185,6 +190,111 @@ class CombinatorAgreementTest {
 
     private static String nodes(int depth) {
         return "{\"children\":[".repeat(depth) + "]}".repeat(depth);
+    }
+
+    // ---- value objects: the object form as the document, bare when nested ---------------------------------------
+    @Test
+    void valueObjectDocument_isTheObjectOfItsComponent_onTheEntryPointAndTheProductionMapper() {
+        var code = new Code("x \"q\"");
+
+        assertEquals("{\"value\":\"x \\\"q\\\"\"}", text(Containers_CodeJson.encode(code)));
+        assertEquals(jackson(code), text(Containers_CodeJson.encode(code)));
+        assertEquals(jackson(code), text(Containers_CodeJson.CODEC.encode(code)));
+        assertEquals(code, Containers_CodeJson.decode(jackson(code)).unwrap());
+        assertEquals(code, Baseline.MAPPER.readBytes(Containers_CodeJson.encode(code), Code.class).unwrap());
+    }
+
+    @Test
+    void valueObjectDocument_acceptsOnlyTheObjectForm_asTheProductionMapperDoes() {
+        assertJacksonAgreement(Containers_CodeJson.CODEC, new TypeToken<>() {},
+                               List.of("{\"value\":\"x\"}", " { \"value\" : \"x\" } ", "{\"value\":\"x\",\"extra\":[1,{}]}",
+                                       "{\"extra\":null,\"value\":\"x\"}", "{\"value\":\"a\",\"value\":\"b\"}", "\"x\"", "{}",
+                                       "{\"value\":null}", "{\"value\":\"\"}", "{\"value\":\" \"}", "[\"x\"]", "[]",
+                                       "{\"value\":\"x\"", "{\"value\":\"x\"} x"));
+        assertEquals(new Code("b"), Containers_CodeJson.decode("{\"value\":\"a\",\"value\":\"b\"}").unwrap());
+    }
+
+    // The document form decodes through the factory too, so a refused value is the factory's refusal, not a shape error.
+    @Test
+    void valueObjectDocument_runsTheFactory() {
+        assertTrue(Containers_CodeJson.decode("{\"value\":\" \"}")
+                                      .fold(Cause::message, _ -> "")
+                                      .contains("Invalid Code: blank"));
+        assertInstanceOf(JsonError.MissingField.class, Containers_CodeJson.decode("{}").fold(cause -> cause, _ -> null));
+        assertInstanceOf(JsonError.Malformed.class, Containers_CodeJson.decode("\"x\"").fold(cause -> cause, _ -> null));
+    }
+
+    @Test
+    void valueObjectsNested_stayBare_inCombinatorsGeneratedCodeAndTheProductionMapper() {
+        var codes = List.of(new Code("x"), new Code("y"));
+        var byName = new LinkedHashMap<String, Code>();
+        var byCode = new LinkedHashMap<Code, Code>();
+
+        byName.put("k", new Code("x"));
+        byCode.put(new Code("k"), new Code("x"));
+        assertEquals("[\"x\",\"y\"]", text(JsonTypeCodec.listOf(Containers_CodeJson.CODEC).encode(codes)));
+        assertEquals(jackson(codes), text(JsonTypeCodec.listOf(Containers_CodeJson.CODEC).encode(codes)));
+        assertEquals(jackson(new LinkedHashSet<>(codes)), text(JsonTypeCodec.setOf(Containers_CodeJson.CODEC).encode(new LinkedHashSet<>(codes))));
+        assertEquals("{\"k\":\"x\"}", text(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC).encode(byName)));
+        assertEquals(jackson(byName), text(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC).encode(byName)));
+        assertEquals("{\"v\":{\"k\":\"x\"}}", text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
+        assertEquals("{\"v\":" + jackson(byCode) + "}", text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
+        assertEquals(jackson(new Containers.Codes(codes)), text(Containers_CodesJson.encode(new Containers.Codes(codes))));
+        assertEquals(jackson(new Containers.CodesByCode(byCode)), text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
+    }
+
+    @Test
+    void valueObjectsNested_acceptOnlyTheBareForm_asTheProductionMapperDoes() {
+        assertJacksonAgreement(JsonTypeCodec.listOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+                               List.of("[]", "[\"x\",\"y\"]", "[{\"value\":\"x\"}]", "[\"\"]", "{\"value\":\"x\"}"));
+        assertJacksonAgreement(JsonTypeCodec.setOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+                               List.of("[]", "[\"x\",\"y\"]", "[{\"value\":\"x\"}]", "[\"\"]", "{\"value\":\"x\"}"));
+        assertEquals(Set.of(new Code("x")), JsonTypeCodec.setOf(Containers_CodeJson.CODEC).decode("[\"x\"]").unwrap());
+        assertJacksonAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+                               List.of("{}", "{\"k\":\"x\"}", "{\"k\":{\"value\":\"x\"}}", "{\"k\":\" \"}"));
+        assertJacksonAgreement(Containers_CodesByCodeJson.CODEC, new TypeToken<>() {},
+                               List.of("{\"v\":{\"k\":\"x\"}}", "{\"v\":{\"k\":{\"value\":\"x\"}}}", "{\"v\":{\" \":\"x\"}}",
+                                       "{\"v\":{\"k\":\" \"}}"));
+    }
+
+    // An option is no container: as the document its value is the object form, as a component or element it is bare.
+    @Test
+    void optionOfValueObject_takesTheFormOfWhereItStands() {
+        var some = Option.some(new Code("x"));
+
+        assertEquals("{\"value\":\"x\"}", text(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).encode(some)));
+        assertEquals(jackson(some), text(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).encode(some)));
+        assertEquals("[\"x\",null]",
+                     text(JsonTypeCodec.listOf(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC)).encode(List.of(some, Option.none()))));
+        assertSameBytes(Containers_MaybeCodeJson.encode(new Containers.MaybeCode(some)), "\"x\"".getBytes(StandardCharsets.UTF_8));
+        assertEquals(jackson(new Containers.MaybeCode(some)), text(Containers_MaybeCodeJson.encode(new Containers.MaybeCode(some))));
+        assertJacksonAgreement(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+                               List.of("{\"value\":\"x\"}", "\"x\""));
+        assertAgreement(JsonTypeCodec.listOf(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC)),
+                        Containers_CodesJson::decode,
+                        holder -> holder.v().stream().map(Option::some).toList(),
+                        List.of("[\"x\"]", "[{\"value\":\"x\"}]"));
+        assertFalse(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).decode("\"x\"").isSuccess());
+    }
+
+    private static <T> void assertJacksonAgreement(JsonTypeCodec<T> codec, TypeToken<T> token, List<String> documents) {
+        for (var document : documents) {
+            var ours = codec.decode(document);
+            var theirs = Baseline.MAPPER.readString(document, token);
+
+            assertEquals(theirs.isSuccess(), ours.isSuccess(), () -> "accept/refuse differs for " + document + ": jackson "
+                                                                     + theirs + ", generated " + ours);
+            theirs.onSuccess(value -> assertEquals(value, ours.unwrap(), document));
+        }
+    }
+
+    private static String jackson(Object value) {
+        return Baseline.MAPPER.writeAsString(value)
+                              .unwrap();
+    }
+
+    private static String text(byte[] json) {
+        return new String(json, StandardCharsets.UTF_8);
     }
 
     private static <C, H> void assertAgreement(JsonTypeCodec<C> combinator,

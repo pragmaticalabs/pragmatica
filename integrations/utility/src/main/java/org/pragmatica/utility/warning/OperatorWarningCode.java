@@ -29,7 +29,11 @@ import org.pragmatica.lang.Option;
 /// condition under different severities. `OperatorWarningCodeTest` refuses duplicate or non-kebab
 /// codes.
 ///
-/// To add a code, append a constant here. Never rename the string of a shipped code, because anything
+/// To add a code, insert a constant ABOVE the last constant, never after it: the last constant carries the terminating
+/// `;`, and the formatter rewrites a trailing comma away, so a constant appended after it would edit that line and
+/// conflict with any other PR adding a code (this file merges with `merge=union`, see `.gitattributes`).
+///
+/// Never rename the string of a shipped code, because anything
 /// that matches on it (alert rules, scripts, a future server-side filter) depends on it.
 public enum OperatorWarningCode {
     /// SWIM's #336 co-confirmation kill-gate is holding the death of a long-healthy peer. This node
@@ -189,6 +193,29 @@ public enum OperatorWarningCode {
                              "replacement",
                              WarningLevel.INFO,
                              NODE_REPLACEMENT_FAILED_KEPT_BOTH),
+    /// A core replacement has been refused by capacity admission (source busy, fleet limit reached, inventory unavailable) and is deferred
+    /// to the next reconcile pass (#1404). Raised on the first refusal of a run, not on every tick; the subject is `core-provisioning`. Closed
+    /// by [#PROVISION_ADMISSION_RESUMED]. A permanent refusal never closes, which is what makes it visible.
+    PROVISION_ADMISSION_DEFERRED("provision-admission-deferred", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#PROVISION_ADMISSION_DEFERRED], same subject: a replacement passed admission and was dispatched.
+    PROVISION_ADMISSION_RESUMED("provision-admission-resumed",
+                                "deployment",
+                                WarningLevel.INFO,
+                                PROVISION_ADMISSION_DEFERRED),
+    /// An allocation dispatched under an earlier leader term, whose instance no provider listing or lookup showed in several
+    /// consecutive passes, was released (#1404). The subject is the node. A one-off resolution that tells the operator a leader decided an
+    /// uncertain create did not happen: nothing stays open, so it is INFO (a condition that stays open would be a WARNING with a recovery); the
+    /// release itself is logged at WARN where it happens.
+    CAPACITY_DISPATCH_RELEASED("capacity-dispatch-released", "deployment", WarningLevel.INFO),
+    /// A core deficit has been held open for longer than the join grace by committed allocations that never joined (#1404): an uncertain
+    /// create (DISPATCHED) counts as capacity for ever, so no replacement is created until the allocation resolves. The subject is `core`.
+    /// Closed by [#CORE_CAPACITY_DURABLE_RESOLVED].
+    CORE_CAPACITY_AWAITING_DURABLE("core-capacity-awaiting-durable", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#CORE_CAPACITY_AWAITING_DURABLE], same subject: durable allocations no longer cover the deficit.
+    CORE_CAPACITY_DURABLE_RESOLVED("core-capacity-durable-resolved",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   CORE_CAPACITY_AWAITING_DURABLE),
     /// A rolling upgrade run (#1543 part F) was started: every node is being replaced, serially, by a node running the target
     /// version, so the cluster runs mixed versions until it ends. The subject is always `upgrade` (there is one run). Closed by
     /// [#UPGRADE_COMPLETED] or [#UPGRADE_ABORTED].
@@ -347,7 +374,84 @@ public enum OperatorWarningCode {
     /// A SWIM datagram presented a different process token for a member whose live process answered with its own,
     /// and was refused. A genuinely new process under the same identity is not this: it answers with the new token
     /// and is refused by the identity rule.
-    SWIM_MEMBER_IDENTITY_CONFLICT("swim-member-identity-conflict", "membership", WarningLevel.WARNING);
+    SWIM_MEMBER_IDENTITY_CONFLICT("swim-member-identity-conflict", "membership", WarningLevel.WARNING),
+    /// An observer (a node outside the voter roster, such as an auto-heal replacement still joining) stopped applying
+    /// consensus decisions while it catches up or after it lost sight of the quorum. It is not a voter, so this is NOT a
+    /// quorum loss and raises no `QUORUM_LOST`; routing on the node is quiesced until it observes again. Throttled per node like every operator
+    /// warning; subject is the node; the message names it. Closed by [#OBSERVER_CONSENSUS_RESUMED].
+    OBSERVER_CONSENSUS_LAGGING("observer-consensus-lagging", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#OBSERVER_CONSENSUS_LAGGING], same subject (#2306): the observer is observing again and applies committed
+    /// decisions, or it left the lagging state another way (promoted to a voter, removed from the cluster, shutting down; the message
+    /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
+    /// publishes nothing.
+    OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// Background promotion of a storage instance has copied nothing for several consecutive cycles while copies kept
+    /// failing: a copy attempt fails when its faster tier rejects the write or its source tier cannot be read. It detects
+    /// FAILING COPIES only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing.
+    /// The subject is the storage instance; the message names it and what to do (check the tiers' health and free space,
+    /// `memory_max_bytes` / `disk_max_bytes`, or set `promotion = false` for the instance). Closed by
+    /// [#STORAGE_PROMOTION_RESUMED].
+    STORAGE_PROMOTION_STALLED("storage-promotion-stalled", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_PROMOTION_STALLED], same subject: a promotion cycle copied a block successfully. A cycle
+    /// with nothing to copy does not close it, because a tier that is still broken looks the same as an idle one. INFO,
+    /// published only after a published stalled event for the instance (#752 mechanism).
+    STORAGE_PROMOTION_RESUMED("storage-promotion-resumed", "storage", WarningLevel.INFO, STORAGE_PROMOTION_STALLED),
+    /// A worker still has no committed activation directive after the community-absence window (#1840): its SWIM ANNOUNCE is held until the
+    /// directive commits, so the cluster's SWIM scope does not include it. Typically the leader has not admitted it (no capacity reservation
+    /// or admission authorisation), or the directive was refused. The subject is the node. Closed by [#WORKER_ASSIGNED].
+    WORKER_ASSIGNMENT_OVERDUE("worker-assignment-overdue", "membership", WarningLevel.WARNING),
+    /// The recovery of [#WORKER_ASSIGNMENT_OVERDUE], same subject (#1840): the worker's activation directive committed and its held SWIM ANNOUNCE was
+    /// released. Raised only when the warning was.
+    WORKER_ASSIGNED("worker-assigned", "membership", WarningLevel.INFO, WORKER_ASSIGNMENT_OVERDUE),
+    /// An ephemeral-tier publisher fanned an event out to a subscriber whose handler takes the delivery context (#1337): that
+    /// handler belongs to a durable topic, and an ephemeral delivery carries no envelope to build the context from. The delivery
+    /// was refused and the event NOT delivered to that subscriber. The message names the topic, the publishing slice and the
+    /// subscribing method. Subject is `<topic address>/<subscriber slice without its version>:<method>`, so redeploying the subscriber
+    /// at a new version stays the same subject.
+    TOPIC_TIER_MISMATCH("topic-tier-mismatch", "topic", WarningLevel.WARNING),
+    /// The end of a `topic-tier-mismatch` (#1337): a later delivery from the same publisher reached the same subscriber slice (any
+    /// version), the subscriber is no longer registered, or the publisher was released. INFO,
+    /// published only after a published mismatch event for the same subject (#752 mechanism); a subscriber that was never refused
+    /// publishes nothing.
+    TOPIC_TIER_MISMATCH_RESOLVED("topic-tier-mismatch-resolved", "topic", WarningLevel.INFO, TOPIC_TIER_MISMATCH),
+    /// A worker joined a source whose derived communities cannot take it (#241): every community of the source is at the hard ceiling and
+    /// the source is at its `community_policy.max_communities`, so the worker gets no community. Subject is the source; the message names the
+    /// worker and the bounds. Raise `max_communities` or `max_size` in the cluster config, or add worker capacity under another source; the
+    /// worker takes a community when it rejoins. Closed by [#COMMUNITY_GROWTH_RESUMED].
+    COMMUNITY_GROWTH_BLOCKED("community-growth-blocked", "community-growth", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
+    /// was raised, or a community has room). INFO, published only after a published blocked event for the source (#752 mechanism).
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED),
+    /// A community placement operation (a worker replacement, a scale-down, a community retirement) is parked and needs an operator (#241): its
+    /// drain acknowledgement deadline passed (DRAIN_UNCERTAIN), so the previous worker may or may not be drained, or it is BLOCKED by a
+    /// conflict the reconciler cannot resolve by itself. Subject is the community; the message names the operation, the phase, both nodes
+    /// and the command that clears it. Closed by [#COMMUNITY_PLACEMENT_RESUMED] or [#COMMUNITY_PLACEMENT_CLEARED].
+    COMMUNITY_PLACEMENT_PARKED("community-placement-parked", "community-placement", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_PLACEMENT_PARKED], same subject (#241): the operation left its parked phase by itself (a late drain
+    /// acknowledgement, the target observed). INFO. It closes a warning another node may have raised: a leader change keeps the operation.
+    COMMUNITY_PLACEMENT_RESUMED("community-placement-resumed",
+                                "community-placement",
+                                WarningLevel.INFO,
+                                COMMUNITY_PLACEMENT_PARKED,
+                                true),
+    /// The other recovery of [#COMMUNITY_PLACEMENT_PARKED], same subject (#241): an OPERATOR cleared the parked operation (`aether cluster
+    /// clear-placement`). Nothing was terminated or removed by the clear: the event names the operator, the reason the operator gave, the phase
+    /// the operation was parked in and both nodes, which are left as they were. Closes the warning another node may have raised.
+    COMMUNITY_PLACEMENT_CLEARED("community-placement-cleared",
+                                "community-placement",
+                                WarningLevel.INFO,
+                                COMMUNITY_PLACEMENT_PARKED,
+                                true),
+    /// A worker has no community because the leader's commit of its assignment was refused several times in a row (#241): the community
+    /// changed between each decision and its commit. Subject is the worker. The worker takes a community when it is admitted again (restart it
+    /// if it does not). Closed by [#COMMUNITY_ASSIGNMENT_PLACED].
+    COMMUNITY_ASSIGNMENT_UNPLACED("community-assignment-unplaced", "community-assignment", WarningLevel.WARNING),
+    /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO, published only after a
+    /// published unplaced event for the worker (#752 mechanism).
+    COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",
+                                "community-assignment",
+                                WarningLevel.INFO,
+                                COMMUNITY_ASSIGNMENT_UNPLACED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

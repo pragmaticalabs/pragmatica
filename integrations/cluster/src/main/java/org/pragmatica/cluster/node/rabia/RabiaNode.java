@@ -210,6 +210,18 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
     }
 
+    /// Why this node's own persisted consensus history could not be restored, while that keeps it from
+    /// activating (#1468). Empty for a node that restored, never needed to, or whose engine is a test double.
+    default Option<org.pragmatica.lang.Cause> ownRestoreFailure() {
+        return Option.none();
+    }
+
+    /// Why the re-persist of a restored or adopted state failed, while that keeps the node from activating (#1516).
+    /// Empty for a node whose restore was persisted, never needed to, or whose engine is a test double.
+    default Option<org.pragmatica.lang.Cause> restoredStateSaveFailure() {
+        return Option.none();
+    }
+
     default Option<VoterConfiguration> voterConfiguration() {
         return Option.none();
     }
@@ -618,7 +630,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
         // R5: transport never mutates topology projection. ConnectionFailed/Established
         // are forwarded to SWIM via QuicClusterNetwork's peer-state listener
-        // (AetherNode.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
+        // (MembershipAssembly.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
         // The router routes are retained only to satisfy sealed-hierarchy coverage.
         route(ConnectionFailed.class,
               _ -> {}),
@@ -710,18 +722,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
             @Override
             public Promise<Unit> start() {
-                return network().start()
-                              .onSuccessRunAsync(topologyManager()::start)
-                              .flatMap(consensus()::start);
+                return RabiaNodeLifecycle.start(network()::start, topologyManager()::start, consensus()::start);
             }
 
             @Override
             public Promise<Unit> stop() {
                 leaderManager().stop();
 
-                return consensus().stop()
-                                .onResultRun(topologyManager()::stop)
-                                .flatMap(network()::stop);
+                return RabiaNodeLifecycle.stop(consensus()::stop, topologyManager()::stop, network()::stop);
             }
 
             @Override
@@ -826,6 +834,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
                 return consensus().voterReconfigurationStatus();
+            }
+
+            @Override
+            public Option<org.pragmatica.lang.Cause> ownRestoreFailure() {
+                return consensus().ownRestoreFailure();
+            }
+
+            @Override
+            public Option<org.pragmatica.lang.Cause> restoredStateSaveFailure() {
+                return consensus().restoredStateSaveFailure();
             }
 
             @Override

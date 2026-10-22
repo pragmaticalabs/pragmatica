@@ -14,17 +14,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Stream;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -91,12 +84,12 @@ class AppendLogVolumeReadOnlyTest {
                                                       WritePolicy.WRITE_THROUGH,
                                                       some(volume.resolve("logs")),
                                                       tail -> record(reported, tail));
-        var capture = Capture.attach();
+        var capture = LogCapture.capture(AppendLog.class, Level.ALL, true);
 
         try {
             storage.openLog("orders/0").onFailure(cause -> fail(cause.message())).onSuccess(AppendLog::close);
         } finally {
-            capture.detach();
+            capture.close();
         }
 
         assertThat(reported).containsExactly(new AppendLog.TornTail(logFile().toAbsolutePath(),
@@ -104,11 +97,11 @@ class AppendLogVolumeReadOnlyTest {
                                                                     extent.fileBytes(),
                                                                     2L));
         assertThat(Files.size(logFile())).isEqualTo(extent.validBytes());
-        assertThat(capture.warns()).singleElement()
-                                   .asString()
-                                   .contains(logFile().toAbsolutePath().toString())
-                                   .contains("[" + extent.validBytes() + ", " + extent.fileBytes() + ")")
-                                   .contains("offset 2");
+        assertThat(capture.messages(Level.WARN)).singleElement()
+                                            .asString()
+                                            .contains(logFile().toAbsolutePath().toString())
+                                            .contains("[" + extent.validBytes() + ", " + extent.fileBytes() + ")")
+                                            .contains("offset 2");
     }
 
     /// What a write the process did not survive leaves behind: a `<hex>.<n>.partial` beside the shards.
@@ -162,47 +155,5 @@ class AppendLogVolumeReadOnlyTest {
         reported.add(tail);
 
         return Unit.unit();
-    }
-
-    private static final class Capture extends AbstractAppender {
-        private static final String LOGGER = AppendLog.class.getName();
-        private final List<String> warns = new CopyOnWriteArrayList<>();
-
-        private Capture() {
-            super("AppendLogTornTailCapture", (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
-        }
-
-        static Capture attach() {
-            var capture = new Capture();
-            var ctx = (LoggerContext) LogManager.getContext(false);
-            var config = ctx.getConfiguration();
-            var loggerConfig = new LoggerConfig(LOGGER, Level.ALL, true);
-
-            capture.start();
-            config.addLogger(LOGGER, loggerConfig);
-            loggerConfig.addAppender(capture, Level.ALL, null);
-            ctx.updateLoggers();
-
-            return capture;
-        }
-
-        void detach() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            ctx.getConfiguration().removeLogger(LOGGER);
-            ctx.updateLoggers();
-            stop();
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel() == Level.WARN) {
-                warns.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> warns() {
-            return warns;
-        }
     }
 }

@@ -2,7 +2,7 @@
 
 Unified Application Runtime for Java -- scale horizontally without microservices complexity.
 
-> **Release status: `1.0.0-rc4` (release candidate).** This RC validates the distributed
+> **Release status: `1.0.0-rc5` (release candidate).** This RC validates the distributed
 > foundation — consensus, leader election, failure detection, membership, and topology
 > management — under sustained cloud load. Scope for this RC:
 > - **Single trust domain.** Aether assumes all cluster nodes and management clients are
@@ -24,8 +24,7 @@ Unified Application Runtime for Java -- scale horizontally without microservices
 > - **Known limitations are listed in
 >   [docs/reference/known-limitations.md](docs/reference/known-limitations.md) — read before
 >   evaluating.** Among them: a network cut that leaves no core majority halts every core,
->   node-binary version skew has no join-time check, and the dashboard does not work against a
->   real node.
+>   node-binary version skew has no join-time check.
 
 ## Overview
 
@@ -72,13 +71,9 @@ To run an example application on Forge, follow the [Quick Start](../README.md#qu
 PostgreSQL, `./run-forge.sh`, then `curl`. The example scripts use the installed Forge; nothing is built from source but
 the example.
 
-Forge provides a dashboard, cluster operations, chaos testing, and per-node management API access.
-**rc4 limitation:** on Forge only `/ws/status` has a publisher (`/ws/dashboard` and `/ws/events` send nothing), and
-Forge serves only a subset of the dashboard's unversioned `/api/...` REST calls, so several panels (governors,
-strategies, streams, schema, storage, desired topology, among others) are empty; against a real node, whose router
-serves `/api/v1` only, every REST-fed panel is empty. See
-[Known Limitations](docs/reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty);
-use the CLI or the `/api/v1` REST API for the data behind the empty panels.
+Forge provides a REST API (port 8888) for cluster operations, chaos testing and load generation, plus per-node
+management API access. The web dashboard was removed in 1.0.0-rc5; a new one will be written from scratch. Until then the
+CLI and the `/api/v1` REST API are the supported operator surfaces.
 
 ### Installation
 
@@ -123,7 +118,7 @@ aether/
 ├── node/                # Runtime (AetherNode) + management API routes
 ├── aether-stream/       # Event streams: replication, failover, consumers
 ├── aether-deployment/   # Membership, topology, cluster deployment
-├── forge/               # Local cluster simulator & dashboard
+├── forge/               # Local cluster simulator (load/chaos REST API)
 ├── cli/                 # Command-line tools (`aether`)
 └── docs/                # Reference, operator, and contributor docs
 ```

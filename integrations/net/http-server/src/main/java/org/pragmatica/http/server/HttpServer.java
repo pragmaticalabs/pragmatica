@@ -58,6 +58,9 @@ public interface HttpServer {
 
     /// Create and start an HTTP/3 server over QUIC.
     ///
+    /// #2310: the QUIC context must offer the `h3` ALPN token (`Http3.supportedApplicationProtocols()`); QUIC
+    /// requires ALPN, and a context without it completes no handshake with an HTTP/3 client.
+    ///
     /// @param config         server configuration
     /// @param quicSslContext QUIC-specific SSL context (TLS 1.3 required for HTTP/3)
     /// @param handler        request handler (shared with HTTP/1.1 pipeline)

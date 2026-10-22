@@ -58,7 +58,7 @@ class AppHttpServerSecurityModeTest {
 
     @Nested
     class ApiKeyServerTests {
-        private static final int SECURE_PORT = 19091;
+        private static int port;
         private static final String VALID_API_KEY = "test-api-key-valid-12345";
         private static AppHttpServer server;
         private static HttpClient httpClient;
@@ -68,7 +68,7 @@ class AppHttpServerSecurityModeTest {
             httpClient = HttpClient.newBuilder()
                                    .connectTimeout(Duration.ofSeconds(5))
                                    .build();
-            var config = AppHttpConfig.appHttpConfig(SECURE_PORT, Set.of(VALID_API_KEY));
+            var config = AppHttpConfig.appHttpConfig(0, Set.of(VALID_API_KEY));
             server = AppHttpServer.appHttpServer(config,
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
@@ -82,7 +82,8 @@ class AppHttpServerSecurityModeTest {
                                                  Option.none(),
                                                  Option.none(),
                                                  Option.none());
-            server.start().await();
+            TlsProbe.requireStarted(server.start().await(), "app listener");
+            port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         }
 
         @AfterAll
@@ -93,7 +94,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void rejectsRequestWithoutKey() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + SECURE_PORT + "/some/path"))
+                                     .uri(URI.create("http://localhost:" + port + "/some/path"))
                                      .GET()
                                      .build();
 
@@ -105,7 +106,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void healthEndpointBypassesAuth() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + SECURE_PORT + "/health"))
+                                     .uri(URI.create("http://localhost:" + port + "/health"))
                                      .GET()
                                      .build();
 
@@ -117,7 +118,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void acceptsValidKey() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + SECURE_PORT + "/some/path"))
+                                     .uri(URI.create("http://localhost:" + port + "/some/path"))
                                      .header("X-API-Key", VALID_API_KEY)
                                      .GET()
                                      .build();
@@ -131,7 +132,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void rejectsInvalidKey() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + SECURE_PORT + "/some/path"))
+                                     .uri(URI.create("http://localhost:" + port + "/some/path"))
                                      .header("X-API-Key", "wrong-key")
                                      .GET()
                                      .build();
@@ -147,7 +148,7 @@ class AppHttpServerSecurityModeTest {
     /// policy is `publicRoute()`, so this request was served. `/health` stays open in every mode.
     @Nested
     class BareBuilderIsFailClosedTests {
-        private static final int BARE_PORT = 19098;
+        private static int port;
         private static AppHttpServer server;
         private static HttpClient httpClient;
 
@@ -156,7 +157,7 @@ class AppHttpServerSecurityModeTest {
             httpClient = HttpClient.newBuilder()
                                    .connectTimeout(Duration.ofSeconds(5))
                                    .build();
-            var config = AppHttpConfig.appHttpConfig(BARE_PORT);
+            var config = AppHttpConfig.appHttpConfig(0);
             server = AppHttpServer.appHttpServer(config,
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
@@ -170,7 +171,8 @@ class AppHttpServerSecurityModeTest {
                                                  Option.none(),
                                                  Option.none(),
                                                  Option.none());
-            server.start().await();
+            TlsProbe.requireStarted(server.start().await(), "app listener");
+            port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         }
 
         @AfterAll
@@ -181,7 +183,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void bareBuilder_refusesUnspecifiedPolicyRoute_withoutCredentials() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + BARE_PORT + "/api/anything"))
+                                     .uri(URI.create("http://localhost:" + port + "/api/anything"))
                                      .GET()
                                      .build();
 
@@ -196,7 +198,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void bareBuilder_stillServesHealth() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + BARE_PORT + "/health"))
+                                     .uri(URI.create("http://localhost:" + port + "/health"))
                                      .GET()
                                      .build();
 
@@ -208,7 +210,7 @@ class AppHttpServerSecurityModeTest {
 
     @Nested
     class NoSecurityServerTests {
-        private static final int OPEN_PORT = 19092;
+        private static int port;
         private static AppHttpServer server;
         private static HttpClient httpClient;
 
@@ -217,7 +219,7 @@ class AppHttpServerSecurityModeTest {
             httpClient = HttpClient.newBuilder()
                                    .connectTimeout(Duration.ofSeconds(5))
                                    .build();
-            var config = AppHttpConfig.insecureAppHttpConfig(OPEN_PORT);
+            var config = AppHttpConfig.insecureAppHttpConfig(0);
             server = AppHttpServer.appHttpServer(config,
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
@@ -231,7 +233,8 @@ class AppHttpServerSecurityModeTest {
                                                  Option.none(),
                                                  Option.none(),
                                                  Option.none());
-            server.start().await();
+            TlsProbe.requireStarted(server.start().await(), "app listener");
+            port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         }
 
         @AfterAll
@@ -242,7 +245,7 @@ class AppHttpServerSecurityModeTest {
         @Test
         void allowsUnauthenticatedHealthRequest() throws Exception {
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + OPEN_PORT + "/health"))
+                                     .uri(URI.create("http://localhost:" + port + "/health"))
                                      .GET()
                                      .build();
 

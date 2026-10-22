@@ -57,7 +57,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// `addNode()` directly; it commits `ClusterConfigKey.CURRENT.coreCount = 7` to the KV store, and
 /// the committed-config fan-out then drives the SAME reconciler chain the cloud bug travels:
 ///   route handler → KV `ClusterConfigKey.CURRENT` Put
-///     → `AetherNode.onClusterConfigPut` → `leaderReconciler.onConfigChange()`
+///     → `ClusterBootstrapAssembly.onClusterConfigPut` → `leaderReconciler.onConfigChange()`
 ///       → deficit = configuredCoreCount(7) − effectiveCapacity(members + in-flight)
 ///         → `ClusterTopologyManager.provisionReplacement(..., CORE)`
 ///           → `NodeLifecycleManager.provisionNode` → ember `ComputeProvider.provision`

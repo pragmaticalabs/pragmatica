@@ -12,6 +12,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -23,6 +25,7 @@ import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.TopicTierMismatch;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
@@ -601,11 +604,58 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                             method,
                                                                                                             request,
                                                                                                             deadline))
-                                         .onFailure(cause -> log.warn("SLICE-INVOKE-FAIL slice={} method={} causeClass={} message=[{}]",
-                                                                      slice.asString(),
-                                                                      method.name(),
-                                                                      cause.getClass().getName(),
-                                                                      cause.message()));
+                                         .onFailure(cause -> logInvokeFailure(slice, method, cause));
+    }
+
+    /// One tier-mismatch WARN per (subscriber slice, method) per this period, then DEBUG with a suppressed count (#1337). A hot ephemeral
+    /// publisher with a mismatched subscriber fails every publish identically; the operator event and the counter already carry the
+    /// loss, and a line per publish buried everything else.
+    private static final long TIER_MISMATCH_LOG_PERIOD_NANOS = TimeUnit.SECONDS.toNanos(60);
+
+    private record TierMismatchLog(AtomicLong lastLoggedNanos, AtomicLong suppressed) {}
+
+    private final ConcurrentHashMap<String, TierMismatchLog> tierMismatchLogs = new ConcurrentHashMap<>();
+    /// The clock of the tier-mismatch log window; a test advances it instead of waiting a minute.
+    java.util.function.LongSupplier tierMismatchNanos = System::nanoTime;
+
+    Unit logInvokeFailure(Artifact slice, MethodName method, Cause cause) {
+        return TopicTierMismatch.isTierMismatch(cause)
+               ? logTierMismatch(slice, method, cause)
+               : logFailure(slice, method, cause);
+    }
+
+    private Unit logFailure(Artifact slice, MethodName method, Cause cause) {
+        log.warn("SLICE-INVOKE-FAIL slice={} method={} causeClass={} message=[{}]",
+                 slice.asString(),
+                 method.name(),
+                 cause.getClass().getName(),
+                 cause.message());
+
+        return Unit.unit();
+    }
+
+    private Unit logTierMismatch(Artifact slice, MethodName method, Cause cause) {
+        var state = tierMismatchLogs.computeIfAbsent(slice.base().asString() + "/" + method.name(),
+                                                     _ -> new TierMismatchLog(new AtomicLong(tierMismatchNanos.getAsLong() - TIER_MISMATCH_LOG_PERIOD_NANOS),
+                                                                              new AtomicLong()));
+        var now = tierMismatchNanos.getAsLong();
+        var last = state.lastLoggedNanos().get();
+
+        if (now - last >= TIER_MISMATCH_LOG_PERIOD_NANOS && state.lastLoggedNanos().compareAndSet(last, now)) {
+            log.warn("SLICE-INVOKE-FAIL slice={} method={} causeClass={} message=[{}] ({} more tier-mismatch refusals since the previous line)",
+                     slice.asString(),
+                     method.name(),
+                     cause.getClass().getName(),
+                     cause.message(),
+                     state.suppressed().getAndSet(0));
+        } else {
+            state.suppressed().incrementAndGet();
+            log.debug("SLICE-INVOKE-FAIL slice={} method={}: tier-mismatch refusal, WARN suppressed within the period",
+                      slice.asString(),
+                      method.name());
+        }
+
+        return Unit.unit();
     }
 
     private <R> Promise<R> sendRequestResponse(Endpoint endpoint,
@@ -901,7 +951,7 @@ class SliceInvokerImpl implements SliceInvoker {
             return;
         }
 
-        var delayMs = BASE_RETRY_DELAY_MS * (1L<< (newCtx.attemptCount() - 1));
+        var delayMs = BASE_RETRY_DELAY_MS * (1L << (newCtx.attemptCount() - 1));
 
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",

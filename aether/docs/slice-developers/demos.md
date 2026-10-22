@@ -8,7 +8,7 @@ Aether includes:
 
 | Component | Purpose | Audience |
 |-----------|---------|----------|
-| **Aether Forge** (`aether/forge/`) | Cluster simulator with visual dashboard for resilience testing | Developers, DevOps, executives |
+| **Aether Forge** (`aether/forge/`) | Cluster simulator with a load and chaos REST API for resilience testing | Developers, DevOps, executives |
 | **Real Cluster Demo** (`aether/script/demo-cluster.sh`) | Multi-process cluster with slice deployment | Developers, DevOps |
 | **E-commerce Example** (`examples/ecommerce/`) | Multi-slice business domain example | Developers, architects |
 
@@ -16,13 +16,13 @@ Aether includes:
 
 ## Aether Forge
 
-**Aether Forge** is a single-JVM cluster simulator with a visual web dashboard for testing and demonstrating
+**Aether Forge** is a single-JVM cluster simulator with a REST API for testing and demonstrating
 Aether's distributed capabilities. It provides:
 
 - **Multi-node simulation**: Run multiple Aether nodes in a single JVM
 - **Chaos engineering**: Kill nodes, crash nodes, simulate network partitions
 - **Load testing**: Generate configurable request loads
-- **Real-time dashboard**: Visualize cluster health, metrics, and events
+- **Status and events**: Cluster health, metrics and the event timeline over REST
 - **API control**: Full REST API for automation and integration
 
 ### Architecture
@@ -46,13 +46,13 @@ Aether's distributed capabilities. It provides:
 │  └──────────────┘                                                │
 │                                                                  │
 ├─────────────────────────────────────────────────────────────────┤
-│  ForgeApiHandler          │  StaticFileHandler                   │
-│  /api/nodes/status        │  /index.html                         │
-│  /api/nodes/metrics       │  /dashboard.js                       │
-│  /api/forge/status        │  /style.css                          │
-│  /api/chaos/*             │                                      │
-│  /api/load/*              │                                      │
-│  /api/events              │                                      │
+│  ForgeApiHandler                                                 │
+│  /api/nodes/status                                               │
+│  /api/nodes/metrics                                              │
+│  /api/forge/status                                               │
+│  /api/chaos/*                                                    │
+│  /api/load/*                                                     │
+│  /api/events                                                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,21 +64,16 @@ Aether's distributed capabilities. It provides:
 | `ForgeCluster` | `aether/forge/forge-core/src/.../ForgeCluster.java` | Manages multiple AetherNodes in-process |
 | `ConfigurableLoadRunner` | `aether/forge/forge-load/src/.../ConfigurableLoadRunner.java` | Generates configurable HTTP load against the cluster |
 | `ForgeMetrics` | `aether/forge/forge-core/src/.../ForgeMetrics.java` | Aggregates success/failure/latency metrics |
-| `ForgeApiHandler` | `aether/forge/forge-api/src/.../ForgeApiHandler.java` | REST API for dashboard interactions |
-| `StaticFileHandler` | `aether/forge/forge-core/src/.../StaticFileHandler.java` | Serves web dashboard files |
+| `ForgeApiHandler` | `aether/forge/forge-api/src/.../ForgeApiHandler.java` | REST API for status, load and chaos control |
 
-### Dashboard Features
+### API Features
 
-The web dashboard (`index.html`) provides:
+Forge has no web UI (the dashboard was removed in 1.0.0-rc5); everything is on its REST API:
 
-- **Cluster Topology Visualization**: D3.js-powered node graph showing leader and node states
-- **Real-Time Metrics**: Requests/sec, success rate, average latency
-- **Charts**: Historical success rate and throughput (Chart.js)
-- **Event Timeline**: Scrolling log of cluster events
-- **Control Panel**:
-    - Chaos operations: Kill node, kill leader, crash node, rolling restart
-    - Load control: Slider and preset buttons (1K, 5K, 10K req/sec)
-    - Ramp-up functionality for gradual load increase
+- **Cluster status**: `GET /api/nodes/status` (nodes, leader, load, metrics) and `GET /api/nodes/metrics`
+- **Event timeline**: `GET /api/events`
+- **Chaos operations**: kill node, kill leader, rolling restart, add node
+- **Load control**: set the rate (`POST /api/load/rate/{rate}`), start, pause, resume, stop
 
 ### Prerequisites
 
@@ -96,7 +91,7 @@ aether-forge
 CLUSTER_SIZE=7 LOAD_RATE=2000 aether-forge
 ```
 
-The dashboard opens automatically at `http://localhost:8888`.
+Forge's REST API is served at `http://localhost:8888`.
 
 ### Running with Docker
 
@@ -142,7 +137,7 @@ docker compose up
 **Steps**:
 
 1. Start the demo with defaults
-2. Observe dashboard showing 5 healthy nodes
+2. Check `GET /api/nodes/status`: it shows 5 healthy nodes
 3. Note consistent ~1000 req/sec throughput
 4. Success rate should be 100%
 
@@ -158,7 +153,7 @@ docker compose up
 
 1. Start demo with 5 nodes
 2. Wait for stable metrics (30 seconds)
-3. Click "KILL NODE" and select a non-leader node
+3. Kill a non-leader node: `POST /api/chaos/kill/{nodeId}`
 4. Observe brief dip in success rate
 5. Watch as remaining nodes take over
 
@@ -166,7 +161,7 @@ docker compose up
 
 - Brief dip in success rate (< 5 seconds)
 - Throughput recovers to previous level
-- Dashboard shows 4 healthy nodes
+- `GET /api/nodes/status` shows 4 healthy nodes
 
 ---
 
@@ -178,7 +173,7 @@ docker compose up
 
 1. Start demo with 5 nodes
 2. Wait for stable metrics
-3. Click "KILL LEADER"
+3. Kill the leader: `POST /api/chaos/kill/{leaderId}` (the id from `GET /api/nodes/status`)
 4. Observe leader re-election
 
 **Expected Result**:
@@ -215,7 +210,7 @@ docker compose up
 
 1. Start demo with 3 nodes
 2. Observe throughput ceiling
-3. Click "+ ADD NODE" repeatedly to add 2 more nodes
+3. Add 2 more nodes: `POST /api/chaos/add-node`, twice
 4. Observe throughput capacity increase
 
 **Expected Result**:
@@ -233,7 +228,7 @@ docker compose up
 **Steps**:
 
 1. Start demo with 5 nodes at 5000 req/sec
-2. Click "ROLLING RESTART"
+2. Start a rolling restart: `POST /api/chaos/start-rolling-restart`
 3. Observe nodes restarting one by one
 4. Monitor success rate throughout
 
@@ -253,9 +248,9 @@ docker compose up
 **Steps**:
 
 1. Start demo with 5 nodes at 1000 req/sec
-2. Suddenly set load to 10K req/sec using button
+2. Suddenly set load to 10K req/sec: `POST /api/load/rate/10000`
 3. Observe latency increase and potential backpressure
-4. Click "RAMP UP" to demonstrate gradual increase
+4. Step the rate up gradually instead (repeat `POST /api/load/rate/{rate}` with growing values)
 
 **Expected Result**:
 
@@ -351,15 +346,13 @@ mvn package -DskipTests
 
 After starting, access these endpoints:
 
-| Node | Management API | Dashboard |
-|------|----------------|-----------|
-| node-1 (leader) | http://localhost:8081 | http://localhost:8081/dashboard |
-| node-2 | http://localhost:8082 | http://localhost:8082/dashboard |
-| node-3 | http://localhost:8083 | http://localhost:8083/dashboard |
-| node-4 | http://localhost:8084 | http://localhost:8084/dashboard |
-| node-5 | http://localhost:8085 | http://localhost:8085/dashboard |
-
-Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
+| Node | Management API |
+|------|----------------|
+| node-1 (leader) | http://localhost:8081 |
+| node-2 | http://localhost:8082 |
+| node-3 | http://localhost:8083 |
+| node-4 | http://localhost:8084 |
+| node-5 | http://localhost:8085 |
 
 ### Step-by-Step Demo
 
@@ -402,11 +395,9 @@ curl http://localhost:8081/health
 
 Shows slice distribution across nodes.
 
-**5. Open dashboard:**
+**5. Check cluster state and metrics:**
 
-Navigate to http://localhost:8081/dashboard for real-time metrics.
-
-Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
+Use the CLI or the management API (for example `GET /api/v1/nodes/status` on http://localhost:8081); the live feeds are `/ws/status` and `/ws/events`.
 
 **6. Clean up:**
 
@@ -512,13 +503,13 @@ cd examples/ecommerce && mvn install -DskipTests -P '!test-plan-gate'
 2. Check for other Aether processes: `lsof -i :5150` or `lsof -i :6000`
 3. Increase startup timeout if slow machine
 
-### Dashboard Not Loading
+### Forge API Not Reachable
 
-**Symptom**: Browser shows connection refused
+**Symptom**: Connection refused on port 8888
 
 **Solutions**:
 
-1. Verify demo is running: `curl http://localhost:8888/api/status`
+1. Verify demo is running: `curl http://localhost:8888/api/forge/status`
 2. Check firewall settings
 3. For Docker, ensure port mapping: `-p 8888:8888`
 

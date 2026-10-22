@@ -112,8 +112,8 @@ curl http://localhost:5150/api/v1/versions
 ## Build and run
 
 ```bash
-# From examples/catalog: build the slice and run its unit tests. The platform artifacts (`platform.version` 1.0.0-rc4)
-# must be resolvable: once rc4 is published they come from Maven Central; before that, run `mvn install` from the repo root first.
+# From examples/catalog: build the slice and run its unit tests. The platform artifacts (`platform.version` 1.0.0-rc5)
+# must be resolvable: once rc5 is published they come from Maven Central; before that, run `mvn install` from the repo root first.
 # -P '!test-plan-gate': the root pom's test-plan-gate profile needs test-plan-witness, which is not on Central.
 mvn install -P '!test-plan-gate'
 

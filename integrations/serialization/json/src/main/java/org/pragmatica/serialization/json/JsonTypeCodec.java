@@ -44,14 +44,25 @@ import static org.pragmatica.lang.Option.some;
 /// `reader` may return anything (including `null`) once it has recorded a failure in the [JsonReader]'s
 /// error slot; no decode method lets such a value escape.
 ///
+/// A codec has two forms. `writer` and `reader` are the **document** form: what [#decode] and [#encode] read
+/// and write when the value is the whole document. `nestedWriter` and `nestedReader` are the **nested** form:
+/// what a value is inside another one (a record component, a collection element, a map value). The two are
+/// the same for every type except a value object, which is a JSON object of its one component as a document
+/// (`{"value":"a@b.c"}`) and its bare component when nested (`"a@b.c"`).
+///
 /// The static combinators ([#listOf], [#setOf], [#optionOf], [#mapOf]) wrap a codec into one for a container
 /// of its type. They write the same bytes and accept and refuse the same documents as the container code the
-/// generator emits for a component of that type.
+/// generator emits for a component of that type: elements and map values take the nested form. An option is no
+/// container of its own: [#optionOf] keeps the form its value has where the option stands.
 ///
 /// Every codec reads and writes under its `options` ([JsonOptions#DEFAULTS] unless bound by [#withOptions]). They
 /// govern the whole document: a combinator's codec applies its own options to everything inside it, whatever the
 /// options of the element codec it was built from.
-public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader, JsonOptions options) {
+public record JsonTypeCodec<T>(BodyWriter<T> writer,
+                               BodyReader<T> reader,
+                               BodyWriter<T> nestedWriter,
+                               BodyReader<T> nestedReader,
+                               JsonOptions options) {
     /// Appends `value` to the writer; cannot fail. `void` because it drives the [JsonWriter] carve-out.
     @FunctionalInterface
     public interface BodyWriter<T> {
@@ -64,15 +75,24 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader, JsonO
         T read(JsonReader in);
     }
 
-    /// A codec under [JsonOptions#DEFAULTS].
+    /// A codec whose document and nested forms are the same, under [JsonOptions#DEFAULTS].
     public static <T> JsonTypeCodec<T> jsonTypeCodec(BodyWriter<T> writer, BodyReader<T> reader) {
-        return new JsonTypeCodec<>(writer, reader, JsonOptions.DEFAULTS);
+        return new JsonTypeCodec<>(writer, reader, writer, reader, JsonOptions.DEFAULTS);
+    }
+
+    /// A codec whose document form (`writer`, `reader`) differs from its nested form (`nestedWriter`,
+    /// `nestedReader`): a value object's. Under [JsonOptions#DEFAULTS].
+    public static <T> JsonTypeCodec<T> jsonTypeCodec(BodyWriter<T> writer,
+                                                     BodyReader<T> reader,
+                                                     BodyWriter<T> nestedWriter,
+                                                     BodyReader<T> nestedReader) {
+        return new JsonTypeCodec<>(writer, reader, nestedWriter, nestedReader, JsonOptions.DEFAULTS);
     }
 
     /// This codec reading and writing under `options`: `BuyRequestJson.CODEC.withOptions(options)`,
     /// `JsonTypeCodec.listOf(BuyRequestJson.CODEC).withOptions(options)`, or a codec from `JsonCodecs.codecFor`.
     public JsonTypeCodec<T> withOptions(JsonOptions options) {
-        return new JsonTypeCodec<>(writer, reader, options);
+        return new JsonTypeCodec<>(writer, reader, nestedWriter, nestedReader, options);
     }
 
     /// Decodes the whole of `json`.
@@ -112,29 +132,33 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader, JsonO
         return out.toByteArray();
     }
 
-    /// A JSON array of `elements`, decoded into a mutable `ArrayList` in document order.
+    /// A JSON array of `elements` in their nested form, decoded into a mutable `ArrayList` in document order.
     public static <T> JsonTypeCodec<List<T>> listOf(JsonTypeCodec<T> elements) {
-        return jsonTypeCodec((out, values) -> writeArray(out, values, elements.writer()),
-                             in -> readArray(in, new ArrayList<>(), elements.reader()));
+        return jsonTypeCodec((out, values) -> writeArray(out, values, elements.nestedWriter()),
+                             in -> readArray(in, new ArrayList<>(), elements.nestedReader()));
     }
 
-    /// A JSON array of `elements`, decoded into a mutable `LinkedHashSet`: document order, a repeated element
-    /// kept once.
+    /// A JSON array of `elements` in their nested form, decoded into a mutable `LinkedHashSet`: document order, a
+    /// repeated element kept once.
     public static <T> JsonTypeCodec<Set<T>> setOf(JsonTypeCodec<T> elements) {
-        return jsonTypeCodec((out, values) -> writeArray(out, values, elements.writer()),
-                             in -> readArray(in, new LinkedHashSet<>(), elements.reader()));
+        return jsonTypeCodec((out, values) -> writeArray(out, values, elements.nestedWriter()),
+                             in -> readArray(in, new LinkedHashSet<>(), elements.nestedReader()));
     }
 
-    /// An optional value: `null` decodes to empty and empty encodes to `null`; anything else goes through `value`.
+    /// An optional value: `null` decodes to empty and empty encodes to `null`; anything else goes through `value`,
+    /// in its document form as a document and its nested form when nested.
     public static <T> JsonTypeCodec<Option<T>> optionOf(JsonTypeCodec<T> value) {
         return jsonTypeCodec((out, option) -> writeOption(out, option, value.writer()),
-                             in -> readOption(in, value.reader()));
+                             in -> readOption(in, value.reader()),
+                             (out, option) -> writeOption(out, option, value.nestedWriter()),
+                             in -> readOption(in, value.nestedReader()));
     }
 
-    /// A JSON object with free-form string keys, decoded into a mutable `LinkedHashMap` in document order; a
-    /// repeated key keeps its last value, unless the options refuse duplicates.
+    /// A JSON object with free-form string keys and `values` in their nested form, decoded into a mutable
+    /// `LinkedHashMap` in document order; a repeated key keeps its last value, unless the options refuse duplicates.
     public static <V> JsonTypeCodec<Map<String, V>> mapOf(JsonTypeCodec<V> values) {
-        return jsonTypeCodec((out, map) -> writeObject(out, map, values.writer()), in -> readObject(in, values.reader()));
+        return jsonTypeCodec((out, map) -> writeObject(out, map, values.nestedWriter()),
+                             in -> readObject(in, values.nestedReader()));
     }
 
     private Result<T> read(JsonReader in) {

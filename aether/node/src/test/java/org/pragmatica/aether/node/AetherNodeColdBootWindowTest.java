@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.pragmatica.aether.node.assembly.SwimAssembly;
 
 /// A6 cold-boot convergence window. The SWIM cold-boot FAULTY-suppression gate
 /// ({@code swimIsBootingSupplier}) must stay active for a bounded window after THIS node's boot even
@@ -33,25 +34,25 @@ class AetherNodeColdBootWindowTest {
     @Test
     void coldBootConvergenceActive_phaseColdBoot_active_regardlessOfElapsed() {
         // COLD_BOOT phase: always suppressing, even long past the window.
-        assertThat(AetherNode.coldBootConvergenceActive(true, 0L, 10_000_000L, WINDOW_MS)).isTrue();
+        assertThat(SwimAssembly.coldBootConvergenceActive(true, 0L, 10_000_000L, WINDOW_MS)).isTrue();
     }
 
     @Test
     void coldBootConvergenceActive_phaseNormal_withinWindow_active() {
         // Phase flipped to NORMAL (first quorum) but still within this node's boot window: keep suppressing.
-        assertThat(AetherNode.coldBootConvergenceActive(false, 1_000L, 1_000L + WINDOW_MS - 1, WINDOW_MS)).isTrue();
+        assertThat(SwimAssembly.coldBootConvergenceActive(false, 1_000L, 1_000L + WINDOW_MS - 1, WINDOW_MS)).isTrue();
     }
 
     @Test
     void coldBootConvergenceActive_phaseNormal_atWindowBoundary_inactive() {
         // Exactly at the window edge the suppression has ended (strict less-than).
-        assertThat(AetherNode.coldBootConvergenceActive(false, 1_000L, 1_000L + WINDOW_MS, WINDOW_MS)).isFalse();
+        assertThat(SwimAssembly.coldBootConvergenceActive(false, 1_000L, 1_000L + WINDOW_MS, WINDOW_MS)).isFalse();
     }
 
     @Test
     void coldBootConvergenceActive_phaseNormal_afterWindow_inactive() {
         // Past the window: steady-state detection resumes (never-HEALTHY peers may FAULTY normally).
-        assertThat(AetherNode.coldBootConvergenceActive(false, 1_000L, 1_000L + WINDOW_MS + 1, WINDOW_MS)).isFalse();
+        assertThat(SwimAssembly.coldBootConvergenceActive(false, 1_000L, 1_000L + WINDOW_MS + 1, WINDOW_MS)).isFalse();
     }
 
     @Test

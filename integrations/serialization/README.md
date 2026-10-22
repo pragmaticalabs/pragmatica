@@ -77,14 +77,30 @@ becomes a gate; see the `MODE` line in that test.
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>serialization-api</artifactId>
-    <version>1.0.0-rc4</version>
-</dependency>
-<dependency>
-    <groupId>org.pragmatica-lite</groupId>
-    <artifactId>serialization-codec-processor</artifactId>
-    <version>1.0.0-rc4</version>
-    <scope>provided</scope>
+    <version>1.0.0-rc5</version>
 </dependency>
 ```
+
+The processor goes on the compiler's processor path, not on the class path:
+
+```xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <configuration>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>serialization-codec-processor</artifactId>
+                <version>1.0.0-rc5</version>
+            </path>
+        </annotationProcessorPaths>
+    </configuration>
+</plugin>
+```
+
+The same processor serves `@Json` (see [`json/README.md`](json/README.md)), and the same advice holds there:
+on the processor path its own dependencies stay inside the compiler. Setting `annotationProcessorPaths` turns off
+processor discovery from the class path, so list every other processor your build uses there as well.
 
 Compile-scope dependencies of `serialization-api` (from `pom.xml`): `org.pragmatica-lite:core`, `io.netty:netty-all` (for ByteBuf), `org.slf4j:slf4j-api` (version-skew disclosure from `UnknownEnumOrdinals`).

@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerActivation.ActivationBlock;
 import org.pragmatica.consensus.NodeId;
@@ -30,7 +31,7 @@ class OwnerPromotionAlarmTest {
 
     @Test
     void oversizedEventBlock_raisesItsCode_andItsEndRaisesTheRecovery_onTheSameSubject() {
-        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var alarm = StreamAssembly.ownerPromotionAlarm(sink);
         var block = new ActivationBlock.PeerEventExceedsReadCap("orders", 3, PEER, 7L);
 
         alarm.raise(block);
@@ -45,7 +46,7 @@ class OwnerPromotionAlarmTest {
 
     @Test
     void holdersUnreachableBlock_raisesAnOperatorEvent_notOnlyALog_andItsEndRaisesTheRecovery() {
-        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var alarm = StreamAssembly.ownerPromotionAlarm(sink);
         var block = new ActivationBlock.HoldersUnreachable("orders", 3, List.of(PEER), List.of(), TimeSpan.timeSpan(30).seconds());
 
         alarm.raise(block);
@@ -64,7 +65,7 @@ class OwnerPromotionAlarmTest {
     /// same subject, so the event layer publishes the recovery only after the raise (#752).
     @Test
     void lineageRefusedBlock_raisesItsCode_andItsEndRaisesTheRecovery_onTheSameSubject() {
-        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var alarm = StreamAssembly.ownerPromotionAlarm(sink);
         var block = new ActivationBlock.LineageRefused("orders", 3, 5);
 
         alarm.raise(block);
@@ -82,7 +83,7 @@ class OwnerPromotionAlarmTest {
     /// recovery code; two escapes of one partition for different members are two subjects, so the event layer's throttle keeps both.
     @Test
     void promotionEscape_raisesItsCriticalCode_naming_thePartition_theCandidate_andTheSkippedMembers() {
-        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var alarm = StreamAssembly.ownerPromotionAlarm(sink);
         var other = NodeId.randomNodeId();
         var candidate = NodeId.randomNodeId();
 
@@ -101,7 +102,7 @@ class OwnerPromotionAlarmTest {
     /// event layer throttles per (code, subject) for 60 s, and every escape is to be an event. The subject carries the instant.
     @Test
     void promotionEscape_sameEscapeTwice_hasDistinctSubjects() throws InterruptedException {
-        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var alarm = StreamAssembly.ownerPromotionAlarm(sink);
         var escape = new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, NodeId.randomNodeId(), List.of(PEER), TimeSpan.timeSpan(120).seconds(), TimeSpan.timeSpan(121).seconds());
 
         alarm.escaped(escape);
@@ -115,7 +116,7 @@ class OwnerPromotionAlarmTest {
     /// The blocks that still have no code stay a log line: ending one raises no event, there is nothing to recover.
     @Test
     void otherBlock_endingRaisesNoEvent() throws InterruptedException {
-        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var alarm = StreamAssembly.ownerPromotionAlarm(sink);
 
         alarm.resolved(new ActivationBlock.DivergentPeer("orders", 3, PEER, 5L, 6L));
         Thread.sleep(200);

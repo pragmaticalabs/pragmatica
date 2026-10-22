@@ -16,6 +16,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.assembly.MembershipAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTConfig;
@@ -42,7 +43,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
 
 /// #1830 at the membership level: a real `SwimProtocol` feeding a real `MembershipFsm` through the production
-/// router (`AetherNode.routeSwimEdgeToMembershipFsm`), whose DEPARTING edge prunes a real DHT ring through
+/// router (`MembershipAssembly.routeSwimEdgeToMembershipFsm`), whose DEPARTING edge prunes a real DHT ring through
 /// `DHTTopologyListener.onNodeDeparting` — the wiring `AetherNode.assembleNode` installs. Both the FSM and the
 /// ring are seeded from the static core list, as at boot, so every seed starts as a counted MEMBER in the ring.
 ///
@@ -89,7 +90,7 @@ class PhantomSeedMembershipTest {
                                          SELF_ADDR,
                                          booting::get)
                            .unwrap();
-        swim.addObservationListener(observation -> AetherNode.routeSwimEdgeToMembershipFsm(observation, membership));
+        swim.addObservationListener(observation -> MembershipAssembly.routeSwimEdgeToMembershipFsm(observation, membership));
         swim.addSeedMember(PHANTOM, PHANTOM_ADDR);
         swim.addSeedMember(GENUINE, GENUINE_ADDR);
     }

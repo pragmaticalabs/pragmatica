@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.assembly.TopologyAssembly;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
@@ -41,7 +42,7 @@ class CommittedLeaderRefreshTest {
         assertThat(notifications.get()).isEqualTo(before);
 
         var manager = mock(LeaderManager.class);
-        AetherNode.refreshCommittedLeader(store, manager);
+        TopologyAssembly.refreshCommittedLeader(store, manager);
         verify(manager).onLeaderCommitted(leader, 9);
         verifyNoMoreInteractions(manager);
     }
@@ -53,7 +54,7 @@ class CommittedLeaderRefreshTest {
             public <T> void write(io.netty.buffer.ByteBuf buffer, T value) {}
         }, mock(Deserializer.class));
         var manager = mock(LeaderManager.class);
-        AetherNode.refreshCommittedLeader(store, manager);
+        TopologyAssembly.refreshCommittedLeader(store, manager);
         verifyNoInteractions(manager);
     }
 }

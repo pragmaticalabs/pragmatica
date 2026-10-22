@@ -21,7 +21,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.type.TypeToken;
 
-import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.post;
 import static org.pragmatica.http.routing.Route.put;
 
@@ -62,19 +61,12 @@ public sealed interface DeploymentRoutes {
 
     record ProxyResponse(boolean success, String body) {}
 
-    record SlicesStatusResponse(java.util.List<EmberCluster.SliceStatus> slices) {}
-
-    record ClusterMetricsResponse(String body) {}
-
     static RouteSource deploymentRoutes(EmberCluster cluster,
                                         Consumer<EventLogEntry> eventLogger,
                                         OperatorKey operatorKey) {
         var http = NodeHttp.nodeHttp(operatorKey);
 
-        return RouteSource.of(blueprintRoute(cluster, http, eventLogger),
-                              slicesStatusRoute(cluster, http),
-                              clusterMetricsRoute(cluster, http),
-                              repositoryPutRoute(cluster, eventLogger));
+        return RouteSource.of(blueprintRoute(cluster, http, eventLogger), repositoryPutRoute(cluster, eventLogger));
     }
 
     private static Route<ProxyResponse> blueprintRoute(EmberCluster cluster,
@@ -83,16 +75,6 @@ public sealed interface DeploymentRoutes {
         return Route.<ProxyResponse> post("/api/blueprints")
                     .withBody(TypeToken.typeToken(String.class))
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
-    }
-
-    private static Route<SlicesStatusResponse> slicesStatusRoute(EmberCluster cluster, NodeHttp http) {
-        return Route.<SlicesStatusResponse> get("/api/slices/status").toJson(() -> getSlicesStatus(cluster));
-    }
-
-    private static Route<ClusterMetricsResponse> clusterMetricsRoute(EmberCluster cluster, NodeHttp http) {
-        return Route.<ClusterMetricsResponse> get("/api/cluster/metrics")
-                    .to(_ -> proxyClusterMetrics(cluster, http))
-                    .asJson();
     }
 
     private static Route<RepositoryPutResponse> repositoryPutRoute(EmberCluster cluster,
@@ -115,16 +97,6 @@ public sealed interface DeploymentRoutes {
         eventLogger.accept(new EventLogEntry("BLUEPRINT", "Applied blueprint"));
 
         return new ProxyResponse(true, body);
-    }
-
-    private static SlicesStatusResponse getSlicesStatus(EmberCluster cluster) {
-        return new SlicesStatusResponse(cluster.slicesStatus());
-    }
-
-    private static Promise<ClusterMetricsResponse> proxyClusterMetrics(EmberCluster cluster, NodeHttp http) {
-        return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyGet(http, port, "/api/v1/metrics"))
-                             .map(ClusterMetricsResponse::new);
     }
 
     private static Promise<RepositoryPutResponse> storeArtifact(EmberCluster cluster,
@@ -195,14 +167,6 @@ public sealed interface DeploymentRoutes {
                           .POST(HttpRequest.BodyPublishers.ofString(body))
                           .timeout(HTTP_TIMEOUT)
                           .build();
-
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
-    }
-
-    private static Promise<String> proxyGet(NodeHttp http, int port, String path) {
-        var request = http.request(port, path).GET().timeout(HTTP_TIMEOUT).build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()

@@ -17,6 +17,7 @@
 package org.pragmatica.cloud.aws;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -46,6 +47,30 @@ public sealed interface AwsError extends Cause {
         public String message() {
             return "Failed to parse AWS response: " + context + cause.map(t -> " - " + Causes.fromThrowable(t).message())
                                                                      .or("");
+        }
+    }
+
+    /// A paginated listing that cannot be completed: a continuation token repeated (a cycle of any length),
+    /// or the page cap was exceeded. Never degraded to a partial list, which would look like the whole
+    /// fleet. `endpoint` is the EC2 action, `pages` the pages read.
+    record PaginationFailed(String endpoint, int pages, String reason, String message) implements AwsError {
+        static final Fn3<PaginationFailed, String, Integer, String> FACTORY = Causes.forThreeValues("AWS listing %s stopped after %s page(s): %s",
+                                                                                                    PaginationFailed::new);
+    }
+
+    /// Credentials could not be obtained from `provider` (environment, a credentials file, the instance
+    /// metadata service). `detail` names what was missing or failed and never carries a secret value; `cause`
+    /// is the exception that failed the read, when one did.
+    record CredentialsUnavailable(String provider, String detail, Option<Throwable> cause) implements AwsError {
+        public CredentialsUnavailable(String provider, String detail) {
+            this(provider, detail, Option.none());
+        }
+
+        @Override
+        public String message() {
+            return "AWS credentials unavailable from " + provider
+                 + ": " + detail + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                        .or("");
         }
     }
 

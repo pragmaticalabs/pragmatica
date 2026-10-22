@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.ManagementRouteError;
@@ -46,7 +47,6 @@ import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
 import org.pragmatica.aether.api.routes.DeployRoutes;
 import org.pragmatica.aether.api.routes.DhtRoutes;
-import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
@@ -54,6 +54,7 @@ import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.NodeReplacementRoutes;
 import org.pragmatica.aether.api.routes.UpgradeRunRoutes;
+import org.pragmatica.aether.api.routes.CommunityPlacementRoutes;
 import org.pragmatica.aether.api.routes.UnconfirmedMarkRoutes;
 import org.pragmatica.aether.api.routes.ObservabilityRoutes;
 import org.pragmatica.aether.api.routes.AbTestRoutes;
@@ -101,6 +102,7 @@ import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.concurrent.PublishSlot;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.consensus.NodeId;
@@ -118,6 +120,7 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.aether.http.TlsRotation;
+import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
@@ -135,6 +138,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.http3.Http3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -150,6 +154,11 @@ public interface ManagementServer {
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
 
+    /// The port the HTTP/1.1 listener actually bound. Empty until that listener has bound, again after `stop()`, for the
+    /// instant a certificate rotation swaps the listener, and always for an HTTP/3-only server (the QUIC listener reports only
+    /// its configured port). For tests and diagnostics: a server configured with port 0 learns its real port here, so a test
+    /// never probes a free port and then loses the race to rebind it.
+    Option<Integer> boundPort();
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
     /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
@@ -238,7 +247,7 @@ class ManagementServerImpl implements ManagementServer {
     private final ObservabilityConfigRegistry configRegistry;
     private final InvocationTraceStore traceStore;
     private final LogLevelRegistry logLevelRegistry;
-    private final DashboardMetricsPublisher metricsPublisher;
+    private final AlertThresholdEvaluator thresholdEvaluator;
     private final StatusWebSocketHandler statusWsHandler;
     private final StatusWebSocketPublisher statusWsPublisher;
     private final EventWebSocketHandler eventWsHandler;
@@ -288,7 +297,6 @@ class ManagementServerImpl implements ManagementServer {
     /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
     /// scheduler.
     private final AtomicReference<ApiKeyRoutes> apiKeyRoutesRef = new AtomicReference<>();
-    private final StaticFileHandler staticFileHandler;
     private final ManagementRouter router;
     private final StatusRoutes statusRoutes;
     private final JsonMapper probeJsonMapper;
@@ -344,7 +352,7 @@ class ManagementServerImpl implements ManagementServer {
                                      ? Set::of
                                      : pendingDrainsSupplier;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
-        this.metricsPublisher = DashboardMetricsPublisher.dashboardMetricsPublisher(nodeSupplier, alertManager);
+        this.thresholdEvaluator = AlertThresholdEvaluator.alertThresholdEvaluator(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(statusWsHandler,
                                                                                    () -> buildStatusJson(nodeSupplier));
@@ -353,7 +361,6 @@ class ManagementServerImpl implements ManagementServer {
                                                                                 () -> nodeSupplier.get()
                                                                                                   .eventAggregator(),
                                                                                 ManagementServerImpl::buildEventsJson);
-        this.staticFileHandler = StaticFileHandler.staticFileHandler();
         this.observability = ObservabilityRegistry.prometheus();
         this.requestObserver = HttpRequestObserver.httpRequestObserver(observability);
         this.tls = tls;
@@ -381,6 +388,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(NodeReplacementRoutes.nodeReplacementRoutes(nodeSupplier));
         routeSources.add(UpgradeRunRoutes.upgradeRunRoutes(nodeSupplier));
         routeSources.add(UnconfirmedMarkRoutes.unconfirmedMarkRoutes(nodeSupplier));
+        routeSources.add(CommunityPlacementRoutes.communityPlacementRoutes(nodeSupplier));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,
@@ -432,8 +440,8 @@ class ManagementServerImpl implements ManagementServer {
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // #520 — the publication gate inside MavenProtocolRoutes must see the SAME posture this
-        // server gates management auth on. `securityEnabled` is `config.appHttp().securityEnabled()`
-        // (see AetherNode), so `false` means app-HTTP `security_mode = NONE`: no SecurityContext is
+        // server gates management auth on. `securityEnabled` is `config.appHttp().managementSecurityEnabled()`
+        // (see AetherNode), so `false` means the management plane's `security_mode = NONE`: no SecurityContext is
         // ever bound and OPERATOR is structurally unholdable. Passing it here unifies the two
         // half-overlapping dev switches instead of leaving the route with its own env-only bypass.
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier, () -> securityEnabled));
@@ -458,6 +466,12 @@ class ManagementServerImpl implements ManagementServer {
                     .appHttpServer()
                     .httpRoutePublisher()
                     .onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
+    }
+
+    @Override
+    public Option<Integer> boundPort() {
+        return serverSlot.current()
+                         .map(HttpServer::port);
     }
 
     @Override
@@ -495,8 +509,11 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
-                         .or(QuicSslContextFactory.createSelfSignedServer());
+        // #2310: the h3 ALPN token, without which no HTTP/3 client completes the QUIC handshake
+        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg,
+                                                                        ClientAuthPolicy.NOT_REQUESTED,
+                                                                        Http3.supportedApplicationProtocols()))
+                         .or(QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()));
         // A QUIC context that cannot be built refuses the start: an HTTP/3 listener configured for TLS must not
         // silently not exist (nor, in BOTH mode, leave the node reporting a start that bound only some listeners).
         return quicTls.fold(cause -> quicTlsRefused("management-h3", cause), this::startH3WithSslContext);
@@ -525,13 +542,10 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private HttpServerConfig buildServerConfig() {
-        var wsHandler = new DashboardWebSocketHandler(metricsPublisher, wsAuthenticator);
-        var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("management", port)
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
-                                     .withWebSocket(wsEndpoint)
                                      .withWebSocket(statusWsEndpoint)
                                      .withWebSocket(eventWsEndpoint);
         // #967: the node's cluster TlsConfig is Mutual, which makes every listener built from it
@@ -597,7 +611,7 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> stop() {
-        metricsPublisher.stop();
+        thresholdEvaluator.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
         Option.option(apiKeyRoutesRef.get()).onPresent(ApiKeyRoutes::stop);
@@ -662,13 +676,10 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> restartH1WithTls(Option<TlsConfig> newTls) {
-        var wsHandler = new DashboardWebSocketHandler(metricsPublisher, wsAuthenticator);
-        var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("management", port)
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
-                                     .withWebSocket(wsEndpoint)
                                      .withWebSocket(statusWsEndpoint)
                                      .withWebSocket(eventWsEndpoint);
         var serverConfig = newTls.map(config::withTls).or(config);
@@ -688,7 +699,9 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
-        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle, ClientAuthPolicy.NOT_REQUESTED);
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle,
+                                                                   ClientAuthPolicy.NOT_REQUESTED,
+                                                                   Http3.supportedApplicationProtocols());
 
         return quicTls.map(this::startH3WithSslContext)
                       .onFailure(cause -> log.error("Failed to create QUIC SSL context for management server rotation: {}",
@@ -714,7 +727,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private void onServerStarted(HttpServer server) {
-        metricsPublisher.start();
+        thresholdEvaluator.start();
         statusWsPublisher.start();
         eventWsPublisher.start();
         observability.registerTransportMetrics(() -> nodeSupplier.get()
@@ -734,12 +747,13 @@ class ManagementServerImpl implements ManagementServer {
                                                                  .consensusSnapshot()
                                                                  .counterMap());
         registerStreamMemoryMetrics();
+        registerStoragePromotionMetrics();
         registerDhtCatchUpMetrics();
         var transport = tls.isPresent()
                         ? "HTTPS"
                         : "HTTP";
 
-        log.info("{} management server started on port {} (protocol: {}, dashboard at /)", transport, port, httpProtocol);
+        log.info("{} management server started on port {} (protocol: {})", transport, port, httpProtocol);
     }
 
     private void registerStreamMemoryMetrics() {
@@ -749,6 +763,35 @@ class ManagementServerImpl implements ManagementServer {
 
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
+    }
+
+    /// Promotion of each storage instance that promotes (an inert one has nothing to report), cumulative since boot, read
+    /// from the instance's own manager. `failed` rising while `blocks` stands still is the condition behind the
+    /// `storage-promotion-stalled` operator event.
+    private void registerStoragePromotionMetrics() {
+        nodeSupplier.get().storageSetups().forEach(this::registerPromotionGauges);
+    }
+
+    private void registerPromotionGauges(String instance, StorageSetup setup) {
+        var manager = setup.promotionManager();
+
+        if (manager == PromotionManager.NOOP) {
+            return;
+        }
+
+        Supplier<Number> blocks = () -> manager.stats()
+                                               .blocksPromoted();
+        Supplier<Number> bytes = () -> manager.stats()
+                                              .bytesMoved();
+        Supplier<Number> failed = () -> manager.stats()
+                                               .failed();
+        Supplier<Number> cycles = () -> manager.stats()
+                                               .cycles();
+
+        observability.gauge("aether.storage.promotion.blocks", blocks, "instance", instance);
+        observability.gauge("aether.storage.promotion.bytes", bytes, "instance", instance);
+        observability.gauge("aether.storage.promotion.failed", failed, "instance", instance);
+        observability.gauge("aether.storage.promotion.cycles", cycles, "instance", instance);
     }
 
     /// #1777: DHT partitions still catching up after `DHTAntiEntropy.STUCK_AFTER_ROUNDS` rounds — non-zero means a
@@ -775,6 +818,36 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.dht.strays.purged.partitions", dhtGauge(DHTNode::purgedStrayPartitionCount));
         observability.gauge("aether.dht.gc.unagreed.partitions",
                             dhtGauge(node -> node.unagreedPartitions(agreementWindow)));
+        registerDhtRepairMetrics();
+    }
+
+    /// A6, the DHT repair plane: the repair deficit — partitions this node replicates that are catching up or
+    /// diverged and not yet repaired, where a further loss can lose entries; the repair pages and bytes sent; and
+    /// the verified single-replica reads that moved past a replica, found a corrupt copy, or fell back to the
+    /// quorum. Legacy peers and exchanges are non-zero only during a rolling upgrade.
+    private void registerDhtRepairMetrics() {
+        observability.gauge("aether.dht.repair.deficit.partitions", dhtGauge(DHTNode::repairDeficitPartitions));
+        observability.gauge("aether.dht.repair.pages.sent",
+                            dhtGauge(node -> node.repair()
+                                                 .pagesSent()));
+        observability.gauge("aether.dht.repair.bytes.sent",
+                            dhtGauge(node -> node.repair()
+                                                 .pageBytesSent()));
+        observability.gauge("aether.dht.repair.legacy.peers",
+                            dhtGauge(node -> node.repair()
+                                                 .legacyPeerCount()));
+        observability.gauge("aether.dht.repair.legacy.exchanges",
+                            dhtGauge(node -> node.repair()
+                                                 .legacyExchanges()));
+        observability.gauge("aether.dht.read.verified.fallbacks",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadFallbacks()));
+        observability.gauge("aether.dht.read.verified.mismatches",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadMismatches()));
+        observability.gauge("aether.dht.read.verified.quorum.fallbacks",
+                            dhtGauge(node -> node.repair()
+                                                 .verifiedReadQuorumFallbacks()));
     }
 
     private Supplier<Number> dhtGauge(org.pragmatica.lang.Functions.Fn1<Number, DHTNode> reading) {
@@ -932,7 +1005,7 @@ class ManagementServerImpl implements ManagementServer {
 
     @SuppressWarnings("JBCT-PAT-01")
     private static void appendEventJson(StringBuilder sb, ClusterEvent event) {
-        // Preserve the legacy `timestamp` JSON field name for dashboard / WS read-compat, but
+        // Preserve the legacy `timestamp` JSON field name for WS read-compat, but
         // source it from the HLC's physical-millis half (the sealed ClusterEvent carries `at()`,
         // an HlcTimestamp, instead of the old wall-clock Instant). `type` is the record variant
         // simple name (e.g. "NodeJoined") now that EventType is a sealed hierarchy, not an enum.
@@ -957,8 +1030,11 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}}");
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private void handleRequest(HttpRequest ctx, ResponseWriter response) {
+    /// Package-visible so the local-path security gate is pinnable (#1121): `ManagementServerSecurityCouplingTest` drives it
+    /// with security disabled and enabled. Widening only, no behaviour change: the server callback remains the only production caller, and
+    /// the RET-01 suppression is the cost of widening a terminal `void` sink, as on `dispatchManagementRequest`.
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
+    void handleRequest(HttpRequest ctx, ResponseWriter response) {
         var startTime = System.nanoTime();
         var path = ctx.path();
         var method = ctx.method();
@@ -968,13 +1044,6 @@ class ManagementServerImpl implements ManagementServer {
         var instrumented = InstrumentedResponseWriter.instrumentedResponseWriter(response);
 
         if (handleProbeRequest(path, instrumented)) {
-            recordRequestMetrics(methodName, path, instrumented, startTime);
-
-            return;
-        }
-
-        if (isDashboardPath(path)) {
-            staticFileHandler.handle(ctx, instrumented);
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
@@ -1049,8 +1118,17 @@ class ManagementServerImpl implements ManagementServer {
             }
         }
 
-        staticFileHandler.handle(ctx, instrumented);
+        writeNotFound(instrumented, path);
         recordRequestMetrics(methodName, path, instrumented, startTime);
+    }
+
+    /// The body shape (`File not found: <path>`, text/plain) is what the retired static-file fallback
+    /// answered for every unmatched path, and operator runbooks quote it; kept so a mistyped or
+    /// unversioned path reads the same as before.
+    private static void writeNotFound(ResponseWriter response, String path) {
+        response.write(HttpStatus.NOT_FOUND,
+                       ("File not found: " + path).getBytes(StandardCharsets.UTF_8),
+                       CommonContentType.TEXT_PLAIN);
     }
 
     private boolean tryForwardToRouteOwner(HttpRequest ctx,
@@ -1467,10 +1545,18 @@ class ManagementServerImpl implements ManagementServer {
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
         log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
+                                      managementForwardFailureStatus(cause),
                                       "Management forward failed: " + HttpError.clientMessage(cause),
                                       path,
                                       requestId);
+    }
+
+    /// A [ForwardError] names its own status (503 per the 2026-10-07 ruling, know 14a3606152, or 413 for a request
+    /// no cluster frame can carry); every other management forward failure stays a 503.
+    private static HttpStatus managementForwardFailureStatus(Cause cause) {
+        return cause instanceof ForwardError forwardError
+               ? forwardError.status()
+               : HttpStatus.SERVICE_UNAVAILABLE;
     }
 
     private Unit sendForwardUnavailable(InstrumentedResponseWriter response,
@@ -1810,10 +1896,6 @@ class ManagementServerImpl implements ManagementServer {
         network.send(request.sender(), forwardResponse);
     }
 
-    private static boolean isDashboardPath(String path) {
-        return "/".equals(path) || "/index.html".equals(path) || path.startsWith("/css/") || path.startsWith("/js/") || path.startsWith("/vendor/") || path.endsWith(".ico");
-    }
-
     @SuppressWarnings("JBCT-PAT-01")
     private boolean handleProbeRequest(String path, ResponseWriter response) {
         if ("/health/live".equals(path)) {
@@ -2082,7 +2164,9 @@ class ManagementServerImpl implements ManagementServer {
                                                      ctx.queryParams().asMap(),
                                                      ctx.headers().asMap(),
                                                      ctx.body(),
-                                                     "mgmt");
+                                                     ctx.trailers().asMap(),
+                                                     "mgmt",
+                                                     SecurityContext.securityContext());
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -2099,7 +2183,24 @@ class ManagementServerImpl implements ManagementServer {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
         }
 
-        ProblemResponses.writeProblem(response, toRoutingStatus(status), HttpError.clientMessage(cause), path, requestId);
+        ProblemResponses.writeProblem(response, toRoutingStatus(status), denialDetail(cause), path, requestId);
+    }
+
+    private static final String AUTHENTICATION_DENIAL = "Management API authentication refused: ";
+
+    private static final String AUTHORIZATION_DENIAL = "Management API authorization refused (authorization_role axis: ADMIN > OPERATOR > VIEWER, set per key as"
+                                                     + " authorization_role; the roles that gate app-HTTP routes are a separate axis and do not apply here): ";
+
+    /// #962: the refusal names the PLANE and, for an authorization refusal, the AXIS. App-HTTP api-key mode arms this
+    /// plane too (same keys, same bootstrap admin key), but the two planes check different things: app-HTTP route
+    /// policies test the key's `roles`, this plane tests its `authorization_role`. A bare "role VIEWER cannot access
+    /// OPERATOR endpoint" named neither, so an operator who had just enabled api-key mode for the application plane
+    /// diagnosed the wrong component. Package-visible for the same reason as [#resolveSecurityErrorStatus].
+    static String denialDetail(Cause cause) {
+        return switch (cause) {
+            case SecurityError.AccessDenied _, RoleEnforcer.AuthorizationError.AccessDenied _ -> AUTHORIZATION_DENIAL + HttpError.clientMessage(cause);
+            default -> AUTHENTICATION_DENIAL + HttpError.clientMessage(cause);
+        };
     }
 
     private static org.pragmatica.http.HttpStatus toRoutingStatus(HttpStatus status) {

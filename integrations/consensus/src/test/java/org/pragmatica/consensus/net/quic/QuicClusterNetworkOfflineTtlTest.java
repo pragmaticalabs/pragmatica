@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -90,6 +91,45 @@ class QuicClusterNetworkOfflineTtlTest {
         assertThat(routed.getFirst().byPath()).containsExactly(java.util.Map.entry("LaneProbe", 2));
         assertThat(network.transportMetrics().get("quic_offline_expired_total")).isEqualTo(2L);
         assertThat(network.offlineBufferSizeForTests(peerId)).as("nothing is left to deliver later").isZero();
+    }
+
+    /// #2244 F4: HTTP forwards now go through the outcome-reporting `sendOutcome(peer, frame, ttl)`. Its frame is bounded
+    /// by the caller's wait exactly as the plain TTL send's is: buffered while the peer is down (reported `Sent`, since
+    /// it may still be delivered), and dropped at the flush once that wait has passed.
+    @Test
+    void sendOutcomeWithTtl_frameFlushedAfterItsCallerGaveUp_isDropped() {
+        var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
+        var network = network(routed);
+        var peerId = new NodeId("peer-late-outcome");
+        var state = connectingPeer(network, peerId);
+        var stream = writableStream();
+
+        var outcome = network.sendOutcome(peerId, request(peerId), SHORT_WAIT).await().unwrap();
+        assertThat(outcome).as("a buffered frame may still be delivered").isInstanceOf(WriteOutcome.Sent.class);
+        assertThat(network.offlineBufferSizeForTests(peerId)).isEqualTo(1);
+
+        parkPast(PAST_SHORT_WAIT_NANOS);
+        network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
+
+        verify(stream, never()).writeAndFlush(any());
+        assertThat(routed).hasSize(1);
+        assertThat(network.offlineBufferSizeForTests(peerId)).isZero();
+    }
+
+    /// Control for the test above: the same outcome-reporting send with a long wait is delivered at the flush.
+    @Test
+    void sendOutcomeWithTtl_frameFlushedBeforeItsCallerGaveUp_isDelivered() {
+        var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
+        var network = network(routed);
+        var peerId = new NodeId("peer-in-time-outcome");
+        var state = connectingPeer(network, peerId);
+        var stream = writableStream();
+
+        network.sendOutcome(peerId, request(peerId), LONG_WAIT).await().unwrap();
+        network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
+
+        verify(stream, times(1)).writeAndFlush(any());
+        assertThat(routed).isEmpty();
     }
 
     /// The control: the same frame, same path, flushed before its caller gives up, is delivered and nothing is reported.

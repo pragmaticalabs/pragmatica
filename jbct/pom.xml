@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>1.0.0-rc4</version>
+        <version>1.0.0-rc5</version>
     </parent>
 
     <artifactId>jbct-parent</artifactId>
@@ -46,6 +46,7 @@
         <module>jbct-core</module>
         <module>jbct-format</module>
         <module>jbct-lint</module>
+        <module>jbct-async-check</module>
         <module>jbct-init</module>
         <module>jbct-derive</module>
         <module>jbct-cli</module>
@@ -102,6 +103,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-lint</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-async-check</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

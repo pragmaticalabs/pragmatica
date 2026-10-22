@@ -1,10 +1,12 @@
 # QUIC Transport Layer Specification
 
+> **Superseded (historical design).** This document is the design plan the QUIC transport was built from, not a description of the shipped transport. It diverges from the code in several places: 0-RTT is not configured (no early data, no session-ticket setup), the QUIC idle timeout is disabled (`0`) rather than 30 s, flow control is 64,000,000 bytes per connection and 32,000,000 per stream, a connection carries eight long-lived lanes (not four allocated by message type), a 5 s reconciler re-dials missing peers with a per-peer backoff, and SWIM listens on the cluster port + 100. The live descriptions are [architecture/04-networking.md](../architecture/04-networking.md) and [operators/networking.md](../operators/networking.md).
+>
 > **RC4 note:** The historical `DHTRelayMessage` lane example below is superseded. That dormant worker relay and its codec were removed; active DHT traffic uses direct `DHTMessage` protocol records. Scoped worker metadata uses CONTROL manifests and SYNC chunks, with no raw consensus Decision relay. See [worker metadata distribution](worker-metadata-distribution-spec.md).
 
 
 ## Version: 1.1
-## Status: Implementation-Ready
+## Status: Superseded (historical design; see the note above)
 ## Target: Pre V1.0.0 (v0.24.0)
 ## Last Updated: 2026-03-24
 
@@ -16,7 +18,7 @@ Replace TCP-based inter-node cluster networking with QUIC transport. Same messag
 
 ### 1.1 Motivation
 
-- **0-RTT reconnection** — QUIC resumes connections without 3-way handshake, critical for partition healing
+- **0-RTT reconnection** — *(planned; not implemented: no early data or session-ticket setup is configured)*
 - **Stream multiplexing** — consensus messages can't be starved by bulk DHT transfers
 - **No head-of-line blocking** — packet loss on one stream doesn't block others
 - **Built-in TLS 1.3** — mandatory encryption, eliminates TLS on/off config divergence
@@ -84,11 +86,11 @@ Workers do NOT use stream 0 (consensus) — they don't participate in Rabia.
 
 ### 2.4 Connection Initiation — NodeId Ordering
 
-To prevent simultaneous-open race conditions:
-- **Lower NodeId always initiates** (QUIC client role)
-- **Higher NodeId always accepts** (QUIC server role)
+The default dial direction:
+- **Lower NodeId normally initiates** (QUIC client role)
+- **Higher NodeId normally accepts** (QUIC server role)
 
-This eliminates duplicate connection detection entirely. Each pair has exactly one connection with a deterministic initiator.
+This is not exclusive: after a link loss both ends can dial at once, so a pair can briefly hold two connections. They are arbitrated by a link rank: every dial carries a generation (greater than any generation that dialing node has itself dialed or attached for the peer), the connection with the greater generation wins and equal generations go to the one dialed by the lower NodeId. Both ends decide from the same two attributes of each connection and no clock, so they keep the same one, except for a connection closed by liveness during the decision (the pair re-dials with a higher generation). A pair in which one end sends no generation keeps the previous age-based rule and its window of disagreement.
 
 ---
 
@@ -141,9 +143,9 @@ Listens on UDP port, accepts incoming QUIC connections. Uses raw QUIC codec (NOT
 ```java
 var quicCodec = QuicServerCodecBuilder.create()
     .sslContext(quicSslContext)
-    .maxIdleTimeout(30, TimeUnit.SECONDS)
-    .initialMaxData(16_000_000)
-    .initialMaxStreamDataBidirectionalLocal(4_000_000)
+    .maxIdleTimeout(0, TimeUnit.MILLISECONDS)          // disabled; shipped value
+    .initialMaxData(64_000_000)                         // shipped value
+    .initialMaxStreamDataBidirectionalLocal(32_000_000) // shipped value
     .initialMaxStreamsBidirectional(64)
     .handler(connectionHandler)
     .streamHandler(streamHandler)
@@ -215,15 +217,17 @@ cluster_secret = "my-cluster-secret"
 
 ### 3.7 Reconnection — Simplified
 
-QUIC's built-in mechanisms replace the current retry-with-backoff logic:
-- **0-RTT resumption:** Subsequent connections skip full TLS handshake
-- **Connection migration:** IP changes handled transparently
-- **Idle timeout:** 30s default. Connection closes naturally, reopened on next send.
+*(As planned. Shipped: 0-RTT not configured, no idle timeout, and an explicit reconnect loop.)*
 
-Implementation:
-1. On send failure: reopen QUIC connection immediately
-2. On idle timeout: let QUIC close naturally, reconnect on next message
-3. No explicit retry loop — no `SharedScheduler.schedule()` for reconnection
+QUIC's built-in mechanisms were meant to replace the retry-with-backoff logic:
+- **0-RTT resumption:** planned; not implemented (no early data or session-ticket setup is configured).
+- **Connection migration:** IP changes handled transparently
+- **Idle timeout:** planned as 30s; shipped disabled (`0`). A dead link is found by write failure or by the receipt sweep.
+
+Implementation as shipped:
+1. On send failure: the link is evicted and re-dialed with a short per-peer backoff
+2. A 5 s reconciler tick re-dials any configured peer that is not connected, with a per-peer exponential backoff and jitter
+3. The reconnect loop is `SharedScheduler`-driven
 
 ### 3.8 Configuration
 
@@ -241,7 +245,7 @@ cluster_secret = "my-cluster-secret"
 
 ### 3.9 UDP Port Documentation
 
-**Operator requirement:** Aether requires UDP port access between all cluster nodes on the cluster port. This is the same requirement SWIM already has (SWIM uses cluster_port + 1). Firewalls and security groups must allow UDP traffic.
+**Operator requirement:** Aether requires UDP port access between all cluster nodes on the cluster port. This is the same requirement SWIM already has (SWIM uses cluster_port + 100). Firewalls and security groups must allow UDP traffic.
 
 Docker compose, Hetzner integration, and cloud provider firewall configs must be updated to explicitly open UDP on the cluster port.
 
@@ -259,7 +263,7 @@ Docker compose, Hetzner integration, and cloud provider firewall configs must be
 | All message types | None | Same protocol messages |
 | Hello handshake | Simplified | Same protocol, no duplicate detection needed (NodeId ordering) |
 | TLS | Always on | No toggle, auto-generate for dev |
-| Reconnection | Simplified | QUIC 0-RTT + connection migration, no retry loop |
+| Reconnection | Simplified | No 0-RTT configured, explicit reconciler loop (planned: 0-RTT, no retry loop) |
 | SWIM | None | Stays on separate UDP port |
 | `peerLinks` | Type change | `Map<NodeId, QuicPeerConnection>` |
 | Topology/discovery | None | Same mechanism |
@@ -308,7 +312,7 @@ Per evolutionary implementation protocol:
 ### 6.4 Performance Benchmark
 - Latency comparison: TCP vs QUIC for consensus round-trip
 - Throughput comparison: DHT replication under concurrent consensus load
-- Reconnection time: TCP 3-way handshake vs QUIC 0-RTT
+- Reconnection time: TCP 3-way handshake vs QUIC handshake (0-RTT was planned, not implemented)
 
 ---
 

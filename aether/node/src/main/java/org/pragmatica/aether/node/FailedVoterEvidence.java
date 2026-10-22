@@ -23,12 +23,12 @@ import org.pragmatica.lang.Option;
 ///
 /// The two sources are the leader's reported-state view (the metrics collector) and the membership verdicts; both are read afresh on
 /// every call, so the set follows the cluster rather than a snapshot taken at wiring time.
-final class FailedVoterEvidence {
+public final class FailedVoterEvidence {
     private FailedVoterEvidence() {}
 
     /// The node's own wiring: the collector's reported-state view and the live membership FSM (not yet built when the wiring is made,
     /// hence a supplier; none yet means no verdicts).
-    static Supplier<Set<NodeId>> forNode(ClusterSyncCollector collector, Supplier<MembershipFsm> membership) {
+    public static Supplier<Set<NodeId>> forNode(ClusterSyncCollector collector, Supplier<MembershipFsm> membership) {
         return failedVoterEvidence(collector::reportedStates,
                                    () -> Option.option(membership.get())
                                                .map(MembershipFsm::memberStates)

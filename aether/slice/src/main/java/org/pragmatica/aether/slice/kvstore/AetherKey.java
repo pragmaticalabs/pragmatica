@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.AssignmentGuarded;
+import org.pragmatica.cluster.state.kvstore.HolderGuarded;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -640,6 +641,35 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// Per-publisher registry key, namespaced AND node-scoped: `topic-pub/{namespace}/{topic}/{version}/{artifact}/{node}` (#1337).
+    ///
+    /// The publisher-side twin of [TopicSubscriptionKey]. The node component keeps one row per publishing slice INSTANCE, so an unload
+    /// removes only its own row; it is last so the `topic-pub/{namespace}/{topic}/{version}` prefix stays intact.
+    record TopicPublisherKey(ResourceAddress address, Artifact artifact, NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "topic-pub/";
+
+        @Override
+        public String asString() {
+            return PREFIX + address.namespace()
+                                   .value()
+                 + "/" + address.name()
+                                .value()
+                 + "/" + address.version()
+                                .asString()
+                 + "/" + artifact.asString()
+                 + "/" + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static TopicPublisherKey topicPublisherKey(ResourceAddress address, Artifact artifact, NodeId nodeId) {
+            return new TopicPublisherKey(address, artifact, nodeId);
+        }
+    }
+
     /// Runtime: republished by slice activation, and its value names the registering node
     /// (`ScheduledTaskValue.registeredBy`). The operator's pause is NOT here — it is cluster state and
     /// lives in [ScheduledTaskPauseKey], so a cold restart keeps it.
@@ -752,7 +782,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     /// pre-upgrade global row (`node` absent) can never parse into the node-scoped shape, so the
     /// new per-node aggregation scan — which filters on `node().isPresent()` — can never misread
     /// it as a node's row.
-    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName, Option<NodeId> node) implements RuntimeKey {
+    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName, Option<NodeId> node) implements RuntimeKey, HolderGuarded {
         private static final String PREFIX = "scheduled-task-state/";
         private static final String NODE_PREFIX = PREFIX + "node/";
 
@@ -767,6 +797,15 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         @Override
         public String toString() {
             return asString();
+        }
+
+        /// The unscoped (SINGLE-mode) row is written by the fire that holds the task's claim, so a write bound to a claim
+        /// is admitted only while that claim is the committed one (#1155). A per-node (ALL-mode) row has no claim.
+        @Override
+        public Option<Object> holderKey() {
+            return node.isPresent()
+                   ? Option.none()
+                   : Option.some(ScheduledTaskClaimKey.scheduledTaskClaimKey(configSection, artifact, methodName));
         }
 
         public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,
@@ -835,6 +874,51 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
                          .map((artifact, method) -> new ScheduledTaskStateKey(configSection, artifact, method, node));
+        }
+    }
+
+    /// Runtime: the durable in-flight claim of one SINGLE-mode scheduled task (#1155). The leader writes it before a
+    /// fire and gives it up when the fire settles, so a leader elected mid-fire finds the previous leader's run and does
+    /// not start a second one; its value is [org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskClaimValue].
+    /// One row per SINGLE-mode task, never per fire, and it goes with the task. The identity is the task's
+    /// `(configSection, artifact, method)`, rendered like [ScheduledTaskKey]'s under its own prefix. There is no
+    /// ALL-mode claim: an ALL-mode fire is per node and never contends across nodes.
+    record ScheduledTaskClaimKey(String configSection, Artifact artifact, MethodName methodName) implements RuntimeKey {
+        private static final String PREFIX = "scheduled-task-claim/";
+
+        @Override
+        public String asString() {
+            return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ScheduledTaskClaimKey scheduledTaskClaimKey(String configSection,
+                                                                  Artifact artifact,
+                                                                  MethodName methodName) {
+            return new ScheduledTaskClaimKey(configSection, artifact, methodName);
+        }
+
+        public static ScheduledTaskClaimKey scheduledTaskClaimKey(ScheduledTaskKey task) {
+            return new ScheduledTaskClaimKey(task.configSection(), task.artifact(), task.methodName());
+        }
+
+        /// The task this claim guards.
+        public ScheduledTaskKey task() {
+            return ScheduledTaskKey.scheduledTaskKey(configSection, artifact, methodName);
+        }
+
+        public static Result<ScheduledTaskClaimKey> scheduledTaskClaimKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SCHEDULED_TASK_CLAIM_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return ScheduledTaskKey.scheduledTaskKey(ScheduledTaskKey.PREFIX + key.substring(PREFIX.length()))
+                                   .mapError(_ -> SCHEDULED_TASK_CLAIM_KEY_FORMAT_ERROR.apply(key))
+                                   .map(ScheduledTaskClaimKey::scheduledTaskClaimKey);
         }
     }
 
@@ -1417,6 +1501,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> SCHEDULED_TASK_PAUSE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-pause key format: %s");
 
     Fn1<Cause, String> SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-state key format: %s");
+
+    Fn1<Cause, String> SCHEDULED_TASK_CLAIM_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-claim key format: %s");
 
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
 

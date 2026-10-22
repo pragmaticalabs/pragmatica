@@ -42,6 +42,16 @@ PG_LABEL="${PG_LABEL:-aether-cluster=test-pg}"
 
 API="https://api.hetzner.cloud/v1"
 
+# Every Hetzner answer is parsed with jq. Without it `resolve_firewall_id` yields nothing, and `destroy` would
+# report "no firewall ... to destroy" and leave a real, billable firewall behind. A missing tool is an
+# environment error, so it is refused up front and named, never folded into "nothing to do".
+require_tools() {
+    local dep
+    for dep in curl jq; do
+        command -v "$dep" >/dev/null 2>&1 || { log_err "missing dependency: ${dep} (required tool; install it and retry)"; exit 1; }
+    done
+}
+
 hcloud_get() {
     local path="$1"
     curl -sS --max-time 30 -H "Authorization: Bearer ${HCLOUD_TOKEN}" "${API}${path}"
@@ -57,8 +67,19 @@ hcloud_post() {
     fi
 }
 
+# A delete the API refused (409 firewall still attached, 404, 5xx) is a failed delete: the response is checked
+# and its body printed, never discarded (#2273). Returns 2 so the caller can name the resource.
 hcloud_delete() {
-    curl -sS --max-time 30 -X DELETE -H "Authorization: Bearer ${HCLOUD_TOKEN}" "${API}$1"
+    local path="$1" tmp http
+    tmp=$(mktemp)
+    http=$(curl -sS --max-time 30 -o "$tmp" -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer ${HCLOUD_TOKEN}" "${API}${path}") || { rm -f "$tmp"; return 2; }
+    if [ "$http" -ge 400 ]; then
+        log_err "DELETE ${path} failed (HTTP ${http}): $(cat "$tmp")"
+        rm -f "$tmp"
+        return 2
+    fi
+    rm -f "$tmp"
 }
 
 encode_selector() {
@@ -188,6 +209,17 @@ cmd_status() {
         | jq '{name: .firewall.name, applied_to: [.firewall.applied_to[] | {type, server_id: .server.id}], rules: .firewall.rules}'
 }
 
+# Detach is best effort: the delete that follows decides the outcome. A refused detach is still named, because
+# it is the usual reason the delete is then refused with 409.
+detach_firewall() {
+    local fw_id="$1" server_id="$2" payload="$3" resp err
+    resp=$(hcloud_post "/firewalls/${fw_id}/actions/remove_from_resources" "$payload") || resp='{}'
+    err=$(printf '%s' "$resp" | jq -r '.error.message // empty' 2>/dev/null) || err=""
+    if [ -n "$err" ]; then
+        log_warn "could not detach firewall ${fw_id} from server ${server_id}: ${err}"
+    fi
+}
+
 cmd_destroy() {
     local fw_id server_id
     fw_id=$(resolve_firewall_id) || true
@@ -197,19 +229,18 @@ cmd_destroy() {
         local payload
         payload=$(jq -nc --argjson id "$server_id" \
             '{remove_from:[{type:"server", server:{id:$id}}]}')
-        hcloud_post "/firewalls/${fw_id}/actions/remove_from_resources" "$payload" >/dev/null || true
+        detach_firewall "$fw_id" "$server_id" "$payload"
     fi
-    hcloud_delete "/firewalls/${fw_id}" >/dev/null
+    if ! hcloud_delete "/firewalls/${fw_id}"; then
+        log_err "could not delete firewall '${FIREWALL_NAME}' (id=${fw_id})"
+        return 2
+    fi
     log_ok "destroyed firewall '${FIREWALL_NAME}' (id=${fw_id})"
 }
 
 main() {
     case "${1:-}" in
-        init)    cmd_init ;;
-        open)    cmd_open ;;
-        close)   cmd_close ;;
-        status)  cmd_status ;;
-        destroy) cmd_destroy ;;
+        init|open|close|status|destroy) require_tools; "cmd_$1" ;;
         ""|-h|--help)
             sed -n '2,/^set -euo/p' "$0" | sed 's/^# //;s/^#$//;/^set -euo/d'
             ;;

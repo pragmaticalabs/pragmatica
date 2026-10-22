@@ -1,10 +1,17 @@
 package org.pragmatica.storage;
 
 import java.nio.file.Path;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Contract;
@@ -36,7 +43,26 @@ public interface StorageInstance {
     /// Read content by block ID -- waterfall through tiers by latency.
     Promise<Option<byte[]>> get(BlockId id);
     /// Check if a block exists in any tier.
+    ///
+    /// A shared tier answers for the whole cluster, so `true` here does NOT mean this node holds the block:
+    /// it never makes a block local. [#warm] does.
     Promise<Boolean> exists(BlockId id);
+
+    /// Makes this node hold a copy of `id` in its own cache tiers, fetched from wherever the read
+    /// waterfall finds it (in practice the cluster-shared tier). Resolves `true` when a copy was made,
+    /// and `false` when nothing was to be done or nothing could be: a node-private tier already holds the
+    /// block, the block is absent everywhere, or every cache tier refused it (full, or failing).
+    ///
+    /// Not a read: it counts no access, so a prefetch cannot make a block look popular. The copy is recorded
+    /// as a cache-only marker when this node holds no record of the block ([BlockLifecycle#cacheOnly]), so
+    /// demotion can see and evict it. Only cache tiers are written -- never a durable one: a warmed copy is
+    /// not this node's data.
+    ///
+    /// The default warms nothing: an implementation without cache tiers has nowhere to put the copy.
+    default Promise<Boolean> warm(BlockId id) {
+        return Promise.success(false);
+    }
+
     /// Adds a named reference to a block this instance ALREADY holds, crediting one reference for the
     /// new name. This is the aliasing primitive -- a second (third, ...) name for a block that some
     /// other reference is already keeping alive.
@@ -193,7 +219,8 @@ public interface StorageInstance {
     ///   2. `refName` is pointed at the block, with [#putRef]'s counting;
     ///   3. [AppendLog#sealedThrough] advances to `toOffset`, which is what lets [AppendLog#truncate] pass it.
     /// A failure at any step leaves the log's seal bound where it was, so its records stay. "Durable" here
-    /// means the local-disk tier: an in-memory DHT tier never counts (#1544), and an instance with no
+    /// means a tier reporting [StorageTier#isDurable] -- the local disk, or an S3 tier built from config (#249): an
+    /// in-memory DHT tier never counts (#1544), and an instance with no
     /// durable tier refuses with [StorageError.NoDurableTier]. The ref itself reaches disk only with the
     /// next metadata snapshot (#1345) -- see [AppendLog]'s class doc.
     default Promise<BlockId> seal(AppendLog log, long fromOffset, long toOffset, String refName, byte[] block) {
@@ -255,7 +282,33 @@ public interface StorageInstance {
                                            WritePolicy writePolicy,
                                            Option<Path> logRoot,
                                            AppendLog.TornTailSink tornTailSink) {
-        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy, logRoot, tornTailSink);
+        return storageInstance(name,
+                               tiers,
+                               metadataStore,
+                               writePolicy,
+                               logRoot,
+                               tornTailSink,
+                               DefaultStorageInstance::ignoreAccess);
+    }
+
+    /// As above, plus `accessListener`, told of every [#get] that found its block -- after the access is
+    /// recorded, once per caller (callers sharing one in-flight read are each counted). It runs on the
+    /// reading thread, so it must be cheap and must not throw. [#warm] never reports to it.
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy,
+                                           Option<Path> logRoot,
+                                           AppendLog.TornTailSink tornTailSink,
+                                           Consumer<BlockId> accessListener) {
+        return new DefaultStorageInstance(name,
+                                          tiers,
+                                          metadataStore,
+                                          writePolicy,
+                                          logRoot,
+                                          tornTailSink,
+                                          accessListener,
+                                          DefaultStorageInstance.CacheMarkerLimits.DEFAULT);
     }
 }
 
@@ -296,6 +349,41 @@ final class DefaultStorageInstance implements StorageInstance {
     /// that finds a registration waits for that write instead of deduplicating onto a claim whose bytes may
     /// never land -- a ref, cursor or checkpoint naming it would then name nothing.
     private final Map<BlockId, Promise<Unit>> writing = new ConcurrentHashMap<>();
+    private final Consumer<BlockId> accessListener;
+    /// Levels of the tiers that are cluster-shared: a copy there is not this node's, so a record that places
+    /// the block only on these tiers holds nothing of this node's to track.
+    private final Set<TierLevel> sharedLevels;
+    private final CacheMarkerLimits markerLimits;
+    private final LongSupplier clockMillis;
+    /// The cache-only markers in the metadata store: counted exactly on first use (a snapshot restore puts markers
+    /// there before any read), then kept by every creation here, and re-counted by every [#sweepIdleMarkers]. A
+    /// removal elsewhere is not seen until the next sweep, so it can only over-count, never let the table grow.
+    ///
+    /// A slot is RESERVED before the marker is claimed and confirmed (or given back) after, all under one lock, so
+    /// racing readers cannot all pass a room check and overshoot the cap, and a recount never wipes a reservation
+    /// that is still in flight: it can over-count for a moment (a marker already in the store whose claim has not
+    /// been confirmed yet), never under-count.
+    private final Set<WarmTicket> warmsInFlight = ConcurrentHashMap.newKeySet();
+    private final Set<BlockId> deletesInFlight = ConcurrentHashMap.newKeySet();
+    private final Object markerLock = new Object();
+    private int cacheMarkers;
+    private int pendingMarkerClaims;
+    private boolean markersCounted;
+    private final AtomicLong lastMarkerSweepMillis = new AtomicLong();
+
+    /// Bounds on the cache-only markers that READS create for blocks this node does not own. A marker is
+    /// created for every distinct block read from a shared tier, so without a bound the metadata store would
+    /// grow with the cluster's whole working set. At `maxMarkers` no new marker is created until a sweep
+    /// (at most one per `sweepIntervalMs`) has dropped the markers that hold nothing of this node's and have
+    /// been idle for `idleMs`. A block read while the table is full is simply not tracked: it counts no
+    /// access, exactly like the prefetch observation table at its cap.
+    record CacheMarkerLimits(int maxMarkers, long idleMs, long sweepIntervalMs) {
+        static final CacheMarkerLimits DEFAULT = cacheMarkerLimits(100_000, 600_000L, 5_000L);
+
+        static CacheMarkerLimits cacheMarkerLimits(int maxMarkers, long idleMs, long sweepIntervalMs) {
+            return new CacheMarkerLimits(maxMarkers, idleMs, sweepIntervalMs);
+        }
+    }
 
     DefaultStorageInstance(String name,
                            List<StorageTier> tiers,
@@ -303,10 +391,53 @@ final class DefaultStorageInstance implements StorageInstance {
                            WritePolicy writePolicy,
                            Option<Path> logRoot,
                            AppendLog.TornTailSink tornTailSink) {
+        this(name,
+             tiers,
+             metadataStore,
+             writePolicy,
+             logRoot,
+             tornTailSink,
+             DefaultStorageInstance::ignoreAccess,
+             CacheMarkerLimits.DEFAULT);
+    }
+
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot,
+                           AppendLog.TornTailSink tornTailSink,
+                           Consumer<BlockId> accessListener,
+                           CacheMarkerLimits markerLimits) {
+        this(name,
+             tiers,
+             metadataStore,
+             writePolicy,
+             logRoot,
+             tornTailSink,
+             accessListener,
+             markerLimits,
+             System::currentTimeMillis);
+    }
+
+    /// Test seam: the clock marker idleness and sweep spacing are measured on.
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot,
+                           AppendLog.TornTailSink tornTailSink,
+                           Consumer<BlockId> accessListener,
+                           CacheMarkerLimits markerLimits,
+                           LongSupplier clockMillis) {
+        this.accessListener = accessListener;
+        this.markerLimits = markerLimits;
+        this.clockMillis = clockMillis;
         this.name = name;
         this.tiers = List.copyOf(tiers);
         this.requiredTiers = requiredTiersOf(this.tiers);
         this.cacheTiers = this.tiers.stream().filter(tier -> !requiredTiers.contains(tier)).toList();
+        this.sharedLevels = sharedLevelsOf(this.tiers);
         this.metadataStore = metadataStore;
         this.writePolicy = writePolicy;
         this.logRoot = logRoot;
@@ -334,22 +465,175 @@ final class DefaultStorageInstance implements StorageInstance {
     public Promise<Option<byte[]>> get(BlockId id) {
         return readCache.deduplicate(id,
                                      () -> waterfallRead(id))
-                        .onSuccess(opt -> opt.onPresent(_ -> recordAccess(id)));
+                        .withSuccess(opt -> opt.onPresent(_ -> recordAccess(id)));
     }
 
     @Override
     public Promise<Boolean> exists(BlockId id) {
-        return metadataStore.containsBlock(id)
+        return holdsOwnedRecord(id)
                ? Promise.success(true)
-               : checkTiersForExistence(id, 0);
+               : checkTiersForExistence(id, 0, _ -> true);
+    }
+
+    /// "Exists" means readable. A cache-only marker records that the block was read here once; the shared copy it
+    /// pointed at may be gone, so a marker does not make the block exist -- the tiers are asked.
+    private boolean holdsOwnedRecord(BlockId id) {
+        return metadataStore.getLifecycle(id)
+                            .map(lc -> !lc.cacheOnly())
+                            .or(false);
+    }
+
+    /// Fetches the block through the read waterfall only when no node-private tier holds it, and copies it
+    /// into the cache tiers. The waterfall read is the one [#get] shares (single flight, integrity verified),
+    /// but no access is recorded: this is this node acting on a hint, not a reader asking for the block.
+    @Override
+    public Promise<Boolean> warm(BlockId id) {
+        return checkTiersForExistence(id, 0, tier -> !tier.isShared()).flatMap(held -> fetchUnlessHeld(held, id));
+    }
+
+    private Promise<Boolean> fetchUnlessHeld(boolean held, BlockId id) {
+        return held || cacheTiers.isEmpty() || !roomToTrack(id)
+               ? Promise.success(false)
+               : warmGuarded(new WarmTicket(id, new AtomicBoolean()));
+    }
+
+    /// A prefetch in flight, which a [#delete] of the same block cancels: the bytes it is fetching are the block a
+    /// delete is removing, and storing them afterwards would bring the deleted block back on this node.
+    private record WarmTicket(BlockId id, AtomicBoolean cancelled) {
+        void cancel() {
+            cancelled.set(true);
+        }
+
+        boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        boolean isFor(BlockId block) {
+            return id.equals(block);
+        }
+    }
+
+    /// The ticket is registered BEFORE the tombstone is read, and [#delete] sets the tombstone BEFORE it looks for
+    /// tickets, so a warm and a delete of one block cannot both miss each other: either the warm sees the delete in
+    /// flight and does not start, or the delete finds the ticket and cancels it.
+    private Promise<Boolean> warmGuarded(WarmTicket ticket) {
+        warmsInFlight.add(ticket);
+
+        return (deletesInFlight.contains(ticket.id())
+                ? Promise.success(false)
+                : readCache.deduplicate(ticket.id(),
+                                        () -> waterfallRead(ticket.id()))
+                           .flatMap(opt -> copyIfFound(ticket, opt))).withResult(_ -> warmsInFlight.remove(ticket));
+    }
+
+    /// A prefetch is refused, not half done, when the copy could not be tracked: a record already exists, or the
+    /// marker table has room for one.
+    private boolean roomToTrack(BlockId id) {
+        return metadataStore.containsBlock(id) || hasRoomForMarker();
+    }
+
+    private Promise<Boolean> copyIfFound(WarmTicket ticket, Option<byte[]> found) {
+        return found.fold(() -> Promise.success(false), content -> copyToCacheTiers(ticket, content));
+    }
+
+    /// The record comes first: a copy with no record is invisible to demotion (#886). The read that fetched
+    /// the block normally created it; if it did not, a counted marker is claimed here and given back unless a
+    /// cache tier accepted the copy, so a failed warm leaves no empty marker of its own. When there is neither a
+    /// record nor a slot for one (another reader took the last slot since the room check), no copy is made.
+    private Promise<Boolean> copyToCacheTiers(WarmTicket ticket, byte[] content) {
+        var id = ticket.id();
+        var created = claimWarmMarker(id);
+
+        return created.isPresent() || metadataStore.containsBlock(id)
+               ? promoteToCacheTiers(id, content).flatMap(_ -> settleWarm(ticket, created))
+               : Promise.success(false);
+    }
+
+    private Option<BlockLifecycle> claimWarmMarker(BlockId id) {
+        var marker = BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.noneOf(TierLevel.class));
+
+        return metadataStore.containsBlock(id) || !reserveMarkerSlot()
+               ? Option.none()
+               : claimReservedMarker(id, marker);
+    }
+
+    private Option<BlockLifecycle> claimReservedMarker(BlockId id, BlockLifecycle marker) {
+        if (metadataStore.claimBlock(id, marker)) {
+            confirmMarkerSlot();
+
+            return Option.some(marker);
+        }
+
+        giveBackMarkerSlot();
+
+        return Option.none();
+    }
+
+    private Promise<Boolean> settleWarm(WarmTicket ticket, Option<BlockLifecycle> created) {
+        return ticket.isCancelled()
+               ? takeBackCancelledWarm(ticket.id())
+               : Promise.success(settleKeptWarm(ticket.id(), created));
+    }
+
+    private boolean settleKeptWarm(BlockId id, Option<BlockLifecycle> created) {
+        var held = holdsPrivateCopy(id);
+
+        if (!held) {
+            created.onPresent(marker -> dropUnusedMarker(id, marker));
+        }
+
+        return held;
+    }
+
+    /// BER (compensate by inverse): a delete of this block landed while the warm was fetching it, so what the warm
+    /// just stored is the deleted block coming back. The cache copies and the cache marker (the warm's own, or the
+    /// one the read made) are taken out again. The delete's own pass may have run before they existed, so it cannot be
+    /// relied on to remove them. Guarantee: a cancelled warm leaves this node holding nothing of the block; the
+    /// mechanism is the ticket [#delete] cancels, checked after the store.
+    private Promise<Boolean> takeBackCancelledWarm(BlockId id) {
+        return deleteFromPrivateTiers(id, 0).map(_ -> forgetCancelledMarker(id));
+    }
+
+    /// Test observation: prefetches that have not finished yet.
+    int inFlightWarms() {
+        return warmsInFlight.size();
+    }
+
+    private boolean forgetCancelledMarker(BlockId id) {
+        metadataStore.getLifecycle(id)
+                     .filter(BlockLifecycle::cacheOnly)
+                     .onPresent(marker -> dropUnusedMarker(id, marker));
+
+        return false;
+    }
+
+    private void dropUnusedMarker(BlockId id, BlockLifecycle marker) {
+        if (metadataStore.releaseClaim(id, marker)) {
+            forgetMarker();
+        }
+    }
+
+    private boolean holdsPrivateCopy(BlockId id) {
+        return metadataStore.getLifecycle(id)
+                            .map(lc -> lc.presentIn()
+                                         .stream()
+                                         .anyMatch(level -> !sharedLevels.contains(level)))
+                            .or(false);
     }
 
     @Override
     public Promise<Unit> createRef(String refName, BlockId id) {
-        metadataStore.putRef(refName, id);
-        metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
+        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncrementedIfOwned)
+                            .filter(BlockLifecycle::cacheOnly)
+                            .isPresent()
+               ? StorageError.CacheOnlyBlock.cacheOnlyBlock(id).promise()
+               : Promise.success(nameBlock(refName, id));
+    }
 
-        return Promise.success(unit());
+    private Unit nameBlock(String refName, BlockId id) {
+        metadataStore.putRef(refName, id);
+
+        return unit();
     }
 
     @Override
@@ -393,7 +677,20 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"));
+        return Promise.success(id)
+                      .map(this::announceDelete)
+                      .flatMap(_ -> deleteFromAllTiers(id, 0))
+                      .withSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"))
+                      .withResult(_ -> deletesInFlight.remove(id));
+    }
+
+    /// The tombstone first, then the cancellation of every prefetch of this block already in flight (see
+    /// [#warmGuarded] for why that order).
+    private Unit announceDelete(BlockId id) {
+        deletesInFlight.add(id);
+        warmsInFlight.stream().filter(ticket -> ticket.isFor(id)).forEach(WarmTicket::cancel);
+
+        return unit();
     }
 
     /// #801: the scan's verdict is only good until something touches the record, so the record is
@@ -548,7 +845,12 @@ final class DefaultStorageInstance implements StorageInstance {
                                           BlockLifecycle sentinel,
                                           Promise<Unit> mine,
                                           Result<BlockId> result) {
-        result.onFailure(_ -> releaseOwnClaim(id));
+        return result.fold(_ -> releaseOwnClaim(id),
+                           _ -> Promise.success(unit()))
+                     .flatMap(_ -> finishedWriting(id, mine, result));
+    }
+
+    private Promise<BlockId> finishedWriting(BlockId id, Promise<Unit> mine, Result<BlockId> result) {
         finishWriting(id, mine, result.mapToUnit());
 
         return resolved(result);
@@ -558,8 +860,37 @@ final class DefaultStorageInstance implements StorageInstance {
     /// add presence or an access to the claim record, and a compare-and-remove would then miss and leave a
     /// record claiming a block no tier holds -- which a retry deduplicates onto and "succeeds". The record is
     /// this writer's own: every other put of the id waits in [#writing] and adds nothing to it.
-    private void releaseOwnClaim(BlockId id) {
-        metadataStore.removeLifecycle(id);
+    ///
+    /// A cache copy the failed put found already there (the claim replaced the cache-only marker that tracked it)
+    /// is not the failed write's to lose: the record is put back as a marker over the cache tiers that still hold
+    /// the block, or the copy would sit in memory where demotion cannot see it (#886). BER: the inverse of the
+    /// claim's replacement.
+    private Promise<Unit> releaseOwnClaim(BlockId id) {
+        return checkTiersForExistence(id, 0, DefaultStorageInstance::isPrivateCacheTier).map(held -> settleReleasedClaim(id,
+                                                                                                                         held));
+    }
+
+    private static boolean isPrivateCacheTier(StorageTier tier) {
+        return ! tier.isShared() && !tier.isDurable();
+    }
+
+    private Unit settleReleasedClaim(BlockId id, boolean cacheCopyHeld) {
+        if (cacheCopyHeld) {
+            metadataStore.computeLifecycle(id, lc -> BlockLifecycle.cacheOnlyLifecycle(id, cacheLevelsIn(lc)));
+        } else {
+            metadataStore.removeLifecycle(id);
+        }
+
+        return unit();
+    }
+
+    private Set<TierLevel> cacheLevelsIn(BlockLifecycle record) {
+        var cacheLevels = tiers.stream().filter(tier -> !tier.isDurable()).map(StorageTier::level).toList();
+
+        return record.presentIn()
+                     .stream()
+                     .filter(cacheLevels::contains)
+                     .collect(Collectors.toCollection(() -> EnumSet.noneOf(TierLevel.class)));
     }
 
     private void finishWriting(BlockId id, Promise<Unit> mine, Result<Unit> outcome) {
@@ -610,9 +941,17 @@ final class DefaultStorageInstance implements StorageInstance {
     /// removed it (#801) -- so the id must not be handed out and the put goes round again, where its
     /// claim now succeeds and [#afterCollection] orders its write behind GC's tier deletes.
     private Promise<BlockId> deduplicateBlock(BlockId id, byte[] content) {
-        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented)
-                            .fold(() -> handlePut(id, content),
-                                  lc -> Promise.success(deduplicated(lc.blockId())));
+        return creditOwnedBlock(id).fold(() -> handlePut(id, content),
+                                         lc -> Promise.success(deduplicated(lc.blockId())));
+    }
+
+    /// Credits a reference to the block's record, but only to a record this node owns. A cache-only marker
+    /// is no duplicate to deduplicate onto -- it records that the block was READ here, never that it was
+    /// written to this node's required tiers -- so it is left as it is and reported as empty, which sends
+    /// the put round again to claim the id (a claim replaces a marker, see [MetadataStore#claimBlock]).
+    private Option<BlockLifecycle> creditOwnedBlock(BlockId id) {
+        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncrementedIfOwned)
+                            .filter(lc -> !lc.cacheOnly());
     }
 
     private static BlockId deduplicated(BlockId id) {
@@ -811,8 +1150,8 @@ final class DefaultStorageInstance implements StorageInstance {
         // failure is recovered, not propagated, or the caller is told its durably stored data
         // failed (#910). The old chain logged "skipped" and then flatMapped the failure through.
         return tier.put(id, content)
-                   .onSuccess(_ -> recordTierPresence(id,
-                                                      tier.level()))
+                   .withSuccess(_ -> recordTierPresence(id,
+                                                        tier.level()))
                    .fold(result -> result.fold(cause -> discardFailedPromotion(tier, id, cause),
                                                Promise::success))
                    .flatMap(_ -> promoteToNextCacheTier(id, content, cacheTiers, index + 1));
@@ -976,9 +1315,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// GC removed the record meanwhile; the put goes round again as a fresh claim, as [#deduplicateBlock]
     /// does.
     private Promise<BlockId> rewriteDeduplicated(BlockId id, byte[] content) {
-        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented)
-                            .fold(() -> handleDurablePut(id, content),
-                                  _ -> rewriteRequiredTiers(id, content));
+        return creditOwnedBlock(id).fold(() -> handleDurablePut(id, content), _ -> rewriteRequiredTiers(id, content));
     }
 
     private Promise<BlockId> rewriteRequiredTiers(BlockId id, byte[] content) {
@@ -1041,27 +1378,178 @@ final class DefaultStorageInstance implements StorageInstance {
             return StorageError.IntegrityError.integrityError(expectedId, computedId).promise();
         }
 
-        recordTierPresence(expectedId, tier.level());
+        recordReadPresence(expectedId, tier);
 
         return Promise.success(some(content));
     }
 
     // --- Existence check ---
-    private Promise<Boolean> checkTiersForExistence(BlockId id, int tierIndex) {
+    private Promise<Boolean> checkTiersForExistence(BlockId id, int tierIndex, Predicate<StorageTier> inScope) {
         if (tierIndex >= tiers.size()) {
             return Promise.success(false);
         }
 
-        return tiers.get(tierIndex)
-                    .exists(id)
-                    .flatMap(found -> found
-                                      ? Promise.success(true)
-                                      : checkTiersForExistence(id, tierIndex + 1));
+        return existsInScope(tiers.get(tierIndex), id, inScope).flatMap(found -> foundOrNext(found,
+                                                                                             id,
+                                                                                             tierIndex,
+                                                                                             inScope));
+    }
+
+    private static Promise<Boolean> existsInScope(StorageTier tier, BlockId id, Predicate<StorageTier> inScope) {
+        return inScope.test(tier)
+               ? tier.exists(id)
+               : Promise.success(false);
+    }
+
+    private Promise<Boolean> foundOrNext(boolean found, BlockId id, int tierIndex, Predicate<StorageTier> inScope) {
+        return found
+               ? Promise.success(true)
+               : checkTiersForExistence(id, tierIndex + 1, inScope);
     }
 
     // --- Lifecycle helpers ---
     private void recordAccess(BlockId id) {
         metadataStore.computeLifecycle(id, BlockLifecycle::withAccessTimestamp);
+        accessListener.accept(id);
+    }
+
+    @Contract
+    static void ignoreAccess(BlockId id) {}
+
+    private static Set<TierLevel> sharedLevelsOf(List<StorageTier> tiers) {
+        var shared = EnumSet.noneOf(TierLevel.class);
+
+        tiers.stream().filter(StorageTier::isShared).map(StorageTier::level).forEach(shared::add);
+
+        return shared;
+    }
+
+    /// A read found `id` in `tier`. A node with a record just adds the presence. A node with none -- it did
+    /// not write the block -- gets a cache-only marker, so its accesses are counted (promotion reads them)
+    /// and any copy it keeps is visible to demotion. Two cases are not a cache and get none: the copy it just
+    /// read is on a DURABLE tier (the block is this node's own data whose record was lost, and calling it a
+    /// cache would let demotion evict the only durable copy), or the instance has no shared tier (nothing else
+    /// holds the block, so this node's copy is the block).
+    private void recordReadPresence(BlockId id, StorageTier tier) {
+        metadataStore.computeLifecycle(id,
+                                       lc -> lc.withTierAdded(tier.level()))
+                     .onEmpty(() -> trackReadOnlyBlock(id, tier));
+    }
+
+    private void trackReadOnlyBlock(BlockId id, StorageTier tier) {
+        if (!sharedLevels.isEmpty() && !tier.isDurable() && reserveMarkerSlot()) {
+            createMarker(id, tier.level());
+        }
+    }
+
+    /// The slot is already reserved ([#reserveMarkerSlot]). The claim loses to a writer or another reader that got
+    /// there first; the slot is then given back and the presence is added to whatever record that left.
+    private void createMarker(BlockId id, TierLevel level) {
+        if (metadataStore.claimBlock(id,
+                                     BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(level)))) {
+            confirmMarkerSlot();
+        } else {
+            giveBackMarkerSlot();
+            recordTierPresence(id, level);
+        }
+    }
+
+    /// Takes one marker slot atomically, so racing readers cannot all pass a room check and overshoot the cap.
+    /// The caller must make the marker or give the slot back.
+    private boolean reserveMarkerSlot() {
+        countMarkersOnFirstUse();
+
+        return tryReserveSlot() || sweepIdleMarkers() && tryReserveSlot();
+    }
+
+    private boolean tryReserveSlot() {
+        synchronized (markerLock) {
+            var hasRoom = cacheMarkers + pendingMarkerClaims < markerLimits.maxMarkers();
+
+            if (hasRoom) {
+                pendingMarkerClaims++;
+            }
+
+            return hasRoom;
+        }
+    }
+
+    private void confirmMarkerSlot() {
+        synchronized (markerLock) {
+            pendingMarkerClaims--;
+            cacheMarkers++;
+        }
+    }
+
+    private void giveBackMarkerSlot() {
+        synchronized (markerLock) {
+            pendingMarkerClaims--;
+        }
+    }
+
+    private void forgetMarker() {
+        synchronized (markerLock) {
+            cacheMarkers--;
+        }
+    }
+
+    private boolean hasRoomForMarker() {
+        countMarkersOnFirstUse();
+
+        return markersInUse() < markerLimits.maxMarkers() || sweepIdleMarkers();
+    }
+
+    private int markersInUse() {
+        synchronized (markerLock) {
+            return cacheMarkers + pendingMarkerClaims;
+        }
+    }
+
+    private void countMarkersOnFirstUse() {
+        synchronized (markerLock) {
+            if (!markersCounted) {
+                markersCounted = true;
+                cacheMarkers = (int) metadataStore.listAllLifecycles()
+                                                  .stream()
+                                                  .filter(BlockLifecycle::cacheOnly)
+                                                  .count();
+            }
+        }
+    }
+
+    /// At most one sweep per interval; true when it left room for another marker.
+    private boolean sweepIdleMarkers() {
+        var now = clockMillis.getAsLong();
+        var last = lastMarkerSweepMillis.get();
+
+        return now - last >= markerLimits.sweepIntervalMs()
+               && lastMarkerSweepMillis.compareAndSet(last, now)
+               && reclaimIdleMarkers(now) < markerLimits.maxMarkers();
+    }
+
+    /// Drops the markers that track nothing of this node's -- every tier in the record is shared -- and have
+    /// not been touched for the idle window, by compare-and-remove against the record as scanned (a read or
+    /// put that landed since wins). Re-counts the markers left, which also corrects the drift in
+    /// [#cacheMarkers]; returns that count.
+    private int reclaimIdleMarkers(long now) {
+        synchronized (markerLock) {
+            var markers = metadataStore.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).toList();
+            var reclaimed = markers.stream()
+                                   .filter(marker -> isIdleSharedOnly(marker, now))
+                                   .filter(marker -> metadataStore.releaseClaim(marker.blockId(),
+                                                                                marker))
+                                   .count();
+            var remaining = markers.size() - (int) reclaimed;
+
+            cacheMarkers = remaining;
+            log.debug("Cache marker sweep on '{}': {} reclaimed, {} left", name, reclaimed, remaining);
+
+            return remaining + pendingMarkerClaims;
+        }
+    }
+
+    private boolean isIdleSharedOnly(BlockLifecycle marker, long now) {
+        return now - marker.lastAccessedAt() >= markerLimits.idleMs() && sharedLevels.containsAll(marker.presentIn());
     }
 
     private void recordTierPresence(BlockId id, TierLevel tier) {

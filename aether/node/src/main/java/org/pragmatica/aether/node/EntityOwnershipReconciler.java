@@ -128,10 +128,10 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     /// Tick intervals (of time, not passes) the hosting-set fingerprint must stay unchanged before owners may be
     /// (re)placed. A marked guess (#1734): one interval already spans the observed 0.1-0.9 s registration gap, the second
     /// absorbs autoscaler jitter.
-    static final int SETTLE_TICKS = 2;
+    public static final int SETTLE_TICKS = 2;
     /// Tick intervals after which an arc with no record is minted over an unsettled set anyway (30 s at the 5 s tick). A
     /// marked guess (#1734): the gate must delay a first mint, never starve it.
-    static final int FIRST_MINT_CEILING_TICKS = 6;
+    public static final int FIRST_MINT_CEILING_TICKS = 6;
 
     private final Map<String, Integer> entityKeyspaces = new ConcurrentHashMap<>();
     private final KVStore<AetherKey, AetherValue> kvStore;
@@ -207,18 +207,18 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     /// As above, with the settle gate explicit: the thresholds are `settleTicks` and `firstMintCeilingTicks` multiples of
     /// `tickInterval`, measured on `nanoClock` (monotonic). `settleTicks` of 0 is the pre-#1734 behaviour (every set is
     /// settled), which the tests use as the arming control.
-    static EntityOwnershipReconciler entityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
-                                                               NodeId self,
-                                                               Supplier<List<NodeId>> membersSupplier,
-                                                               BooleanSupplier consensusActive,
-                                                               Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
-                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                                               Executor reconcileExecutor,
-                                                               int settleTicks,
-                                                               int firstMintCeilingTicks,
-                                                               TimeSpan tickInterval,
-                                                               LongSupplier nanoClock,
-                                                               OperatorWarningSink warningSink) {
+    public static EntityOwnershipReconciler entityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
+                                                                      NodeId self,
+                                                                      Supplier<List<NodeId>> membersSupplier,
+                                                                      BooleanSupplier consensusActive,
+                                                                      Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
+                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                                      Executor reconcileExecutor,
+                                                                      int settleTicks,
+                                                                      int firstMintCeilingTicks,
+                                                                      TimeSpan tickInterval,
+                                                                      LongSupplier nanoClock,
+                                                                      OperatorWarningSink warningSink) {
         return new EntityOwnershipReconciler(kvStore,
                                              self,
                                              membersSupplier,
@@ -293,7 +293,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     /// now, since until the leader re-mints the retracted node is still the committed owner. Any other
     /// removal is ignored. Runs on every node; the writer's leader gate leaves followers a no-op.
     @Contract
-    void onRegistrationRemoved(ValueRemove<?, ?> removal) {
+    public void onRegistrationRemoved(ValueRemove<?, ?> removal) {
         if (removal.cause().key() instanceof EntityKeyspaceRegistrationKey) {
             requestReconcile();
         }
@@ -306,7 +306,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     /// removal) on different threads, and two concurrent passes would each compute the same delta and commit
     /// it twice. The body never blocks — every apply is fire-and-forget — so serialising costs nothing.
     @Contract
-    synchronized void tick() {
+    public synchronized void tick() {
         // ScheduledExecutorService CANCELS a periodic task whose run throws, silently and permanently.
         // This tick is the only thing that ever mints entity ownership records, so a single throw would
         // leave every entity write refused forever with a cause that says "transient" — undiagnosable
@@ -534,7 +534,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     /// The stream ownership driver's exclusion boundary (see the type comment's "Exclusive authority"):
     /// everything in `reconciled` EXCEPT entity arcs. Replica placement for entity logs is untouched —
     /// only the ownership write has exactly one authority.
-    static List<PartitionKey> withoutEntityArcs(List<PartitionKey> reconciled) {
+    public static List<PartitionKey> withoutEntityArcs(List<PartitionKey> reconciled) {
         return reconciled.stream()
                          .filter(partition -> EntityPartitionArc.keyspaceOf(partition.streamName()).isEmpty())
                          .toList();

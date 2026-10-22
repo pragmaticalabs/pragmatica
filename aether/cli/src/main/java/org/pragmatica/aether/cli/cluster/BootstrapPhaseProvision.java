@@ -822,7 +822,7 @@ sealed interface BootstrapPhaseProvision {
             return seam.provisionInZone(nodeId, globalIndex, "");
         }
 
-        while (cursor[0]< zones.size()) {
+        while (cursor[0] < zones.size()) {
             var zone = zones.get(cursor[0]);
             var attempt = seam.provisionInZone(nodeId, globalIndex, zone);
 

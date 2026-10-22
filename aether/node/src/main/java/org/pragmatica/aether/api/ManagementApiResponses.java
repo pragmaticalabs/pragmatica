@@ -731,7 +731,9 @@ public sealed interface ManagementApiResponses {
     /// a `ClusterTopologyManager` (the only node that can answer "why is this deficit not being
     /// filled?"); when `false` the numeric fields are zeroed and `lastReason` explains the absence.
     /// `deficit` is `configuredCoreCount - effective` clamped to `>= 0`. `lastProvisionFailure` is empty
-    /// (serialized as `null`) when no provisioning failure has been recorded.
+    /// (serialized as `null`) when no provisioning failure has been recorded. A wait for a complete inventory is not a failure: it is
+    /// `inventoryWaiting` with `lastInventoryWait` (reason and time) while it lasts, cleared once an admission gets past the inventory;
+    /// `inventoryWaits` counts them all.
     record ProvisioningDiagnosticsResponse(boolean leader,
                                            int configuredCoreCount,
                                            int countedCoreMembers,
@@ -744,7 +746,10 @@ public sealed interface ManagementApiResponses {
                                            String lastReason,
                                            long deficitAgeMs,
                                            ProvisioningCircuitBreakerInfo circuitBreaker,
-                                           Option<ProvisionFailureInfo> lastProvisionFailure) {}
+                                           Option<ProvisionFailureInfo> lastProvisionFailure,
+                                           boolean inventoryWaiting,
+                                           long inventoryWaits,
+                                           Option<ProvisionFailureInfo> lastInventoryWait) {}
 
     record ProvisioningCircuitBreakerInfo(int consecutiveFailures, boolean tripped, long nextAllowedMs) {}
 

@@ -841,7 +841,7 @@ public final class PartitionBackfill {
                        .anyMatch(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP);
     }
 
-    /// Partitions the periodic re-drive ({@code AetherNode.redriveIncompleteBackfills}) should re-attempt
+    /// Partitions the periodic re-drive ({@code StreamAssembly.redriveIncompleteBackfills}) should re-attempt
     /// `backfill` for: every partition where self is a registered, not-yet-CAUGHT_UP replica, PLUS the
     /// #333 write-idle residual case — a CAUGHT_UP replica that is NOT the HRW owner and whose
     /// `confirmedOffset` has moved since, or which has not been re-verified against the owner within the
@@ -1083,11 +1083,11 @@ public final class PartitionBackfill {
         return transport.requestCatchup(owner,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
-                                                                                                                                                               partition,
-                                                                                                                                                               epoch,
-                                                                                                                                                               !response.payloads()
-                                                                                                                                                                        .isEmpty())));
+                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response).withSuccess(_ -> markVerifiedIfCompared(streamName,
+                                                                                                                                                                 partition,
+                                                                                                                                                                 epoch,
+                                                                                                                                                                 !response.payloads()
+                                                                                                                                                                          .isEmpty())));
     }
 
     /// The compare succeeded against the committed owner of `epoch`: this copy may now serve and acknowledge at and above that
@@ -1414,7 +1414,7 @@ public final class PartitionBackfill {
     /// local ring HRW-ranks self owner while the authoritative committed record names someone else (the m1
     /// self-election loop). {@link Option#none} (no record committed yet — cold start / legacy / unowned)
     /// returns FALSE so pure-HRW self-election is preserved and the cold-start deadlock-break stays intact.
-    /// This is the INVERSE of `AetherNode.committedOwnerElsewhere`'s release semantics: that guard treats
+    /// This is the INVERSE of `StreamAssembly.committedOwnerElsewhere`'s release semantics: that guard treats
     /// none() as releasable (`.or(true)`); this one treats none() as still-HRW-eligible (`.or(false)`).
     /// Strict equality (blocking whenever committed != self) would starve a just-promoted owner by one commit.
     private boolean committedOwnerIsOther(String streamName, int partition) {
@@ -1592,7 +1592,7 @@ public final class PartitionBackfill {
                                         request,
                                         () -> progress(streamName, partition))
                         .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
-                        .onSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
+                        .withSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
     }
 
     /// After a SUCCESSFUL owner catch-up the owner has just read `localWatermark + 1 .. survivorTail` FROM
@@ -1602,7 +1602,7 @@ public final class PartitionBackfill {
     /// watermarks are never propagated, {@link WatermarkStore#NOOP}) makes the replicas-view and any
     /// "a CAUGHT_UP non-owner exists" check see the survivor CAUGHT_UP@survivorTail immediately, without
     /// waiting for the survivor's next live ack or the #333 redrive. Fires ONLY on a successful pull
-    /// ({@link Promise#onSuccess}) and only for the survivor actually pulled from, at the tail actually
+    /// ({@link Promise#withSuccess}) and only for the survivor actually pulled from, at the tail actually
     /// applied. Guarded MONOTONIC-UP: {@link ReplicaRegistry#updateWatermark} overwrites unconditionally, so
     /// it is invoked only when `survivorTail` exceeds the survivor's currently-recorded offset — a concurrent
     /// higher live ack is never clobbered down. On the local-registry HIT path this is a no-op (the survivor's
@@ -2238,10 +2238,10 @@ public final class PartitionBackfill {
                         .flatMap(response -> response.payloads()
                                                      .isEmpty()
                                              ? handleNoSource(streamName, partition, replicas)
-                                             : applyAndPromote(streamName, partition, -1L, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
-                                                                                                                                           partition,
-                                                                                                                                           epoch,
-                                                                                                                                           true)));
+                                             : applyAndPromote(streamName, partition, -1L, response).withSuccess(_ -> markVerifiedIfCompared(streamName,
+                                                                                                                                             partition,
+                                                                                                                                             epoch,
+                                                                                                                                             true)));
     }
 
     /// An owner reporting `-1` is an EMPTY owner, never a true tail (#445) — self must not promote off

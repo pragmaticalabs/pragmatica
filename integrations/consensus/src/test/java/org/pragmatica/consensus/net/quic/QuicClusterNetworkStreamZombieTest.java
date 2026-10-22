@@ -34,15 +34,6 @@ import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -69,6 +60,7 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -608,28 +600,16 @@ class QuicClusterNetworkStreamZombieTest {
 
         // --- dedup fixtures ---
 
-        private CapturingAppender appender;
-        private LoggerConfig loggerConfig;
+        private LogCapture appender;
 
         @BeforeEach
         void attachAppender() {
-            appender = CapturingAppender.create("LazyOpenDedupCapture");
-            appender.start();
-
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-            loggerConfig.addAppender(appender, Level.WARN, null);
-            ctx.updateLoggers();
+            appender = LogCapture.capture(QuicClusterNetwork.class, Level.WARN, true);
         }
 
         @AfterEach
         void detachAppender() {
-            var ctx = (LoggerContext) LogManager.getContext(false);
-
-            loggerConfig.removeAppender(appender.getName());
-            ctx.updateLoggers();
-            appender.stop();
+            appender.close();
         }
 
         private static void writeBurst(QuicClusterNetwork network,
@@ -649,32 +629,17 @@ class QuicClusterNetworkStreamZombieTest {
         /// appender that captured one stray line, and an absent capture would make a `hasSize(0)`
         /// variant pass vacuously.
         private void assertSentinelWasCaptured() {
-            assertThat(appender.messages())
+            assertThat(appender.messages(Level.WARN))
                 .as("the appender must be attached to %s, or the volume assertion examines nothing",
                     QuicClusterNetwork.class.getName())
                 .anyMatch(message -> message.contains(SENTINEL));
         }
 
         private List<String> warnsContaining(String fragment) {
-            return appender.messages()
+            return appender.messages(Level.WARN)
                            .stream()
                            .filter(message -> message.contains(fragment))
                            .toList();
-        }
-
-        private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-            var name = QuicClusterNetwork.class.getName();
-            var existing = configuration.getLoggerConfig(name);
-
-            if (name.equals(existing.getName())) {
-                return existing;
-            }
-
-            var fresh = new LoggerConfig(name, Level.WARN, true);
-
-            configuration.addLogger(name, fresh);
-
-            return fresh;
         }
     }
 
@@ -704,30 +669,6 @@ class QuicClusterNetworkStreamZombieTest {
 
         int openCount() {
             return opens.get();
-        }
-    }
-
-    /// In-memory log4j2 appender capturing WARN-and-above messages for the dedup volume assertion.
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> captured = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                captured.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> messages() {
-            return List.copyOf(captured);
         }
     }
 

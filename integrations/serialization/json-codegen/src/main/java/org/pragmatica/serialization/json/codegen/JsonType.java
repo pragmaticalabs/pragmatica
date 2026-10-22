@@ -57,7 +57,9 @@ sealed interface JsonType {
 
     /// `factory` is the JBCT construction path (`static Result<T> t(...)` over the components, in order), when
     /// the record has one. A value object is a single-component record over a scalar that has
-    /// one; it travels unwrapped, as its bare component (owner ruling 2026-10-17).
+    /// one; nested (a component, an element, a map key or value) it travels unwrapped, as its bare component
+    /// (owner ruling 2026-10-17), while as a whole document it is the object of its one component, like any
+    /// record (owner ruling 2026-10-18).
     ///
     /// The value-object rule has exactly one counterpart, on the Jackson side:
     /// `org.pragmatica.json.ValueObjectModule#valueObjectFactory`. The two are pinned together by

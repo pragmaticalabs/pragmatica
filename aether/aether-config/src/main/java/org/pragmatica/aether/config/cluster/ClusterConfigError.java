@@ -405,6 +405,46 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1966: a role pointing at a different runtime profile answered the generic 501 "escalate rather than retry"
+    /// although the refusal is deliberate (#1543 F): rolling a role onto another runtime by apply would stop a node and
+    /// start another under the same id, and a node id never returns. Nodes move onto new software by replacement.
+    record RuntimeChangeViaApply(String sourceName, String role, String from, String to) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Changing the runtime of " + sourceName
+                 + "." + role
+                 + " (" + from
+                 + " -> " + to
+                 + ") is not applied through 'aether cluster apply': it would stop a node and start another in its place under the same id. "
+                 + "Nodes are moved onto new software by replacement under a fresh id: 'aether cluster upgrade --version X.Y.Z --wait' "
+                 + "replaces every node one at a time. Keep runtime = \"" + from
+                 + "\" on that role in the file you apply.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1966: the content of a runtime profile changed. Replacements are provisioned from the COMMITTED config and apply
+    /// does not rewrite it for profile content, so an accepted edit would be silently dropped; it is refused by name instead.
+    record RuntimeProfileChangeViaApply(String profile, String fields) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Runtime profile '" + profile
+                 + "' changed (" + fields
+                 + ") but 'aether cluster apply' does not change runtime-profile content: replacements are provisioned from the committed config, "
+                 + "so the edit would not take effect. To move nodes onto a new version use 'aether cluster upgrade --version X.Y.Z' "
+                 + "(declare the image with {version}); otherwise keep the profile as committed in the file you apply.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record ImmutableFieldChange(String field) implements ClusterConfigError {
         @Override
         public String message() {
@@ -526,7 +566,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     ///
     /// The message deliberately does NOT tell the operator to destroy and re-bootstrap: unlike
     /// `ImmutableFieldChange`, these actions are not actually unsupportable — `aether cluster apply
-    /// --resume`/`--rollback` route through `WaveExecutor`, which DOES provision/destroy/roll these
+    /// --resume` routes through `WaveExecutor`, which DOES provision/destroy/roll these
     /// kinds live. The plain `aether cluster apply <file>` invocation just never reaches that engine;
     /// it POSTs straight to this endpoint instead. That dispatch gap is a separate, structural finding
     /// (flagged for its own fix, not asserted here as a working workaround) — this cause only

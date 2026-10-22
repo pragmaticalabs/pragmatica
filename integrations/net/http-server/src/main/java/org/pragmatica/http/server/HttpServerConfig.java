@@ -20,6 +20,7 @@ import java.util.List;
 
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.SocketOptions;
 import org.pragmatica.net.tcp.TlsConfig;
 
@@ -33,14 +34,27 @@ import org.pragmatica.net.tcp.TlsConfig;
 /// @param webSocketEndpoints   WebSocket endpoints
 /// @param chunkedWriteEnabled  whether to enable chunked transfer encoding
 /// @param socketOptions        socket-level options
+/// @param readTimeout          how long the server waits on a client's request bytes without receiving one: an IDLE
+///                             bound, the same on both protocols. HTTP/1.1: a connection that delivers no byte for this
+///                             long while no response is pending (a stalled body, an idle keep-alive connection) is
+///                             closed. HTTP/3: a request stream whose body delivers no frame for this long is answered
+///                             408 and its input reset. WebSocket connections are exempt once upgraded.
+/// @param bodyRateLimit        the minimum rate a request body must arrive at, the same on both protocols (see
+///                             [BodyRateLimit]): it bounds a client that trickles just inside the idle bound.
 public record HttpServerConfig(String name,
                                int port,
                                Option<TlsConfig> tls,
                                int maxContentLength,
                                List<WebSocketEndpoint> webSocketEndpoints,
                                boolean chunkedWriteEnabled,
-                               SocketOptions socketOptions) {
+                               SocketOptions socketOptions,
+                               TimeSpan readTimeout,
+                               BodyRateLimit bodyRateLimit) {
     private static final int DEFAULT_MAX_CONTENT_LENGTH = 65536;
+    /// 60 s mirrors nginx's `client_body_timeout` default. It is a guess, not a measurement: long enough for a
+    /// client on a slow link to send a 10 MiB body over HTTP/3 (about 1.4 Mbit/s), short enough that a stalled
+    /// connection stops pinning its aggregation buffer within a minute.
+    public static final TimeSpan DEFAULT_READ_TIMEOUT = TimeSpan.timeSpan(60).seconds();
 
     public HttpServerConfig {
         webSocketEndpoints = List.copyOf(webSocketEndpoints);
@@ -53,7 +67,9 @@ public record HttpServerConfig(String name,
                                     DEFAULT_MAX_CONTENT_LENGTH,
                                     List.of(),
                                     false,
-                                    SocketOptions.defaultConfig());
+                                    SocketOptions.defaultConfig(),
+                                    DEFAULT_READ_TIMEOUT,
+                                    BodyRateLimit.DEFAULT);
     }
 
     public HttpServerConfig withTls(TlsConfig tls) {
@@ -63,7 +79,9 @@ public record HttpServerConfig(String name,
                                     maxContentLength,
                                     webSocketEndpoints,
                                     chunkedWriteEnabled,
-                                    socketOptions);
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 
     public HttpServerConfig withMaxContentLength(int maxContentLength) {
@@ -73,7 +91,9 @@ public record HttpServerConfig(String name,
                                     maxContentLength,
                                     webSocketEndpoints,
                                     chunkedWriteEnabled,
-                                    socketOptions);
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 
     public HttpServerConfig withWebSocket(WebSocketEndpoint endpoint) {
@@ -87,10 +107,44 @@ public record HttpServerConfig(String name,
                                     maxContentLength,
                                     List.copyOf(endpoints),
                                     chunkedWriteEnabled,
-                                    socketOptions);
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 
     public HttpServerConfig withChunkedWrite() {
-        return new HttpServerConfig(name, port, tls, maxContentLength, webSocketEndpoints, true, socketOptions);
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    true,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit);
+    }
+
+    public HttpServerConfig withBodyRateLimit(BodyRateLimit bodyRateLimit) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit);
+    }
+
+    public HttpServerConfig withReadTimeout(TimeSpan readTimeout) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit);
     }
 }

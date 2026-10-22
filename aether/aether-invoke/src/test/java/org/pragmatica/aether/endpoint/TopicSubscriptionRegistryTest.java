@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -64,8 +65,12 @@ class TopicSubscriptionRegistryTest {
 
     /// Register a subscription at an explicit, fully-qualified address (`namespace:name:version`).
     private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId) {
+        registerSubscriptionAt(address, artifact, method, nodeId, TopicTier.UNDECLARED);
+    }
+
+    private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId, TopicTier tier) {
         var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method, nodeId);
-        var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
+        var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId, tier);
         var put = new KVCommand.Put<>(key, value);
         registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
     }
@@ -76,6 +81,29 @@ class TopicSubscriptionRegistryTest {
 
     @Nested
     class FindSubscribers {
+        /// #1337: the tier the row recorded reaches the publisher through the subscriber it selects, so a publisher can refuse a
+        /// context handler without invoking it. A row that recorded none reads as UNDECLARED.
+        @Test
+        void findSubscribers_carriesTheTierTheRowRecorded() {
+            var contextArtifact = Artifact.artifact("org.example:context-slice:1.0.0").unwrap();
+            var bareArtifact = Artifact.artifact("org.example:bare-slice:1.0.0").unwrap();
+            var oldArtifact = Artifact.artifact("org.example:old-slice:1.0.0").unwrap();
+
+            registerSubscriptionAt(resourceAddress("orders"), contextArtifact, method, nodeA, TopicTier.DURABLE);
+            registerSubscriptionAt(resourceAddress("orders"), bareArtifact, method, nodeA, TopicTier.ANY);
+            registerSubscription("orders", oldArtifact, method, nodeA);
+
+            var tiers = registry.findSubscribers(routingKey("orders"))
+                                .stream()
+                                .collect(java.util.stream.Collectors.toMap(subscriber -> subscriber.artifact().artifactId().id(),
+                                                                           TopicSubscriptionRegistry.TopicSubscriber::tier));
+
+            assertEquals(TopicTier.DURABLE, tiers.get("context-slice"));
+            assertEquals(TopicTier.ANY, tiers.get("bare-slice"));
+            assertEquals(TopicTier.UNDECLARED, tiers.get("old-slice"));
+            assertTrue(registry.allSubscriptions().stream().anyMatch(subscription -> subscription.tier() == TopicTier.DURABLE));
+        }
+
         @Test
         void findSubscribers_emptyRegistry_returnsEmptyList() {
             var subscribers = registry.findSubscribers(routingKey("orders"));

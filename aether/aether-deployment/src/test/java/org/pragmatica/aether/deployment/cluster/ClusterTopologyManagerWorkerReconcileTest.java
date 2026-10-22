@@ -167,7 +167,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             _ -> {},
                                                             Option::none,
                                                             liveness);
-        var placements = new java.util.HashMap<AetherKey, AetherValue>();
+        var placements = new java.util.concurrent.ConcurrentHashMap<AetherKey, AetherValue>();
         built.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
             key -> Option.option(placements.get(key)), commands -> {
@@ -474,6 +474,22 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(lifecycleManager.provisionedNodeIds()).hasSize(2);
     }
 
+    /// #1404: one source whose inventory never answers must not hold back another source's convergence. Worker entries reconcile in
+    /// bounded lanes, each item on its own deadline; before, the pass was one chain and a stalled listing stopped every later entry.
+    @Test
+    void reconcile_stalledSourceInventory_doesNotPreventAnotherSourceFromConverging() {
+        seedTopology(entry("unavailable", "worker", 1), entry("healthy", "worker", 1));
+        lifecycleManager.blockedSource = "unavailable";
+        var held = lifecycleManager.gateListing();
+
+        ctm.activate();
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(lifecycleManager.provisionedSourceNames()).containsExactly("healthy"));
+        held.succeed(unit()).await().onFailure(cause -> fail("listing gate release failed: " + cause.message()));
+        ctm.deactivate();
+    }
+
     /// The replay is armed by a MISSED trigger only — an uncontended pass must not re-poke itself,
     /// or every commit would cost two provider listings forever.
     @Test
@@ -620,6 +636,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
         private final AtomicReference<Map<String, String>> lastFilter = new AtomicReference<>(Map.of());
         private final AtomicReference<Promise<Unit>> listGate = new AtomicReference<>(Promise.success(unit()));
         private final AtomicLong listCalls = new AtomicLong();
+        /// The one source whose listing is held by [#gateListing]; every other source answers at once. Empty holds them all.
+        private String blockedSource = "";
 
         void preExisting(InstanceInfo... instances) {
             inventory.addAll(List.of(instances));
@@ -696,7 +714,11 @@ class ClusterTopologyManagerWorkerReconcileTest {
             listCalls.incrementAndGet();
             lastFilter.set(tagFilter);
 
-            return listGate.get().map(_ -> matching(tagFilter));
+            var gate = blockedSource.isEmpty() || blockedSource.equals(tagFilter.get("aether-source"))
+                       ? listGate.get()
+                       : Promise.unitPromise();
+
+            return gate.map(_ -> matching(tagFilter));
         }
 
         private List<InstanceInfo> matching(Map<String, String> tagFilter) {

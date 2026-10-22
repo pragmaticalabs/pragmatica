@@ -1,0 +1,4 @@
+### Removed (2026-10-18 — #2241: the dead `SelfShutdown` producer in the QUIC stop path)
+- **`QuicClusterNetwork.stop()` no longer calls `processViewChange(SHUTDOWN, self)`.** The call could never emit an observation: `processViewChange` returns at its first statement for the node's own id, after a WARN ("Ignoring view change SHUTDOWN for self node"), so every graceful stop logged that WARN for an unreachable branch. The call, the `SHUTDOWN` operation and its `case` arm are deleted; a graceful stop no longer logs the WARN. The node's real self-departure signal, `ClusterStateNotification.passive()`, is unchanged.
+- `TransportObservation.SelfShutdown`, its factory and its consumers are kept; their removal belongs to the deployment state machine rewrite.
+- `[verified: integrations/consensus SelfShutdownRemovalTest]`

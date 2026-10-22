@@ -3,13 +3,17 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.UnaryOperator;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -19,19 +23,11 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileError;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -51,39 +47,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SnapshotDurableWriteTest {
     private static final String LOGGER = DefaultSnapshotManager.class.getName();
     private static final String NODE_ID = "node-durable";
+    private static final Function<Path, Result<Unit>> NO_SYNC = _ -> Result.unitResult();
 
     @TempDir
     Path tempDir;
 
     private InMemoryMetadataStore store;
     private SnapshotConfig config;
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture capture;
 
     @BeforeEach
     void setUp() {
         store = inMemoryMetadataStore("durable");
         config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
-        appender = CapturingAppender.create("SnapshotDurableWriteCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.ALL);
-        ctx.updateLoggers();
+        capture = LogCapture.capture(LOGGER, Level.ALL, true);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        capture.close();
     }
 
     // --- Write path: interrupted writes ---
@@ -107,7 +89,7 @@ class SnapshotDurableWriteTest {
 
         assertThat(restored.isPresent()).as("the previous complete snapshot still restores").isTrue();
         assertThat(restored.unwrap().epoch()).isEqualTo(epochOnDisk);
-        assertThat(appender.warnsMentioning("Snapshot restore failed")).isEmpty();
+        assertThat(warnsMentioning("Snapshot restore failed")).isEmpty();
         assertThat(manager.lastSnapshotEpoch()).as("the interrupted snapshot was not recorded as taken")
                   .isEqualTo(epochOnDisk);
         assertThat(disk.tornPath.get()).as("the fixture tore the LATEST write").hasFileName("LATEST.partial");
@@ -245,7 +227,267 @@ class SnapshotDurableWriteTest {
         assertThat(misnamed).as("files whose content epoch differs from the name").isEmpty();
         assertThat(raceDir.resolve(FileOps.readString(raceDir.resolve("LATEST")).unwrap().trim())).as("LATEST names an existing file")
                   .exists();
-        assertThat(appender.warnsMentioning("Snapshot write failed")).isEmpty();
+        assertThat(warnsMentioning("Snapshot write failed")).isEmpty();
+    }
+
+    // --- Write-time read-back (#2257) ---
+    /// A snapshot is read back through the restore path before its file is committed. The node id is
+    /// written as-is, so one holding a newline encodes to a file that restores under a different id.
+    @Test
+    void snapshotNow_nodeIdThatDoesNotReadBack_isRefusedAndPreviousSnapshotKept() {
+        var good = new DefaultSnapshotManager(store, config);
+        var badConfig = snapshotConfig(tempDir, 100, 600_000, 5, "node\nwith-newline");
+
+        mutate("kept");
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        mutate("refused");
+
+        var refused = new DefaultSnapshotManager(store, badConfig).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// An encoder defect of the SA-01 kind -- a line lost on the way out -- is caught by the integrity
+    /// check the restore would apply, at write time, not at the next boot.
+    @Test
+    void snapshotNow_serializerDropsRefLine_isRefusedAtWrite() {
+        var good = new DefaultSnapshotManager(store, config);
+
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        store.putRef("lost", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withoutLastLine).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A separator mangled by the encoder is a parse failure on the read-back, refused at write time.
+    @Test
+    void snapshotNow_serializerMangledSeparator_isRefusedAtWrite() {
+        var good = new DefaultSnapshotManager(store, config);
+
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        good.snapshotNow().unwrap();
+        var latestBefore = readLatest();
+        store.putRef("mangled", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withMangledSeparator).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// The encoder itself loses information. The file is written from a snapshot that was rebuilt with the
+    /// loss, so its hash is consistent with what it holds: only a comparison with the in-memory source
+    /// by value can see it.
+    @Test
+    void snapshotNow_encoderLosesRefNameCharacter_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("a\0b", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withoutNul)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    @Test
+    void snapshotNow_encoderLosesRefCount_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount() + 1, lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesLastAccessedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt() + 1, lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesCreatedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt() + 1, lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesAccessCount_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount() + 1, lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesOrphanedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), 0L));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesTiers_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesBlockId_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(BlockId.blockId(new byte[]{1}).unwrap(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesRefTarget_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("target", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withOtherTargets)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A file with an extra trailing line, or an extra ref line, does not read back as captured.
+    @Test
+    void snapshotNow_fileWithTrailingLine_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> DefaultSnapshotManager.serializeSnapshot(snapshot) + "extra-line\n").snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A raw character that is not part of the encoded alphabet is a malformed token even when it equals the name.
+    @Test
+    void snapshotNow_nameWrittenRaw_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("a b", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> DefaultSnapshotManager.serializeSnapshot(snapshot).replace("a%20b|", "a b|")).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private void assertLifecycleLossRefused(UnaryOperator<BlockLifecycle> loss) {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.createLifecycle(new BlockLifecycle(BlockId.blockId("distinct".getBytes(StandardCharsets.UTF_8)).unwrap(), EnumSet.of(TierLevel.MEMORY), 2, 11L, 12L, 13, 14L));
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(snapshot -> withLifecycles(snapshot, loss))).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static MetadataSnapshot withLifecycles(MetadataSnapshot snapshot, UnaryOperator<BlockLifecycle> loss) {
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles().stream().map(loss).toList(), snapshot.refs());
+    }
+
+    private static MetadataSnapshot withOtherTargets(MetadataSnapshot snapshot) {
+        var other = BlockId.blockId(new byte[]{9}).unwrap();
+        var refs = snapshot.refs().keySet().stream().collect(Collectors.toMap(name -> name, _ -> other, (a, b) -> a, LinkedHashMap::new));
+
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
+    }
+
+    @Test
+    void snapshotNow_encoderShiftsEpoch_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withNextEpoch)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// The hash is computed once, from the captured snapshot, and the read-back checks the file carries that
+    /// value: a file whose header hash is not the captured one is refused although its content is right.
+    @Test
+    void snapshotNow_headerHashIsNotTheCapturedOne_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, SnapshotDurableWriteTest::withZeroHash).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static String withZeroHash(MetadataSnapshot snapshot) {
+        return DefaultSnapshotManager.serializeSnapshot(snapshot).replaceFirst("contentHash=[0-9a-f]+", "contentHash=" + "00".repeat(32));
+    }
+
+    private String keptSnapshotThenChange() {
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        new DefaultSnapshotManager(store, config).snapshotNow().unwrap();
+
+        return readLatest();
+    }
+
+    /// A lossy encoder as it would be seen in production: the header carries the hash of the CAPTURED
+    /// snapshot (computed while rendering), so only the body lines can disagree with the in-memory source.
+    private static Function<MetadataSnapshot, String> lossy(Function<MetadataSnapshot, MetadataSnapshot> loss) {
+        return snapshot -> withCapturedHash(snapshot, loss.apply(snapshot));
+    }
+
+    private static String withCapturedHash(MetadataSnapshot captured, MetadataSnapshot lossy) {
+        return DefaultSnapshotManager.serializeSnapshot(lossy)
+                                     .replace("contentHash=" + HexFormat.of().formatHex(lossy.contentHash()),
+                                              "contentHash=" + HexFormat.of().formatHex(captured.contentHash()));
+    }
+
+    @Test
+    void snapshotNow_formatHeaderDisagrees_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replace("format=2\n", "format=7\n"));
+    }
+
+    @Test
+    void snapshotNow_lifecycleLineWithExtraField_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replaceAll("(?m)^([0-9a-f]{64}\\|.*)$", "$1|9"));
+    }
+
+    @Test
+    void snapshotNow_refTargetWithTrailingCharacters_isRefusedAtWrite() {
+        assertTextDefectRefused(content -> content.replaceAll("(?m)^([^\\n#=|]+\\|[0-9a-f]{64})$", "$1ab"));
+    }
+
+    private void assertTextDefectRefused(UnaryOperator<String> defect) {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> defect.apply(DefaultSnapshotManager.serializeSnapshot(snapshot))).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static MetadataSnapshot withoutNul(MetadataSnapshot snapshot) {
+        var refs = snapshot.refs().entrySet().stream().collect(Collectors.toMap(e -> e.getKey().replace("\0", ""), Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
+
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
+    }
+
+    private static MetadataSnapshot withNextEpoch(MetadataSnapshot snapshot) {
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch() + 1, snapshot.nodeId(), snapshot.lifecycles(), snapshot.refs());
+    }
+
+    private static String withoutLastLine(MetadataSnapshot snapshot) {
+        var lines = DefaultSnapshotManager.serializeSnapshot(snapshot).split("\n");
+
+        return String.join("\n", List.of(lines).subList(0, lines.length - 1)) + "\n";
+    }
+
+    private static String withMangledSeparator(MetadataSnapshot snapshot) {
+        return DefaultSnapshotManager.serializeSnapshot(snapshot).replace("mangled|", "mangled ");
+    }
+
+    private void assertRefusedAndPreviousIntact(Result<MetadataSnapshot> refused, String latestBefore) {
+        refused.onSuccess(_ -> Assertions.fail("a snapshot that does not read back must not be written"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(SnapshotError.RoundTripFailed.class));
+        assertThat(readLatest()).as("LATEST still names the previous snapshot").isEqualTo(latestBefore);
+        assertThat(snapshotFiles()).as("no new snapshot file").hasSize(1);
+        assertThat(errorsMentioning("NOT written")).as("the refusal is logged at ERROR").hasSize(1);
+        assertThat(new DefaultSnapshotManager(inMemoryMetadataStore("boot"), config).restoreFromLatest().unwrap().isPresent())
+            .as("the previous snapshot still restores")
+            .isTrue();
     }
 
     // --- Read path: fallback ---
@@ -272,13 +514,13 @@ class SnapshotDurableWriteTest {
         assertThat(restored.isPresent()).as("the previous retained snapshot restores").isTrue();
         assertThat(restored.unwrap().epoch()).isEqualTo(previousEpoch);
         assertThat(restored.unwrap().lifecycles()).hasSize(1);
-        assertThat(appender.warnsMentioning("restored another retained snapshot")).hasSize(1)
+        assertThat(warnsMentioning("restored another retained snapshot")).hasSize(1)
                   .first()
-                  .satisfies(warn -> assertThat(warn.message()).contains(newest.getFileName().toString())
+                  .satisfies(warn -> assertThat(warn).contains(newest.getFileName().toString())
                                                .contains("snapshot-000001.dat"));
         assertThat(readLatest()).as("restore does not rewrite LATEST").isEqualTo(latestBefore);
         assertThat(newest).as("the torn file is left as evidence").exists();
-        assertThat(appender.warnsMentioning("Snapshot restore failed")).as("the torn target is tried once, via LATEST, and not again as a candidate")
+        assertThat(warnsMentioning("Snapshot restore failed")).as("the torn target is tried once, via LATEST, and not again as a candidate")
                   .hasSize(1);
     }
 
@@ -299,7 +541,7 @@ class SnapshotDurableWriteTest {
 
         assertThat(restored.isPresent()).isTrue();
         assertThat(restored.unwrap().epoch()).as("newest complete snapshot, not the oldest").isEqualTo(newestEpoch);
-        assertThat(appender.warnsMentioning("restored another retained snapshot")).hasSize(1);
+        assertThat(warnsMentioning("restored another retained snapshot")).hasSize(1);
     }
 
     /// Every candidate is tried newest-first and a torn one is skipped, never restored: two torn
@@ -404,7 +646,7 @@ class SnapshotDurableWriteTest {
         var manager = SnapshotManager.snapshotManager(store, config);
 
         assertThat(manager.restoreFromLatest().unwrap().isEmpty()).isTrue();
-        assertThat(appender.warns()).isEmpty();
+        assertThat(capture.messages(Level.WARN)).isEmpty();
     }
 
     /// #1013: the snapshot directory does not exist yet either (the first boot of a node whose data
@@ -428,7 +670,7 @@ class SnapshotDurableWriteTest {
 
         assertThat(FileOps.exists(missing)).isFalse();
         assertThat(manager.restoreFromLatest().unwrap().isEmpty()).isTrue();
-        assertThat(appender.warns()).isEmpty();
+        assertThat(capture.messages(Level.WARN)).isEmpty();
     }
 
     /// #1013 round 2: the AGGREGATE verdict is WARNed, not only returned. The PR that made this state
@@ -452,13 +694,12 @@ class SnapshotDurableWriteTest {
         truncateToHalf(torn);
         manager.restoreFromLatest();
 
-        assertThat(appender.warnsMentioning("refusing to start with EMPTY metadata")).as("the aggregate verdict is WARNed, not only returned")
+        assertThat(warnsMentioning("refusing to start with EMPTY metadata")).as("the aggregate verdict is WARNed, not only returned")
                                                                                      .hasSize(1);
-        assertThat(appender.warnsMentioning("Snapshot restore failed")).as("control: the per-file WARN is a separate line and still fires")
+        assertThat(warnsMentioning("Snapshot restore failed")).as("control: the per-file WARN is a separate line and still fires")
                                                                        .hasSize(1);
-        assertThat(appender.warnsMentioning("Snapshot restore failed")
-                           .getFirst()
-                           .message()).as("control: the per-file line does NOT carry the aggregate text, so the assertion above needs the restored WARN")
+        assertThat(warnsMentioning("Snapshot restore failed")
+                           .getFirst()).as("control: the per-file line does NOT carry the aggregate text, so the assertion above needs the restored WARN")
                                       .doesNotContain("refusing to start with EMPTY metadata");
     }
 
@@ -645,50 +886,17 @@ class SnapshotDurableWriteTest {
         }
     }
 
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER);
-
-        if (existing.getName().equals(LOGGER)) {
-            return existing;
-        }
-
-        var created = new LoggerConfig(LOGGER, Level.ALL, true);
-
-        configuration.addLogger(LOGGER, created);
-
-        return created;
+    private List<String> warnsMentioning(String fragment) {
+        return capture.messages(Level.WARN)
+                      .stream()
+                      .filter(message -> message.contains(fragment))
+                      .toList();
     }
 
-    record Captured(Level level, String message) {}
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<Captured> events = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            events.add(new Captured(event.getLevel(),
-                                    event.getMessage().getFormattedMessage()));
-        }
-
-        List<Captured> warns() {
-            return events.stream()
-                         .filter(e -> e.level() == Level.WARN)
-                         .toList();
-        }
-
-        List<Captured> warnsMentioning(String fragment) {
-            return warns().stream()
-                        .filter(e -> e.message()
-                                      .contains(fragment))
-                        .toList();
-        }
+    private List<String> errorsMentioning(String fragment) {
+        return capture.messages(Level.ERROR)
+                      .stream()
+                      .filter(message -> message.contains(fragment))
+                      .toList();
     }
 }

@@ -5,6 +5,7 @@ package org.pragmatica.aether.deadsurface;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -14,6 +15,11 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.storage.WritePolicy;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -31,7 +37,7 @@ class KnownUnwiredSurfacesTest {
     /// #686 (CTO ruling 2026-09-14, option (b)): plain `aether cluster apply` is scale-only, actuated by
     /// the LEADER from KV desired counts. `ApplyOrchestrator.apply` / `WaveExecutor.execute` are a
     /// complete client-side wave rollout that actuates through the CLI's `ComputeProvider` — a second
-    /// actuation authority over the same fleet — entered only via `--resume`/`--rollback`, and
+    /// actuation authority over the same fleet — entered only via `--resume` (`--rollback` is refused as not implemented), and
     /// evidenced only by their own unit tests. They stay unwired until the server-side wave design
     /// (the ticket drafted in the #686 fix report) lands; wiring plain `apply` to them is the change
     /// that ruling refused.
@@ -73,8 +79,34 @@ class KnownUnwiredSurfacesTest {
                    + "defaults skipConfirmation and delegates to the three-argument one, so it reaches the same "
                    + "client-side wave rollout the ruling refused. Retire this entry only with the server-side wave design.");
         assertTrue(reachability.isReachable(waves),
-                   "control: WaveExecutor.execute IS reachable — through ApplyOrchestrator.resume/rollback (--resume/--rollback), "
+                   "control: WaveExecutor.execute IS reachable — through ApplyOrchestrator.resume (--resume), "
                   + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
+    }
+
+    /// Reachability control for the read-hit listener overload of `StorageInstance.storageInstance`: `StorageFactory`
+    /// builds every production instance through it, so the scanner must reach it. It was registered here as unwired until
+    /// the prefetch wiring landed; if this flips, the scanner or the wiring changed.
+    ///
+    /// `StorageInstance.warm` was registered beside it, and is NOT asserted here any more: its production caller is the
+    /// prefetch manager in `integrations/storage`, which this gate's corpus (aether modules only) does not scan, so a
+    /// reachability check on `warm` would answer "no" whether or not the call exists. The call is pinned where the manager
+    /// is tested: `PrefetchManagerTest#processHints_blockOnlyInTheSharedTier_copiesItIntoTheCacheTier` goes red when the
+    /// manager stops calling `warm`.
+    @Test
+    void storageReadHitListener_isCalledFromProduction() throws Exception {
+        assertCorpusComplete();
+        var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
+        var listenerOverload = MethodRef.of(StorageInstance.class.getDeclaredMethod("storageInstance",
+                                                                                    String.class,
+                                                                                    List.class,
+                                                                                    MetadataStore.class,
+                                                                                    WritePolicy.class,
+                                                                                    Option.class,
+                                                                                    AppendLog.TornTailSink.class,
+                                                                                    Consumer.class));
+
+        assertTrue(reachability.isReachable(listenerOverload),
+                   "The read-hit listener overload is no longer reached from production: StorageFactory stopped using it.");
     }
 
     /// Every `apply` overload declared on [ApplyOrchestrator], by bytecode identity. The assertions

@@ -27,13 +27,13 @@ import org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.http.TlsProbe;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
-import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -47,14 +47,16 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /// #2184: the management server's WebSocket feeds, driven through a real socket by the JDK client. The
-/// server registers `/ws/dashboard`, `/ws/status` and `/ws/events` in that order; before #2184 the second and
-/// third never completed the handshake, and no endpoint's handler ever saw `Open`. The existing WebSocket
+/// server registers `/ws/status` and `/ws/events` in that order (until the dashboard was removed it also
+/// registered `/ws/dashboard` first); before #2184 every endpoint after the first never completed the
+/// handshake, and no endpoint's handler ever saw `Open`. The existing WebSocket
 /// tests in this module call `handle(...)` directly and could not see either defect.
 ///
 /// The harness is the mocked-collaborator `ManagementServer` of `ManagementServerDhtCatchUpGaugeTest`: the
 /// lightest one that runs the real `buildServerConfig()` endpoint registration and the real publishers on a
 /// real `NettyHttpServer`. A Forge or Ember cluster would add consensus and slice deployment that the feeds
-/// do not need. The port comes from [ClusterTestPorts], so nothing collides under `-T 1C` (#939).
+/// do not need. The listener binds port 0 and the test reads the real port back, so nothing collides under `-T 1C` (#939)
+/// and no probed port can be taken between the probe and the bind (#2152).
 class ManagementServerWebSocketFeedsTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final long WAIT_SECONDS = 10;
@@ -77,7 +79,7 @@ class ManagementServerWebSocketFeedsTest {
         return mock(type, ManagementServerWebSocketFeedsTest.NONE_OR_MOCK);
     };
 
-    private final int port = ClusterTestPorts.freeTcpAndUdpPort();
+    private int port;
     private ManagementServer server;
     private HttpClient client;
 
@@ -130,9 +132,9 @@ class ManagementServerWebSocketFeedsTest {
     private void start(boolean securityEnabled) {
         server = managementServer(securityEnabled);
 
-        var started = server.start().await(START_BOUND);
-
-        assertThat(started.isSuccess()).as("control: the server started: %s", started).isTrue();
+        TlsProbe.requireStarted(server.start().await(START_BOUND), "management listener");
+        port = server.boundPort().or(0);
+        assertThat(port).as("control: the started listener reports its bound port").isPositive();
     }
 
     private void connect(String path, FeedListener listener) throws Exception {
@@ -149,7 +151,7 @@ class ManagementServerWebSocketFeedsTest {
         // Read by every status broadcast; a sealed type the default answer leaves null.
         when(node.deploymentMap()).thenReturn(DeploymentMap.deploymentMap());
 
-        return ManagementServer.managementServer(port,
+        return ManagementServer.managementServer(0,
                                                  () -> node,
                                                  mock(EntityCheckpointDriver.class, NONE_OR_MOCK),
                                                  mock(AlertManager.class, NONE_OR_MOCK),

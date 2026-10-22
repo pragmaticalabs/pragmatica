@@ -23,7 +23,6 @@ import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
-import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
@@ -117,6 +116,23 @@ class DrainWaitCallSitesTest {
             assertThat(http.drainPosts()).as("%s: no drain requested", type).isZero();
             assertThat(http.lifecycleGets()).as("%s: no lifecycle polled", type).isZero();
         }
+    }
+
+    /// #1966: a runtime-profile content change is refused by name, not logged and counted as zero modifications.
+    @Test
+    void aRuntimeProfileChange_isRefused_namingTheProfile_andTouchesNoNode() {
+        var http = drainsThenHalts();
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        var config = config(SourceType.SSH, "unused-host");
+        var plan = DiffPlan.diffPlan(List.of(),
+                                     List.of(new DiffAction.RuntimeProfileChange("app", "image")),
+                                     List.of(),
+                                     List.of());
+
+        var result = WaveExecutor.execute(plan, config, config);
+
+        assertThat(failureText(result)).contains("Runtime profile 'app' changed (image)");
+        assertThat(http.drainPosts()).as("no drain requested").isZero();
     }
 
     /// A refusal that outlasts the bound still ends the drain, naming the slice.
@@ -290,8 +306,7 @@ class DrainWaitCallSitesTest {
     }
 
     private static ClusterBootstrapConfig config(SourceType type, String... hosts) {
-        var role = RoleSubTable.roleSubTable(NodeRole.CORE,
-                                             Option.some(hosts.length),
+        var role = RoleSubTable.roleSubTable(Option.some(hosts.length),
                                              Option.some(List.of(hosts)),
                                              Option.empty(),
                                              Option.empty(),
@@ -313,15 +328,14 @@ class DrainWaitCallSitesTest {
                                                  List.of());
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
                                                     TlsDeploymentConfig.defaultTlsConfig(),
-                                                    TimeoutsConfig.timeoutsConfig("3s", "10s", "10s"),
+                                                    TimeoutsConfig.timeoutsConfig("3s", "10s"),
                                                     PortMapping.defaultPortMapping());
 
-        return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
+        return ClusterBootstrapConfig.clusterBootstrapConfig(ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("dc", source),
                                                              Map.of(),
-                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             InfrastructureConfig.infrastructureConfig(),
                                                              ops,
                                                              Map.of());
     }

@@ -19,17 +19,11 @@ import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// or count; a metrics-only config counts but does not record or log; an explicit all-off config is
 /// identity (nothing). Also the setDepth regression: materializing a depth pin on an UNCONFIGURED method
 /// must not darken it — tracing still records, logging still fires, counting continues, only the depth
-/// threshold changes. Log output is captured with a programmatic log4j2 appender on the trace logger.
+/// threshold changes. Log output is captured with a LogCapture on the trace logger.
 class ObservabilityConfiguredFacetTest {
     private static final String ARTIFACT_BASE = "com.example:my-slice";
     private static final String METHOD = "echo";
@@ -212,70 +206,13 @@ class ObservabilityConfiguredFacetTest {
                          .unwrap();
     }
 
-    // Attaches a capturing log4j2 appender to the trace logger, runs the action, then detaches — returning
+    // Captures the trace logger while the action runs, then detaches — returning
     // every trace line emitted during the action so a test can assert the logging facet fired (or did not).
     private static List<String> captureTraceLines(Runnable action) {
-        var attachment = attachTraceAppender();
-
-        try {
+        try (var capture = LogCapture.capture(TRACE_LOGGER, Level.TRACE, true)) {
             action.run();
 
-            return List.copyOf(attachment.appender()
-                                         .messages());
-        } finally {
-            detachTraceAppender(attachment);
-        }
-    }
-
-    private static Attachment attachTraceAppender() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var config = ctx.getConfiguration();
-        var appender = new CapturingAppender();
-
-        appender.start();
-        config.addAppender(appender);
-        var loggerConfig = config.getLoggerConfig(TRACE_LOGGER);
-        var previousLevel = loggerConfig.getLevel();
-
-        loggerConfig.addAppender(appender, Level.ALL, null);
-        loggerConfig.setLevel(Level.TRACE);
-        ctx.updateLoggers();
-
-        return new Attachment(ctx, appender, loggerConfig, previousLevel);
-    }
-
-    private static void detachTraceAppender(Attachment attachment) {
-        attachment.loggerConfig()
-                  .removeAppender(attachment.appender()
-                                            .getName());
-        attachment.loggerConfig()
-                  .setLevel(attachment.previousLevel());
-        attachment.ctx()
-                  .updateLoggers();
-        attachment.appender()
-                  .stop();
-    }
-
-    private record Attachment(LoggerContext ctx,
-                              CapturingAppender appender,
-                              LoggerConfig loggerConfig,
-                              Level previousLevel) {}
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender() {
-            super("obs-test-capture", null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            messages.add(event.getMessage()
-                              .getFormattedMessage());
-        }
-
-        List<String> messages() {
-            return messages;
+            return capture.messages();
         }
     }
 

@@ -8,20 +8,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Configuration;
-import org.apache.logging.log4j.core.config.LoggerConfig;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,6 +42,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -61,7 +51,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// #689 — the leader holds both halves of the role comparison: the role it PROVISIONED a node with
 /// (`provisionReplacement(..., intendedRole)`) and the role that node ADVERTISES as membership holds
 /// it (`MembershipFsm.memberDescriptor(id).role()`, reached through `MembershipLiveness.advertisedRole`
-/// — here a test-side descriptor map, exactly the projection `AetherNode.drainGraceLiveness` wires).
+/// — here a test-side descriptor map, exactly the projection `TopologyAssembly.drainGraceLiveness` wires).
 /// A provisioned node whose label never arrives is classified CORE by `MemberDescriptor.isCoreRole` —
 /// deliberately, and unchanged here — so an intended worker that boots unlabelled silently joins the
 /// core set and every community-tier mechanism gated on "not a core" is suppressed on it with nothing
@@ -93,9 +83,7 @@ class ClusterTopologyManagerRoleMismatchTest {
     private final Set<NodeId> tracked = ConcurrentHashMap.newKeySet();
     private TopologyObserver observer;
     private ClusterTopologyManager ctm;
-    private CapturingAppender appender;
-    private LoggerConfig loggerConfig;
-    private Level originalLevel;
+    private LogCapture appender;
 
     @BeforeEach
     void setUp() {
@@ -130,24 +118,20 @@ class ClusterTopologyManagerRoleMismatchTest {
                                                             liveness);
         ctm.activate();
 
-        appender = CapturingAppender.create("CtmRoleMismatchCapture");
-        appender.start();
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-        loggerConfig = getOrCreateLoggerConfig(configuration);
-        originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.INFO, null);
-        loggerConfig.setLevel(Level.INFO);
-        ctx.updateLoggers();
+        appender = LogCapture.capture(LOGGER_NAME, Level.INFO, false);
     }
 
     @AfterEach
     void tearDown() {
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        loggerConfig.removeAppender(appender.getName());
-        loggerConfig.setLevel(originalLevel);
-        ctx.updateLoggers();
-        appender.stop();
+        appender.close();
+    }
+
+    private List<String> capturedWarns() {
+        return appender.entries()
+                       .stream()
+                       .filter(entry -> entry.level().isMoreSpecificThan(Level.WARN))
+                       .map(LogCapture.Entry::message)
+                       .toList();
     }
 
     /// A provisioned WORKER with no role label remains UNKNOWN. The diagnostic names the node,
@@ -159,7 +143,7 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         join(PROVISIONED);
 
-        var mismatchWarns = appender.capturedWarns()
+        var mismatchWarns = capturedWarns()
                                     .stream()
                                     .filter(msg -> msg.contains(MISMATCH_MARKER))
                                     .toList();
@@ -180,7 +164,7 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         join(STRANGER);
 
-        assertThat(appender.capturedWarns()).as("#689: no intent on record, so no mismatch to report")
+        assertThat(capturedWarns()).as("#689: no intent on record, so no mismatch to report")
                                             .noneMatch(msg -> msg.contains(MISMATCH_MARKER));
     }
 
@@ -192,7 +176,7 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         join(PROVISIONED);
 
-        assertThat(appender.capturedWarns()).noneMatch(msg -> msg.contains(MISMATCH_MARKER));
+        assertThat(capturedWarns()).noneMatch(msg -> msg.contains(MISMATCH_MARKER));
     }
 
     /// verify-1120 SF-1 — the leader learns a node by GOSSIP before its direct ANNOUNCE: the
@@ -214,7 +198,7 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         join(PROVISIONED);
 
-        assertThat(appender.capturedWarns()).as("#689 SF-1: membership classified this node core from its label; no mismatch")
+        assertThat(capturedWarns()).as("#689 SF-1: membership classified this node core from its label; no mismatch")
                                             .noneMatch(msg -> msg.contains(MISMATCH_MARKER));
         assertThat(ctm.roleMismatches()).isEmpty();
     }
@@ -227,7 +211,7 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         join(PROVISIONED);
 
-        assertThat(appender.capturedWarns()).noneMatch(msg -> msg.contains(MISMATCH_MARKER));
+        assertThat(capturedWarns()).noneMatch(msg -> msg.contains(MISMATCH_MARKER));
         assertThat(ctm.roleMismatches()).isEmpty();
     }
 
@@ -241,7 +225,7 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(PROVISIONED, "worker", new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF)));
 
-        assertThat(appender.capturedWarns()).filteredOn(msg -> msg.contains(MISMATCH_MARKER))
+        assertThat(capturedWarns()).filteredOn(msg -> msg.contains(MISMATCH_MARKER))
                                             .hasSize(1)
                                             .first()
                                             .asString()
@@ -293,7 +277,7 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         assertThat(ctm.roleMismatches()).as("a correctly relabelled rejoin clears the entry").isEmpty();
         assertThat(mismatchWarns()).as("no second WARN — the halves now agree").hasSize(1);
-        assertThat(appender.capturedInfos()).filteredOn(msg -> msg.contains(CLEARED_MARKER))
+        assertThat(appender.messages(Level.INFO)).filteredOn(msg -> msg.contains(CLEARED_MARKER))
                                             .hasSize(1)
                                             .first()
                                             .asString()
@@ -380,7 +364,7 @@ class ClusterTopologyManagerRoleMismatchTest {
     }
 
     private List<String> mismatchWarns() {
-        return appender.capturedWarns()
+        return capturedWarns()
                        .stream()
                        .filter(msg -> msg.contains(MISMATCH_MARKER))
                        .toList();
@@ -394,14 +378,6 @@ class ClusterTopologyManagerRoleMismatchTest {
         var router = MessageRouter.mutable();
         router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
         return router;
-    }
-
-    private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
-        var existing = configuration.getLoggerConfig(LOGGER_NAME);
-        if (LOGGER_NAME.equals(existing.getName())) {return existing;}
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.INFO, false);
-        configuration.addLogger(LOGGER_NAME, fresh);
-        return fresh;
     }
 
     private static final class StubSnapshotSource implements GenerationSnapshotSource {
@@ -438,38 +414,6 @@ class ClusterTopologyManagerRoleMismatchTest {
                                              InstanceStatus.RUNNING,
                                              List.of("127.0.0.1"),
                                              InstanceType.ON_DEMAND).unwrap();
-        }
-    }
-
-    private static final class CapturingAppender extends AbstractAppender {
-        private record Captured(Level level, String message) {}
-
-        private final List<Captured> messages = new CopyOnWriteArrayList<>();
-
-        private CapturingAppender(String name, Layout<?> layout) {
-            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
-        }
-
-        static CapturingAppender create(String name) {
-            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
-        }
-
-        @Override public void append(LogEvent event) {
-            messages.add(new Captured(event.getLevel(), event.getMessage().getFormattedMessage()));
-        }
-
-        List<String> capturedWarns() {
-            return messages.stream()
-                           .filter(captured -> captured.level().isMoreSpecificThan(Level.WARN))
-                           .map(Captured::message)
-                           .toList();
-        }
-
-        List<String> capturedInfos() {
-            return messages.stream()
-                           .filter(captured -> captured.level().equals(Level.INFO))
-                           .map(Captured::message)
-                           .toList();
         }
     }
 }

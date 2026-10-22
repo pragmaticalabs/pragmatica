@@ -22,10 +22,12 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
+import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PlacementOperationPhase;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -35,6 +37,12 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// Serial leader-side placement workflow. The durable phase precedes every provider effect;
@@ -66,6 +74,75 @@ public interface CommunityPlacementReconciler {
         return java.util.Set.of();
     }
 
+    /// #241: where the parked-operation events go. Late-wired, like [#protectReplacements]: the node binds its own sink after the reconciler is
+    /// built, and until then the log line is the whole report.
+    default Unit operatorWarnings(OperatorWarningSink sink) {
+        return Unit.unit();
+    }
+
+    /// The sink the parked-operation events go to. Read-only, for the boot test that pins the node's wiring.
+    default OperatorWarningSink operatorWarningSink() {
+        return OperatorWarningSink.logOnly();
+    }
+
+    /// #241: the operator clears ONE parked operation of `communityId` (DRAIN_UNCERTAIN, or BLOCKED with a target the reconciler has not observed)
+    /// after looking at the nodes it names. The operation is closed
+    /// without effect: the previous worker is NOT removed, drained or terminated by the clear, and neither is the replacement. The next pass
+    /// recomputes the community from what is there. Refused for a community with no operation, for an operation that is not parked, and
+    /// by a node that is not the active leader.
+    default Promise<ParkedClear> clearParked(String communityId, String operator, String reason) {
+        return new ParkedClearRefusal.NotActive().promise();
+    }
+
+    /// What a clear closed.
+    record ParkedClear(String communityId,
+                       String operationId,
+                       PlacementOperationPhase phase,
+                       NodeId targetNode,
+                       Option<NodeId> previousNode) {
+        public static ParkedClear parkedClear(CommunityPlacementOperationValue operation) {
+            return new ParkedClear(operation.communityId(),
+                                   operation.operationId(),
+                                   operation.phase(),
+                                   operation.targetNode(),
+                                   operation.previousNode());
+        }
+    }
+
+    /// Why [#clearParked] cleared nothing.
+    sealed interface ParkedClearRefusal extends org.pragmatica.lang.Cause {
+        record NotActive() implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "Only the active leader clears a parked community placement operation";
+            }
+        }
+
+        record NoOperation(String communityId) implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "Community " + communityId + " has no placement operation";
+            }
+        }
+
+        record NotParked(String communityId, PlacementOperationPhase phase) implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "The placement operation of community " + communityId
+                     + " is " + phase
+                     + ", not parked: it is either progressing or resumes by itself, so there is nothing to clear";
+            }
+        }
+
+        record Changed(String communityId) implements ParkedClearRefusal {
+            @Override
+            public String message() {
+                return "The placement operation of community " + communityId
+                     + " changed or the clear was not confirmed committed; read the operation again before retrying";
+            }
+        }
+    }
+
     interface Actuator {
         org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source);
 
@@ -87,6 +164,36 @@ public interface CommunityPlacementReconciler {
                                                                      Consumer<CommunityPlacementOperationValue> escalation,
                                                                      java.util.function.BiConsumer<NodeId, org.pragmatica.lang.Cause> retirementRefusal,
                                                                      org.pragmatica.lang.io.TimeSpan drainTimeout) {
+        return communityPlacementReconciler(self,
+                                            store,
+                                            apply,
+                                            activeLeader,
+                                            ready,
+                                            admittedNodes,
+                                            fleetLimit,
+                                            actuator,
+                                            escalation,
+                                            retirementRefusal,
+                                            drainTimeout,
+                                            System::currentTimeMillis);
+    }
+
+    /// As above, with the wall clock injected (#1535): the drain deadline, the readiness timeout and the
+    /// availability retry read `clock` (epoch milliseconds), so a test can step them deterministically.
+    /// Wall-clock, not monotonic, on purpose: the stamps are written to the replicated KV and compared by
+    /// whichever leader reads them next.
+    static CommunityPlacementReconciler communityPlacementReconciler(NodeId self,
+                                                                     KVStore<AetherKey, AetherValue> store,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
+                                                                     BooleanSupplier activeLeader,
+                                                                     Predicate<NodeId> ready,
+                                                                     Supplier<java.util.Set<NodeId>> admittedNodes,
+                                                                     IntSupplier fleetLimit,
+                                                                     Actuator actuator,
+                                                                     Consumer<CommunityPlacementOperationValue> escalation,
+                                                                     java.util.function.BiConsumer<NodeId, org.pragmatica.lang.Cause> retirementRefusal,
+                                                                     org.pragmatica.lang.io.TimeSpan drainTimeout,
+                                                                     java.util.function.LongSupplier clock) {
         return new PlacementReconciler(self,
                                        store,
                                        apply,
@@ -101,7 +208,10 @@ public interface CommunityPlacementReconciler {
                                        drainTimeout,
                                        new AtomicBoolean(),
                                        new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
-                                       new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of));
+                                       new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
+                                       clock,
+                                       new java.util.concurrent.ConcurrentHashMap<>(),
+                                       new java.util.concurrent.atomic.AtomicReference<>(OperatorWarningSink.logOnly()));
     }
 }
 
@@ -119,7 +229,12 @@ record PlacementReconciler(NodeId self,
                            org.pragmatica.lang.io.TimeSpan drainTimeout,
                            AtomicBoolean running,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> protectedNodes,
-                           java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes) implements CommunityPlacementReconciler {
+                           java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes,
+                           java.util.function.LongSupplier clock,
+                           java.util.concurrent.ConcurrentHashMap<String, Long> emptySince,
+                           java.util.concurrent.atomic.AtomicReference<OperatorWarningSink> warnings) implements CommunityPlacementReconciler {
+    private static final Logger LOG = LoggerFactory.getLogger(CommunityPlacementReconciler.class);
+
     @Override
     public java.util.Set<NodeId> protectedView() {
         return protectedNodes.get()
@@ -130,6 +245,18 @@ record PlacementReconciler(NodeId self,
     public java.util.Set<NodeId> surgeView() {
         return surgeNodes.get()
                          .get();
+    }
+
+    @Override
+    public Unit operatorWarnings(OperatorWarningSink sink) {
+        warnings.set(sink);
+
+        return Unit.unit();
+    }
+
+    @Override
+    public OperatorWarningSink operatorWarningSink() {
+        return warnings.get();
     }
 
     @Override
@@ -151,7 +278,7 @@ record PlacementReconciler(NodeId self,
 
         return configuration(snapshot).fold(Promise::unitPromise,
                                             config -> reconcileConfiguration(config, snapshot))
-                            .onResultRun(() -> running.set(false));
+                            .withResult(_ -> running.set(false));
     }
 
     private Map<AetherKey, AetherValue> aetherSnapshot() {
@@ -251,8 +378,8 @@ record PlacementReconciler(NodeId self,
                                                          placement.sourceName(),
                                                          PlacementOperationPhase.AWAITING_READY,
                                                          leader,
-                                                         System.currentTimeMillis(),
-                                                         System.currentTimeMillis(),
+                                                         clock.getAsLong(),
+                                                         clock.getAsLong(),
                                                          "Implicit source capacity reduction");
         var guards = new ArrayList<>(reservationGuardsFromSnapshot(snapshot));
         var directiveKey = new AetherKey.ActivationDirectiveKey(node);
@@ -269,26 +396,172 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> reconcileConfiguration(ClusterBootstrapConfig config, Map<AetherKey, AetherValue> snapshot) {
-        var pass = Promise.unitPromise();
+        var identities = new java.util.TreeSet<>(config.communities().keySet());
 
-        for (var policy : config.communities()
-                                .values()
-                                .stream()
-                                .sorted(Comparator.comparing(CommunityPlacement::id))
-                                .toList()) {
-            pass = pass.flatMap(_ -> reconcileCommunity(config, policy, snapshot).onSuccess(_ -> operation(policy.id()).onPresent(value -> snapshot.put(new AetherKey.CommunityPlacementOperationKey(policy.id()),
-                                                                                                                                                        value))));
-        }
+        snapshot.values()
+                .stream()
+                .filter(CommunityPlacementOperationValue.class::isInstance)
+                .map(CommunityPlacementOperationValue.class::cast)
+                .filter(CommunityPlacementOperationValue::active)
+                .map(CommunityPlacementOperationValue::communityId)
+                .forEach(identities::add);
 
-        for (var value : snapshot.values()) {
-            if (value instanceof CommunityPlacementOperationValue operation && operation.active() && !config.communities()
-                                                                                                            .containsKey(operation.communityId())) {
-                pass = pass.flatMap(_ -> currentLeader().fold(Promise::unitPromise,
-                                                              leader -> advance(config, operation, leader)));
-            }
-        }
+        return ReconciliationBatch.reconcile(List.copyOf(identities),
+                                             4,
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(30).seconds(),
+                                             this::reconcileIdentity,
+                                             (identity, cause) -> org.slf4j.LoggerFactory.getLogger(CommunityPlacementReconciler.class)
+                                                                                         .warn("Community {} reconciliation deferred: {}",
+                                                                                               identity,
+                                                                                               cause.message()))
+                                  .flatMap(_ -> reconcileDerived(config));
+    }
 
-        return pass;
+    /// #241: the derived communities (`<source>-w-N`) of a cluster that declares no `[community.*]` follow the committed
+    /// `[community_policy]`: their target size is re-stamped to `max_size`, and with growth on an empty one is dissolved after the
+    /// grace. Declared communities are never touched here. Needs a committed policy: without one there is nothing to follow.
+    private Promise<Unit> reconcileDerived(ClusterBootstrapConfig config) {
+        return config.communities()
+                     .isEmpty()
+               ? config.communityPolicy()
+                       .fold(Promise::unitPromise, this::reconcileDerivedCommunities)
+               : Promise.unitPromise();
+    }
+
+    private Promise<Unit> reconcileDerivedCommunities(CommunityPolicy policy) {
+        var snapshot = aetherSnapshot();
+        var views = derivedViews(snapshot);
+        var since = timeEmptiness(views);
+        var actions = DerivedCommunityPlan.plan(views, policy, since, clock.getAsLong());
+
+        return currentLeader().fold(Promise::unitPromise, leader -> applyDerivedActions(actions, leader, snapshot));
+    }
+
+    private static List<DerivedCommunityPlan.View> derivedViews(Map<AetherKey, AetherValue> snapshot) {
+        var members = snapshot.values()
+                              .stream()
+                              .filter(AetherValue.ActivationDirectiveValue.class::isInstance)
+                              .map(AetherValue.ActivationDirectiveValue.class::cast)
+                              .collect(Collectors.groupingBy(AetherValue.ActivationDirectiveValue::communityId,
+                                                             Collectors.counting()));
+
+        return snapshot.entrySet()
+                       .stream()
+                       .flatMap(entry -> derivedView(entry, members).stream())
+                       .toList();
+    }
+
+    private static Option<DerivedCommunityPlan.View> derivedView(Map.Entry<AetherKey, AetherValue> entry,
+                                                                 Map<String, Long> members) {
+        return entry.getKey() instanceof AetherKey.CommunityKey key && entry.getValue() instanceof AetherValue.CommunityValue community
+               ? derivedView(key.communityId(), community, members)
+               : Option.none();
+    }
+
+    private static Option<DerivedCommunityPlan.View> derivedView(String id,
+                                                                 AetherValue.CommunityValue community,
+                                                                 Map<String, Long> members) {
+        return CommunityGrowthPolicy.derivedIndex(community.sourceName(),
+                                                  id)
+                                    .map(_ -> DerivedCommunityPlan.View.view(id,
+                                                                             community.sourceName(),
+                                                                             community.state(),
+                                                                             community.targetSize(),
+                                                                             members.getOrDefault(id, 0L).intValue()));
+    }
+
+    /// Emptiness is timed in this leader's memory: a community first seen empty now starts its grace now, a community seen
+    /// with a member is forgotten. A new leader restarts every grace, which delays a dissolve and never hastens one.
+    private Map<String, Long> timeEmptiness(List<DerivedCommunityPlan.View> views) {
+        var empty = DerivedCommunityPlan.emptyOpen(views);
+
+        emptySince.keySet().retainAll(empty);
+        empty.forEach(id -> emptySince.putIfAbsent(id, clock.getAsLong()));
+
+        return Map.copyOf(emptySince);
+    }
+
+    private Promise<Unit> applyDerivedActions(List<DerivedCommunityPlan.Action> actions,
+                                              LeaderValue leader,
+                                              Map<AetherKey, AetherValue> snapshot) {
+        return actions.stream()
+                      .reduce(Promise.unitPromise(),
+                              (previous, action) -> previous.flatMap(_ -> applyDerived(action, leader, snapshot)),
+                              (_, later) -> later);
+    }
+
+    // FER (degrade forward): a refused or failed write for one derived community is dropped, and the pass carries on to the next. Guarantee: the
+    // community is left exactly as committed, because every write is an expected-value transaction; nothing is half-applied. Mechanism: the
+    // next pass (every 10 s) recomputes the actions from the committed state, so a dropped write is retried by construction.
+    private Promise<Unit> applyDerived(DerivedCommunityPlan.Action action,
+                                       LeaderValue leader,
+                                       Map<AetherKey, AetherValue> snapshot) {
+        return (switch (action) {
+            case DerivedCommunityPlan.Action.Restamp restamp -> rewriteCommunity(restamp.communityId(),
+                                                                                 community -> community.withTargetSize(restamp.targetSize()),
+                                                                                 leader,
+                                                                                 snapshot);
+            case DerivedCommunityPlan.Action.BeginDissolve begin -> rewriteCommunity(begin.communityId(),
+                                                                                     community -> community.withState(CommunityState.DISSOLVING),
+                                                                                     leader,
+                                                                                     snapshot);
+            case DerivedCommunityPlan.Action.Reopen reopen -> rewriteCommunity(reopen.communityId(),
+                                                                               community -> community.withState(CommunityState.FORMING),
+                                                                               leader,
+                                                                               snapshot);
+            case DerivedCommunityPlan.Action.CompleteDissolve complete -> markDissolved(complete.communityId(),
+                                                                                        leader,
+                                                                                        snapshot);
+        }).recover(_ -> Unit.unit());
+    }
+
+    private Promise<Unit> rewriteCommunity(String communityId,
+                                           Function<AetherValue.CommunityValue, AetherValue.CommunityValue> change,
+                                           LeaderValue leader,
+                                           Map<AetherKey, AetherValue> snapshot) {
+        var key = new AetherKey.CommunityKey(communityId);
+
+        return store.getTyped(key, AetherValue.CommunityValue.class)
+                    .fold(Promise::unitPromise,
+                          before -> commitRewrite(key,
+                                                  before,
+                                                  change.apply(before),
+                                                  leader,
+                                                  snapshot));
+    }
+
+    private Promise<Unit> commitRewrite(AetherKey.CommunityKey key,
+                                        AetherValue.CommunityValue before,
+                                        AetherValue.CommunityValue after,
+                                        LeaderValue leader,
+                                        Map<AetherKey, AetherValue> snapshot) {
+        var id = UUID.randomUUID().toString();
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                              id,
+                                                                              leader,
+                                                                              reservationGuardsFromSnapshot(snapshot),
+                                                                              List.of(new KVCommand.Mutation<>(key,
+                                                                                                               Option.some(before),
+                                                                                                               Option.some(after))));
+
+        return apply.apply(List.of(command))
+                    .map(results -> accepted(results, id))
+                    .mapToUnit();
+    }
+
+    private Promise<Unit> reconcileIdentity(String identity) {
+        var snapshot = aetherSnapshot();
+
+        return configuration(snapshot).fold(Promise::unitPromise,
+                                            config -> Option.option(config.communities().get(identity)).fold(() -> currentLeader().fold(Promise::unitPromise,
+                                                                                                                                        leader -> operation(identity).filter(CommunityPlacementOperationValue::active)
+                                                                                                                                                           .fold(Promise::unitPromise,
+                                                                                                                                                                 value -> advance(config,
+                                                                                                                                                                                  value,
+                                                                                                                                                                                  leader))),
+                                                                                                             policy -> reconcileCommunity(config,
+                                                                                                                                          policy,
+                                                                                                                                          snapshot)));
     }
 
     private Promise<Unit> reconcileCommunity(ClusterBootstrapConfig config,
@@ -297,8 +570,8 @@ record PlacementReconciler(NodeId self,
         return currentLeader().fold(Promise::unitPromise,
                                     leader -> alignCommunity(policy, leader, snapshot).flatMap(accepted -> {
                                         if (!accepted) {
-                                        return Promise.unitPromise();
-                                    }
+                                            return Promise.unitPromise();
+                                        }
 
                                         return operation(policy.id()).filter(CommunityPlacementOperationValue::active)
                                                         .fold(() -> reserve(config, policy, leader, snapshot),
@@ -382,8 +655,8 @@ record PlacementReconciler(NodeId self,
                   .isEmpty()) {
             return uncertain(operation,
                              leader,
-                             PlacementOperationPhase.BLOCKED,
-                             "Source identity changed or disappeared");
+                             operation.phase(),
+                             "Source identity changed or disappeared; restore the recorded binding to resume");
         }
 
         return switch (operation.phase()) {
@@ -401,10 +674,10 @@ record PlacementReconciler(NodeId self,
                                    : readinessExpired(config, operation)
                                      ? uncertain(operation,
                                                  leader,
-                                                 PlacementOperationPhase.BLOCKED,
+                                                 PlacementOperationPhase.READINESS_DELAYED,
                                                  "Reserved replacement did not become ready; reservation retained")
                                      : Promise.unitPromise();
-            case DRAIN_REQUESTED -> System.currentTimeMillis() - operation.phaseChangedAt() > drainTimeout.millis()
+            case DRAIN_REQUESTED -> clock.getAsLong() - operation.phaseChangedAt() > drainTimeout.millis()
                                     ? uncertain(operation,
                                                 leader,
                                                 PlacementOperationPhase.DRAIN_UNCERTAIN,
@@ -419,7 +692,13 @@ record PlacementReconciler(NodeId self,
                                      : observedTarget(operation).isPresent()
                                        ? createAccepted(config, operation, leader)
                                        : Promise.unitPromise();
-            case COMPLETE, DRAIN_UNCERTAIN, BLOCKED, UNKNOWN -> Promise.unitPromise();
+            case READINESS_DELAYED -> targetReady(operation)
+                                      ? beginDrain(operation, leader)
+                                      : Promise.unitPromise();
+            case BLOCKED -> observedTarget(operation).isPresent()
+                            ? createAccepted(config, operation, leader)
+                            : Promise.unitPromise();
+            case COMPLETE, DRAIN_UNCERTAIN, UNKNOWN -> Promise.unitPromise();
         };
     }
 
@@ -441,7 +720,7 @@ record PlacementReconciler(NodeId self,
                             .or(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)
                             .millis();
 
-        return System.currentTimeMillis() - operation.phaseChangedAt() > timeout;
+        return clock.getAsLong() - operation.phaseChangedAt() > timeout;
     }
 
     private Promise<Unit> beginCreate(ClusterBootstrapConfig config,
@@ -456,7 +735,10 @@ record PlacementReconciler(NodeId self,
                                "Reserved identity observed in a different location");
         }
 
-        var requested = operation.withPhase(PlacementOperationPhase.CREATE_REQUESTED, leader, operation.detail());
+        var requested = operation.withPhase(PlacementOperationPhase.CREATE_REQUESTED,
+                                            leader,
+                                            operation.detail(),
+                                            clock.getAsLong());
 
         return transition(operation, requested).flatMap(accepted -> accepted && currentLeader().filter(leader::equals)
                                                                                              .isPresent()
@@ -464,7 +746,7 @@ record PlacementReconciler(NodeId self,
                                                                               .flatMap(_ -> createAccepted(config,
                                                                                                            requested,
                                                                                                            leader))
-                                                                              .fold(result -> result.fold(cause -> cause == CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE
+                                                                              .fold(result -> result.fold(cause -> cause instanceof CapacityControlledLifecycle.AdmissionFailure
                                                                                                                    ? deferCapacity(requested,
                                                                                                                                    leader,
                                                                                                                                    cause.message())
@@ -532,11 +814,11 @@ record PlacementReconciler(NodeId self,
                            .isPresent();
     }
 
-    private static boolean probeDue(CommunityPlacement policy,
-                                    CommunityPlacement.Location location,
-                                    Option<String> binding,
-                                    Map<AetherKey, AetherValue> snapshot) {
-        return availability(policy, location, snapshot).filter(value -> System.currentTimeMillis() - value.refusedAt() >= CommunityPlacementAvailability.retryDelay(value.attempts()).millis())
+    private boolean probeDue(CommunityPlacement policy,
+                             CommunityPlacement.Location location,
+                             Option<String> binding,
+                             Map<AetherKey, AetherValue> snapshot) {
+        return availability(policy, location, snapshot).filter(value -> clock.getAsLong() - value.refusedAt() >= CommunityPlacementAvailability.retryDelay(value.attempts()).millis())
                            .filter(value -> binding.filter(value.sourceBinding()::equals)
                                                    .isPresent())
                            .filter(value -> releasedRefusal(value,
@@ -577,11 +859,12 @@ record PlacementReconciler(NodeId self,
         var refused = new AetherValue.CommunityPlacementAvailabilityValue(identity,
                                                                           operation.sourceBinding(),
                                                                           operation.targetNode(),
-                                                                          System.currentTimeMillis(),
+                                                                          clock.getAsLong(),
                                                                           attempts);
         var completed = operation.withPhase(PlacementOperationPhase.COMPLETE,
                                             leader,
-                                            "Provider definitively refused capacity; eligible discretionary capacity may fall back");
+                                            "Provider definitively refused capacity; eligible discretionary capacity may fall back",
+                                            clock.getAsLong());
 
         return commitAvailability(operation,
                                   completed,
@@ -606,7 +889,7 @@ record PlacementReconciler(NodeId self,
         var before = Option.option(snapshot.get(key))
                            .filter(AetherValue.CommunityPlacementAvailabilityValue.class::isInstance)
                            .map(AetherValue.CommunityPlacementAvailabilityValue.class::cast);
-        var next = operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "");
+        var next = operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "", clock.getAsLong());
 
         if (before.isEmpty()) return transition(operation, next).mapToUnit();
 
@@ -650,20 +933,21 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> deferCapacity(CommunityPlacementOperationValue operation, LeaderValue leader, String detail) {
-        var deferred = operation.withPhase(PlacementOperationPhase.RESERVED, leader, detail);
+        var deferred = operation.withPhase(PlacementOperationPhase.RESERVED, leader, detail, clock.getAsLong());
 
         return transition(operation, deferred).onSuccess(accepted -> {
                                                              if (accepted && !operation.detail()
                                                                                        .equals(detail)) {
-                                                             escalation.accept(deferred);
-                                                         }
+                                                                 escalation.accept(deferred);
+                                                             }
                                                          })
                          .mapToUnit();
     }
 
     private Promise<Unit> beginDrain(CommunityPlacementOperationValue operation, LeaderValue leader) {
         if (operation.previousNode().isEmpty()) {
-            return transition(operation, operation.withPhase(PlacementOperationPhase.COMPLETE, leader, "")).mapToUnit();
+            return transition(operation,
+                              operation.withPhase(PlacementOperationPhase.COMPLETE, leader, "", clock.getAsLong())).mapToUnit();
         }
 
         if (operation.previousNode()
@@ -684,11 +968,20 @@ record PlacementReconciler(NodeId self,
                        .flatMap(safe -> safe && targetReady(operation) && currentLeader().filter(leader::equals)
                                                                                        .isPresent()
                                         ? commitDrain(operation, leader)
-                                        : Promise.unitPromise());
+                                        : retirementDelayed(operation, leader));
+    }
+
+    private Promise<Unit> retirementDelayed(CommunityPlacementOperationValue operation, LeaderValue leader) {
+        return clock.getAsLong() - operation.phaseChangedAt() > drainTimeout.millis()
+               ? uncertain(operation,
+                           leader,
+                           PlacementOperationPhase.READINESS_DELAYED,
+                           "Previous worker evacuation is delayed; retirement safety proof is still required")
+               : Promise.unitPromise();
     }
 
     private Promise<Unit> commitDrain(CommunityPlacementOperationValue operation, LeaderValue leader) {
-        var draining = operation.withPhase(PlacementOperationPhase.DRAIN_REQUESTED, leader, "");
+        var draining = operation.withPhase(PlacementOperationPhase.DRAIN_REQUESTED, leader, "", clock.getAsLong());
 
         return transition(operation, draining).flatMap(accepted -> accepted && targetReady(operation) && currentLeader().filter(leader::equals)
                                                                                                                       .isPresent()
@@ -697,7 +990,7 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> beginTerminate(CommunityPlacementOperationValue operation, LeaderValue leader) {
-        var terminating = operation.withPhase(PlacementOperationPhase.TERMINATING, leader, "");
+        var terminating = operation.withPhase(PlacementOperationPhase.TERMINATING, leader, "", clock.getAsLong());
 
         return transition(operation, terminating).flatMap(accepted -> accepted && currentLeader().filter(leader::equals)
                                                                                                .isPresent()
@@ -710,13 +1003,16 @@ record PlacementReconciler(NodeId self,
                        .flatMap(exists -> {
                                     if (currentLeader().filter(leader::equals)
                                                      .isEmpty()) {
-                                    return Promise.unitPromise();
-                                }
+                                        return Promise.unitPromise();
+                                    }
 
                                     return exists
                                            ? terminateIfSafe(operation, leader)
                                            : transition(operation,
-                                                        operation.withPhase(PlacementOperationPhase.COMPLETE, leader, "")).mapToUnit();
+                                                        operation.withPhase(PlacementOperationPhase.COMPLETE,
+                                                                            leader,
+                                                                            "",
+                                                                            clock.getAsLong())).mapToUnit();
                                 });
     }
 
@@ -736,13 +1032,16 @@ record PlacementReconciler(NodeId self,
                                     LeaderValue leader,
                                     PlacementOperationPhase phase,
                                     String reason) {
-        var uncertain = operation.withPhase(phase, leader, reason);
+        if (operation.phase() == phase && operation.detail().equals(reason)) return Promise.unitPromise();
+
+        var uncertain = operation.withPhase(phase, leader, reason, clock.getAsLong());
 
         return transition(operation, uncertain).onSuccess(accepted -> {
-                             if (accepted) {
-                             escalation.accept(uncertain);
-                         }
-                         })
+                                                              if (accepted) {
+                                                                  escalation.accept(uncertain);
+                                                                  reportParked(uncertain);
+                                                              }
+                                                          })
                          .mapToUnit();
     }
 
@@ -778,13 +1077,14 @@ record PlacementReconciler(NodeId self,
         return currentLeader().fold(() -> Promise.success(false),
                                     leader -> matchingDrain(sender, operationId).fold(() -> Promise.success(false),
                                                                                       operation -> switch (operation.phase()) {
-            case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
-            case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
-                                                                operation.withPhase(PlacementOperationPhase.DRAINED,
-                                                                                    leader,
-                                                                                    ""));
-            default -> Promise.success(false);
-        }));
+                                                                                          case DRAINED, TERMINATING, COMPLETE -> Promise.success(true);
+                                                                                          case DRAIN_REQUESTED, DRAIN_UNCERTAIN -> transition(operation,
+                                                                                                                                              operation.withPhase(PlacementOperationPhase.DRAINED,
+                                                                                                                                                                  leader,
+                                                                                                                                                                  "",
+                                                                                                                                                                  clock.getAsLong()));
+                                                                                          default -> Promise.success(false);
+                                                                                      }));
     }
 
     private Option<CommunityPlacementOperationValue> matchingDrain(NodeId sender, String operationId) {
@@ -801,7 +1101,126 @@ record PlacementReconciler(NodeId self,
 
     private Promise<Boolean> transition(CommunityPlacementOperationValue before,
                                         CommunityPlacementOperationValue after) {
-        return commit(after, Option.some(before), List.of());
+        return commit(after, Option.some(before), List.of()).onSuccess(accepted -> reportResumed(accepted, before, after));
+    }
+
+    /// #241: phases that need an operator unless the reconciler sees them resolve by itself. A drain acknowledgement that never came
+    /// (DRAIN_UNCERTAIN, ended by a late acknowledgement) and a conflict the reconciler cannot resolve (BLOCKED, ended when the target is
+    /// observed). The other uncertain phases wait on the provider and are not parked here.
+    private static boolean isParkedPhase(PlacementOperationPhase phase) {
+        return phase == PlacementOperationPhase.DRAIN_UNCERTAIN || phase == PlacementOperationPhase.BLOCKED;
+    }
+
+    @Contract
+    private void reportParked(CommunityPlacementOperationValue operation) {
+        if (isParkedPhase(operation.phase())) {
+            OperatorWarnings.raise(LOG,
+                                   warnings.get(),
+                                   OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
+                                   operation.communityId(),
+                                   "Community placement operation {} of community {} is parked in {} ({}). Target node {}, previous node {}. {}",
+                                   operation.operationId(),
+                                   operation.communityId(),
+                                   operation.phase(),
+                                   operation.detail(),
+                                   operation.targetNode().id(),
+                                   operation.previousNode().map(NodeId::id).or("none"),
+                                   parkedAdvice(operation));
+        }
+    }
+
+    private static String parkedAdvice(CommunityPlacementOperationValue operation) {
+        var clear = "Verify both nodes at the provider, then clear it with: aether cluster clear-placement " + operation.communityId()
+                  + " --reason <what you verified>. The clear removes and terminates nothing.";
+
+        return operation.phase() == PlacementOperationPhase.DRAIN_UNCERTAIN
+               ? "The previous node may or may not be drained; a late drain acknowledgement resumes the operation by itself. " + clear
+               : "The operation resumes by itself when its target node is observed. " + clear;
+    }
+
+    @Contract
+    private void reportResumed(boolean accepted,
+                               CommunityPlacementOperationValue before,
+                               CommunityPlacementOperationValue after) {
+        if (accepted && isParkedPhase(before.phase()) && !isParkedPhase(after.phase())) {
+            OperatorWarnings.raise(LOG,
+                                   warnings.get(),
+                                   OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
+                                   before.communityId(),
+                                   "Community placement operation {} of community {} left {} for {}",
+                                   before.operationId(),
+                                   before.communityId(),
+                                   before.phase(),
+                                   after.phase());
+        }
+    }
+
+    @Override
+    public Promise<ParkedClear> clearParked(String communityId, String operator, String reason) {
+        return currentLeader().fold(() -> new ParkedClearRefusal.NotActive().<ParkedClear> promise(),
+                                    leader -> operation(communityId).fold(() -> new ParkedClearRefusal.NoOperation(communityId).<ParkedClear> promise(),
+                                                                          operation -> clearOn(operation,
+                                                                                               leader,
+                                                                                               operator,
+                                                                                               reason)));
+    }
+
+    private Promise<ParkedClear> clearOn(CommunityPlacementOperationValue operation,
+                                         LeaderValue leader,
+                                         String operator,
+                                         String reason) {
+        return isParkedNow(operation)
+               ? commitClear(operation, leader, operator, reason)
+               : new ParkedClearRefusal.NotParked(operation.communityId(), operation.phase()).promise();
+    }
+
+    /// Parked now: in a parked phase and, for BLOCKED, with a target the reconciler has not observed (an observed target resumes by itself).
+    private boolean isParkedNow(CommunityPlacementOperationValue operation) {
+        return isParkedPhase(operation.phase()) && (operation.phase() != PlacementOperationPhase.BLOCKED || observedTarget(operation).isEmpty());
+    }
+
+    // The close is a single expected-value transaction on the operation: COMPLETE, with the operator and reason in its detail. It does not use
+    // [#commit], whose COMPLETE removes the previous worker's directive and placement: a clear attests nothing about that worker, so it stays.
+    private Promise<ParkedClear> commitClear(CommunityPlacementOperationValue operation,
+                                             LeaderValue leader,
+                                             String operator,
+                                             String reason) {
+        var cleared = operation.withPhase(PlacementOperationPhase.COMPLETE,
+                                          leader,
+                                          "Cleared by operator " + operator + ": " + reason,
+                                          clock.getAsLong());
+        var key = new AetherKey.CommunityPlacementOperationKey(operation.communityId());
+        var id = UUID.randomUUID().toString();
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                              id,
+                                                                              leader,
+                                                                              List.of(),
+                                                                              List.of(new KVCommand.Mutation<>(key,
+                                                                                                               Option.some(operation),
+                                                                                                               Option.some(cleared))));
+
+        return apply.apply(List.of(command))
+                    .map(results -> accepted(results, id))
+                    .flatMap(accepted -> accepted
+                                         ? Promise.success(reportCleared(operation, operator, reason))
+                                         : new ParkedClearRefusal.Changed(operation.communityId()).promise());
+    }
+
+    private ParkedClear reportCleared(CommunityPlacementOperationValue operation, String operator, String reason) {
+        OperatorWarnings.raise(LOG,
+                               warnings.get(),
+                               OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
+                               operation.communityId(),
+                               "Community placement operation {} of community {} was cleared by operator {} ({}); it was {}, target node {}, previous node {}, both left as they were",
+                               operation.operationId(),
+                               operation.communityId(),
+                               operator,
+                               reason,
+                               operation.phase(),
+                               operation.targetNode().id(),
+                               operation.previousNode().map(NodeId::id).or("none"));
+
+        return ParkedClear.parkedClear(operation);
     }
 
     private Promise<Boolean> commit(CommunityPlacementOperationValue value,
@@ -849,7 +1268,7 @@ record PlacementReconciler(NodeId self,
             return Option.from(members.entrySet()
                                       .stream()
                                       .sorted(Map.Entry.comparingByKey(Comparator.comparing(NodeId::id)))
-                                      .findFirst()).fold(() -> markDissolved(policy, leader, snapshot),
+                                      .findFirst()).fold(() -> markDissolved(policy.id(), leader, snapshot),
                                                          member -> reserveRetirement(config,
                                                                                      policy,
                                                                                      leader,
@@ -966,8 +1385,8 @@ record PlacementReconciler(NodeId self,
                                                                                   source.value(),
                                                                                   PlacementOperationPhase.AWAITING_READY,
                                                                                   leader,
-                                                                                  System.currentTimeMillis(),
-                                                                                  System.currentTimeMillis(),
+                                                                                  clock.getAsLong(),
+                                                                                  clock.getAsLong(),
                                                                                   "Community retirement");
 
                                  return commit(value,
@@ -976,10 +1395,8 @@ record PlacementReconciler(NodeId self,
                              });
     }
 
-    private Promise<Unit> markDissolved(CommunityPlacement policy,
-                                        LeaderValue leader,
-                                        Map<AetherKey, AetherValue> snapshot) {
-        var key = new AetherKey.CommunityKey(policy.id());
+    private Promise<Unit> markDissolved(String communityId, LeaderValue leader, Map<AetherKey, AetherValue> snapshot) {
+        var key = new AetherKey.CommunityKey(communityId);
 
         return store.getTyped(key, AetherValue.CommunityValue.class)
                     .fold(Promise::unitPromise,
@@ -989,7 +1406,7 @@ record PlacementReconciler(NodeId self,
                                                                          0,
                                                                          org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED,
                                                                          before.createdAt(),
-                                                                         Option.some(System.currentTimeMillis()));
+                                                                         Option.some(clock.getAsLong()));
                               var id = UUID.randomUUID().toString();
                               var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
                                                                                                     id,
@@ -1061,8 +1478,8 @@ record PlacementReconciler(NodeId self,
                                                                                   previous.getValue().sourceName(),
                                                                                   PlacementOperationPhase.AWAITING_READY,
                                                                                   leader,
-                                                                                  System.currentTimeMillis(),
-                                                                                  System.currentTimeMillis(),
+                                                                                  clock.getAsLong(),
+                                                                                  clock.getAsLong(),
                                                                                   "Scale down");
 
                                  return commit(value,
@@ -1091,8 +1508,8 @@ record PlacementReconciler(NodeId self,
                                                                                     .sourceName()).or(""),
                                                          PlacementOperationPhase.RESERVED,
                                                          leader,
-                                                         System.currentTimeMillis(),
-                                                         System.currentTimeMillis(),
+                                                         clock.getAsLong(),
+                                                         clock.getAsLong(),
                                                          "");
         var guards = reservationGuards(config, snapshot);
 
@@ -1143,9 +1560,16 @@ record PlacementReconciler(NodeId self,
 
         snapshot.keySet()
                 .stream()
+                .filter(_ -> !snapshot.containsKey(AetherKey.CapacityLedgerKey.INSTANCE))
                 .filter(AetherKey.NodePlacementKey.class::isInstance)
                 .map(AetherKey.NodePlacementKey.class::cast)
                 .map(AetherKey.NodePlacementKey::nodeId)
+                .forEach(nodes::add);
+        snapshot.keySet()
+                .stream()
+                .filter(AetherKey.CapacityReservationKey.class::isInstance)
+                .map(AetherKey.CapacityReservationKey.class::cast)
+                .map(AetherKey.CapacityReservationKey::nodeId)
                 .forEach(nodes::add);
         snapshot.values()
                 .stream()

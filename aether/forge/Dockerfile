@@ -12,7 +12,7 @@ WORKDIR /app
 COPY target/forge-*-shaded.jar /app/aether-forge.jar
 
 # Expose ports
-# 8888 - Dashboard HTTP server
+# 8888 - Forge HTTP API server
 # 5050-5060 - Cluster node ports
 EXPOSE 8888
 EXPOSE 5050-5060

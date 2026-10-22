@@ -172,7 +172,7 @@ public final class NodeReplacementWiring {
     }
 
     /// What is committed in the same transaction as an EXTERNAL replacement's record: the admission intent the operator-started node
-    /// is admitted by, a capacity reservation for its role (core admission and `AetherNode.workerAdmissionAllowed` both admit on
+    /// is admitted by, a capacity reservation for its role (core admission and `WorkerHierarchyAssembly.workerAdmissionAllowed` both admit on
     /// it; the same reservation the leader writes when it provisions a node itself), so there is no window with a pairing and no
     /// intent, or the reverse. A CTM replacement is admitted by its own provisioning reservation, so it commits the record alone.
     ///
@@ -494,9 +494,9 @@ public final class NodeReplacementWiring {
                                                       record,
                                                       Set.copyOf(members))
                                         .<EffectResult> map(disposition -> switch (disposition) {
-                case ProvisionDisposition.Dispatched _ -> provisionDispatched(record);
-                case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
-            })
+                                                                case ProvisionDisposition.Dispatched _ -> provisionDispatched(record);
+                                                                case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
+                                                            })
                                         .recover(cause -> provisionFailed(record, cause));
         }
 
@@ -587,11 +587,7 @@ public final class NodeReplacementWiring {
                              record.replacement())
                          .map(node -> in.ctm()
                                         .instanceListed(node, source)
-                                        .onSuccess(listed -> {
-                                  if (listed) {
-                                  seen.add(node);
-                              }
-                              })
+                                        .withSuccess(listed -> noteListed(node, listed))
                                         .<Unit> map(_ -> Unit.unit())
                                         .recover(_ -> Unit.unit()))
                          .reduce(Promise.unitPromise(),
@@ -616,15 +612,17 @@ public final class NodeReplacementWiring {
                                          source -> {
                                              in.ctm()
                                                .instanceListed(node, source)
-                                               .onSuccess(listed -> {
-                                             if (listed) {
-                                             seen.add(node);
-                                         }
-                                         })
-                                               .onResultRun(() -> observing.remove(node));
+                                               .withSuccess(listed -> noteListed(node, listed))
+                                               .withResult(_ -> observing.remove(node));
 
                                              return Unit.unit();
                                          });
+        }
+
+        private void noteListed(NodeId node, boolean listed) {
+            if (listed) {
+                seen.add(node);
+            }
         }
 
         private EffectResult drained(NodeId original, DrainOutcome outcome) {

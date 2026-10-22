@@ -266,7 +266,7 @@ if echo "$TARGETS" | grep -q "node"; then
 -----
     8090/udp    Cluster communication (QUIC)
     8190/udp    SWIM health detection
-    8080        Management API and dashboard"
+    8080        Management API"
 fi
 
 if echo "$TARGETS" | grep -q "cli"; then
@@ -284,10 +284,10 @@ if echo "$TARGETS" | grep -q "forge"; then
         "$AETHER_DIR/forge/forge-core/target/aether-forge.jar" \
         "aether-forge" \
         "-XX:+UseZGC -Xmx1g" \
-        "Forge is the Aether testing simulator with a visual dashboard.
+        "Forge is the Aether cluster simulator: a REST API for load and chaos control.
 
 Default port: 8888
-Dashboard:    http://localhost:8888"
+API:          http://localhost:8888"
 fi
 
 # --- Generate checksums ---

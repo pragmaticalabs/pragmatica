@@ -16,6 +16,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -30,22 +32,15 @@ import org.slf4j.LoggerFactory;
 /// slice-state, and node-artifact entries against the nodes that still own placements — the
 /// resolved core membership plus the registered workers ({@link #placementNodes()}) — and removes
 /// entries for departed nodes; also unloads/removes orphaned slice entries that have no matching
-/// blueprint. All cleanups gate on {@link Active#coreMembershipResolved()} so a sweep racing the
+/// blueprint. Every pass gates on {@link Active#coreMembershipResolved()} (before it reads the placement snapshot) so a sweep racing the
 /// membership wiring never mass-classifies KV-known members as departed.
 record StaleEntryCleaner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(StaleEntryCleaner.class);
 
-    // Fire-and-forget cleanup sweep: only callers are the reconcile/KV-rebuild paths in
-    // ClusterDeploymentState (rebuildStateFromKVStore / deferredTopologyRecheck), which ignore the
-    // outcome. The KV apply already reports its own failure via .onFailure(log.error) below, so void
-    // is the correct contract — propagating Promise<Unit> would just be discarded one level up.
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
     @Contract
-    void cleanupStaleNodeRoutes() {
-        if (!active.coreMembershipResolved()) {
-            return;
-        }
-
-        var currentNodes = placementNodes();
+    void cleanupStaleNodeRoutes(Set<NodeId> currentNodes) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
@@ -60,6 +55,51 @@ record StaleEntryCleaner(Active active) {
                   .apply(commands)
                   .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                 cause.message()));
+        }
+    }
+
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
+    @Contract
+    void cleanupStaleTopicRows(Set<NodeId> currentNodes) {
+        if (!active.coreMembershipResolved()) {
+            return;
+        }
+
+        var commands = new ArrayList<KVCommand<AetherKey>>();
+
+        active.ctx()
+              .kvStore()
+              .forEach(TopicSubscriptionKey.class,
+                       AetherValue.TopicSubscriptionValue.class,
+                       (key, _) -> collectStaleTopicRow(commands,
+                                                        key,
+                                                        key.nodeId(),
+                                                        currentNodes));
+        active.ctx()
+              .kvStore()
+              .forEach(TopicPublisherKey.class,
+                       AetherValue.TopicPublisherValue.class,
+                       (key, _) -> collectStaleTopicRow(commands,
+                                                        key,
+                                                        key.nodeId(),
+                                                        currentNodes));
+        if (!commands.isEmpty()) {
+            log.info("Cleaning up {} stale topic subscription/publisher rows", commands.size());
+            active.ctx()
+                  .cluster()
+                  .apply(commands)
+                  .onFailure(cause -> log.error("Failed to clean up stale topic rows: {}",
+                                                cause.message()));
+        }
+    }
+
+    private void collectStaleTopicRow(List<KVCommand<AetherKey>> commands,
+                                      AetherKey key,
+                                      NodeId rowNode,
+                                      Set<NodeId> currentNodes) {
+        if (!currentNodes.contains(rowNode)) {
+            commands.add(new KVCommand.Remove<>(key));
         }
     }
 
@@ -78,15 +118,14 @@ record StaleEntryCleaner(Active active) {
         }
     }
 
-    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome; the
-    // KV apply reports its own failure via .onFailure(log.error).
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
     @Contract
-    void cleanupStaleSliceEntries() {
+    void cleanupStaleSliceEntries(Set<NodeId> currentNodes) {
         if (!active.coreMembershipResolved()) {
             return;
         }
 
-        var currentNodes = placementNodes();
         var staleKeys = active.sliceStates()
                               .keySet()
                               .stream()
@@ -110,15 +149,10 @@ record StaleEntryCleaner(Active active) {
                                             cause.message()));
     }
 
-    // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome; the
-    // KV apply reports its own failure via .onFailure(log.error).
+    /// One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    /// single tick, and a node entering the set between two of them would lose rows one sweep keeps.
     @Contract
-    void cleanupStaleNodeArtifactEntries() {
-        if (!active.coreMembershipResolved()) {
-            return;
-        }
-
-        var currentNodes = placementNodes();
+    void cleanupStaleNodeArtifactEntries(Set<NodeId> currentNodes) {
         var staleKeys = new ArrayList<NodeArtifactKey>();
 
         active.ctx()
@@ -159,15 +193,14 @@ record StaleEntryCleaner(Active active) {
     // CI run 34772700962) left the key in the store for good — and a node then healed its ACTIVE
     // claim into a running slice with no owning blueprint. Keys of departed nodes are left to
     // cleanupStaleNodeArtifactEntries, which removes them outright.
+    //
+    // One pass hands every sweep the SAME placement snapshot (#1337): sweeps that each read the set afresh could disagree within a
+    // single tick. The membership-resolved guard is the pass's (`Active#sweepStaleEntries`), taken before the snapshot.
     @Contract
-    void cleanupOrphanedSliceEntries() {
-        if (!active.coreMembershipResolved()) {
-            return;
-        }
+    void cleanupOrphanedSliceEntries(Set<NodeId> currentNodes) {
         // #850: the inclusion filter is the placement set (core ∪ registered workers), not the core
         // set alone — a worker-hosted orphan must be unloaded too, and the stale-entry sweeps no longer
         // remove a live worker's key for it.
-        var currentNodes = placementNodes();
         var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
 
         active.ctx()

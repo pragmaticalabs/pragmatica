@@ -159,11 +159,5 @@ public final class ForgeApiResponses {
 
     public record MultiplierSetResponse(boolean success, double multiplier) {}
 
-    public record TopologyResponse(List<TopologyNodeInfo> nodes, List<TopologyEdgeInfo> edges) {}
-
-    public record TopologyNodeInfo(String id, String type, String label, String sliceArtifact) {}
-
-    public record TopologyEdgeInfo(String from, String to, String style, String topicConfig) {}
-
     public record ForgeStatusResponse(boolean forge) {}
 }

@@ -471,7 +471,7 @@ Costs to state everywhere this feature is described:
 | REST | `GET /api/v1/ingress/floating-ips` (leader-routed): per IP `source, family, committedHolder, epoch, reason, since, observedHolder, status, lastError`; status ∈ `CONVERGED` / `MOVING` / `DIVERGED` / `UNSERVED` / `UNVERIFIED`. `POST /api/v1/ingress/floating-ips/rebalance` runs one rebalance step now. (Operator move/pin: Q7.) |
 | CLI | Two planned operations: an assignment-table read (table and JSON output) and rebalance-now. The implementation PR names the subcommands under the quad rule. This spec deliberately writes no command line for them, so no document shows an invocation that rc4 does not have (the cli-docs gate checks every documented invocation against the real command tree). |
 | Docs | `management-api.md`, `cli.md`, `bootstrap-config.md` (`[source.X.floating_ip]`), feature catalog, this spec, the runbook |
-| Dashboard | An "Ingress" panel with the assignment table and per-IP status; on a cluster with no `floating_ip` source it shows the degenerate empty state, per the #494 ruling |
+| Dashboard | Suspended until the new dashboard lands (CLAUDE.md invariant 1). When it does: an "Ingress" panel with the assignment table and per-IP status; on a cluster with no `floating_ip` source it shows the degenerate empty state, per the #494 ruling |
 | Events | `FloatingIpMoved{ip, from, to, reason, epoch}`, `FloatingIpMoveFailed{ip, target, cause}`, `FloatingIpUnserved{ip}`, `FloatingIpMakeBeforeBreakExpired{node, ips}` on the cluster event stream |
 | Metrics | `aether_floating_ip_moves_total{source,reason}`, `aether_floating_ip_unserved{source}`, `aether_floating_ip_diverged{source}`, `aether_floating_ip_provider_call_seconds{op,outcome}` |
 
@@ -496,7 +496,7 @@ repo-wide grep for `ELECTED`, `"elected"` and `elected LB` that nothing remains 
 - `parseLoadBalancerMode` silent default → PF-28;
 - docs: cluster-bootstrap-spec REQ-5.1.3.2, REQ-5.1.4.2, REQ-5.1.7.3, REQ-5.1.8.2, §6.3 (REQ-6.3.1–6.3.5),
   §11.1a/§11.2 floating-IP rows; `bootstrap-config.md` `load_balancer` rows; feature catalog rows
-  147/197/198; `cluster-generation-spec.md`, `cluster-init-wizard-spec.md`, `dashboard-ui-spec.md`,
+  147/197/198; `cluster-generation-spec.md`, `cluster-init-wizard-spec.md`,
   `docker-scaling-test-spec.md`, `hetzner-e2e-test-spec.md` mentions; `aether cluster init`/scaffold
   templates if they emit `elected`;
 - tests that construct `LoadBalancerMode.ELECTED` (validator, parser, firewall tests).

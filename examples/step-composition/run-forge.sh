@@ -55,7 +55,7 @@ fi
 
 echo ""
 echo "Starting Aether Forge with Step Composition Example..."
-echo "  Dashboard:  http://localhost:8888"
+echo "  Forge API:  http://localhost:8888"
 echo "  App HTTP:   http://localhost:8070 (nodes: 8070-8072)"
 echo "  Management: http://localhost:5150"
 echo "  Blueprint:  $BLUEPRINT_COORDS"

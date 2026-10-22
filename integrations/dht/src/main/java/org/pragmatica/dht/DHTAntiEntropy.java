@@ -32,6 +32,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.dht.storage.KeyStamp;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -41,6 +42,10 @@ import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 
 
 /// Periodic anti-entropy process that synchronizes replicas.
@@ -73,7 +78,31 @@ public final class DHTAntiEntropy {
 
     /// A pull in flight, remembered so its answer is attributed to its partition — and, for a catch-up
     /// pull, completes that round's wait on `peer` once its entries are stored.
-    private record PendingPull(NodeId peer, int partitionIndex, Option<CatchUpRound> round, long createdAtNanos) {}
+    private record PendingPull(NodeId peer,
+                               int partitionIndex,
+                               Option<CatchUpRound> round,
+                               PullProgress progress,
+                               long createdAtNanos) {}
+
+    /// A periodic paged pull, by peer and partition: where its next page starts (A6).
+    private record PullKey(NodeId peer, int partitionIndex) {}
+
+    /// How far a paged pull has come (A6, D4): when its FIRST page was requested, on the node's monotonic clock, and
+    /// whether every page so far came from a holder authoritative for the partition. A completed pull certifies the
+    /// partition only as of `startedAtMillis`: a resumed pull does not read again the keys below its cursor, so the
+    /// pages read before an interruption can predate a remove the completion would otherwise vouch for.
+    private record PullProgress(long startedAtMillis, boolean authoritative) {
+        PullProgress after(DHTMessage.Readiness readiness) {
+            return new PullProgress(startedAtMillis, authoritative && readiness.authoritative());
+        }
+    }
+
+    /// Where an interrupted periodic paged pull resumes, with the progress it carries across rounds (A6).
+    private record Resume(byte[] cursor, PullProgress progress) {}
+
+    /// This node's digests of one partition for one exchange (A6): the stamp digest every current peer is asked to
+    /// match, and the legacy value digest, computed only when a peer recorded as legacy takes part.
+    private record LocalDigests(byte[] stamp, Option<byte[]> legacy) {}
 
     private final DHTNode node;
     private final DHTNetwork network;
@@ -109,6 +138,13 @@ public final class DHTAntiEntropy {
     private final AtomicLong refusedPulls = new AtomicLong();
     /// Migration batches dropped as unauthentic — counted, never silent.
     private final AtomicLong rejectedResponses = new AtomicLong();
+    /// Where an interrupted periodic paged pull resumes (A6): the last key applied from that peer for that
+    /// partition, and the pull's progress. Cleared when the pull reaches the partition's last page.
+    private final ConcurrentHashMap<PullKey, Resume> resumeAt = new ConcurrentHashMap<>();
+    /// Stamp digest probes sent to peers held as legacy, by correlation id: an answer is current evidence ([RepairPlane]).
+    private final ConcurrentHashMap<String, PendingProbe> stampProbes = new ConcurrentHashMap<>();
+
+    private record PendingProbe(NodeId peer, long createdAtNanos) {}
 
     private DHTAntiEntropy(DHTNode node,
                            DHTNetwork network,
@@ -125,6 +161,9 @@ public final class DHTAntiEntropy {
         this.departingSenders = departingSenders;
         this.clock = clock;
         node.ring().onNodeRemoved(this::dropRoundsAsking);
+        node.ring().onNodeRemoved(this::forgetRepairPeer);
+        node.repair()
+            .useFreshnessWindow(TimeSpan.timeSpan(RepairPlane.DEFAULT_FRESHNESS_INTERVALS * antiEntropyInterval.millis()).millis());
     }
 
     /// Create an anti-entropy process for the given node with default interval.
@@ -293,6 +332,7 @@ public final class DHTAntiEntropy {
     private void synchronizePartitions() {
         expireStalePendingDigests();
         purgeStrays();
+        probeLegacyPeers();
         var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
         var owned = 0;
 
@@ -300,6 +340,7 @@ public final class DHTAntiEntropy {
             var nodes = node.ring().nodesFor(Partition.at(p), replicationFactor);
 
             if (!nodes.contains(node.nodeId())) {
+                node.repair().forgetPartition(p);
                 continue;
             }
 
@@ -368,11 +409,7 @@ public final class DHTAntiEntropy {
         // A local store that cannot be read sends no digest; the round never decides, expires after
         // CATCH_UP_ROUND_TIMEOUT and is restarted by the next tick — FER: the catch-up is delayed, never
         // completed on a read that did not happen.
-        node.storage()
-            .entriesForPartition(node.ring(),
-                                 partition)
-            .onSuccess(entries -> sendCatchUpDigests(round,
-                                                     computeDigest(entries)));
+        localDigests(partition, sources).onSuccess(digests -> sendCatchUpDigests(round, digests));
     }
 
     /// The current co-replicas plus every recorded previous holder still in the ring — the nodes that may
@@ -455,17 +492,18 @@ public final class DHTAntiEntropy {
         }
     }
 
-    private void sendCatchUpDigests(CatchUpRound round, byte[] localDigest) {
-        round.sources().forEach(source -> sendCatchUpDigest(round, source, localDigest));
+    private void sendCatchUpDigests(CatchUpRound round, LocalDigests digests) {
+        round.sources().forEach(source -> sendCatchUpDigest(round, source, digests));
     }
 
-    private void sendCatchUpDigest(CatchUpRound round, NodeId source, byte[] localDigest) {
+    private void sendCatchUpDigest(CatchUpRound round, NodeId source, LocalDigests digests) {
         var correlationId = IdGenerator.generate();
         var partitionIndex = round.partition().value();
 
-        catchUpDigests.put(correlationId, new CatchUpDigest(source, localDigest, round, System.nanoTime()));
+        catchUpDigests.put(correlationId,
+                           new CatchUpDigest(source, digestFor(source, digests), round, System.nanoTime()));
         sendLoudly(source,
-                   new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
+                   digestRequest(correlationId, source, partitionIndex),
                    "catch-up digest request",
                    () -> catchUpDigests.remove(correlationId));
     }
@@ -514,8 +552,8 @@ public final class DHTAntiEntropy {
         // Readback runs once the apply settled. As at round start, a failed apply or an unreadable store leaves
         // the round undecided until it expires and restarts.
         applyMigrationEntries(response).flatMap(_ -> node.storage()
-                                                         .entriesForPartition(node.ring(),
-                                                                              round.partition()))
+                                                         .stampsForPartition(node.ring(),
+                                                                             round.partition()))
                              .onSuccess(local -> verifyCatchUpPull(pull.peer(),
                                                                    round,
                                                                    response.entries(),
@@ -527,7 +565,7 @@ public final class DHTAntiEntropy {
     private void verifyCatchUpPull(NodeId peer,
                                    CatchUpRound round,
                                    List<DHTMessage.KeyValue> pulled,
-                                   List<DHTMessage.KeyValue> local) {
+                                   List<KeyStamp> local) {
         if (!allStored(pulled, local)) {
             log.warn("Catch-up of partition {}: entries pulled from {} were not stored; retrying",
                      round.partition().value(),
@@ -545,9 +583,12 @@ public final class DHTAntiEntropy {
         }
     }
 
-    private boolean allStored(List<DHTMessage.KeyValue> pulled, List<DHTMessage.KeyValue> local) {
+    /// The readback compares against the local STAMPS (A6): proving a copy stored needs its stamp, not its value.
+    private boolean allStored(List<DHTMessage.KeyValue> pulled, List<KeyStamp> local) {
         var stored = local.stream()
-                          .collect(Collectors.toMap(DHTAntiEntropy::keyOf, entry -> entry, DHTAntiEntropy::newer));
+                          .collect(Collectors.toMap(DHTAntiEntropy::keyOf,
+                                                    stamp -> stamp,
+                                                    (left, right) -> left));
 
         return pulled.stream()
                      .allMatch(entry -> isStored(stored, entry));
@@ -557,20 +598,18 @@ public final class DHTAntiEntropy {
     /// epoch first, then HLC version (#1818). A copy kept out by a newer-epoch entry with a lower HLC version is
     /// superseded, not refused; comparing versions alone would leave the partition catching up forever. An EXPIRED
     /// tombstone with no local entry is satisfied too (#1777 track 3): it is deliberately never re-created.
-    private boolean isStored(Map<String, DHTMessage.KeyValue> stored, DHTMessage.KeyValue entry) {
+    private boolean isStored(Map<String, KeyStamp> stored, DHTMessage.KeyValue entry) {
         return Option.option(stored.get(keyOf(entry)))
                      .map(local -> local.compareOrder(entry) >= 0)
                      .or(() -> node.expiredTombstone(entry));
     }
 
-    private static DHTMessage.KeyValue newer(DHTMessage.KeyValue left, DHTMessage.KeyValue right) {
-        return left.compareOrder(right) >= 0
-               ? left
-               : right;
-    }
-
     private static String keyOf(DHTMessage.KeyValue entry) {
         return Arrays.toString(entry.key());
+    }
+
+    private static String keyOf(KeyStamp stamp) {
+        return Arrays.toString(stamp.key());
     }
 
     /// A round whose sources include a node the ring has since pruned is dropped (#1777 Q2): it would keep
@@ -579,6 +618,13 @@ public final class DHTAntiEntropy {
     /// its late answers complete nothing.
     private void dropRoundsAsking(NodeId removed) {
         rounds.values().removeIf(round -> asks(round, removed));
+    }
+
+    /// A node that left the ring takes its divergence, its legacy record and its resume cursors with it (A6).
+    private void forgetRepairPeer(NodeId removed) {
+        node.repair().forgetPeer(removed);
+        resumeAt.keySet().removeIf(key -> key.peer()
+                                             .equals(removed));
     }
 
     private static boolean asks(CatchUpRound round, NodeId node) {
@@ -613,12 +659,68 @@ public final class DHTAntiEntropy {
                                                       round));
     }
 
+    /// A pull from a peer recorded as legacy is the whole-partition [DHTMessage.MigrationDataRequest] it understands;
+    /// any other pull is paged (A6). A periodic paged pull resumes where an interrupted one stopped; a catch-up pull
+    /// always starts at the first key, since its completion is proven page by page within one round. A resumed pull
+    /// keeps the progress of the pull it resumes, so its completion is stamped with the time ITS first page was asked.
     private void sendPull(NodeId peer, int partitionIndex, Option<CatchUpRound> round, String what) {
+        if (node.repair().isLegacyPeer(peer)) {
+            sendLegacyPull(peer, partitionIndex, round, what);
+        } else {
+            sendResumedPageRequest(peer, partitionIndex, round, resumeFrom(peer, partitionIndex, round), what);
+        }
+    }
+
+    private void sendResumedPageRequest(NodeId peer,
+                                        int partitionIndex,
+                                        Option<CatchUpRound> round,
+                                        Option<Resume> resume,
+                                        String what) {
+        sendPageRequest(peer,
+                        partitionIndex,
+                        round,
+                        resume.map(Resume::cursor),
+                        resume.map(Resume::progress).or(this::pullStartingNow),
+                        what);
+    }
+
+    private PullProgress pullStartingNow() {
+        return new PullProgress(node.monotonicMillis(), true);
+    }
+
+    private void sendLegacyPull(NodeId peer, int partitionIndex, Option<CatchUpRound> round, String what) {
         var correlationId = IdGenerator.generate();
 
-        pendingPulls.put(correlationId, new PendingPull(peer, partitionIndex, round, System.nanoTime()));
+        node.repair().noteLegacyExchange();
+        pendingPulls.put(correlationId,
+                         new PendingPull(peer, partitionIndex, round, pullStartingNow(), System.nanoTime()));
         sendLoudly(peer,
                    new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
+                   what,
+                   () -> pendingPulls.remove(correlationId));
+    }
+
+    private Option<Resume> resumeFrom(NodeId peer, int partitionIndex, Option<CatchUpRound> round) {
+        return round.isPresent()
+               ? none()
+               : option(resumeAt.get(new PullKey(peer, partitionIndex)));
+    }
+
+    private void sendPageRequest(NodeId peer,
+                                 int partitionIndex,
+                                 Option<CatchUpRound> round,
+                                 Option<byte[]> after,
+                                 PullProgress progress,
+                                 String what) {
+        var correlationId = IdGenerator.generate();
+
+        pendingPulls.put(correlationId, new PendingPull(peer, partitionIndex, round, progress, System.nanoTime()));
+        sendLoudly(peer,
+                   new DHTMessage.MigrationPageRequest(correlationId,
+                                                       node.nodeId(),
+                                                       partitionIndex,
+                                                       after,
+                                                       node.repair().pageBudget().bytes()),
                    what,
                    () -> pendingPulls.remove(correlationId));
     }
@@ -627,21 +729,68 @@ public final class DHTAntiEntropy {
         var partition = Partition.at(partitionIndex);
         var startedAt = node.nowMillis();
 
-        node.storage()
-            .entriesForPartition(node.ring(),
-                                 partition)
-            .onSuccess(entries -> {
-                           var digest = computeDigest(entries);
-                           var round = AgreementRound.agreementRound(partition,
-                                                                     startedAt,
-                                                                     coReplicas(nodes));
+        localDigests(partition, coReplicas(nodes)).onSuccess(digests -> startAgreementRound(partition,
+                                                                                            startedAt,
+                                                                                            nodes,
+                                                                                            digests));
+    }
 
-                           agreements.put(partitionIndex, round);
-                           sendDigestToPeers(partitionIndex, nodes, digest, round);
-                           if (round.agreed()) {
-                           onAgreed(round);
-                       }
-                       });
+    private void startAgreementRound(Partition partition, long startedAt, List<NodeId> nodes, LocalDigests digests) {
+        var round = AgreementRound.agreementRound(partition, startedAt, coReplicas(nodes));
+
+        agreements.put(partition.value(), round);
+        sendDigestToPeers(partition.value(), nodes, digests, round);
+        if (round.agreed()) {
+            onAgreed(round);
+        }
+    }
+
+    /// This node's digests of `partition` for an exchange with `peers` (A6): the stamp digest, which reads no value,
+    /// and — only when one of `peers` is recorded as legacy — the legacy value digest that peer computes.
+    private Promise<LocalDigests> localDigests(Partition partition, Set<NodeId> peers) {
+        return Promise.all(node.storage().stampsForPartition(node.ring(),
+                                                             partition).map(node::stampDigestOf),
+                           legacyDigest(partition, peers))
+                      .map(LocalDigests::new);
+    }
+
+    private Promise<Option<byte[]>> legacyDigest(Partition partition, Set<NodeId> peers) {
+        return peers.stream()
+                    .anyMatch(node.repair()::isLegacyPeer)
+               ? valueDigest(partition).map(Option::some)
+               : Promise.success(none());
+    }
+
+    /// The legacy digest, over values: read only for an exchange with a legacy peer.
+    private Promise<byte[]> valueDigest(Partition partition) {
+        return node.storage()
+                   .entriesForPartition(node.ring(),
+                                        partition)
+                   .map(this::computeDigest);
+    }
+
+    /// The digest `peer` is compared against: the legacy one for a peer recorded as legacy, else the stamp digest.
+    private byte[] digestFor(NodeId peer, LocalDigests digests) {
+        return node.repair()
+                   .isLegacyPeer(peer)
+               ? digests.legacy()
+                        .or(digests.stamp())
+               : digests.stamp();
+    }
+
+    /// The digest question `peer` understands: the legacy [DHTMessage.DigestRequest] for a peer recorded as legacy,
+    /// else the [DHTMessage.StampDigestRequest] (A6).
+    private ProtocolMessage digestRequest(String correlationId, NodeId peer, int partitionIndex) {
+        return node.repair()
+                   .isLegacyPeer(peer)
+               ? legacyDigestRequest(correlationId, partitionIndex)
+               : new DHTMessage.StampDigestRequest(correlationId, node.nodeId(), partitionIndex);
+    }
+
+    private ProtocolMessage legacyDigestRequest(String correlationId, int partitionIndex) {
+        node.repair().noteLegacyExchange();
+
+        return new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex);
     }
 
     private Set<NodeId> coReplicas(List<NodeId> nodes) {
@@ -656,7 +805,7 @@ public final class DHTAntiEntropy {
         return node.digestOf(entries);
     }
 
-    private void sendDigestToPeers(int partitionIndex, List<NodeId> nodes, byte[] localDigest, AgreementRound round) {
+    private void sendDigestToPeers(int partitionIndex, List<NodeId> nodes, LocalDigests digests, AgreementRound round) {
         for (var peer : nodes) {
             if (peer.equals(node.nodeId())) {
                 continue;
@@ -664,10 +813,11 @@ public final class DHTAntiEntropy {
 
             var correlationId = IdGenerator.generate();
 
-            pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest, System.nanoTime()));
+            pendingDigests.put(correlationId,
+                               new PendingDigest(peer, partitionIndex, digestFor(peer, digests), System.nanoTime()));
             agreementVotes.put(correlationId, round);
             sendLoudly(peer,
-                       new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
+                       digestRequest(correlationId, peer, partitionIndex),
                        "digest request",
                        () -> forgetDigest(correlationId));
         }
@@ -748,7 +898,7 @@ public final class DHTAntiEntropy {
     /// round, with nothing to remove them.
     private void sendLoudly(NodeId peer, ProtocolMessage message, String what, Runnable onNotSent) {
         network.sendOutcome(peer, message)
-               .onSuccess(outcome -> {
+               .withSuccess(outcome -> {
                               if (!outcome.isSent()) {
                               log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
                                        what,
@@ -757,7 +907,7 @@ public final class DHTAntiEntropy {
                               onNotSent.run();
                           }
                           })
-               .onFailure(cause -> {
+               .withFailure(cause -> {
                               log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
                                        what,
                                        peer.id(),
@@ -776,6 +926,23 @@ public final class DHTAntiEntropy {
         agreementVotes.keySet().retainAll(pendingDigests.keySet());
         catchUpDigests.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
         pendingPulls.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
+        stampProbes.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
+    }
+
+    /// One stamp digest probe per peer held as legacy, every round (D1): an older node drops it, a current one answers,
+    /// and the answer clears the record. The legacy record therefore never latches between two current nodes.
+    private void probeLegacyPeers() {
+        node.repair().legacyPeers().stream().filter(node.ring().nodes()::contains).forEach(this::sendStampProbe);
+    }
+
+    private void sendStampProbe(NodeId peer) {
+        var correlationId = IdGenerator.generate();
+
+        stampProbes.put(correlationId, new PendingProbe(peer, System.nanoTime()));
+        sendLoudly(peer,
+                   new DHTMessage.StampDigestRequest(correlationId, node.nodeId(), 0),
+                   "stamp protocol probe",
+                   () -> stampProbes.remove(correlationId));
     }
 
     /// Handle a digest response from a remote peer.
@@ -783,6 +950,9 @@ public final class DHTAntiEntropy {
     @Contract
     public void onDigestResponse(DHTMessage.DigestResponse response) {
         node.noteHeardFrom(response.sender());
+        Option.option(stampProbes.remove(response.requestId())).onPresent(probe -> node.repair()
+                                                                                       .noteCurrentEvidence(probe.peer(),
+                                                                                                            node.monotonicMillis()));
         Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> voteAndCompare(pending, response));
         Option.option(catchUpDigests.remove(response.requestId())).onPresent(pending -> onCatchUpDigest(pending,
                                                                                                         response));
@@ -809,6 +979,9 @@ public final class DHTAntiEntropy {
             log.debug("Partition {} in sync with {}",
                       pending.partitionIndex(),
                       pending.peer().id());
+            node.repair().noteRepaired(pending.partitionIndex(), pending.peer());
+            noteSyncedIfAuthoritative(pending, response);
+            resumeAt.remove(new PullKey(pending.peer(), pending.partitionIndex()));
 
             return;
         }
@@ -824,6 +997,7 @@ public final class DHTAntiEntropy {
         log.info("Partition {} diverged from {}, requesting migration data",
                  pending.partitionIndex(),
                  pending.peer().id());
+        node.repair().noteDiverged(pending.partitionIndex(), pending.peer());
         sendPull(pending.peer(), pending.partitionIndex(), Option.none(), "migration request");
     }
 
@@ -893,7 +1067,201 @@ public final class DHTAntiEntropy {
         pull.round()
             .filter(this::isCurrent)
             .onPresent(round -> onCatchUpPull(pull, round, response))
-            .onEmpty(() -> applyAndAcknowledge(response));
+            .onEmpty(() -> applyPulled(pull, response));
+    }
+
+    /// A pull answer is never ack-requested; once every entry is applied, the divergence from that peer is repaired.
+    private void applyPulled(PendingPull pull, DHTMessage.MigrationDataResponse response) {
+        applyMigrationEntries(response).onSuccess(applied -> notePulled(pull, applied));
+    }
+
+    /// A completed LEGACY pull repairs the divergence but is not a sync (D4): its answer, a [DHTMessage.MigrationDataResponse]
+    /// whose shape an older node fixes, carries no readiness, so it cannot show the holder was authoritative, which a
+    /// sync requires of a paged pull and a digest match alike. A legacy peer still syncs this node by a digest match:
+    /// its digest answer carries readiness.
+    @Contract
+    private void notePulled(PendingPull pull, boolean applied) {
+        if (applied) {
+            node.repair().noteRepaired(pull.partitionIndex(), pull.peer());
+        }
+    }
+
+    /// A digest match with a SERVING peer syncs this node with it (D4): this node held what the peer held when it
+    /// answered. A peer still catching up is no evidence of what the partition holds. The sync is stamped when the
+    /// answer arrives, so it vouches for the peer's state at most one exchange earlier than its stamp; an unanswered
+    /// digest is expired after one interval.
+    @Contract
+    private void noteSyncedIfAuthoritative(PendingDigest pending, DHTMessage.DigestResponse response) {
+        if (response.readiness().authoritative()) {
+            node.repair().noteSynced(pending.partitionIndex(), pending.peer(), node.monotonicMillis());
+        }
+    }
+
+    /// Handle one page of a paged pull (A6). Only the answer to a page request this node sent is applied — its
+    /// correlation id, from the node asked, with every entry in the partition asked for — exactly the authenticity
+    /// rules of a [DHTMessage.MigrationDataResponse] pull answer; anything else is dropped with a WARN and counted.
+    /// A catch-up page is proven stored by readback before the next page is asked for, and the round completes only
+    /// on the last page; a periodic page asks for the next one once applied, until the last.
+    @Contract
+    public void onMigrationPageResponse(DHTMessage.MigrationPageResponse response) {
+        Option.option(pendingPulls.get(response.requestId()))
+              .onPresent(pull -> onPageAnswer(pull, response))
+              .onEmpty(() -> rejectPage(response, "answer to no page request this node sent"));
+    }
+
+    private void onPageAnswer(PendingPull pull, DHTMessage.MigrationPageResponse response) {
+        if (!pull.peer().equals(response.sender())) {
+            rejectPage(response,
+                       "answer to a page request sent to " + pull.peer().id());
+
+            return;
+        }
+
+        pendingPulls.remove(response.requestId());
+        node.repair().noteCurrentEvidence(response.sender(), node.monotonicMillis());
+        if (response.refused()) {
+            onRefusedPull(pull);
+
+            return;
+        }
+
+        if (!allInPartition(response.entries(), pull.partitionIndex())) {
+            rejectPage(response, "entries outside the requested partition " + pull.partitionIndex());
+
+            return;
+        }
+
+        routePage(pull, response);
+    }
+
+    /// A page of a catch-up round still current continues that round; a page of a round since replaced is applied
+    /// and its pull ends there (the replacing round pulls afresh); a periodic page continues its pull.
+    private void routePage(PendingPull pull, DHTMessage.MigrationPageResponse response) {
+        if (pull.round().isEmpty()) {
+            onRepairPage(pull, response);
+
+            return;
+        }
+
+        pull.round()
+            .filter(this::isCurrent)
+            .onPresent(round -> onCatchUpPage(pull, round, response))
+            .onEmpty(() -> applyStalePage(pull, response));
+    }
+
+    /// The entries of a replaced round's page are still copies worth keeping; nothing waits on them.
+    private void applyStalePage(PendingPull pull, DHTMessage.MigrationPageResponse response) {
+        applyPage(response).onSuccess(_ -> log.debug("Applied a page of partition {} from {} for a replaced catch-up "
+                                                    + "round; its pull ends here",
+                                                     pull.partitionIndex(),
+                                                     pull.peer().id()));
+    }
+
+    private Promise<Boolean> applyPage(DHTMessage.MigrationPageResponse response) {
+        if (response.entries().isEmpty()) {
+            return Promise.success(true);
+        }
+
+        log.debug("Received a page of {} entries from {} for repair",
+                  response.entries().size(),
+                  response.sender().id());
+
+        return node.applyMigrationData(response.entries());
+    }
+
+    private void onRepairPage(PendingPull pull, DHTMessage.MigrationPageResponse response) {
+        applyPage(response).onSuccess(applied -> continueRepairPull(pull, response, applied));
+    }
+
+    /// A page that could not be stored ends the pull; the divergence stays recorded and the next round retries from
+    /// the resume cursor (FER: repair is delayed, never reported complete on a failed store).
+    @Contract
+    private void continueRepairPull(PendingPull pull, DHTMessage.MigrationPageResponse response, boolean applied) {
+        var key = new PullKey(pull.peer(), pull.partitionIndex());
+        var progress = pull.progress().after(response.readiness());
+
+        if (!applied) {
+            log.warn("Repair pull of partition {} from {}: a page could not be stored; the next round retries",
+                     pull.partitionIndex(),
+                     pull.peer().id());
+
+            return;
+        }
+
+        response.next()
+                .onPresent(cursor -> resumeAt.put(key,
+                                                  new Resume(cursor, progress)))
+                .onPresent(cursor -> sendPageRequest(pull.peer(),
+                                                     pull.partitionIndex(),
+                                                     none(),
+                                                     some(cursor),
+                                                     progress,
+                                                     "migration page request"))
+                .onEmpty(() -> finishRepairPull(key, progress));
+    }
+
+    /// A completed pull repairs the divergence from its holder, and syncs this node with it (D4) only if every page came
+    /// from the holder while it was authoritative, as of the time the pull's first page was asked.
+    @Contract
+    private void finishRepairPull(PullKey key, PullProgress progress) {
+        resumeAt.remove(key);
+        node.repair().noteRepaired(key.partitionIndex(), key.peer());
+        if (progress.authoritative()) {
+            node.repair().noteSynced(key.partitionIndex(), key.peer(), progress.startedAtMillis());
+        }
+    }
+
+    private void onCatchUpPage(PendingPull pull, CatchUpRound round, DHTMessage.MigrationPageResponse response) {
+        // As for a whole-partition catch-up pull: a failed apply or an unreadable store leaves the round undecided
+        // until it expires and restarts.
+        applyPage(response).flatMap(_ -> node.storage()
+                                             .stampsForPartition(node.ring(),
+                                                                 round.partition()))
+                 .onSuccess(local -> verifyCatchUpPage(pull, round, response, local));
+    }
+
+    /// A page is proven stored by readback before the round goes on; only the readback of the LAST page completes
+    /// the round's wait on that source.
+    private void verifyCatchUpPage(PendingPull pull,
+                                   CatchUpRound round,
+                                   DHTMessage.MigrationPageResponse response,
+                                   List<KeyStamp> local) {
+        if (!allStored(response.entries(), local)) {
+            log.warn("Catch-up of partition {}: entries paged from {} were not stored; retrying",
+                     round.partition().value(),
+                     pull.peer().id());
+            rounds.remove(round.partition().value(),
+                          round);
+
+            return;
+        }
+
+        response.next()
+                .filter(_ -> isCurrent(round))
+                .onPresent(cursor -> sendPageRequest(pull.peer(),
+                                                     pull.partitionIndex(),
+                                                     some(round),
+                                                     some(cursor),
+                                                     pull.progress(),
+                                                     "catch-up page request"))
+                .onEmpty(() -> completeIfLastPage(pull, round, response));
+    }
+
+    private void completeIfLastPage(PendingPull pull, CatchUpRound round, DHTMessage.MigrationPageResponse response) {
+        if (response.next().isEmpty() && isCurrent(round) && round.pullStored(pull.peer())) {
+            completeCatchUp(round.partition(), round.anchorless());
+            rounds.remove(round.partition().value(),
+                          round);
+        }
+    }
+
+    private void rejectPage(DHTMessage.MigrationPageResponse response, String reason) {
+        rejectedResponses.incrementAndGet();
+        log.warn("Rejected a page of {} migrated entries from {} (request {}): {}",
+                 response.entries().size(),
+                 response.sender().id(),
+                 response.requestId(),
+                 reason);
     }
 
     private void onUnsolicited(DHTMessage.MigrationDataResponse response) {
@@ -1059,5 +1427,10 @@ public final class DHTAntiEntropy {
     /// Get the count of pending digest comparisons (for testing).
     int pendingDigestCount() {
         return pendingDigests.size();
+    }
+
+    /// Get the count of unanswered stamp protocol probes (for testing).
+    int pendingProbeCount() {
+        return stampProbes.size();
     }
 }

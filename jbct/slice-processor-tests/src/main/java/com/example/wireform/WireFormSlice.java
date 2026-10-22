@@ -8,6 +8,7 @@ import java.util.List;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 
 /// Test slice for the one-wire-form rule: generated codecs and the Jackson fallback write and read the same
@@ -21,6 +22,10 @@ public interface WireFormSlice {
     Promise<Drawing> drawing(ShapeRequest request);
     Promise<Renamed> renamed(ShapeRequest request);
     Promise<Note> note(ShapeRequest request);
+    // A value object as the whole body and the whole response: both are the object of its component.
+    Promise<Email> publish(PublishRequest request);
+    // Value objects inside a List body: bare elements.
+    Promise<Accounts> publishAll(List<PublishRequest> request);
 
     static WireFormSlice wireFormSlice() {
         return new WireFormSlice() {
@@ -53,6 +58,30 @@ public interface WireFormSlice {
             public Promise<Note> note(ShapeRequest request) {
                 return Promise.success(new Note("1", Option.none()));
             }
+
+            @Override
+            public Promise<Email> publish(PublishRequest request) {
+                return published(request);
+            }
+
+            @Override
+            public Promise<Accounts> publishAll(List<PublishRequest> request) {
+                return publishedAll(request);
+            }
         };
+    }
+
+    private static Promise<Email> published(PublishRequest request) {
+        return emailOf(request).async();
+    }
+
+    private static Promise<Accounts> publishedAll(List<PublishRequest> requests) {
+        return Result.allOf(requests.stream().map(WireFormSlice::emailOf).toList())
+                     .map(Accounts::new)
+                     .async();
+    }
+
+    private static Result<Email> emailOf(PublishRequest request) {
+        return Email.email(request.payload());
     }
 }
