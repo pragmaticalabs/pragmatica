@@ -15,6 +15,7 @@ import java.util.function.ToIntFunction;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 
 /// The commit ring of the worker replica feed: the effects of recently committed batches, in apply order, byte-bounded, with the position
 /// bookkeeping a subscriber needs to resume (floor, frontier, incarnation tag, the last [#ANCHOR_PAIRS] effect pairs).
@@ -139,6 +140,7 @@ public final class CommitRing {
             }
         }
 
+        @Contract
         void fireClose(CloseReason reason) {
             onClose.accept(reason);
         }
@@ -375,37 +377,36 @@ public final class CommitRing {
             return new Refused(RefusalReason.EVICTED, floor, tag);
         }
 
-        var refusal = verifyAnchor(pairs);
+        return verifyAnchor(pairs).<Subscribe> map(refusal -> refusal)
+                                  .or(() -> grant(closes, applied, subscription));
+    }
 
-        if (refusal != null) {
-            return refusal;
-        }
-
+    private Subscribe grant(Closes closes, long applied, Subscription subscription) {
         closeOpenRange(closes);
         subscriptions.add(subscription);
 
         return new Granted(entriesFrom(applied), nextSlot, subscription);
     }
 
-    /// Every pair at or above the floor must be present with an equal batch id, at least one pair must be verifiable. Null means verified.
-    private Refused verifyAnchor(List<AnchorPair> pairs) {
+    /// Every pair at or above the floor must be present with an equal batch id, at least one pair must be verifiable. Empty means verified.
+    private Option<Refused> verifyAnchor(List<AnchorPair> pairs) {
         var verifiable = pairs.stream()
                               .filter(pair -> pair.slot() >= floor)
                               .toList();
 
         if (verifiable.isEmpty()) {
-            return new Refused(RefusalReason.EVICTED, floor, tag);
+            return Option.some(new Refused(RefusalReason.EVICTED, floor, tag));
         }
 
-        for (var pair : verifiable) {
-            var present = effectEntriesBySlot.get(pair.slot());
+        return verifiable.stream().allMatch(this::presentWithEqualId)
+               ? Option.none()
+               : Option.some(new Refused(RefusalReason.AHEAD, floor, tag));
+    }
 
-            if (present == null || !present.batchId().equals(pair.batchId())) {
-                return new Refused(RefusalReason.AHEAD, floor, tag);
-            }
-        }
+    private boolean presentWithEqualId(AnchorPair pair) {
+        var present = effectEntriesBySlot.get(pair.slot());
 
-        return null;
+        return present != null && present.batchId().equals(pair.batchId());
     }
 
     private List<ReplicaEntry> entriesFrom(long applied) {
@@ -489,6 +490,7 @@ public final class CommitRing {
     private static final class Closes {
         private final List<Runnable> pending = new ArrayList<>();
 
+        @Contract
         void add(Runnable close) {
             pending.add(close);
         }
@@ -512,10 +514,12 @@ public final class CommitRing {
     }
 
     private void underLockDo(Consumer<Closes> body) {
-        underLock(closes -> {
-            body.accept(closes);
+        underLock(closes -> unitAfter(body, closes));
+    }
 
-            return null;
-        });
+    private static Unit unitAfter(Consumer<Closes> body, Closes closes) {
+        body.accept(closes);
+
+        return Unit.unit();
     }
 }
