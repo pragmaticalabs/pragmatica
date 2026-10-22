@@ -17,6 +17,9 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+
 
 /// Evaluates every alert threshold against the cluster's metrics once per interval.
 ///
@@ -33,7 +36,7 @@ public class AlertThresholdEvaluator {
     private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
 
-    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
+    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -52,7 +55,7 @@ public class AlertThresholdEvaluator {
             return;
         }
 
-        scheduledTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::evaluateThresholds,
+        scheduledTask.set(some(SharedScheduler.scheduleAtFixedRate(this::evaluateThresholds,
                                                                           TimeSpan.timeSpan(EVALUATION_INTERVAL_MS).millis())));
         log.info("Alert threshold evaluator started");
     }
@@ -62,7 +65,7 @@ public class AlertThresholdEvaluator {
             return;
         }
 
-        scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
+        scheduledTask.getAndSet(none()).onPresent(task -> task.cancel(false));
         log.info("Alert threshold evaluator stopped");
     }
 
