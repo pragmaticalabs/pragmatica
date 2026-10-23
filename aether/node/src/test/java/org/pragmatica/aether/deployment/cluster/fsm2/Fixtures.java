@@ -12,6 +12,7 @@ import org.pragmatica.aether.config.TimeoutsConfig.ClusterTimeouts;
 import org.pragmatica.aether.config.WorkerConfig.SwimSettings;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.node.deployment.Fsm2System;
+import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -30,6 +31,7 @@ import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimConfig;
 
@@ -74,6 +76,27 @@ final class Fixtures {
                                     ClusterTimeouts.clusterTimeouts().communityAbsence(),
                                     Fsm2System.suspicionLag(swim, FIXTURE_MAX_CORES, MembershipConfig.membershipConfig().splitTimeout()))
                             .unwrap();
+    }
+
+    /// A cluster large enough that SWIM's window multiplier is at its cap.
+    static final int LARGE_CLUSTER = 100;
+
+    /// The worst case a dead core stays listed in the leader's core view (MEMBER + SUSPECT), modelled from SWIM's and the membership's own
+    /// constants rather than from `suspicionLag` (cluster assessment delta 4): it is first probed up to `cores - 1` periods after it died
+    /// (least-recently-probed rotation), the direct and indirect probes time out, SWIM arms `suspectTimeout x lhmMaxScore x min(max(1,
+    /// ln(N + 1)), 3)` (`SwimProtocol`'s window, at its cap from about 20 members), the expiry is seen on the next period tick, the
+    /// membership's backstop keeps the SUSPECT core counted for `splitTimeout`, and the core view is sampled every `SeamPoller.INTERVAL_MS`.
+    static long worstCaseListedNanos(int cores) {
+        var swim = SwimConfig.DEFAULT;
+        var period = swim.period().nanos();
+        var window = Math.min(Math.max(1d, Math.log(LARGE_CLUSTER + 1)), 3d);
+
+        return (cores - 1) * period
+               + 2 * swim.probeTimeout().nanos()
+               + (long)(swim.suspectTimeout().nanos() * swim.lhmMaxScore() * window)
+               + period
+               + MembershipConfig.membershipConfig().splitTimeout().nanos()
+               + TimeSpan.timeSpan(SeamPoller.INTERVAL_MS).millis().nanos();
     }
 
     static long ms(long nanos) {

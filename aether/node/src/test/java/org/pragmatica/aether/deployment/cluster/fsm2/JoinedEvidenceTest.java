@@ -202,6 +202,27 @@ class JoinedEvidenceTest {
         assertThat(epochOf(w, N)).as("one full window after the second listing").isEqualTo(Option.some(E + 1));
     }
 
+    // Rule (b) residual (cluster assessment delta 5; the sampler side is `e1c325fd4`): a core that died before it was counted is still listed in
+    // this leader's core view, MEMBER then SUSPECT, for up to the worst case a dead core stays listed (`Fixtures#worstCaseListedNanos`), and
+    // only then leaves it.
+    // Red when: such a core is counted, or an ADMITTED record is written for it, on a sample taken at the last instant it is still listed (the
+    // suspicion window is shorter than that worst case), or C17b does not run within one tick after it left the view.
+    @Test
+    void ruleB_aCoreThatDiedListed_forAsLongAsADeadCoreStaysListed_isNeverCounted() {
+        var w = deadCoreSeenBy(ALL_CORES).activate();
+
+        run(w, ms(worstCaseListedNanos(FIXTURE_MAX_CORES)) - 1L);
+        w.refreshSeams(s -> s.withCoreView(Option.some(ALL_CORES)));
+        assertThat(w.counts(N)).as("the last sample that still lists it").isFalse();
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        w.refreshSeams(s -> s.withCoreView(Option.some(OTHER_CORES)));
+        w.h.advance(TICK_MS);
+
+        assertThat(w.counts(N)).isFalse();
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("C17b once it left the view").isNotEmpty();
+    }
+
     // (d) Worker.
     // Red when: anything but a WorkerJoin(w) (or C11f) supersedes the record of a worker with a committed WORKER_LEAVE whose directive, roster
     // and local alive view all still list it at Rebuild.
