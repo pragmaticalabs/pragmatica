@@ -346,7 +346,7 @@ class JsonbMappingTest {
         void queryPairOnJsonColumn_isDocument() throws Exception {
             var generated = factory(compile(INFERRED_REPO, "test/InferredRepo.java"), "test.InferredRepoFactory");
 
-            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, probe)")
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROBE_JSON, probe)")
                                  .contains("previous.map(present$ -> org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, present$))");
         }
 
