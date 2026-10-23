@@ -234,6 +234,91 @@ Table is inferred from the return/input record type. Use `@Table` when ambiguous
 Promise<Option<UserRow>> findById(long id);
 ```
 
+## Nullable Columns
+
+An `Option<T>` record component reads a nullable column: SQL `NULL` is `Option.none()`, never a default value. An
+`Option<T>` parameter (or component of an expanded record) binds empty as `NULL`. `T` is a column type, a value object
+with a `ValueMapping`, or a `@Jsonb` document.
+
+```java
+// Assumes a nullable column: ALTER TABLE users ADD COLUMN nickname TEXT;
+record UserRow(long id, String name, Option<String> nickname) {}
+
+@Query("UPDATE users SET nickname = :nickname WHERE id = :id")
+Promise<Unit> rename(long id, Option<String> nickname);
+```
+
+A plain `String` component of a nullable column still reads `NULL` as `""`.
+
+## JSON Documents (`json` / `jsonb`)
+
+Mark a value stored as a JSON document with `@Jsonb` (from `org.pragmatica.aether.pg.codegen.annotation`). The
+generated factory encodes and decodes it with a generated JSON codec: the same compile-time codec generator the slice
+router uses for HTTP bodies. There is no reflection and no Jackson.
+
+```sql
+-- The table the example below reads and writes
+CREATE TABLE user_docs (
+    id BIGINT PRIMARY KEY,
+    profile JSONB NOT NULL,
+    previous JSONB
+);
+```
+
+```java
+record Address(String city, String zip) {}
+record Profile(String name, Option<String> nickname, List<Address> addresses) {}
+record ProfileProbe(String name) {}
+
+// A row record: each marked component is one json/jsonb column.
+record UserDocRow(long id, @Jsonb Profile profile, @Jsonb Option<Profile> previous) {}
+
+@PgSql
+public interface UserDocs {
+    @Table(UserDocRow.class)
+    Promise<Unit> insert(UserDocRow row);                     // CRUD: marked components are encoded
+    Promise<Option<UserDocRow>> findById(long id);           // CRUD: marked components are decoded
+
+    // A method marked @Jsonb reads its single result column as the document.
+    @Query("SELECT profile FROM user_docs WHERE id = :id")
+    @Jsonb
+    Promise<Option<Profile>> profile(long id);
+
+    // A marked parameter is bound as the document, e.g. for containment.
+    @Query("SELECT id, profile, previous FROM user_docs WHERE profile @> :probe")
+    Promise<List<UserDocRow>> containing(@Jsonb ProfileProbe probe);
+}
+```
+
+| Where | Meaning |
+|---|---|
+| Record component | That column of a row record, read and written. `Option<T>`: `NULL` reads as empty and empty writes `NULL` |
+| Method | The single result column (`Promise<T>`, `Promise<Option<T>>`, `Promise<List<T>>`); needs `@Query`. `Option` means zero or one row: a missing row is empty, but a row whose column is `NULL` fails the read. Read a nullable document through a row record with an `Option<T>` component instead |
+| Parameter | The argument is bound as the document instead of being expanded into its components |
+
+- **Types.** A marked type must be a record or enum the codec generator supports. Anything else is a compile error that
+  carries the generator's reason. The escape hatch is a hand-written value-object mapping to the document text:
+  `static ValueMapping<T, JsonText> valueMapping()` on `T`, used without `@Jsonb`.
+- **Schema check.** Where the column's type is known (CRUD methods, `WHERE column = :param` pairs), a `@Jsonb` target
+  must map to a `json` or `jsonb` column. Otherwise the build fails.
+- **Binding.** A document is bound as `JsonText`, text with no declared type, so one value binds to `json` and `jsonb`
+  columns and works as a `jsonb` operator operand (`@>`). A `String` parameter is declared `varchar`. A `jsonb`
+  column or operator refuses it when the statement is prepared fresh, but the driver caches prepared statements by SQL
+  text, so a `String` bind that reuses a statement prepared earlier on the connection with an untyped parameter is
+  accepted. Neither outcome can be relied on: bind such a value as `JsonText.jsonText(text)`, or cast it in SQL
+  (`CAST(:doc AS jsonb)`).
+- **Unmarked columns.** An unmarked `String` component still reads a `json`/`jsonb` column as its raw text.
+- **Fixed codec settings.** Stored documents use the codec's fixed defaults (component names as written, empty `Option`
+  written as `null`). Deploy-time JSON settings for HTTP routes never apply to them, because a stored document is a
+  durable contract.
+- **Evolving stored documents.** Add new components as `Option<T>` only. A document written before the component
+  existed decodes with it empty. A new required component makes every older row unreadable. Renaming a component drops
+  the value stored under the old name (or makes older rows unreadable if the new name is required). Removing a
+  component is safe: the old field becomes an unknown field, and unknown fields are skipped, which is also why older
+  code reads documents written by newer code.
+- **Decode failures.** A document the codec refuses fails the row read. The failure names the column.
+- jOOQ (`db-jooq-async`) has no `@Jsonb` mapping yet.
+
 ## Multiple Datasources
 
 Create custom qualifier annotations:
@@ -258,6 +343,9 @@ error: [PG-VALIDATE] Parameter ':status' has no matching method parameter
 
 error: [PG-VALIDATE] Type mismatch: 'id' is String but column 'users.id' is bigint
   → OrderPersistence.java:22
+
+error: [PG-VALIDATE] @Jsonb target 'title' maps to column 'docs.title' of type text; a JSON document needs a json or jsonb column
+  → DocPersistence.java:12
 ```
 
 ## Migration Linting

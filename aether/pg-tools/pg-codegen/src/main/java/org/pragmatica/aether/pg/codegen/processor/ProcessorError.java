@@ -96,7 +96,7 @@ public final class ProcessorError {
              + "' has type '" + type
              + "' which is neither a supported column type nor a value object exposing "
              + "'static ValueMapping<" + type
-             + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
+             + ", P> valueMapping()'. Add a ValueMapping, use a raw column type, or mark a json/jsonb column @Jsonb.";
     }
 
     public static String missingValueMappingForField(String field, String type, String recordType) {
@@ -106,7 +106,38 @@ public final class ProcessorError {
              + " has type '" + type
              + "' which is neither a supported column type nor a value object exposing "
              + "'static ValueMapping<" + type
-             + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
+             + ", P> valueMapping()'. Add a ValueMapping, use a raw column type, or mark a json/jsonb column @Jsonb.";
+    }
+
+    public static String jsonbUnsupportedType(String target, String type, String reason) {
+        return PREFIX
+             + "@Jsonb target '" + target
+             + "' has type '" + type
+             + "' which the JSON codec generator cannot handle: " + reason
+             + ". Write a 'static ValueMapping<" + type
+             + ", JsonText> valueMapping()' for it and drop @Jsonb.";
+    }
+
+    public static String jsonbColumnMismatch(String target, String column, String table, String pgType) {
+        return PREFIX
+             + "@Jsonb target '" + target
+             + "' maps to column '" + table
+             + "." + column
+             + "' of type " + pgType
+             + "; a JSON document needs a json or jsonb column";
+    }
+
+    public static String jsonbMethodNeedsQuery(String methodName) {
+        return PREFIX
+             + "@Jsonb on method '" + methodName
+             + "' marks its single result column as a JSON document, which needs @Query: "
+             + "a CRUD method reads a row record (mark its json/jsonb components @Jsonb instead)";
+    }
+
+    public static String jsonbMethodReturn(String methodName) {
+        return PREFIX
+             + "@Jsonb method '" + methodName
+             + "' must return Promise<T>, Promise<Option<T>> or Promise<List<T>> of a record or enum";
     }
 
     public static String sqlConnectorWithQueryAnnotation(String interfaceName) {
