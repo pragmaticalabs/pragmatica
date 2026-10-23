@@ -25,6 +25,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.ChannelInputShutdownReadComplete;
@@ -364,11 +367,23 @@ class Http3RequestHandlerTest {
     }
 
     /// #2386: Netty raises a framing error on the stream before its input ends; the stream is then never dispatched,
-    /// even when the input-shutdown events still arrive (the bad bytes and the `FIN` came in one read).
+    /// even when the input-shutdown events still arrive (the bad bytes and the `FIN` came in one read). A QUIC stream
+    /// defers its teardown past the read in progress, so those events reach the handler after it closed the stream;
+    /// an `EmbeddedChannel` would tear the pipeline down at once, so the close is held back ahead of the handler.
     @Test
     void framingErrorBeforeInputEnds_isNeverDispatched() {
-        var channel = channel();
-        var handler = (Http3Server.Http3RequestHandler) channel.pipeline().first();
+        var handler = new Http3Server.Http3RequestHandler(this::handle,
+                                                          LIMIT,
+                                                          timeSpan(60).seconds(),
+                                                          BodyRateLimit.bodyRateLimit(0,
+                                                                                      timeSpan(1).seconds(),
+                                                                                      timeSpan(1).seconds()));
+        var channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void close(ChannelHandlerContext ctx, ChannelPromise promise) {
+                promise.setSuccess();
+            }
+        }, handler);
 
         channel.writeInbound(requestHeaders());
         channel.writeInbound(data(10));
