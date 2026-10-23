@@ -473,6 +473,28 @@ class TerminationRetirementTest {
         assertThat(codesRaised()).containsExactly(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE, OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED);
     }
 
+    /// T9: a resolved warning closes the node's subject, so a later retirement of the same node that is refused past the bound raises a new
+    /// overdue warning. Red when the subject stays open after the first retirement ended (`open.remove` a no-op).
+    @Test
+    void aNodeRetiredAgainAfterAResolvedWarning_raisesASecondOverdueWarning() {
+        var overdue = TerminationRetirement.Overdue.overdue(OperatorWarningSink.handingOffTo(warnings::add), clockNs::get, TimeSpan.timeSpan(2).minutes());
+        var refusal = TerminationRetirement.Refused.FACTORY.apply(GONE);
+        var first = overdue.watch(GONE);
+
+        clockNs.addAndGet(TimeSpan.timeSpan(3).minutes().nanos());
+        first.refused(refusal);
+        first.ended(org.pragmatica.lang.Result.unitResult());
+        var second = overdue.watch(GONE);
+
+        clockNs.addAndGet(TimeSpan.timeSpan(3).minutes().nanos());
+        second.refused(refusal);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() >= 3);
+        assertThat(codesRaised()).containsExactly(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE,
+                                                  OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED,
+                                                  OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE);
+    }
+
     @Test
     void aRetirementRefusedWithinItsBound_raisesNothing() {
         leaderAndBothKeys();
