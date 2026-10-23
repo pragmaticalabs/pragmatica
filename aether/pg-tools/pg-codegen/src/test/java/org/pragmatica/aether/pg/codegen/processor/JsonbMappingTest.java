@@ -547,6 +547,19 @@ class JsonbMappingTest {
         }
 
         @Test
+        void crudInsertStringOnCamelCaseJsonColumn_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                record DocumentRow(long id, String title) {}
+
+                @PgSql
+                public interface StringRepo {
+                    @Table(DocumentRow.class)
+                    Promise<Unit> insert(long id, String extraDoc);
+                }
+                """, "'extraDoc' is a String bound to column 'documents.extra_doc' of type jsonb");
+        }
+
+        @Test
         void crudInsertScalarStringParam_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
                 record DocumentRow(long id, String title) {}
