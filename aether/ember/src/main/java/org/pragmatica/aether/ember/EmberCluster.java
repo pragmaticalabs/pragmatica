@@ -264,6 +264,9 @@ public final class EmberCluster {
     /// committed engine marker, minted by the first leader, then makes the choice cluster-wide.
     private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(DeploymentEngine.LEGACY);
 
+    /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
+    private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
+
     /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
     /// constructor. Captured from the real `config` value itself, never mirrored independently at
     /// construction time, so [#wiredCertificateProvider] and [#wiredQuicTls] can never drift from
@@ -537,6 +540,17 @@ public final class EmberCluster {
     @Contract
     public void withDeploymentEngine(DeploymentEngine engine) {
         deploymentEngine.set(engine);
+    }
+
+    /// W-29 — construct the node `nodeIdStr` with `engine`, whatever the cluster's engine is: a misconfigured node of the other engine. MUST be
+    /// called before that node is created (before [#start] for an initial node, before [#addCoreNode] for a newcomer). Harness-scoped.
+    @Contract
+    public void withDeploymentEngine(String nodeIdStr, DeploymentEngine engine) {
+        nodeEngines.put(nodeIdStr, engine);
+    }
+
+    private DeploymentEngine engineOf(NodeId nodeId) {
+        return Option.option(nodeEngines.get(nodeId.id())).or(deploymentEngine::get);
     }
 
     /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
@@ -1629,7 +1643,7 @@ public final class EmberCluster {
         // in-process node derives its bootstrap admin key exactly as a production node does rather
         // than falling back to a random one. An Ember harness that diverged here would be a fixture
         // encoding different behaviour from the code it exists to exercise.
-        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8))).withDeploymentEngine(deploymentEngine.get());
+        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8))).withDeploymentEngine(engineOf(nodeId));
 
         lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node would exit (drain complete, or its identity refused by the
