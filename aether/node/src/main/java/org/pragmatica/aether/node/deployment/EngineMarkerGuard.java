@@ -53,7 +53,8 @@ import org.slf4j.LoggerFactory;
 /// parks the **latest** action of each name until the guard opens, and drops it if the node is refused, so a misconfigured newcomer that wins an
 /// election writes nothing before it exits. An FSM2 node opens only once it reads an FSM2 marker.
 ///
-/// **Not carried.** The restore half (#1533: a pre-phase-3 backup removes the locally minted marker) and the worker arms are deferred (report 1.2).
+/// **Not carried here.** The restore half (#1533: a pre-phase-3 backup removes the locally minted marker) is the restore's finish
+/// (`BackupRestoreCoordinator`, W-34). The worker arms are deferred (report 1.2).
 public final class EngineMarkerGuard {
     private static final Logger log = LoggerFactory.getLogger(EngineMarkerGuard.class);
 

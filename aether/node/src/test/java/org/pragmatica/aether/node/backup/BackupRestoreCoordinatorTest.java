@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.ClusterIncarnation;
+import org.pragmatica.aether.node.ClusterIncarnationRegistrar;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentEngineKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
@@ -42,6 +44,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
@@ -61,6 +65,7 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -103,6 +108,10 @@ class BackupRestoreCoordinatorTest {
     private final List<Runnable> retries = new ArrayList<>();
     private final List<BackupWarning> warnings = new ArrayList<>();
     private final List<List<KVCommand<AetherKey>>> submitted = new ArrayList<>();
+    /// Runs after every write the coordinator commits while the restore is still `IN_PROGRESS` (a concurrent writer between the chunks and
+    /// the finish); nothing by default.
+    private Runnable whileRestoring = () -> {};
+    private int markerMints;
     private long slot;
 
     @BeforeEach
@@ -457,6 +466,147 @@ class BackupRestoreCoordinatorTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
         }
 
+        /// W-34 restore arm / MT-28 restore clause (phase-3 design 8.2; CTO ruling 9f854db8b): a leader WITHOUT `[backup]` has no restore
+        /// gate, so while a restore is `IN_PROGRESS` (incarnation still absent) its registrar mints the incarnation AND the engine marker. A
+        /// backup-enabled leader then resumes and finishes. A pre-phase-3 backup carries no marker, so the finish removes the minted one: the
+        /// restored cluster reads "incarnation present, marker absent" (LEGACY).
+        @Disabled("#1533: a restore resumed after another lineage's genesis never finishes (the finish's incarnation write is refused by the "
+                  + "version fence); enable with the finish fix, and drop the tripwire below")
+        @Test
+        void aMarkerMintedMidRestoreByALeaderWithoutBackup_isRemoved_byAPrePhase3Restore() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            interruptedRestoreThenUngatedMint(remote);
+
+            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(ClusterIncarnation.committed(kvStore).map(ClusterIncarnationValue::lineageId)).isEqualTo(Option.some(LINEAGE));
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())).as("a pre-phase-3 backup leaves no marker").isEqualTo(Option.none());
+        }
+
+        /// The same path over a phase-3 backup: the finish leaves the backup's own marker, never the one minted mid-restore.
+        @Disabled("#1533: a restore resumed after another lineage's genesis never finishes (the finish's incarnation write is refused by the "
+                  + "version fence); enable with the finish fix, and drop the tripwire below")
+        @Test
+        void aMarkerMintedMidRestoreByALeaderWithoutBackup_isReplaced_byAPhase3BackupsOwn() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var backedUp = new DeploymentEngineValue(DeploymentEngine.LEGACY, NodeId.nodeId("node-0").unwrap(), 10L);
+
+            seedRemote(remote,
+                       BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40),
+                       Map.of(ConfigKey.forKey("alpha"), ALPHA, DeploymentEngineKey.deploymentEngineKey(), backedUp));
+            interruptedRestoreThenUngatedMint(remote);
+
+            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())).as("the backup's marker").isEqualTo(Option.some(backedUp));
+        }
+
+        /// TRIPWIRE for the two disabled W-34 arms above (#1533). Today the ungated mint's incarnation blocks the finish: `netEffect` collapses
+        /// the restore's Remove-then-Put of `ClusterIncarnationKey` into one mutation, and the version fence refuses a replacement that is not
+        /// the stored value's successor, on every retry. Red when the finish completes: then enable the arms above.
+        @Test
+        void tripwire1533_aRestoreResumedAfterAnUngatedMint_doesNotFinish() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            interruptedRestoreThenUngatedMint(remote);
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            fireRetries(20);
+
+            assertThat(coordinator.isComplete()).as("#1533 is fixed: the finish completes after an ungated mint. Enable the two W-34 arms above "
+                                                    + "(aMarkerMintedMidRestoreByALeaderWithoutBackup_*) and delete this tripwire")
+                                                .isFalse();
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
+        }
+
+        /// The finish's marker arm on the path it can reach today (the no-`[backup]` path is blocked by #1533, above): a marker is committed
+        /// after every write of the resumed restore, so after its chunks and before its finish, WITHOUT an incarnation `[instrument: a
+        /// constructed state; the registrar mints both]`, so nothing fences the finish. A pre-phase-3 backup removes it. Red when the finish
+        /// leaves a local marker the backup does not carry.
+        @Test
+        void theFinish_removesALocalMarker_thatAPrePhase3BackupDoesNotCarry() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            interruptedRestoreThenMarkerOnly(remote);
+
+            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            assertThat(markerMints).as("precondition: a marker was committed while the restore was in progress").isPositive();
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())).as("a pre-phase-3 backup leaves no marker").isEqualTo(Option.none());
+        }
+
+        /// The same constructed state over a phase-3 backup. Red when the finish leaves the local marker instead of the backup's.
+        @Test
+        void theFinish_replacesALocalMarker_withAPhase3BackupsOwn() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var backedUp = new DeploymentEngineValue(DeploymentEngine.LEGACY, NodeId.nodeId("node-0").unwrap(), 10L);
+
+            seedRemote(remote,
+                       BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40),
+                       Map.of(ConfigKey.forKey("alpha"), ALPHA, DeploymentEngineKey.deploymentEngineKey(), backedUp));
+            interruptedRestoreThenMarkerOnly(remote);
+
+            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            assertThat(markerMints).as("precondition: a marker was committed while the restore was in progress").isPositive();
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())).as("the backup's marker").isEqualTo(Option.some(backedUp));
+        }
+
+        private void interruptedRestoreThenMarkerOnly(String remote) {
+            interruptedRestore(remote);
+            whileRestoring = this::mintMarkerOnly;
+        }
+
+        /// As a leader writes it: a `LeaderTransaction` witnessed by the committed leader (a plain `Put` of this key is refused).
+        private void mintMarkerOnly() {
+            var key = DeploymentEngineKey.deploymentEngineKey();
+            var minted = new DeploymentEngineValue(DeploymentEngine.FSM2, NodeId.nodeId("ungated-leader").unwrap(), 20L);
+
+            applyDirect(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                "test-mint:" + slot,
+                                                                                kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap(),
+                                                                                List.of(),
+                                                                                List.of(new KVCommand.Mutation<>(key, kvStore.get(key), Option.some(minted)))));
+            if (kvStore.get(key).equals(Option.some(minted))) {
+                markerMints++;
+            }
+        }
+
+        private void interruptedRestore(String remote) {
+            var commit = git(Path.of(remote), "rev-parse", "backup").strip();
+
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                                                  LINEAGE,
+                                                                                  3,
+                                                                                  40,
+                                                                                  commit)));
+        }
+
+        /// A backup-enabled leader began restoring `remote`'s head and stopped (marker `IN_PROGRESS`, nothing else written). Then a leader
+        /// with no `[backup]`, so no restore gate, runs the production lineage mint: it lands, incarnation and FSM2 marker together.
+        private void interruptedRestoreThenUngatedMint(String remote) {
+            interruptedRestore(remote);
+            ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
+                                                   commands -> Promise.success(applyDirect(commands)),
+                                                   ClusterIncarnation.Mint.mint(DeploymentEngine.FSM2, NodeId.nodeId("ungated-leader").unwrap()))
+                                       .get()
+                                       .await();
+
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())
+                              .map(value -> ((DeploymentEngineValue) value).engine())).as("precondition: the ungated mint landed mid-restore")
+                                                                                      .isEqualTo(Option.some(DeploymentEngine.FSM2));
+        }
+
         /// The finish applies at most once (v1533 MY6). Two leaders both decided to resume the same
         /// `IN_PROGRESS` restore; the first finished it. The second builds its finish only afterwards, and its
         /// finish is guarded on the `IN_PROGRESS` marker it resumed from, so it is refused: the incarnation rises
@@ -726,7 +876,14 @@ class BackupRestoreCoordinatorTest {
 
         return RestoreGate.admit(kvStore, commands)
                           .async()
-                          .map(_ -> applyDirect(commands));
+                          .map(_ -> applyDirect(commands))
+                          .onSuccess(_ -> afterRestoreWrite());
+    }
+
+    private void afterRestoreWrite() {
+        if (outcome() == BackupRestoreOutcome.IN_PROGRESS) {
+            whileRestoring.run();
+        }
     }
 
     private List<Object> applyDirect(List<KVCommand<AetherKey>> commands) {
