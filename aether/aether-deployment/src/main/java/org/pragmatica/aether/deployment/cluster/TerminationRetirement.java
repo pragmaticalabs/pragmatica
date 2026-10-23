@@ -5,7 +5,9 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
@@ -219,9 +221,16 @@ public interface TerminationRetirement {
 
     /// The overdue bound of a retirement and where its events go (owner rule 2026-10-03: an operator-visible condition raises one event on
     /// entering it and one on leaving it).
-    record Overdue(OperatorWarningSink warnings, LongSupplier clockNs, TimeSpan after) {
+    ///
+    /// **One emitter.** Both retirements run on the leader: the confirmed reap (B18) and the operator `--force` clear (B19) are reached only
+    /// through an active topology manager (`ClusterTopologyManagerRecord.clearUnconfirmed` refuses with `NotActive` otherwise, and the manager
+    /// is active only on the leader: `AetherNode.toggleCtmOnLeaderChange`). The two can still overlap on that one node for the same terminated
+    /// node, so `open` holds the subjects whose overdue warning is raised: a second retirement of the same node raises nothing while the first
+    /// one's warning is open. `[limit: a retirement started under an earlier leader keeps retrying after leadership moved; if the new leader
+    /// starts one for the same node, each node raises its own]`.
+    record Overdue(OperatorWarningSink warnings, LongSupplier clockNs, TimeSpan after, Set<NodeId> open) {
         static Overdue overdue(OperatorWarningSink warnings, LongSupplier clockNs, TimeSpan after) {
-            return new Overdue(warnings, clockNs, after);
+            return new Overdue(warnings, clockNs, after, ConcurrentHashMap.newKeySet());
         }
 
         Watch watch(NodeId node) {
@@ -235,8 +244,9 @@ public interface TerminationRetirement {
 
             @Contract
             void refused(Cause cause) {
-                if (!cause.isTerminal() && overdue.clockNs().getAsLong() - startedNs >= overdue.after().nanos() && raised.compareAndSet(false,
-                                                                                                                                        true)) {
+                if (!cause.isTerminal() && overdue.clockNs().getAsLong() - startedNs >= overdue.after().nanos() && overdue.open()
+                                                                                                                          .add(node) && raised.compareAndSet(false,
+                                                                                                                                                             true)) {
                     OperatorWarnings.raise(LOG,
                                            overdue.warnings(),
                                            OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE,
@@ -250,7 +260,7 @@ public interface TerminationRetirement {
 
             @Contract
             void ended(Result<Unit> outcome) {
-                if (raised.get()) {
+                if (raised.get() && overdue.open().remove(node)) {
                     OperatorWarnings.raise(LOG,
                                            overdue.warnings(),
                                            OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED,
