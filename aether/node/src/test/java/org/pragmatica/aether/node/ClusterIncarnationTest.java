@@ -139,7 +139,7 @@ class ClusterIncarnationTest {
     @Nested
     class Restore {
         @Test
-        void restoreCommands_keepTheRestoredLineage_atTheNextIncarnation() {
+        void restore_keepTheRestoredLineage_atTheNextIncarnation() {
             var restored = ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, "id-lineage-backup-5");
 
             restore(restored, restored.incarnation(), "restore-id");
@@ -150,7 +150,7 @@ class ClusterIncarnationTest {
         /// A cold-restarted cluster mints its own genesis before the restore runs. The restore must still
         /// land — the restored lineage replaces the fresh one, one incarnation past the backup.
         @Test
-        void restoreCommands_landOverAFreshGenesis() {
+        void restore_landOverAFreshGenesis() {
             ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-fresh", () -> "id-new")
                               .onPresent(ClusterIncarnationTest.this::apply);
 
@@ -182,7 +182,7 @@ class ClusterIncarnationTest {
         /// #1625: a restore commits a FRESH incarnation id, never the restored one, so a number reused by a
         /// history that never reached the backup cannot pass for the restored incarnation.
         @Test
-        void restoreCommands_commitAFreshIncarnationId_notTheRestoredOne() {
+        void restore_commitAFreshIncarnationId_notTheRestoredOne() {
             var restored = ClusterIncarnationValue.clusterIncarnationValue("L1", 5, "id-of-the-backup");
 
             restore(restored, 5, "fresh-restore-id");
