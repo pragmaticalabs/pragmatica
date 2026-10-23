@@ -1235,23 +1235,34 @@ record PlacementReconciler(NodeId self,
 
         mutations.add(mutation);
         if (value.phase() == PlacementOperationPhase.COMPLETE) {
-            value.previousNode()
-                 .onPresent(node -> {
-                                // 12 item 4b: the departure record leaves in the same transaction as the directive (absent under LEGACY), and
-                                // before it, so the cluster FSM never sees a directive removed under a still-mirrored DEPARTED record.
-                                addRemoval(mutations,
-                                           new AetherKey.NodeDepartureKey(node));
-                                addRemoval(mutations,
-                                           new AetherKey.ActivationDirectiveKey(node));
-                                addRemoval(mutations,
-                                           new AetherKey.NodePlacementKey(node));
-                            });
+            value.previousNode().onPresent(node -> addCompletionRemovals(mutations, node));
         }
 
         var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, id, value.issuer(), guards, mutations);
 
         return apply.apply(List.of(command))
                     .map(results -> accepted(results, id));
+    }
+
+    /// 12 item 4b: the departure record leaves in the same transaction as the directive (absent under LEGACY), and before it, so the cluster FSM
+    /// never sees a directive removed under a still-mirrored DEPARTED record. A COMPLETE refused once is retried by the next pass; it retires
+    /// the directive and the record only while the record is DEPARTED or absent (CTO ruling `4c533461f`): a re-admitted record (ADMITTED or
+    /// ACTIVE) belongs to a process that came back after the decision, so the directive and the record stay. The placement row leaves either way.
+    @Contract
+    private void addCompletionRemovals(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations, NodeId node) {
+        if (isRetirable(node)) {
+            addRemoval(mutations, new AetherKey.NodeDepartureKey(node));
+            addRemoval(mutations, new AetherKey.ActivationDirectiveKey(node));
+        }
+
+        addRemoval(mutations, new AetherKey.NodePlacementKey(node));
+    }
+
+    private boolean isRetirable(NodeId node) {
+        return store.getTyped(new AetherKey.NodeDepartureKey(node),
+                              AetherValue.NodeDepartureValue.class)
+                    .map(record -> record.state() == AetherValue.DepartureState.DEPARTED)
+                    .or(true);
     }
 
     @Contract

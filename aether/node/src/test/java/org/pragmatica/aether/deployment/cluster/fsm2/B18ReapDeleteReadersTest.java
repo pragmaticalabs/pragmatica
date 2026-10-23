@@ -85,7 +85,8 @@ class B18ReapDeleteReadersTest {
                                                         commands -> Promise.success(commands.stream()
                                                                                             .map(command -> h.applyCommand((KVCommand) command))
                                                                                             .toList()),
-                                                        ONE_ATTEMPT);
+                                                        ONE_ATTEMPT,
+                                                        () -> false);
     }
 
     @Test

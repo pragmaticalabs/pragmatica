@@ -621,10 +621,26 @@ class CommunityPlacementReconcilerTest {
         assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(true, true, true);
     }
 
-    /// A refused COMPLETE is not terminal (CTO ruling 2026-10-23, P3-F review): the operation stays TERMINATING, and the next pass retries the
-    /// transaction on what the store holds then. Red when: a later pass does not retire the directive, the placement and the record together.
+    /// A refused COMPLETE is not terminal (CTO rulings `c0b4ae539` (2), `4c533461f`): the operation stays TERMINATING, and the next pass retries
+    /// the transaction on what the store holds then. It retires the directive and the record only while the record is DEPARTED or absent.
+    /// Red when: a COMPLETE refused because the directive moved is not retried to retire all three; or a COMPLETE refused because the record was
+    /// re-admitted removes that record or the directive on the next pass.
     @Test
-    void complete_refusedOnce_isRetriedByTheNextPass_andRetiresAllThree() {
+    void complete_refusedBecauseTheDirectiveMoved_isRetriedByTheNextPass_andRetiresAllThree() {
+        movedUpToTheCompletingStep();
+        beforeCommit = () -> seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(OLD),
+                                                      new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "10.0.0.9:9000")));
+        reconciler.reconcile().await();
+        assertThat(identityHeld(OLD)).as("refused: all three stay").containsExactly(true, true, true);
+
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(false, false, false);
+    }
+
+    @Test
+    void complete_refusedBecauseTheRecordWasReadmitted_theNextPassCompletes_andKeepsTheDirectiveAndTheRecord() {
         movedUpToTheCompletingStep();
         beforeCommit = () -> seedRecord(OLD, new AetherValue.NodeDepartureValue(AetherValue.DepartureState.ADMITTED,
                                                                                 2L,
@@ -633,12 +649,12 @@ class CommunityPlacementReconcilerTest {
                                                                                 2L));
         reconciler.reconcile().await();
         assertThat(identityHeld(OLD)).as("refused: all three stay").containsExactly(true, true, true);
-        beforeCommit = () -> {};
 
         reconciler.reconcile().await().unwrap();
 
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
-        assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(false, false, false);
+        assertThat(identityHeld(OLD)).as("directive and record of the re-admitted process stay; the placement row leaves")
+                                     .containsExactly(true, false, true);
     }
 
     @Test

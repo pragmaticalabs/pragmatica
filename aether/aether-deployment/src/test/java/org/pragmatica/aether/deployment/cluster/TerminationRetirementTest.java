@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import io.netty.buffer.ByteBuf;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -93,15 +94,18 @@ class TerminationRetirementTest {
                                                  .strategy(BackoffStrategy.fixed()
                                                                           .interval(TimeSpan.timeSpan(5).millis()));
 
+    /// The node's stop signal for the retried retirements.
+    private final AtomicBoolean stopping = new AtomicBoolean();
+
     /// Runs once, before the first submitted batch is applied: a concurrent writer that lands between the read and the commit.
     private Runnable beforeFirstApply = () -> {};
 
     private TerminationRetirement retirement() {
-        return TerminationRetirement.directiveAndRecord(store, commands -> Promise.success(apply(commands)), ONE_ATTEMPT);
+        return TerminationRetirement.directiveAndRecord(store, commands -> Promise.success(apply(commands)), ONE_ATTEMPT, () -> false);
     }
 
     private TerminationRetirement retried() {
-        return TerminationRetirement.directiveAndRecord(store, commands -> Promise.success(applyAfterTheInterloper(commands)), SHORT_RETRY);
+        return TerminationRetirement.directiveAndRecord(store, commands -> Promise.success(applyAfterTheInterloper(commands)), SHORT_RETRY, stopping::get);
     }
 
     private List<Object> applyAfterTheInterloper(List<KVCommand<AetherKey>> commands) {
@@ -166,34 +170,78 @@ class TerminationRetirementTest {
 
         var outcome = TerminationRetirement.directiveAndRecord(store,
                                                                commands -> Promise.success(List.<Object>of(new KVCommand.TransactionResult("other", false))),
-                                                               ONE_ATTEMPT)
+                                                               ONE_ATTEMPT,
+                                                               () -> false)
                                            .retire(GONE)
                                            .await();
 
         assertThat(outcome.isFailure()).isTrue();
     }
 
-    // A refused retirement is retried until it commits or nothing is left (CTO ruling 2026-10-23, P3-F review).
-    // Red when: a retirement refused because the record moved, or because leadership moved, is not retried to commit both removals; or a
-    // retirement whose keys another authority already removed keeps submitting.
+    // A refused retirement is retried only for the identity first read (CTO rulings c0b4ae539 (2), 4c533461f).
+    // Red when: a retirement refused because the record was re-admitted (ADMITTED, a newer epoch) is retried, or removes the record or the
+    // directive; a retirement refused because leadership moved is not retried to commit both removals; a retirement whose keys another
+    // authority already removed keeps submitting; a retirement whose record alone was removed meanwhile does not retire the directive; or a
+    // retirement keeps retrying once the node stops.
     @Test
-    void aRetirementRefusedBecauseTheRecordMoved_isRetried_andRetiresBoth() {
+    void aRetirementRefusedBecauseTheRecordWasReadmitted_endsTheRetry_andKeepsTheRecordAndTheDirective() {
         leaderAndBothKeys();
-        beforeFirstApply = () -> seed(RECORD, new NodeDepartureValue(DepartureState.ADMITTED, 2L, new ProcessIncarnation(2L, 0xAAL), Option.none(), 20L));
+        var readmitted = new NodeDepartureValue(DepartureState.ADMITTED, 2L, new ProcessIncarnation(2L, 0xAAL), Option.none(), 20L);
+
+        beforeFirstApply = () -> seed(RECORD, readmitted);
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(outcome.isFailure()).as("the retry ended: the record is no longer the one first read").isTrue();
+        assertThat(submitted).as("the refused attempt only").hasSize(1);
+        assertThat(store.get(RECORD)).as("the re-admitted record stays").isEqualTo(Option.some(readmitted));
+        assertThat(store.get(DIRECTIVE).isPresent()).as("and so does the directive").isTrue();
+    }
+
+    @Test
+    void aRetirementWhoseRecordAloneWasRemovedMeanwhile_isRetried_andRetiresTheDirective() {
+        leaderAndBothKeys();
+        beforeFirstApply = this::removeTheRecord;
 
         retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
 
-        assertThat(submitted).as("refused, then retried").hasSize(2);
+        assertThat(submitted).as("refused, then retried on the directive alone").hasSize(2);
         assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
-        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+    }
+
+    private void removeTheRecord() {
+        commit(new KVCommand.LeaderTransaction<>(RECORD,
+                                                 "elsewhere",
+                                                 LEADER,
+                                                 List.of(),
+                                                 List.of(new KVCommand.Mutation<>(RECORD, store.get(RECORD), Option.none()))));
+    }
+
+    @Test
+    void aRetirementOfAStoppingNode_endsAfterTheRefusedAttempt() {
+        leaderAndBothKeys();
+        beforeFirstApply = () -> {
+            moveLeadership();
+            stopping.set(true);
+        };
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(outcome.isFailure()).as("the retry ended on the stop").isTrue();
+        assertThat(submitted).as("no attempt after the stop").hasSize(1);
+        assertThat(store.get(RECORD)).isEqualTo(Option.some(DEPARTED));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void moveLeadership() {
+        ((KVStore) store).process(((KVStore) store).createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, new LeaderValue(new NodeId("core-2"), 2)))));
     }
 
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     void aRetirementRefusedBecauseLeadershipMoved_isRetried_andRetiresBoth() {
         leaderAndBothKeys();
-        beforeFirstApply = () -> ((KVStore) store).process(((KVStore) store).createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE,
-                                                                                                               new LeaderValue(new NodeId("core-2"), 2)))));
+        beforeFirstApply = this::moveLeadership;
 
         retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
 
