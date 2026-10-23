@@ -621,6 +621,26 @@ class CommunityPlacementReconcilerTest {
         assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(true, true, true);
     }
 
+    /// A refused COMPLETE is not terminal (CTO ruling 2026-10-23, P3-F review): the operation stays TERMINATING, and the next pass retries the
+    /// transaction on what the store holds then. Red when: a later pass does not retire the directive, the placement and the record together.
+    @Test
+    void complete_refusedOnce_isRetriedByTheNextPass_andRetiresAllThree() {
+        movedUpToTheCompletingStep();
+        beforeCommit = () -> seedRecord(OLD, new AetherValue.NodeDepartureValue(AetherValue.DepartureState.ADMITTED,
+                                                                                2L,
+                                                                                new AetherValue.ProcessIncarnation(2L, 8L),
+                                                                                Option.none(),
+                                                                                2L));
+        reconciler.reconcile().await();
+        assertThat(identityHeld(OLD)).as("refused: all three stay").containsExactly(true, true, true);
+        beforeCommit = () -> {};
+
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(false, false, false);
+    }
+
     @Test
     void destinationLosesReadinessAfterDrainAcknowledgement_doesNotTerminateUntilRecovered() {
         initialize();

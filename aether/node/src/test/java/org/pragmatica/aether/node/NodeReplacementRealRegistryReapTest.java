@@ -572,7 +572,7 @@ class NodeReplacementRealRegistryReapTest {
     void aConfirmedReap_retiresTheDirectiveAndTheDepartureRecordTogether_underTheFsm2Binding() {
         put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         identityOf(OLD);
-        ctmUnderTest.setTerminationRetirements(TerminationRetirement.directiveAndRecord(store, this::process),
+        ctmUnderTest.setTerminationRetirements(TerminationRetirement.directiveAndRecord(store, this::process, TerminationRetirement.UNTIL_RETIRED),
                                                TerminationRetirement.NONE);
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
 
@@ -612,7 +612,7 @@ class NodeReplacementRealRegistryReapTest {
     void aForcedClear_retiresTheDirectiveAndTheDepartureRecordTogether_underTheFsm2Binding() {
         unconfirmedReapOf(OLD);
         ctmUnderTest.setTerminationRetirements(TerminationRetirement.NONE,
-                                               TerminationRetirement.directiveAndRecord(store, this::process));
+                                               TerminationRetirement.directiveAndRecord(store, this::process, TerminationRetirement.UNTIL_RETIRED));
 
         ctmUnderTest.clearUnconfirmed(OLD, "operator", "unknown", true).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
 

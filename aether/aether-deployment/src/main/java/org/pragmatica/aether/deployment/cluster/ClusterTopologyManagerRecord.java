@@ -3196,9 +3196,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
-    /// 12 item 4b (B18, B19): the termination is confirmed, so the node's directive and departure record are retired together. FER: a refused
-    /// or failed retirement is logged and not retried here; the directive and the record stay together (never one without the other), and the
-    /// cluster FSM's R-4.3.3 still collects the record whenever the directive is removed later.
+    /// 12 item 4b (B18, B19): the termination is confirmed, so the node's directive and departure record are retired together. The retirement
+    /// retries itself until it commits or neither key is left (`TerminationRetirement`), so a failure reaching here means its retry gave up:
+    /// FER, logged and dropped; the directive and the record stay together (never one without the other).
     @Contract
     private void retireIdentity(TerminationRetirement retirement, NodeId nodeId, String authority) {
         retirement.retire(nodeId)

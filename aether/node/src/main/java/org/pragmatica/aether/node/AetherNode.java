@@ -2647,8 +2647,10 @@ public interface AetherNode extends ManageableNode {
         // B14 (design 4.4): under FSM2 a core's leader FSM is judged when the committed snapshot is restored; under LEGACY this adds nothing.
         clusterNode.onStateRestored(deploymentWiring.stateRestored());
         // B18, B19 (design 12 item 4b): under FSM2 the CTM's confirmed reap and the operator --force clear retire the node's directive and
-        // departure record in one transaction; under LEGACY they retire nothing.
-        var retirement = TerminationRetirement.directiveAndRecord(kvStore, clusterCommandApplier);
+        // departure record in one transaction, retried until it commits or nothing is left; under LEGACY they retire nothing.
+        var retirement = TerminationRetirement.directiveAndRecord(kvStore,
+                                                                  clusterCommandApplier,
+                                                                  TerminationRetirement.UNTIL_RETIRED);
 
         clusterTopologyManager.setTerminationRetirements(deploymentWiring.reaperRetirement(retirement),
                                                          deploymentWiring.forceClearRetirement(retirement));
