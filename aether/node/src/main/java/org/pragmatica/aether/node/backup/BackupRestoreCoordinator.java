@@ -5,7 +5,6 @@
 package org.pragmatica.aether.node.backup;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -13,6 +12,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
@@ -85,9 +85,10 @@ import static org.pragmatica.lang.Result.success;
 /// [#CHUNK_BYTES] of rendered entries, ids prefixed [RestoreGate#RESTORE_TRANSACTION_PREFIX], each guarded
 /// on the `IN_PROGRESS` marker and each mutation expecting the value this node holds now; entries already
 /// equal are skipped (a version-fenced equal write would refuse the whole transaction). The incarnation is
-/// excluded from the chunks. The final transaction writes [ClusterIncarnation#restoreCommands] — fed the
-/// DECODED backup value and the highest incarnation the backup history records for its lineage — together
-/// with the `RESTORED` marker, replacing the `IN_PROGRESS` one, so it applies at most once.
+/// excluded from the chunks. The finish writes [ClusterIncarnation#restoring] — fed the DECODED backup value and
+/// the highest incarnation the backup history records for its lineage — through
+/// [ClusterIncarnation#replaceCommands], together with the `RESTORED` marker replacing the `IN_PROGRESS` one, so it
+/// applies at most once.
 public final class BackupRestoreCoordinator {
     private static final Logger LOG = LoggerFactory.getLogger(BackupRestoreCoordinator.class);
     static final TimeSpan INITIAL_BACKOFF = TimeSpan.timeSpan(500L).millis();
@@ -559,12 +560,15 @@ public final class BackupRestoreCoordinator {
                                                                           .toList())));
     }
 
-    /// The incarnation per [ClusterIncarnation#restoreCommands] and the `RESTORED` marker, in one
-    /// transaction that replaces the `IN_PROGRESS` marker — so it applies at most once.
+    /// The restored incarnation ([ClusterIncarnation#restoring]) and the `RESTORED` marker, written by
+    /// [ClusterIncarnation#replaceCommands]: one batch whose transactions are all guarded on the `IN_PROGRESS` marker,
+    /// so it applies at most once. It replaces an incarnation this cluster committed meanwhile, which a single
+    /// transaction cannot (#1533: the remove and the put of one key would fold into one mutation, refused by the
+    /// successor fence on every retry).
     private Promise<Unit> finish(Loaded loaded, BackupRestoreValue marker) {
         return restoredIncarnation(loaded).async()
                                   .flatMap(incarnation -> leaderValue().async()
-                                                                     .flatMap(leaderValue -> submit(finalTransaction(leaderValue,
+                                                                     .flatMap(leaderValue -> submitAll(finalCommands(leaderValue,
                                                                                                                      incarnation,
                                                                                                                      loaded.highestRecorded(),
                                                                                                                      marker))));
@@ -578,38 +582,20 @@ public final class BackupRestoreCoordinator {
                                                                               + " holds no cluster incarnation")));
     }
 
-    private KVCommand<AetherKey> finalTransaction(LeaderValue leaderValue,
-                                                  ClusterIncarnationValue restored,
-                                                  long highestRecorded,
-                                                  BackupRestoreValue marker) {
-        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
-
-        netEffect(ClusterIncarnation.restoreCommands(restored,
-                                                     highestRecorded,
-                                                     ULID.ulid().encoded())).forEach((key, value) -> mutations.add(mutation(key,
-                                                                                                                            value)));
-        mutations.add(new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
-                                               Option.<AetherValue> some(marker),
-                                               Option.<AetherValue> some(marker.restored())));
-
-        return transaction(RestoreGate.RESTORE_TRANSACTION_PREFIX + "finish:", leaderValue, List.of(), mutations);
-    }
-
-    /// Commands collapsed to one replacement per key (a `Remove` then a `Put` of one key is that `Put`): a
-    /// transaction mutates each key once, against the value this node holds.
-    private static Map<AetherKey, Option<AetherValue>> netEffect(List<KVCommand<AetherKey>> commands) {
-        var effect = new LinkedHashMap<AetherKey, Option<AetherValue>>();
-
-        for (var command : commands) {
-            switch (command) {
-                case KVCommand.Put<AetherKey, ?> put when put.value() instanceof AetherValue value -> effect.put(put.key(),
-                                                                                                                 Option.some(value));
-                case KVCommand.Remove<AetherKey> remove -> effect.put(remove.key(), Option.none());
-                default -> {}
-            }
-        }
-
-        return effect;
+    private List<KVCommand<AetherKey>> finalCommands(LeaderValue leaderValue,
+                                                     ClusterIncarnationValue restored,
+                                                     long highestRecorded,
+                                                     BackupRestoreValue marker) {
+        return ClusterIncarnation.replaceCommands(leaderValue,
+                                                  RestoreGate.RESTORE_TRANSACTION_PREFIX + "finish:" + UUID.randomUUID(),
+                                                  ClusterIncarnation.committed(kvStore),
+                                                  ClusterIncarnation.restoring(restored,
+                                                                               highestRecorded,
+                                                                               ULID.ulid().encoded()),
+                                                  List.of(markerWitness(marker)),
+                                                  List.of(new KVCommand.Mutation<>(BackupRestoreKey.backupRestoreKey(),
+                                                                                   Option.<AetherValue> some(marker),
+                                                                                   Option.<AetherValue> some(marker.restored()))));
     }
 
     // --- decisions and transactions ---
@@ -639,6 +625,19 @@ public final class BackupRestoreCoordinator {
                       .flatMap(results -> accepted(results, transactionId)
                                           ? Promise.unitPromise()
                                           : RestoreError.Refused.FACTORY.apply(transactionId).promise());
+    }
+
+    private Promise<Unit> submitAll(List<KVCommand<AetherKey>> commands) {
+        return applier.apply(commands)
+                      .flatMap(results -> ClusterIncarnation.replaceAccepted(results, commands)
+                                          ? Promise.unitPromise()
+                                          : RestoreError.Refused.FACTORY.apply(transactionIds(commands)).promise());
+    }
+
+    private static String transactionIds(List<KVCommand<AetherKey>> commands) {
+        return commands.stream()
+                       .map(command -> ((KVCommand.LeaderTransaction<?, ?>) command).transactionId())
+                       .collect(Collectors.joining(", "));
     }
 
     private static boolean accepted(List<Object> results, String transactionId) {
