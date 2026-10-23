@@ -150,6 +150,20 @@ class KVStoreReplicaRingTest {
         assertThat(closed).containsExactly(CloseReason.INCARNATION_MISMATCH);
     }
 
+    /// A batch that WRITES the incarnation key clears the ring even when the tag it leaves is the one it had (a restore that rewrites the same
+    /// value): the rule is "touches the key", not only "the tag changed". Mutation: drop the `touched` test, and this batch is delivered.
+    @Test
+    void aBatchThatRewritesTheIncarnationKeyWithTheSameValue_stillClearsTheRing() {
+        var store = genesisStore();
+
+        commit(store, 1, put("a", "1"));
+        assertThat(store.replicaRing().entries()).as("precondition: the ring holds slot 1").hasSize(1);
+        commit(store, 2, putIncarnation(1, "A"));
+
+        assertThat(store.replicaRing().entries()).isEmpty();
+        assertThat(store.replicaRing().floor()).isEqualTo(3L);
+    }
+
     @Test
     void aReMintedIncarnationNumber_isADifferentTag() {
         var store = genesisStore();
@@ -319,8 +333,9 @@ class KVStoreReplicaRingTest {
         assertThat(store.replicaRing().nextSlot()).isEqualTo(5L);
 
         store.onPhaseCompleted(3);
+        assertThat(store.committedRevision()).as("advance-only: an older frontier does not move it back (mutation: assign instead of max)").isEqualTo(5L);
         store.onPhaseCompleted(5);
-        assertThat(store.committedRevision()).as("advance-only and idempotent").isEqualTo(5L);
+        assertThat(store.committedRevision()).as("and idempotent").isEqualTo(5L);
     }
 
     /// The hook takes only the store monitor and then the ring lock. `mutationLock` is held while listeners run, so a hook that took it would
