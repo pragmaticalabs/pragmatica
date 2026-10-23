@@ -475,7 +475,7 @@ class JsonbMappingTest {
             var result = compile(source, "test/TitleRepo.java");
 
             assertThat(result.success()).isFalse();
-            assertThat(result.diagnostics()).contains("@Jsonb target 'title' maps to column 'documents.title' of type text");
+            assertThat(result.diagnostics()).contains("@Jsonb target 'title' maps to column 'documents.title' of type text; a JSON document needs a json or jsonb column");
         }
 
         @Test
@@ -505,7 +505,96 @@ class JsonbMappingTest {
             var result = compile(source, "test/TitleInsertRepo.java");
 
             assertThat(result.success()).isFalse();
-            assertThat(result.diagnostics()).contains("@Jsonb target 'title' maps to column 'documents.title' of type text");
+            assertThat(result.diagnostics()).contains("@Jsonb target 'title' maps to column 'documents.title' of type text; a JSON document needs a json or jsonb column");
+        }
+
+        /// The schema check maps the component name to its column the same way the mapper does (camelCase to snake_case).
+        @Test
+        void markedCamelCaseComponentOnTextColumn_isCompileError() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Title(String text) {}
+
+                record DocumentRow(long id, @Jsonb Title documentTitle) {}
+
+                @PgSql
+                public interface CamelRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = compile(source, "test/CamelRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("@Jsonb target 'documentTitle' maps to column 'documents.document_title' of type text");
+        }
+
+        /// The holder name is taken by a type that is not generated output: the processor reports the generator's
+        /// refusal instead of silently leaving the factory without codecs.
+        @Test
+        void holderNameTakenByAnotherType_isCompileError() throws Exception {
+            var squatter = """
+                package test;
+
+                public final class ClashRepoJsonCodecs {}
+                """;
+            var repo = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface ClashRepo {
+                    @Query("SELECT profile FROM documents WHERE id = :id")
+                    @Jsonb
+                    Promise<Option<Profile>> profileOf(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileWithProcessor(java.util.List.of(new TestCompilationHelper.SourceEntry("test/ClashRepoJsonCodecs.java", squatter),
+                                                                                      new TestCompilationHelper.SourceEntry("test/ClashRepo.java", repo)),
+                                                                    tempDir);
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Cannot generate test.ClashRepoJsonCodecs for test.ClashRepo")
+                                            .contains("is not marked as generated JSON codec code");
+        }
+
+        @Test
+        void unmarkedRecordParam_errorPointsAtJsonb() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface UnmarkedParamRepo {
+                    @Query("SELECT count(*) FROM documents WHERE profile = :probe")
+                    Promise<Long> countLike(Profile probe);
+                }
+                """;
+
+            var result = compile(source, "test/UnmarkedParamRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Parameter 'probe' has type 'test.Profile'")
+                                            .contains("use a raw column type, or mark a json/jsonb column @Jsonb.");
         }
 
         @Test
@@ -530,7 +619,7 @@ class JsonbMappingTest {
             var result = compile(source, "test/TitleRepo.java");
 
             assertThat(result.success()).isFalse();
-            assertThat(result.diagnostics()).contains("@Jsonb target 'title' maps to column 'documents.title' of type text");
+            assertThat(result.diagnostics()).contains("@Jsonb target 'title' maps to column 'documents.title' of type text; a JSON document needs a json or jsonb column");
         }
 
         @Test
@@ -580,7 +669,7 @@ class JsonbMappingTest {
             var result = compile(source, "test/UnitRepo.java");
 
             assertThat(result.success()).isFalse();
-            assertThat(result.diagnostics()).contains("@Jsonb method 'remove' must return");
+            assertThat(result.diagnostics()).contains("@Jsonb method 'remove' must return Promise<T>, Promise<Option<T>> or Promise<List<T>> of a record or enum");
         }
 
         @Test

@@ -55,6 +55,14 @@ class JsonTextConverterTest {
     }
 
     @Test
+    void nonAsciiDocument_readsAsUtf8() {
+        var document = "{\"city\":\"Київ 😀\"}";
+
+        assertThat(converter.toObject(Oid.JSONB, document.getBytes(StandardCharsets.UTF_8), JsonText.class))
+            .isEqualTo(JsonText.jsonText(document));
+    }
+
+    @Test
     void pgSqlConnectorFactory_registersTheConverter() {
         assertRegistered(configured(PgSqlConnectorFactory.class));
     }

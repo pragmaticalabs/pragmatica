@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.testkit.TestKitError;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -36,6 +37,9 @@ class MapRowAccessorTest {
         var read = new MapRowAccessor(Map.of("id", 1L)).getOptional("nick", String.class);
 
         assertThat(read.isFailure()).isTrue();
-        read.onFailure(cause -> assertThat(cause).isInstanceOf(TestKitError.UnscriptedInteraction.class));
+        read.onFailure(cause -> assertThat(cause).isInstanceOf(TestKitError.UnscriptedInteraction.class)
+                                                 .extracting(Cause::message)
+                                                 .asString()
+                                                 .startsWith("No scripted column 'nick' in row: "));
     }
 }

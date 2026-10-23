@@ -54,8 +54,9 @@ class JsonbPostgresRoundTripTest {
         import org.pragmatica.lang.Option;
 
         public final class Scenario {
-            static final Address KYIV = new Address("Kyiv", "01001");
-            static final Profile ANN = new Profile("Ann", Option.some("an"), List.of(KYIV, new Address("Lviv", "79000")), KYIV);
+            // Non-ASCII on purpose: Cyrillic and an emoji (a UTF-16 surrogate pair) catch any charset other than UTF-8.
+            static final Address KYIV = new Address("Київ", "01001");
+            static final Profile ANN = new Profile("Іван 😀", Option.some("ваня"), List.of(KYIV, new Address("Львів", "79000")), KYIV);
             static final Profile BOB = new Profile("Bob", Option.none(), List.of(), new Address("Odesa", "65000"));
             static final DocumentRow FIRST = new DocumentRow(1L, ANN, Option.some(BOB), BOB, "first", Option.some("a"));
             static final DocumentRow SECOND = new DocumentRow(2L, BOB, Option.none(), ANN, "second", Option.none());
@@ -73,7 +74,7 @@ class JsonbPostgresRoundTripTest {
             }
 
             public static List<Object> containingAnn(PgSqlConnector db) {
-                return List.of(List.of(FIRST), DocRepoFactory.docRepo(db).containing(new Probe("Ann")).await().unwrap());
+                return List.of(List.of(FIRST), DocRepoFactory.docRepo(db).containing(new Probe("Іван 😀")).await().unwrap());
             }
 
             public static List<Object> documentResults(PgSqlConnector db) {
@@ -142,7 +143,7 @@ class JsonbPostgresRoundTripTest {
         assertThat(count("SELECT count(*) FROM documents WHERE previous IS NULL")).as("an empty Option is stored as SQL NULL, not JSON null")
                                                                                 .isEqualTo(1L);
         assertThat(count("SELECT count(*) FROM documents WHERE nick IS NULL")).isEqualTo(1L);
-        assertThat(count("SELECT count(*) FROM documents WHERE profile ->> 'name' = 'Ann' AND legacy ->> 'name' = 'Bob'"))
+        assertThat(count("SELECT count(*) FROM documents WHERE profile ->> 'name' = 'Іван 😀' AND legacy ->> 'name' = 'Bob'"))
             .as("the documents are stored as JSON the server can query")
             .isEqualTo(1L);
     }
@@ -248,6 +249,31 @@ class JsonbPostgresRoundTripTest {
                             .await())
             .as("JsonText as the jsonb operand")
             .isEqualTo(Result.success(2L));
+    }
+
+    /// A nullable read surfaces a failed read as a failure, never as an empty option: an unknown column and a value of
+    /// the wrong type both fail.
+    @Test
+    void getOptional_unknownColumnOrWrongType_fails_neverReadsAsEmpty() {
+        var unknown = connector.queryOne("SELECT 1::bigint AS l", row -> row.getOptional("nosuchcolumn", Long.class)).await();
+        var wrongType = connector.queryOne("SELECT 1::bigint AS l", row -> row.getOptional("l", java.util.UUID.class)).await();
+
+        assertThat(unknown.fold(Cause::message, value -> "read " + value)).contains("nosuchcolumn");
+        assertThat(wrongType.isFailure()).as("a bigint read as UUID: " + wrongType).isTrue();
+    }
+
+    /// `JsonText` is sent with no declared type, so the server types it from its use. `json_typeof` takes `json` only
+    /// and there is no implicit cast from `jsonb` (or `varchar`) to `json`, so only an untyped parameter resolves it;
+    /// a `jsonb`-typed or `varchar`-typed parameter does not. Assignment cannot tell these apart: `json` and `jsonb`
+    /// have assignment casts both ways.
+    @Test
+    void jsonTextParameter_isUntyped_soAJsonOnlyFunctionAcceptsIt() {
+        assertThat(connector.queryOne("SELECT json_typeof($1) AS t", row -> row.getString("t"), JsonText.jsonText("{}"))
+                            .await()).isEqualTo(Result.success("object"));
+
+        var asString = connector.queryOne("SELECT json_typeof($1) AS t /* varchar */", row -> row.getString("t"), "{}").await();
+
+        assertThat(asString.isFailure()).as("control: a typed (varchar) parameter does not resolve json_typeof").isTrue();
     }
 
     private static final String BOB_JSON = "{\"name\":\"Bob\",\"addresses\":[],\"home\":{\"city\":\"Odesa\",\"zip\":\"65000\"}}";

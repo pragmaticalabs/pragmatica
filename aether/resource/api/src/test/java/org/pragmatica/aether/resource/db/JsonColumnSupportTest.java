@@ -30,6 +30,14 @@ class JsonColumnSupportTest {
     }
 
     @Test
+    void jsonText_keepsNonAsciiText() {
+        var text = JsonText.jsonText(STRING_CODEC, "Київ 😀");
+
+        assertThat(text.value()).isEqualTo("\"Київ 😀\"");
+        assertThat(text.decode(STRING_CODEC)).isEqualTo(Result.success("Київ 😀"));
+    }
+
+    @Test
     void jsonText_decodeFailure_isTheCodecsFailure() {
         assertThat(JsonText.jsonText("42").decode(STRING_CODEC).isFailure()).isTrue();
     }
