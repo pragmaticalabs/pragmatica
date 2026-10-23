@@ -446,6 +446,57 @@ class JsonbMappingTest {
             assertThat(result.diagnostics()).contains("Parameter 'profile'").contains("mark a json/jsonb column @Jsonb");
         }
 
+        /// The component name maps to its column as the mapper maps it (camelCase to snake_case).
+        @Test
+        void camelCaseComponentOnJsonColumn_isDocument() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Extra(String note) {}
+
+                record DocumentRow(long id, Option<Extra> extraDoc) {}
+
+                @PgSql
+                public interface ExtraRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var generated = factory(compile(source, "test/ExtraRepo.java"), "test.ExtraRepoFactory");
+
+            assertThat(generated).contains("row.getOptional(\"extra_doc\", org.pragmatica.aether.resource.db.JsonText.class)");
+        }
+
+        /// Only a json/jsonb column infers a document; an unmarked record on a text column stays an error.
+        @Test
+        void recordOnTextColumn_isNotInferred() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Title(String text) {}
+
+                record DocumentRow(long id, Title title) {}
+
+                @PgSql
+                public interface TextRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = compile(source, "test/TextRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Field 'title'").contains("mark a json/jsonb column @Jsonb");
+        }
+
         @Test
         void inferredTwinSimpleNames_compile() throws Exception {
             var otherProfile = """
