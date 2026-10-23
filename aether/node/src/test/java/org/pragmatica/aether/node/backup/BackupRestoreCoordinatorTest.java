@@ -105,6 +105,8 @@ class BackupRestoreCoordinatorTest {
     private final List<BackupWarning> warnings = new ArrayList<>();
     private final List<List<KVCommand<AetherKey>>> submitted = new ArrayList<>();
     private long slot;
+    /// Tears the next two-transaction finish once (`aTornFinish_isRetried_andConverges`).
+    private boolean tearFinishOnce;
 
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -489,6 +491,36 @@ class BackupRestoreCoordinatorTest {
             assertThat(finishBatch()).as("the finish replaced the committed incarnation: T1 and T2").hasSize(2);
         }
 
+        /// A torn finish is retried and converges (adopted from v-2397's probe): T1 applies, T2 is reported refused, and another lineage mints
+        /// into the gap (the state the batch rules out, forced here). The coordinator must treat the finish as refused, retry it, and the
+        /// retry's T1 expects the gap's genesis. Red when the finish counts as accepted with a transaction refused, or a refusal is not retried.
+        @Test
+        void aTornFinish_isRetried_andConverges() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            var commit = git(Path.of(remote), "rev-parse", "backup").strip();
+
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                                                  LINEAGE,
+                                                                                  3,
+                                                                                  40,
+                                                                                  commit)));
+            applyDirect(new KVCommand.Put<>(ClusterIncarnationKey.clusterIncarnationKey(),
+                                            ClusterIncarnationValue.genesis("ungated-lineage", "ungated-incarnation")));
+            tearFinishOnce = true;
+
+            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            var finishes = submitted.stream().filter(commands -> commands.stream().anyMatch(BackupRestoreCoordinatorTest::isFinish)).toList();
+
+            assertThat(finishes.size()).as("finish attempts").isGreaterThanOrEqualTo(2);
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(ClusterIncarnation.committed(kvStore).map(ClusterIncarnationValue::lineageId)).isEqualTo(Option.some(LINEAGE));
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
+        }
+
         /// The finish applies at most once (v1533 MY6). Two leaders both decided to resume the same
         /// `IN_PROGRESS` restore; the first finished it. The second builds its finish only afterwards, and its
         /// finish is guarded on the `IN_PROGRESS` marker it resumed from, so it is refused: the incarnation rises
@@ -755,6 +787,19 @@ class BackupRestoreCoordinatorTest {
     /// The node's consensus entry: the restore gate first, then the applier.
     private Promise<List<Object>> gatedApply(List<KVCommand<AetherKey>> commands) {
         submitted.add(commands);
+
+        if (tearFinishOnce && commands.size() == 2 && isFinish(commands.getFirst())) {
+            // The torn finish: T1 applies, T2 is refused, and a foreign lineage mints into the gap (the unreachable "T1 in, T2 out").
+            tearFinishOnce = false;
+            var t1 = applyDirect(List.of(commands.getFirst()));
+
+            applyDirect(new KVCommand.Put<>(ClusterIncarnationKey.clusterIncarnationKey(),
+                                            ClusterIncarnationValue.genesis("gap-lineage", "gap-incarnation")));
+
+            var t2 = ((KVCommand.LeaderTransaction<?, ?>) commands.getLast()).transactionId();
+
+            return Promise.success(List.of(t1.getFirst(), new KVCommand.TransactionResult(t2, false)));
+        }
 
         return RestoreGate.admit(kvStore, commands)
                           .async()
