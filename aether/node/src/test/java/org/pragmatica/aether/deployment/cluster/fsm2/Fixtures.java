@@ -11,7 +11,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.TimeoutsConfig.ClusterTimeouts;
 import org.pragmatica.aether.config.WorkerConfig.SwimSettings;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
-import org.pragmatica.aether.node.deployment.Fsm2System;
+import org.pragmatica.aether.node.deployment.Fsm2TestSupport;
 import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
@@ -73,7 +73,7 @@ final class Fixtures {
                                     SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
                                     GovernorAnnouncer.DEFAULT_REANNOUNCE_INTERVAL,
                                     ClusterTimeouts.clusterTimeouts().communityAbsence(),
-                                    Fsm2System.suspicionLag(swim, FIXTURE_MAX_CORES, MembershipConfig.membershipConfig().splitTimeout()))
+                                    Fsm2TestSupport.suspicionLag(swim, FIXTURE_MAX_CORES, MembershipConfig.membershipConfig().splitTimeout()))
                             .unwrap();
     }
 

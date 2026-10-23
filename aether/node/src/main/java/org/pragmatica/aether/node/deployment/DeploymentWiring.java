@@ -89,12 +89,19 @@ public final class DeploymentWiring {
         bindings.put("B13.StopDrain", engineTarget("fsm2:Fsm2System.drainNode"));
         bindings.put("B16.Seams", engineTarget("fsm2:SeamPoller"));
         bindings.put("B20.LineageMint", "marker=" + engine);
-        this.routes = Fsm2Routes.fsm2Routes(new Fsm2Routes.Targets(node.self(),
-                                                                   node.revision(),
-                                                                   node.replaying(),
-                                                                   node.admissions()::tokenOf,
-                                                                   this::deliverToNode,
-                                                                   this::deliverToCluster));
+        this.routes = Fsm2Routes.fsm2Routes(routeTargets(node, this::deliverToNode, this::deliverToCluster));
+    }
+
+    /// The FSM2 routes' targets: the node's stamp accessors and, for the writer's boot token, its admission seam (delta 7).
+    static Fsm2Routes.Targets routeTargets(Node node,
+                                           Fsm2Routes.Sink<NodeFsmInput> toNode,
+                                           Fsm2Routes.Sink<ClusterInput> toCluster) {
+        return new Fsm2Routes.Targets(node.self(),
+                                      node.revision(),
+                                      node.replaying(),
+                                      node.admissions()::tokenOf,
+                                      toNode,
+                                      toCluster);
     }
 
     /// The node's wiring: builds the engine marker guard over the node's own committed mirror (a refused node exits through `exit`), and records

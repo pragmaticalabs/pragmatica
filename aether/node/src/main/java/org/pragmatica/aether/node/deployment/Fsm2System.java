@@ -156,7 +156,7 @@ public final class Fsm2System {
                : topology.clusterSize();
     }
 
-    public static TimeSpan suspicionLag(SwimConfig swim, int maxCores, TimeSpan splitTimeout) {
+    static TimeSpan suspicionLag(SwimConfig swim, int maxCores, TimeSpan splitTimeout) {
         return TimeSpan.timeSpan(SeamPoller.INTERVAL_MS)
                        .millis()
                        .plus(swim.period())
