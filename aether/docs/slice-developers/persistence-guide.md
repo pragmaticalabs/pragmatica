@@ -252,9 +252,11 @@ A plain `String` component of a nullable column still reads `NULL` as `""`.
 
 ## JSON Documents (`json` / `jsonb`)
 
-Mark a value stored as a JSON document with `@Jsonb` (from `org.pragmatica.aether.pg.codegen.annotation`). The
-generated factory encodes and decodes it with a generated JSON codec: the same compile-time codec generator the slice
-router uses for HTTP bodies. There is no reflection and no Jackson.
+A record stored as a JSON document is encoded and decoded by a generated JSON codec: the same compile-time codec
+generator the slice router uses for HTTP bodies. There is no reflection and no Jackson.
+
+Where the schema knows the column is `json`/`jsonb`, a record (or `Option` of one) is mapped as a document without any
+annotation. Where it does not know, mark the value with `@Jsonb` (from `org.pragmatica.aether.pg.codegen.annotation`).
 
 ```sql
 -- The table the example below reads and writes
@@ -270,27 +272,47 @@ record Address(String city, String zip) {}
 record Profile(String name, Option<String> nickname, List<Address> addresses) {}
 record ProfileProbe(String name) {}
 
-// A row record: each marked component is one json/jsonb column.
-record UserDocRow(long id, @Jsonb Profile profile, @Jsonb Option<Profile> previous) {}
+// A row record used by CRUD methods: the table says profile and previous are jsonb, so no marker is needed.
+record UserDocRow(long id, Profile profile, Option<Profile> previous) {}
 
 @PgSql
 public interface UserDocs {
     @Table(UserDocRow.class)
-    Promise<Unit> insert(UserDocRow row);                     // CRUD: marked components are encoded
-    Promise<Option<UserDocRow>> findById(long id);           // CRUD: marked components are decoded
+    Promise<Unit> insert(UserDocRow row);                     // CRUD: components on jsonb columns are encoded
+    Promise<Option<UserDocRow>> findById(long id);           // CRUD: components on jsonb columns are decoded
+
+    // `column = :param`: the schema knows the column, so the record param is a document without a marker.
+    @Query("UPDATE user_docs SET previous = :previous WHERE id = :id")
+    Promise<Unit> replacePrevious(long id, Option<Profile> previous);
 
     // A method marked @Jsonb reads its single result column as the document.
     @Query("SELECT profile FROM user_docs WHERE id = :id")
     @Jsonb
     Promise<Option<Profile>> profile(long id);
 
-    // A marked parameter is bound as the document, e.g. for containment.
+    // A @> operand is not paired with a column, so the parameter is marked.
     @Query("SELECT id, profile, previous FROM user_docs WHERE profile @> :probe")
     Promise<List<UserDocRow>> containing(@Jsonb ProfileProbe probe);
 }
 ```
 
-| Where | Meaning |
+**Inferred, no marker needed.** A record, or `Option` of one, without a `ValueMapping`, at a site where the schema
+knows the column is `json`/`jsonb`:
+- a component of a CRUD method's row record (read or written), and a CRUD condition parameter;
+- a `@Query` parameter in a `column <op> :param` pair (`WHERE`/`AND`/`OR`/`SET`, op one of `= < > !`, against the
+  statement's first table) with no `::type` cast after it;
+- a component of a record expanded by `@Query` into `VALUES (:record)` or `SET :record`.
+
+**Marker required: the schema cannot tell.**
+- A `@Query` result: its column types are unknown, so a document component of its row record, or a method whose
+  single result column is a document, is marked.
+- A record parameter in `VALUES (:record)` / `SET :record` is expanded into its components unless marked, in which
+  case it is one document.
+- Operands of `@>`, `<@`, `?`, function arguments, `IN (...)`, and any other expression.
+- An enum. It is never inferred, because it may as well be text; mark a JSON enum document.
+- An interface whose migrations are not on the processor's class path.
+
+| Where `@Jsonb` goes | Meaning |
 |---|---|
 | Record component | That column of a row record, read and written. `Option<T>`: `NULL` reads as empty and empty writes `NULL` |
 | Method | The single result column (`Promise<T>`, `Promise<Option<T>>`, `Promise<List<T>>`); needs `@Query`. `Option` means zero or one row: a missing row is empty, but a row whose column is `NULL` fails the read. Read a nullable document through a row record with an `Option<T>` component instead |
@@ -299,15 +321,19 @@ public interface UserDocs {
 - **Types.** A marked type must be a record or enum the codec generator supports. Anything else is a compile error that
   carries the generator's reason. The escape hatch is a hand-written value-object mapping to the document text:
   `static ValueMapping<T, JsonText> valueMapping()` on `T`, used without `@Jsonb`.
-- **Schema check.** Where the column's type is known (CRUD methods, `WHERE column = :param` pairs), a `@Jsonb` target
-  must map to a `json` or `jsonb` column. Otherwise the build fails.
+- **Schema check.** Where the column's type is known (the sites listed under "Inferred"), a `@Jsonb` target must map to
+  a `json` or `jsonb` column. Otherwise the build fails.
 - **Binding.** A document is bound as `JsonText`, text with no declared type, so one value binds to `json` and `jsonb`
-  columns and works as a `jsonb` operator operand (`@>`). A `String` parameter is declared `varchar`. A `jsonb`
-  column or operator refuses it when the statement is prepared fresh, but the driver caches prepared statements by SQL
-  text, so a `String` bind that reuses a statement prepared earlier on the connection with an untyped parameter is
-  accepted. Neither outcome can be relied on: bind such a value as `JsonText.jsonText(text)`, or cast it in SQL
-  (`CAST(:doc AS jsonb)`).
-- **Unmarked columns.** An unmarked `String` component still reads a `json`/`jsonb` column as its raw text.
+  columns and works as a `jsonb` operator operand (`@>`).
+- **No `String` binds to json/jsonb.** A `String` parameter is declared `varchar`. Where the schema knows the column
+  (the sites listed under "Inferred", and the values of a CRUD insert or save), binding a `String`, `Option<String>`
+  or a value object lowered to `String` to a `json`/`jsonb` column is a compile error. Bind a record, bind
+  `JsonText.jsonText(text)`, or cast in SQL: `:doc::jsonb` and `CAST(:doc AS jsonb)` stay allowed.
+- **Where the schema cannot tell, a `String` still compiles.** A `jsonb` column or operator refuses it when the
+  statement is prepared fresh. But the driver caches prepared statements by SQL text, so a bind that reuses a statement
+  prepared earlier on the connection with an untyped parameter is accepted. Neither outcome can be relied on; the
+  driver fix is tracked separately (#2402).
+- **`String` reads stay allowed.** A `String` component reads a `json`/`jsonb` column as its raw text.
 - **Fixed codec settings.** Stored documents use the codec's fixed defaults (component names as written, empty `Option`
   written as `null`). Deploy-time JSON settings for HTTP routes never apply to them, because a stored document is a
   durable contract.
