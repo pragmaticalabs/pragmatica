@@ -126,12 +126,15 @@ final class JsonCodecEmitter {
         out.add("    }");
         out.add("");
         mapKey(root).onPresent(key -> {
-                                   out.add("    /// The type as a map key, for `JsonTypeCodec.mapOf(KEY, values)`: the generated map code's own key form.");
-                                   out.add("    public static final " + RT + "JsonKeyCodec<" + type + "> KEY = " + RT
-                                           + "JsonKeyCodec.jsonKeyCodec((out, key) -> " + writeKey(key, "key") + ",");
-                                   out.add("                                                                     in -> " + readKey(key) + ");");
-                                   out.add("");
-                               });
+            out.add("    /// The type as a map key, for `JsonTypeCodec.mapOf(KEY, values)`: the generated map code's own key form.");
+            out.add("    public static final " + RT
+                   + "JsonKeyCodec<" + type
+                   + "> KEY = " + RT
+                   + "JsonKeyCodec.jsonKeyCodec((out, key) -> " + writeKey(key, "key")
+                   + ",");
+            out.add("                                                                     in -> " + readKey(key) + ");");
+            out.add("");
+        });
         out.addAll(emitRegistry("public static final "));
         out.add("");
         out.add("    /// The ServiceLoader's instance; the codec itself is the CODEC constant.");
@@ -680,13 +683,11 @@ final class JsonCodecEmitter {
             return some(new JsonType.EnumRef(root));
         }
 
-        return Option.option(analyzer.records()
-                                     .get(typeName(root)))
+        return Option.option(analyzer.records().get(typeName(root)))
                      .filter(JsonType.RecordDefinition::isValueObject)
                      .filter(definition -> definition.components()
-                                                     .getFirst()
-                                                     .type() instanceof JsonType.Scalar scalar
-                                           && scalar.kind() == JsonType.ScalarKind.STRING)
+                                                     .stream()
+                                                     .anyMatch(component -> component.type() instanceof JsonType.Scalar scalar && scalar.kind() == JsonType.ScalarKind.STRING))
                      .map(_ -> new JsonType.RecordRef(root));
     }
 

@@ -27,7 +27,8 @@ public interface JsonOptionsSlice {
 
             @Override
             public Promise<Map<String, Profile>> byName(ProfileRequest request) {
-                return Promise.success(Map.of(request.displayName(), new Profile(request.displayName(), request.nickName())));
+                return Promise.success(Map.of(request.displayName(),
+                                              new Profile(request.displayName(), request.nickName())));
             }
         };
     }

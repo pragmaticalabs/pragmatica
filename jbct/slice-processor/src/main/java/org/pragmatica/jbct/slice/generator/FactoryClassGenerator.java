@@ -1317,9 +1317,10 @@ public class FactoryClassGenerator {
 
         out.println("    public static Promise<Slice> " + methodName + "Slice(SliceCreationContext ctx) {");
         // Generate local adapter record — add step fields when transitive methods exist
-        var recordComponents = sliceName + " delegate, ResourceProviderFacade resources" + (jsonSettings
-                                                                                         ? ", JsonCodecSettings jsonCodecSettings"
-                                                                                         : "");
+        var recordComponents = sliceName
+                             + " delegate, ResourceProviderFacade resources" + (jsonSettings
+                                                                                ? ", JsonCodecSettings jsonCodecSettings"
+                                                                                : "");
 
         for (var step : transitiveSteps) {
             var stepDep = findDependencyByParamName(model, step.parameterName());
@@ -1450,7 +1451,6 @@ public class FactoryClassGenerator {
                     }
                 }
             }
-
             // The JSON codec settings are one more value provisioned in parallel with create().
             if (jsonSettings) {
                 stepResourceEntries.add(new AllEntry("jsonCodecSettings", JSON_SETTINGS_PROVIDE));
@@ -2867,7 +2867,8 @@ public class FactoryClassGenerator {
         var factoryName = sliceName + "Factory";
 
         if (model.hasConfigUpdateSubscriptions()) {
-            out.println("    private static final Logger configLog = LoggerFactory.getLogger(" + factoryName + ".class);");
+            out.println("    private static final Logger configLog = LoggerFactory.getLogger(" + factoryName
+                       + ".class);");
             out.println();
         }
 
@@ -2878,6 +2879,7 @@ public class FactoryClassGenerator {
             out.println("            deployed.jsonCodecSettings().refresh();");
             out.println("        }");
         }
+
         for (var method : model.configUpdateMethods()) {
             for (var configSub : method.reactiveOfCategory("config-update")) {
                 var configSection = escapeJavaString(configSub.qualifier().configSection());
