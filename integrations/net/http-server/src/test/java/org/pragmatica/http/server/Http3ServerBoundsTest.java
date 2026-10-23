@@ -21,7 +21,6 @@ import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 
@@ -36,8 +35,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// - read timeout 1 s (default 60 s): a body that stalls is answered 408, where the default leaves it to QUIC's 5 s idle
 ///   close, which answers nothing;
 /// - minimum rate 100 kB/s after a 2 s grace (default 1 KiB/s after 10 s): a body trickled at 100 B/s is answered 408
-///   at about 2 s, where the default dispatches it before its grace ends. The grace is longer than the read timeout so
-///   that a stalled body meets the read timeout first.
+///   at about 2 s, where the default dispatches it before its grace ends.
+///
+/// The rate test runs on its own listener, with a 30 s read timeout: a frame arrives every 200 ms, so only a client
+/// pause of nearly 30 s could make the read timeout answer it instead of the rate bound. The other tests' listener has
+/// the rate bound off, so a stalled body can meet only the read timeout.
 class Http3ServerBoundsTest {
     private static final int LIMIT = 1024;
     private static final int TRICKLE_CHUNK = 20;
@@ -47,15 +49,27 @@ class Http3ServerBoundsTest {
     private Http3Server server;
     private int port;
 
-    @BeforeEach
-    void start() {
-        var config = HttpServerConfig.httpServerConfig("h3-bounds", 0)
-                                     .withMaxContentLength(LIMIT)
-                                     .withReadTimeout(timeSpan(1).seconds())
-                                     .withBodyRateLimit(BodyRateLimit.bodyRateLimit(100_000,
-                                                                                    timeSpan(2).seconds(),
-                                                                                    timeSpan(1).seconds()));
+    /// Body limit 1 KiB and read timeout 1 s, with the rate bound off.
+    private static HttpServerConfig limitAndReadTimeout() {
+        return HttpServerConfig.httpServerConfig("h3-bounds", 0)
+                               .withMaxContentLength(LIMIT)
+                               .withReadTimeout(timeSpan(1).seconds())
+                               .withBodyRateLimit(BodyRateLimit.bodyRateLimit(0,
+                                                                              BodyRateLimit.DEFAULT_GRACE,
+                                                                              BodyRateLimit.DEFAULT_WINDOW));
+    }
 
+    /// Minimum rate 100 kB/s after a 2 s grace, checked every second, with a read timeout far above the trickle's gaps.
+    private static HttpServerConfig minimumRate() {
+        return HttpServerConfig.httpServerConfig("h3-rate", 0)
+                               .withMaxContentLength(LIMIT)
+                               .withReadTimeout(timeSpan(30).seconds())
+                               .withBodyRateLimit(BodyRateLimit.bodyRateLimit(100_000,
+                                                                              timeSpan(2).seconds(),
+                                                                              timeSpan(1).seconds()));
+    }
+
+    private void start(HttpServerConfig config) {
         server = Http3Server.create(config,
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
                                                          .unwrap(),
@@ -67,17 +81,23 @@ class Http3ServerBoundsTest {
 
     @AfterEach
     void stop() {
-        server.stop().await(timeSpan(10).seconds());
+        if (server != null) {
+            server.stop().await(timeSpan(10).seconds());
+        }
     }
 
     /// Control for the three bounds: a small body sent at once is dispatched.
     @Test
     void smallBody_isDispatched() throws Exception {
+        start(limitAndReadTimeout());
+
         assertThat(Http3TestClient.exchange(port, stream -> body(stream, 16)).status()).isEqualTo("200");
     }
 
     @Test
     void bodyOverTheConfiguredLimit_isAnswered413() throws Exception {
+        start(limitAndReadTimeout());
+
         var answer = Http3TestClient.exchange(port, stream -> body(stream, 4 * LIMIT));
 
         assertThat(answer.status()).isEqualTo("413");
@@ -86,6 +106,8 @@ class Http3ServerBoundsTest {
 
     @Test
     void bodyIdleForTheConfiguredReadTimeout_isAnswered408() throws Exception {
+        start(limitAndReadTimeout());
+
         var answer = Http3TestClient.exchange(port, this::stall);
 
         assertThat(answer.status()).isEqualTo("408");
@@ -94,6 +116,8 @@ class Http3ServerBoundsTest {
 
     @Test
     void bodyBelowTheConfiguredMinimumRate_isAnswered408() throws Exception {
+        start(minimumRate());
+
         var answer = Http3TestClient.exchange(port, this::trickle);
 
         assertThat(answer.status()).isEqualTo("408");
@@ -113,8 +137,8 @@ class Http3ServerBoundsTest {
         stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[16])));
     }
 
-    /// 300 bytes over 3 s, one frame every 200 ms: inside the limit, never idle for the read timeout, past the
-    /// configured grace and well inside the default one.
+    /// 300 bytes over 3 s, one frame every 200 ms: inside the limit, past the configured grace and well inside the
+    /// default one.
     private void trickle(QuicStreamChannel stream) throws InterruptedException {
         stream.writeAndFlush(Http3TestClient.postHeaders(port));
 

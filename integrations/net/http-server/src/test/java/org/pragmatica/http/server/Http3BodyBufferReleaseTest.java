@@ -24,6 +24,7 @@ import java.util.function.LongPredicate;
 import io.netty.buffer.Unpooled;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3Headers;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
@@ -137,6 +138,30 @@ class Http3BodyBufferReleaseTest {
         assertThat(((Http3HeadersFrame) first).headers().status().toString()).isEqualTo("413");
         assertThat(channel.isOpen()).as("control: the stream has not closed").isTrue();
         assertThat(usedHeap() - before).as("released at the rejection").isLessThan(SLACK);
+        channel.finishAndReleaseAll();
+    }
+
+    /// Input that closes on a body with no header section releases the body at once. A real HTTP/3 stream never reaches
+    /// this state, because Netty's request-stream validation refuses DATA before HEADERS; it is pinned here at the
+    /// handler level, in an `EmbeddedChannel` that stays open until the test closes it.
+    @Test
+    void inputClosedOnABodyWithoutHeaders_releasesTheBodyBuffer_whileTheStreamIsStillOpen() {
+        var channel = new EmbeddedChannel(new Http3Server.Http3RequestHandler((_, writer) -> writer.ok("{}"),
+                                                                              LIMIT,
+                                                                              timeSpan(60).seconds(),
+                                                                              BodyRateLimit.bodyRateLimit(0,
+                                                                                                          BodyRateLimit.DEFAULT_GRACE,
+                                                                                                          BodyRateLimit.DEFAULT_WINDOW)));
+        var before = usedHeap();
+
+        channel.writeInbound(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[BODY])));
+
+        assertThat(usedHeap() - before).as("control: the counter sees the held body").isGreaterThanOrEqualTo(BODY);
+
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+
+        assertThat(channel.isOpen()).as("control: the stream has not closed").isTrue();
+        assertThat(usedHeap() - before).as("released when the input closed").isLessThan(SLACK);
         channel.finishAndReleaseAll();
     }
 
