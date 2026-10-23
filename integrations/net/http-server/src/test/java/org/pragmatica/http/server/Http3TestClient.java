@@ -29,7 +29,9 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
+import io.netty.handler.codec.http3.DefaultHttp3Headers;
 import io.netty.handler.codec.http3.Http3DataFrame;
+import io.netty.handler.codec.http3.Http3Headers;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
 import io.netty.handler.codec.quic.QuicChannel;
@@ -43,9 +45,9 @@ import io.netty.util.ReferenceCountUtil;
 final class Http3TestClient {
     private Http3TestClient() {}
 
-    /// The response to one request: its status and body. The status is `closed` when the stream or the connection ended
-    /// without one.
-    record Answer(String status, String body) {}
+    /// The response to one request: its status, body and header section. The status is `closed`, and the headers empty,
+    /// when the stream or the connection ended without one.
+    record Answer(String status, String body, Http3Headers headers) {}
 
     /// Writes one request on a fresh request stream. It may block (to stall or trickle a body), and need not end the
     /// stream's output.
@@ -117,18 +119,20 @@ final class Http3TestClient {
         }
     }
 
-    /// Collects the first status and the body. Completes when the stream's input ends, when the stream or the
+    /// Collects the first status, its header section, and the body. Completes when the stream's input ends, when the stream or the
     /// connection closes, or when the stream fails.
     private static final class AnswerReader extends Http3RequestStreamInboundHandler {
         private final CompletableFuture<Answer> answer = new CompletableFuture<>();
         private final StringBuilder body = new StringBuilder();
         private String status = "closed";
+        private Http3Headers headers = new DefaultHttp3Headers();
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
             synchronized (body) {
                 if ("closed".equals(status)) {
                     status = String.valueOf(frame.headers().status());
+                    headers = frame.headers();
                 }
             }
         }
@@ -160,7 +164,7 @@ final class Http3TestClient {
 
         void finish() {
             synchronized (body) {
-                answer.complete(new Answer(status, body.toString()));
+                answer.complete(new Answer(status, body.toString(), headers));
             }
         }
     }
