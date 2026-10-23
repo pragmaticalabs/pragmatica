@@ -17,16 +17,16 @@ import org.pragmatica.lang.utils.Causes;
 /// The absence bounds of the departure backstop (spec R-2.14, R-2.14b, R-2.14c) and the core suspicion window (R-2.11 (b)), in
 /// nanoseconds of the leader-local monotonic clock. They are derived from the live configuration, never hard-coded:
 ///
-/// - `coreRemoval` (`B_rm`) = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER + splitTimeout`;
+/// - `coreRemoval` (`B_rm`) = `coreSuspicion + splitTimeout`;
 /// - `workerRemoval` (`B_w`) = `workerSuspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER
 ///   + reannounceInterval + communityAbsence`;
 /// - `announcementFreshness` (`S_ann`) = `2 x reannounceInterval`;
 /// - `coreSuspicion` = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER + suspicionLag`: the upper bound of one SWIM suspicion
 ///   window (R-2.14) plus the lag between SWIM's verdict and the leader's view of it, i.e. how long a core must stay listed in this leader's core
 ///   view to count as alive. SWIM arms `suspectTimeout x min(score + 1, lhmMaxScore) x min(max(1, ln(N + 1)), MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER)`,
-///   so the product is its maximum, reached from about 20 live members; with the product alone the margin there is 0, and the sampling lag
-///   (the core view is read every `SeamPoller.INTERVAL_MS`, the verdict itself takes up to one probe period to be reached) would sit outside both
-///   sides. `suspicionLag` is that lag, from its real sources (v-2204 F2, ruled s37).
+///   so the product is its maximum, reached from about 20 live members. `suspicionLag` is everything a dead core stays listed beyond that window,
+///   from its real sources: the probe lead, two probe timeouts, a tick, the membership's eviction backstop (`splitTimeout`, a SUSPECT core
+///   stays counted) and the core view's sampling interval (`Fsm2System.suspicionLag`; v-2204 F2, ruled s37; cluster assessment delta 3).
 ///
 /// W5 on every path (v-2190 N3, CTO ruling 2026-10-14): a final class with a private constructor, so the `Result` factory below is the only
 /// way to build one and a non-positive window can never exist.

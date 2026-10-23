@@ -11,6 +11,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.TimeoutsConfig.ClusterTimeouts;
 import org.pragmatica.aether.config.WorkerConfig.SwimSettings;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.node.deployment.Fsm2System;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -28,7 +29,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimConfig;
@@ -58,6 +58,9 @@ final class Fixtures {
         return BlueprintId.blueprintId(artifact(coordinates));
     }
 
+    /// The core set the fixture bounds cover: the fixture worlds hold three cores (`CORE_1`..`CORE_3`).
+    static final int FIXTURE_MAX_CORES = 3;
+
     /// B_rm, B_w and S_ann from the real configuration defaults (R-2.14, R-2.14b, R-2.14c).
     static AbsenceBounds bounds() {
         var swim = SwimConfig.DEFAULT;
@@ -69,7 +72,7 @@ final class Fixtures {
                                     MembershipConfig.membershipConfig().splitTimeout(),
                                     GovernorAnnouncer.DEFAULT_REANNOUNCE_INTERVAL,
                                     ClusterTimeouts.clusterTimeouts().communityAbsence(),
-                                    TimeSpan.timeSpan(5).seconds().plus(swim.period()))
+                                    Fsm2System.suspicionLag(swim, FIXTURE_MAX_CORES, MembershipConfig.membershipConfig().splitTimeout()))
                             .unwrap();
     }
 

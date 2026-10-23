@@ -10,6 +10,8 @@ import java.util.Set;
 import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
@@ -19,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.swim.SwimConfig;
 
 import org.junit.jupiter.api.Test;
 
@@ -242,14 +245,37 @@ class SettingsSourcedTest {
         assertThat(settings.bounds()).isEqualTo(bounds());
     }
 
-    // Red when: the derived bounds move: the suspicion window (R-2.14: suspectTimeout x lhmMaxScore x 3, plus the 6 s lag), the removal bound on top of it (261 s), the
-    // worker removal bound (170 s) and the announcement freshness (60 s) at the real defaults; or the factory scrambles its arguments.
+    /// A cluster large enough that SWIM's window multiplier is at its cap.
+    private static final int LARGE_CLUSTER = 100;
+
+    /// The worst case a dead core stays listed in the leader's core view (MEMBER + SUSPECT), modelled from SWIM's and the membership's own
+    /// constants rather than from `suspicionLag` (cluster assessment delta 4): it is first probed up to `cores - 1` periods after it died
+    /// (least-recently-probed rotation), the direct and indirect probes time out, SWIM arms `suspectTimeout x lhmMaxScore x min(max(1,
+    /// ln(N + 1)), 3)` (`SwimProtocol`'s window, at its cap from about 20 members), the expiry is seen on the next period tick, the
+    /// membership's backstop keeps the SUSPECT core counted for `splitTimeout`, and the core view is sampled every `SeamPoller.INTERVAL_MS`.
+    private static long worstCaseListedNanos(int cores) {
+        var swim = SwimConfig.DEFAULT;
+        var period = swim.period().nanos();
+        var window = Math.min(Math.max(1d, Math.log(LARGE_CLUSTER + 1)), 3d);
+
+        return (cores - 1) * period
+               + 2 * swim.probeTimeout().nanos()
+               + (long)(swim.suspectTimeout().nanos() * swim.lhmMaxScore() * window)
+               + period
+               + MembershipConfig.membershipConfig().splitTimeout().nanos()
+               + TimeSpan.timeSpan(SeamPoller.INTERVAL_MS).millis().nanos();
+    }
+
+    // Red when: the suspicion window is shorter than the worst case a dead core stays listed (any term of the lag dropped), or B_rm stops being
+    // the window plus splitTimeout; the worker removal bound (170 s) and the announcement freshness (60 s) move at the real defaults; or the
+    // factory scrambles its arguments.
     @Test
     void absenceBounds_deriveTheSuspicionWindow_andTheBoundsOnTopOfIt() {
         var bounds = bounds();
 
-        assertThat(ms(bounds.coreSuspicion())).as("10 s x 8 x 3 + the lag (5 s sampling + 1 s probe period)").isEqualTo(246_000L);
-        assertThat(ms(bounds.coreRemoval())).as("B_rm = the window + splitTimeout").isEqualTo(261_000L);
+        assertThat(bounds.coreSuspicion()).as("covers the worst case a dead core stays listed").isGreaterThanOrEqualTo(worstCaseListedNanos(FIXTURE_MAX_CORES));
+        assertThat(bounds.coreRemoval()).as("B_rm = the window + splitTimeout")
+                                        .isEqualTo(bounds.coreSuspicion() + MembershipConfig.membershipConfig().splitTimeout().nanos());
         assertThat(ms(bounds.workerRemoval())).as("B_w").isEqualTo(170_000L);
         assertThat(ms(bounds.announcementFreshness())).as("S_ann").isEqualTo(60_000L);
         var built = AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap();
