@@ -9,6 +9,7 @@ import java.util.ServiceLoader;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -21,6 +22,7 @@ import org.pragmatica.config.DynamicConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -153,6 +155,67 @@ class LiveJsonCodecSettingsTest {
 
         assertThat(contextFree.current().name()).isEqualTo("a");
         assertThat(noComposite.current().name()).isEqualTo("a");
+    }
+
+    /// A recovery ends the refusal, so a later rejection is a new transition and is raised again.
+    @Test
+    void rejectRecoverRejectAgain_raisesTheSecondRejection() {
+        var settings = provisioned();
+
+        kv.put("json.default", "nope");
+        settings.refresh();
+        kv.put("json.default", "b");
+        settings.refresh();
+        kv.put("json.default", "nope2");
+        settings.refresh();
+
+        awaitEvents(3);
+        assertThat(events).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.JSON_CONFIG_REJECTED,
+                                           OperatorWarningCode.JSON_CONFIG_APPLIED,
+                                           OperatorWarningCode.JSON_CONFIG_REJECTED);
+    }
+
+    /// The recovery is raised once; valid re-reads after it raise nothing.
+    @Test
+    void validRefreshesAfterRecovery_raiseNothingMore() {
+        var settings = provisioned();
+
+        kv.put("json.default", "nope");
+        settings.refresh();
+        kv.put("json.default", "b");
+        settings.refresh();
+        settings.refresh();
+        settings.refresh();
+
+        awaitEvents(2);
+        assertThat(events).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.JSON_CONFIG_REJECTED, OperatorWarningCode.JSON_CONFIG_APPLIED);
+    }
+
+    /// While already refused, a different refusal is logged at ERROR (not raised again); the same one re-read is not.
+    @Test
+    void changedRefusalWhileRejected_isLoggedAtErrorOnce_andTheSameRefusalIsNot() {
+        var settings = provisioned();
+
+        try (var capture = LogCapture.capture(LiveJsonCodecSettings.class, Level.ERROR, true)) {
+            kv.put("json.default", "nope");
+            settings.refresh();
+            settings.refresh();
+            kv.put("json.default", "nope2");
+            settings.refresh();
+            settings.refresh();
+
+            var stillRejected = capture.messages(Level.ERROR)
+                                       .stream()
+                                       .filter(message -> message.contains("still rejected"))
+                                       .toList();
+
+            assertThat(stillRejected).hasSize(1);
+            assertThat(stillRejected.getFirst()).contains("nope2").contains(SLICE + "/json");
+        }
+
+        awaitEvents(1);
     }
 
     // The sink hands off on its own thread; wait for the expected count, then make sure nothing more trails in.

@@ -148,4 +148,51 @@ class TerraProcessorTest {
         com.google.testing.compile.CompilationSubject.assertThat(compilation).hadErrorContaining("Terra does not support streams or durable entities");
     }
 
+    /// #2378: a routed slice's factory provisions its JSON codec settings for Aether, never for the Terra target, which
+    /// does not load the generated factory. Real javac with routes.toml on the class output, where Maven puts it.
+    @Test void process_routedSlice_provisionsJsonCodecSettingsForAether_neverForTerra(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var aether = routedFactory(dir.resolve("aether"));
+        var terra = routedFactory(dir.resolve("terra"), "-Aslice.target=terra");
+
+        org.assertj.core.api.Assertions.assertThat(aether).contains("JsonCodecSettings");
+        org.assertj.core.api.Assertions.assertThat(terra).contains("TerraContext").doesNotContain("JsonCodecSettings");
+    }
+
+    private static String routedFactory(java.nio.file.Path classes, String... targetOption) throws Exception {
+        var routes = classes.resolve(java.nio.file.Path.of("sample", "routes.toml"));
+
+        java.nio.file.Files.createDirectories(routes.getParent());
+        java.nio.file.Files.writeString(routes, "prefix = \"/api\"\n\n[routes]\nhello = \"POST /hello\"\n");
+        var source = JavaFileObjects.forSourceString("sample.Hello", """
+            package sample;
+            @org.pragmatica.aether.slice.annotation.Slice
+            public interface Hello {
+                record Greeting(String name) {}
+                org.pragmatica.lang.Promise<String> hello(Greeting request);
+                static Hello hello() { return request -> org.pragmatica.lang.Promise.success(request.name()); }
+            }
+            """);
+        var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
+        var collector = new javax.tools.DiagnosticCollector<javax.tools.JavaFileObject>();
+        var options = new java.util.ArrayList<>(java.util.List.of("-proc:only", "-classpath", System.getProperty("java.class.path"),
+            "-Aslice.groupId=test", "-Aslice.artifactId=app", "-Aslice.version=1"));
+
+        options.addAll(java.util.List.of(targetOption));
+        try (var fileManager = compiler.getStandardFileManager(collector, null, null)) {
+            fileManager.setLocationFromPaths(javax.tools.StandardLocation.CLASS_OUTPUT, java.util.List.of(classes));
+            fileManager.setLocationFromPaths(javax.tools.StandardLocation.SOURCE_OUTPUT, java.util.List.of(classes));
+            var task = compiler.getTask(null, fileManager, collector, options, null, java.util.List.of(source));
+
+            task.setProcessors(java.util.List.of(new SliceProcessor()));
+            task.call();
+        }
+
+        var factory = classes.resolve(java.nio.file.Path.of("sample", "HelloFactory.java"));
+
+        org.assertj.core.api.Assertions.assertThat(factory).as("diagnostics: " + collector.getDiagnostics()).exists();
+        org.assertj.core.api.Assertions.assertThat(classes.resolve(java.nio.file.Path.of("sample", "HelloRoutes.java"))).exists();
+
+        return java.nio.file.Files.readString(factory);
+    }
+
 }

@@ -58,6 +58,29 @@ class GeneratedJsonCodecOptionsTest {
         assertThat(codec(STRICT).deserialize(body, new TypeToken<List<Note>>() {}).isSuccess()).isFalse();
     }
 
+    // An explicit container codec (a slice holder's CONTAINERS entry) is chosen before the combinator, so it must carry
+    // the options too.
+    @Test
+    void explicitContainerCodec_refusesAnUnknownField_underTheOptions() {
+        var listOfNotes = new TypeToken<List<Note>>() {};
+        var containers = java.util.Map.<java.lang.reflect.Type, JsonTypeCodec<?>> of(listOfNotes.token(),
+                                                                                    JsonTypeCodec.listOf(GeneratedJsonCodecOptionsTest_NoteJson.CODEC));
+        var body = bytes("[{\"id\":\"1\",\"extra\":true}]");
+
+        assertThat(withContainers(containers, JsonOptions.DEFAULTS).decoderFor(listOfNotes.token())
+                                                                    .unwrap()).isNotNull();
+        assertThat(withContainers(containers, JsonOptions.DEFAULTS).deserialize(body, listOfNotes).isSuccess()).isTrue();
+        assertThat(withContainers(containers, STRICT).deserialize(body, listOfNotes).isSuccess()).isFalse();
+    }
+
+    private static GeneratedJsonCodec withContainers(java.util.Map<java.lang.reflect.Type, JsonTypeCodec<?>> containers,
+                                                     JsonOptions options) {
+        return GeneratedJsonCodec.generatedJsonCodec(java.util.Map.of(),
+                                                     containers,
+                                                     JsonCodecAdapter.forMapper(JsonMapper.valueObjectJsonMapper()),
+                                                     options);
+    }
+
     @Test
     void responseValue_andResponseArray_leaveEmptyOptionsOut_underTheOptions() {
         var note = new Note("1", Option.none());
