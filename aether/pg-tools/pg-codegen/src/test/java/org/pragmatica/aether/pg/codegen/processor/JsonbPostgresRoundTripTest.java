@@ -116,12 +116,15 @@ class JsonbPostgresRoundTripTest {
             static final Address HOME = new Address("Київ", "01001");
             static final Profile EVE = new Profile("Єва 😀", Option.some("єва"), List.of(HOME), HOME);
             static final DocumentRow ROW = new DocumentRow(11L, EVE, Option.none(), EVE, "inferred", Option.none());
+            static final DocumentRow POSITIONAL = new DocumentRow(12L, EVE, Option.none(), EVE, "positional", Option.none());
 
             public static List<Object> roundTrip(PgSqlConnector db) {
                 var repo = InferredRepoFactory.inferredRepo(db);
                 repo.insert(ROW).await().unwrap();
+                repo.addPositional(12L, "positional", EVE, EVE).await().unwrap();
                 return List.of(Option.some(ROW), repo.findById(11L).await().unwrap(),
-                               List.of(ROW), repo.findByProfile(EVE).await().unwrap());
+                               Option.some(POSITIONAL), repo.findById(12L).await().unwrap(),
+                               List.of(ROW, POSITIONAL), repo.findByProfile(EVE).await().unwrap());
             }
         }
         """;

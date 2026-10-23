@@ -275,6 +275,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                               boundBody,
                                                               schema));
         schemaOpt.onPresent(schema -> validateExpandedJsonBinds(execElement, expansion, boundBody, schema));
+        schemaOpt.onPresent(schema -> validatePositionalInsertJsonBinds(execElement, expansion, boundBody, schema));
         var rewritten = QueryRewriter.rewriteNamedParams(expansion.sql(), expansion.allParamNames());
         var parsedCst = sqlParseCache.computeIfAbsent(rewritten.sql(), sqlParser::parseCst);
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
@@ -944,6 +945,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                 jsonColumn(table, pair.columnName()).onPresent(_ -> names.add(pair.paramName()));
             }
         }
+        for (var pair : extractPositionalInsertPairs(expansion.sql())) {
+            jsonColumn(table, pair.columnName()).onPresent(_ -> names.add(pair.paramName()));
+        }
         return names;
     }
 
@@ -979,6 +983,42 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                                    .filter(param -> expansion.expandedFieldNames()
                                                                                              .contains(param.name()))
                                                                    .toList()));
+    }
+
+    /// The values of a plain explicit-column `INSERT`, checked against their json/jsonb columns (a String is refused).
+    /// Only json/jsonb columns are checked: every other column compiles as before.
+    private void validatePositionalInsertJsonBinds(ExecutableElement execElement,
+                                                   QueryExpansionResult expansion,
+                                                   List<FactoryGenerator.MethodParam> boundBody,
+                                                   Schema schema) {
+        var tableName = extractTableNameFromSql(expansion.sql());
+        if (tableName == null) {
+            return;
+        }
+        schema.table(tableName)
+              .onPresent(table -> validatePositionalPairs(execElement,
+                                                          table,
+                                                          extractPositionalInsertPairs(expansion.sql()),
+                                                          boundBody));
+    }
+
+    private void validatePositionalPairs(ExecutableElement execElement,
+                                         org.pragmatica.aether.pg.schema.model.Table table,
+                                         List<ColumnParamPair> pairs,
+                                         List<FactoryGenerator.MethodParam> boundBody) {
+        for (var pair : pairs) {
+            var javaType = findParamType(boundBody, pair.paramName());
+            if (javaType == null) {
+                continue;
+            }
+            jsonColumn(table, pair.columnName()).onPresent(pgType -> validateTypeCompatibility(execElement,
+                                                                                                pair.paramName(),
+                                                                                                javaType,
+                                                                                                pair.columnName(),
+                                                                                                table.name(),
+                                                                                                pgType,
+                                                                                                false));
+        }
     }
 
     private static TypeElement recordParamElement(ExecutableElement execElement) {
@@ -1420,6 +1460,36 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             var paramName = matcher.group(2);
             if ( paramNames.contains(paramName)) {
             pairs.add(new ColumnParamPair(columnName, paramName, sql.startsWith("::", matcher.end())));}
+        }
+        return pairs;
+    }
+
+    /// `INSERT INTO t (c1, .., cn) VALUES (:p1, .., :pn)` and nothing else: one row, every value a bare `:param`, as
+    /// many values as columns. Nothing may follow the values (no `ON CONFLICT`, no `RETURNING`, no second row), and no
+    /// value may be an expression or a cast, so the n-th value is certainly the n-th column's.
+    private static final Pattern PLAIN_INSERT_PATTERN =
+    Pattern.compile("\\s*INSERT\\s+INTO\\s+[a-zA-Z_][a-zA-Z0-9_.]*\\s*\\(([^()]*)\\)\\s*VALUES\\s*\\(([^()]*)\\)\\s*;?\\s*",
+                    Pattern.CASE_INSENSITIVE);
+    private static final Pattern BARE_PARAM_PATTERN = Pattern.compile(":([a-zA-Z][a-zA-Z0-9]*)");
+
+    /// Pairs the n-th column with the n-th value of a plain explicit-column `INSERT`; empty for any other statement.
+    private static List<ColumnParamPair> extractPositionalInsertPairs(String sql) {
+        var matcher = PLAIN_INSERT_PATTERN.matcher(sql);
+        if (!matcher.matches()) {
+            return List.of();
+        }
+        var columns = matcher.group(1).split(",", -1);
+        var values = matcher.group(2).split(",", -1);
+        if (columns.length != values.length) {
+            return List.of();
+        }
+        var pairs = new ArrayList<ColumnParamPair>();
+        for (int i = 0; i < columns.length; i++) {
+            var value = BARE_PARAM_PATTERN.matcher(values[i].trim());
+            if (!value.matches()) {
+                return List.of();
+            }
+            pairs.add(new ColumnParamPair(columns[i].trim(), value.group(1), false));
         }
         return pairs;
     }

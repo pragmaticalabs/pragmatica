@@ -1295,6 +1295,9 @@ class JsonbMappingTest {
 
             @Query("INSERT INTO documents VALUES(:entry)")
             Promise<Unit> add(Entry entry);
+
+            @Query("INSERT INTO documents (title, profile, legacy, id) VALUES (:title, :profile, :legacy, :id)")
+            Promise<Unit> addPositional(long id, String title, Profile profile, Profile legacy);
         }
         """;
 
@@ -1391,6 +1394,151 @@ class JsonbMappingTest {
             Promise<Unit> store(long id, Settings settings);
         }
         """;
+
+    /// #2401 round 2: `INSERT INTO t (c1, .., cn) VALUES (:p1, .., :pn)` names each column by position. Every other
+    /// insert shape stays as it was: no inference, no refusal.
+    @Nested
+    class PositionalInsert {
+        private static final String PROFILE_RECORD = "record Profile(String name) {}\n\n";
+
+        @Test
+        void plainInsert_stringOnJsonColumn_isCompileErrorNamingTheColumn() throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface PositionalRepo {
+                    @Query("INSERT INTO documents (id, profile, legacy, title) VALUES (:id, :raw, :legacy, :title)")
+                    Promise<Unit> store(long id, String raw, String legacy, String title);
+                }
+                """, "test/PositionalRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb")
+                                            .contains("A String parameter is sent as varchar, which json/jsonb refuse");
+        }
+
+        @Test
+        void plainInsert_recordOnJsonColumn_isDocument_pairedByPositionNotByName() throws Exception {
+            var generated = factory(compile(INFERRED_REPO, "test/InferredRepo.java"), "test.InferredRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, profile)")
+                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, legacy)");
+        }
+
+        @Test
+        void plainInsert_textColumnFirst_jsonColumnSecond_isPairedInOrder() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface OrderRepo {
+                    @Query("INSERT INTO documents (title, profile, id, legacy) VALUES (:t, :doc, :id, :old)")
+                    Promise<Unit> store(long id, String t, Profile doc, Profile old);
+                }
+                """, "test/OrderRepo.java"), "test.OrderRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)")
+                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, old)");
+        }
+
+        @Test
+        void plainInsert_jsonColumnFirst_textColumnSecond_isPairedInOrder() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface OrderRepo {
+                    @Query("INSERT INTO documents (profile, title, id, legacy) VALUES (:doc, :t, :id, :old)")
+                    Promise<Unit> store(String t, long id, Profile doc, Profile old);
+                }
+                """, "test/OrderRepo.java"), "test.OrderRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)")
+                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, old)");
+        }
+
+        @Test
+        void plainInsert_textColumnsAreNotChecked_soStringOnTextStaysAllowed() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface TextRepo {
+                    @Query("INSERT INTO documents (title, nick) VALUES (:title, :nick)")
+                    Promise<Unit> store(String title, String nick);
+                }
+                """, "test/TextRepo.java"), "test.TextRepoFactory");
+
+            assertThat(generated).doesNotContain("JsonText");
+        }
+
+        @Test
+        void countMismatch_moreColumnsThanValues_isNotPositional() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile, title) VALUES (:id, :raw)",
+                               "long id, String raw");
+        }
+
+        @Test
+        void countMismatch_moreValuesThanColumns_isNotPositional() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw, :extra)",
+                               "long id, String raw, String extra");
+        }
+
+        @Test
+        void expressionInValues_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, to_jsonb(:raw::text))",
+                               "long id, String raw");
+        }
+
+        @Test
+        void expressionWithoutParentheses_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw || :more)",
+                               "long id, String raw, String more");
+        }
+
+        @Test
+        void statementWithPrefix_staysAsToday() throws Exception {
+            assertStaysAsToday("/* audit */ INSERT INTO documents (id, profile) VALUES (:id, :raw)",
+                               "long id, String raw");
+        }
+
+        @Test
+        void castInValues_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw::jsonb)",
+                               "long id, String raw");
+        }
+
+        @Test
+        void multiRowValues_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw), (:id2, :raw2)",
+                               "long id, String raw, long id2, String raw2");
+        }
+
+        @Test
+        void insertSelect_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) SELECT :id, :raw",
+                               "long id, String raw");
+        }
+
+        @Test
+        void onConflictDoUpdate_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET profile = EXCLUDED.profile",
+                               "long id, String raw");
+        }
+
+        @Test
+        void returning_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw) RETURNING id",
+                               "long id, String raw");
+        }
+
+        /// The String on a json column is the proof of "no refusal": the same bind in the plain form is refused.
+        private void assertStaysAsToday(String sql, String params) throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface ExcludedRepo {
+                    @Query("%s")
+                    Promise<Unit> store(%s);
+                }
+                """.formatted(sql, params), "test/ExcludedRepo.java");
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.ExcludedRepoFactory")).doesNotContain("JsonText");
+        }
+    }
 
     // --- helpers ---
 
