@@ -16,6 +16,8 @@
 
 package org.pragmatica.http.server;
 
+import java.util.Arrays;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -61,10 +63,34 @@ class Http3FrameBoundaryGuardTest {
     /// `0x41 0x00`: a two-byte length of 256, so the high byte counts.
     @Test
     void twoByteLength_withAHighByte_isFollowed() {
-        var header = new int[] {0x00, 0x41, 0x00};
+        assertLengthOf256(0x41, 0x00);
+    }
+
+    /// `0x80 0x00 0x01 0x00`: a four-byte length of 256, so every byte of the varint is read.
+    @Test
+    void fourByteLength_withAHighByte_isFollowed() {
+        assertLengthOf256(0x80, 0x00, 0x01, 0x00);
+    }
+
+    /// `0xC0 ... 0x01 0x00`: an eight-byte length of 256.
+    @Test
+    void eightByteLength_withAHighByte_isFollowed() {
+        assertLengthOf256(0xC0, 0, 0, 0, 0, 0, 0x01, 0x00);
+    }
+
+    /// A DATA frame whose length varint is `length` (256): not a boundary one payload byte short, a boundary at 256. The
+    /// payload bytes are `0x01`, so a guard that misread the varint's length would parse payload as frames and land
+    /// elsewhere.
+    private static void assertLengthOf256(int... length) {
+        var header = new int[length.length + 1];
+
+        System.arraycopy(length, 0, header, 1, length.length);
+
         var almost = new int[header.length + 255];
         var whole = new int[header.length + 256];
 
+        Arrays.fill(almost, 1);
+        Arrays.fill(whole, 1);
         System.arraycopy(header, 0, almost, 0, header.length);
         System.arraycopy(header, 0, whole, 0, header.length);
 
