@@ -243,8 +243,9 @@ class SettingsSourcedTest {
         assertThat(settings.bounds()).isEqualTo(bounds());
     }
 
-    // Red when: the suspicion window is shorter than the worst case a dead core stays listed (any term of the lag dropped), or B_rm stops being
-    // the window itself (each wait counted once: splitTimeout is already in the lag); the worker removal bound (170 s) and the announcement freshness (60 s) move at the real defaults; or the
+    // Red when: the suspicion window is shorter than the worst case a dead core stays listed (any term of the lag dropped), the window or B_rm
+    // moves from 264.6 s at the defaults and three cores (a term added, inflated or counted twice), or B_rm stops being the window itself
+    // (each wait counted once: splitTimeout is already in the lag); the worker removal bound (170 s) and the announcement freshness (60 s) move at the real defaults; or the
     // factory scrambles its arguments.
     @Test
     void absenceBounds_deriveTheSuspicionWindow_andTheBoundsOnTopOfIt() {
@@ -252,6 +253,11 @@ class SettingsSourcedTest {
 
         assertThat(bounds.coreSuspicion()).as("covers the worst case a dead core stays listed").isGreaterThanOrEqualTo(worstCaseListedNanos(FIXTURE_MAX_CORES));
         assertThat(bounds.coreRemoval()).as("B_rm = the window, splitTimeout counted once (in the lag)").isEqualTo(bounds.coreSuspicion());
+        assertThat(ms(bounds.coreSuspicion())).as("the window at the defaults and %d cores: suspectTimeout 10 s x lhmMaxScore 8 x 3 = 240 s, plus the lag: "
+                                                  + "sampling 5 s + a tick 1 s + the probe lead (3 - 1) x 1 s + 2 x probeTimeout 0.8 s + splitTimeout "
+                                                  + "15 s = 24.6 s", FIXTURE_MAX_CORES)
+                                              .isEqualTo(264_600L);
+        assertThat(ms(bounds.coreRemoval())).as("B_rm at the defaults: the same 264.6 s, each wait counted once").isEqualTo(264_600L);
         assertThat(ms(bounds.workerRemoval())).as("B_w").isEqualTo(170_000L);
         assertThat(ms(bounds.announcementFreshness())).as("S_ann").isEqualTo(60_000L);
         var built = AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap();
