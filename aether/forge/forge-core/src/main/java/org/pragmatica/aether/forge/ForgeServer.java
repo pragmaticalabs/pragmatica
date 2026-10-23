@@ -128,7 +128,7 @@ public final class ForgeServer {
         var startupConfig = startupConfigResult.unwrap();
         // #909 - an aether.toml that exists and does not load is refused before anything is created, not dropped to the NONE defaults.
         ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), System::exit);
-        var forgeConfig = loadForgeConfig(startupConfig);
+        var forgeConfig = loadForgeConfig(startupConfig, System::exit);
 
         printBanner(forgeConfig, startupConfig);
         // #1008 — checked before anything is created, for the whole port range at once. Since #1719 a taken
@@ -206,13 +206,23 @@ public final class ForgeServer {
         System.out.println("  CLUSTER_SIZE        Number of nodes (default: " + StartupConfig.DEFAULT_CLUSTER_SIZE + ")");
     }
 
-    private static EmberConfig loadForgeConfig(StartupConfig startupConfig) {
+    /// #2385 - a `--config` file that does not load is refused (ERROR, then `exit` with 1), never replaced by
+    /// [EmberConfig#DEFAULT]: that fallback ran Forge on the default ports with every setting of the file dropped,
+    /// which turned a refusal (a renamed key, a malformed value) into a silent default. Without `--config`, Forge
+    /// runs on the defaults built from its startup flags. The exit is injected so the refusal is verified rather
+    /// than asserted; `main` passes `System::exit`, so the `DEFAULT` after a refusal is never used there.
+    static EmberConfig loadForgeConfig(StartupConfig startupConfig, IntConsumer exit) {
         return startupConfig.forgeConfig()
-                            .map(EmberConfig::load)
-                            .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
-                                                                 c.message()))
-                                       .or(EmberConfig.DEFAULT))
+                            .map(path -> loadOrRefuse(path, exit))
                             .or(createDefaultForgeConfig(startupConfig));
+    }
+
+    private static EmberConfig loadOrRefuse(Path path, IntConsumer exit) {
+        return EmberConfig.load(path)
+                          .onFailure(cause -> ForgeAppConfig.refuse("refusing to start: " + path
+                                                                   + " could not be loaded: " + cause.message(),
+                                                                    exit))
+                          .or(EmberConfig.DEFAULT);
     }
 
     private static EmberConfig createDefaultForgeConfig(StartupConfig startupConfig) {
@@ -226,7 +236,7 @@ public final class ForgeServer {
         log.info("=".repeat(60));
         log.info("    AETHER FORGE");
         log.info("=".repeat(60));
-        log.info("  Forge API: http://localhost:{}", forgeConfig.dashboardPort());
+        log.info("  Forge API: http://localhost:{}", forgeConfig.forgePort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
         log.info("  Cluster QUIC ports: {}-{} (UDP, consensus)",
                  forgeConfig.basePort(),
@@ -787,7 +797,7 @@ public final class ForgeServer {
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
         var config = HttpServerConfig.httpServerConfig("forge",
-                                                       forgeConfig.dashboardPort())
+                                                       forgeConfig.forgePort())
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
                                      .withChunkedWrite();
 

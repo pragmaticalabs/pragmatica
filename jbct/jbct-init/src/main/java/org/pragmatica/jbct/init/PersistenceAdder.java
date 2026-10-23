@@ -6,8 +6,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 
@@ -88,11 +90,10 @@ public final class PersistenceAdder {
     }
 
     private static String resolvePersistencePackage(ProjectConfig config, String packageOverride) {
-        if (packageOverride == null || packageOverride.isBlank()) {
-            return config.basePackage() + ".persistence";
-        }
-
-        return config.resolvePackage(packageOverride);
+        return Option.option(packageOverride)
+                     .filter(Verify.Is::notBlank)
+                     .map(config::resolvePackage)
+                     .or(() -> config.basePackage() + ".persistence");
     }
 
     private Result<Unit> createDirectories() {

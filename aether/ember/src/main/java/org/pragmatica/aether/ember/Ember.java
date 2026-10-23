@@ -11,7 +11,7 @@ import org.pragmatica.lang.Result;
 public final class Ember {
     private int nodes;
     private int managementPort = EmberConfig.DEFAULT_MANAGEMENT_PORT;
-    private int dashboardPort = EmberConfig.DEFAULT_DASHBOARD_PORT;
+    private int forgePort = EmberConfig.DEFAULT_FORGE_PORT;
     private int appHttpPort = EmberConfig.DEFAULT_APP_HTTP_PORT;
     private EmberH2Config h2Config = EmberH2Config.disabled();
     private boolean lbEnabled = EmberConfig.DEFAULT_LB_ENABLED;
@@ -49,8 +49,8 @@ public final class Ember {
         return this;
     }
 
-    public Ember withDashboardPort(int port) {
-        this.dashboardPort = port;
+    public Ember withForgePort(int port) {
+        this.forgePort = port;
 
         return this;
     }
@@ -84,7 +84,7 @@ public final class Ember {
     public Result<EmberInstance> start() {
         return EmberConfig.emberConfig(nodes,
                                        managementPort,
-                                       dashboardPort,
+                                       forgePort,
                                        appHttpPort,
                                        h2Config,
                                        ObservabilityConfig.DEFAULT,

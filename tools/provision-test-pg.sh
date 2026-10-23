@@ -185,14 +185,16 @@ hcloud_delete() {
     return 0
 }
 
+# The JSON body is read from stdin, never passed as an argument: the server payload carries
+# the database password (in user_data), and an argument shows in `ps` and in `bash -x` traces.
 hcloud_post_json() {
-    local path="$1" payload="$2"
+    local path="$1"
     local tmp http
     tmp=$(mktemp)
     http=$(curl -sS -o "$tmp" -w '%{http_code}' -X POST \
             -H "Authorization: Bearer ${HCLOUD_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "$payload" \
+            --data-binary @- \
             "${API}${path}")
     if [ "$http" -ge 400 ]; then
         log_err "POST ${path} failed (HTTP ${http}):"
@@ -294,7 +296,7 @@ ensure_ssh_key_uploaded() {
         --arg cluster "$CLUSTER_LABEL" \
         '{name: $name, public_key: $pub, labels: {"aether-cluster": $cluster}}')
     log_step "uploading SSH key to Hetzner"
-    if ! body=$(hcloud_post_json "/ssh_keys" "$payload"); then
+    if ! body=$(hcloud_post_json "/ssh_keys" <<< "$payload"); then
         return 2
     fi
     local new_id
@@ -304,20 +306,51 @@ ensure_ssh_key_uploaded() {
 }
 
 # ---------------------------------------------------------------------------
-# Cloud-init user_data builder. Echoes raw YAML; caller base64-encodes.
+# Password handling.
+#
+# The database password lives only in a mode-0600 file inside a private work directory,
+# never in a shell variable, a command argument or a log line. A variable assignment and
+# every argument appear in `bash -x` traces, and arguments appear in `ps`. Templates carry
+# the PASSWORD_PLACEHOLDER token; fill_password substitutes it from the file.
+# ---------------------------------------------------------------------------
+readonly PASSWORD_PLACEHOLDER="@PG_PASSWORD@"
+WORK_DIR=""
+
+cleanup_work_dir() {
+    if [ -n "$WORK_DIR" ]; then
+        rm -rf "$WORK_DIR"
+    fi
+}
+trap cleanup_work_dir EXIT
+
+# Reads a template on stdin and writes it to stdout with the placeholder replaced by the
+# contents of the password file named by $1.
+fill_password() {
+    jq -Rsj --rawfile pw "$1" --arg placeholder "$PASSWORD_PLACEHOLDER" 'split($placeholder) | join($pw)'
+}
+
+# ---------------------------------------------------------------------------
+# Cloud-init user_data template (password placeholder unfilled). The password reaches the
+# container through a root-only env file, so it is not in the `docker run` argv on the VM.
 # ---------------------------------------------------------------------------
 build_cloud_init() {
-    local pwd="$1"
     cat <<EOF
 #cloud-config
 package_update: true
 package_upgrade: false
 packages:
   - docker.io
+write_files:
+  - path: /root/aether-pg.env
+    permissions: '0600'
+    content: |
+      POSTGRES_USER=aether
+      POSTGRES_PASSWORD=${PASSWORD_PLACEHOLDER}
+      POSTGRES_DB=aether_forge
 runcmd:
   - systemctl enable docker --now
   - docker pull postgres:16
-  - "docker run -d --name aether-pg --restart unless-stopped -p 5432:5432 -e POSTGRES_USER=aether -e POSTGRES_PASSWORD='${pwd}' -e POSTGRES_DB=aether_forge postgres:16"
+  - docker run -d --name aether-pg --restart unless-stopped -p 5432:5432 --env-file /root/aether-pg.env postgres:16
 EOF
 }
 
@@ -363,8 +396,11 @@ wait_pg_port() {
 # ---------------------------------------------------------------------------
 # Smoke test the PG instance via SSH `docker exec` (no local psql required).
 # ---------------------------------------------------------------------------
+# psql runs inside the container over the local socket, which the postgres image trusts, so
+# no password is needed and none is sent: neither the ssh argv nor the remote `docker exec`
+# argv (nor a failure message echoing them) can carry it.
 smoke_test_pg() {
-    local ip="$1" pwd="$2"
+    local ip="$1"
     log_step "smoke test: SELECT 1 via SSH docker exec"
     local out
     # PG VM cloud-init creates only the `root` user; AETHER_SSH_USER (commonly `aether`) is for
@@ -376,7 +412,7 @@ smoke_test_pg() {
                    -o LogLevel=ERROR \
                    -i "$AETHER_SSH_KEY" \
                    "${pg_user}@${ip}" \
-                   "docker exec -e PGPASSWORD='${pwd}' aether-pg psql -U aether -d aether_forge -tAc 'SELECT 1'" 2>&1); then
+                   "docker exec aether-pg psql -U aether -d aether_forge -tAc 'SELECT 1'" 2>&1); then
         log_err "smoke test failed:"
         printf '%s\n' "$out" >&2
         return 2
@@ -392,19 +428,18 @@ smoke_test_pg() {
 # Persist env file (mode 0600).
 # ---------------------------------------------------------------------------
 write_env_file() {
-    local server_id="$1" ip="$2" pwd="$3"
-    local pg_url ts
-    pg_url="postgres://aether:${pwd}@${ip}:5432/aether_forge"
+    local server_id="$1" ip="$2" pw_file="$3"
+    local ts
     ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     umask 077
-    cat > "$ENV_FILE" <<EOF
+    fill_password "$pw_file" > "$ENV_FILE" <<EOF
 # Aether test-pg VM — auto-generated by tools/provision-test-pg.sh
 # PG VM ${server_id}  IP=${ip}  provisioned=${ts}
-export PG_URL=${pg_url}
+export PG_URL=postgres://aether:${PASSWORD_PLACEHOLDER}@${ip}:5432/aether_forge
 # Component vars for configs that need user/password separately (e.g. cloud
 # node_config.database, which overrides the slice intrinsic [database] creds).
 export PG_USER=aether
-export PG_PASSWORD=${pwd}
+export PG_PASSWORD=${PASSWORD_PLACEHOLDER}
 export PG_HOST=${ip}
 export PG_DB=aether_forge
 EOF
@@ -539,7 +574,7 @@ reuse_existing() {
 # Fresh provision path.
 # ---------------------------------------------------------------------------
 provision_fresh() {
-    local pubkey pubfile pwd ssh_key_id user_data b64 payload body server_id ip vm_name suffix
+    local pubkey pubfile pw_file user_data_file ssh_key_id body server_id ip vm_name suffix
 
     pubfile="${AETHER_SSH_KEY}.pub"
     if ! pubkey=$(resolve_ssh_pubkey "$AETHER_SSH_KEY"); then
@@ -550,20 +585,22 @@ provision_fresh() {
         exit 2
     fi
 
-    pwd=$(openssl rand -hex 16)
-    user_data=$(build_cloud_init "$pwd")
-    b64=$(printf '%s' "$user_data" | base64 | tr -d '\n')
+    WORK_DIR=$(mktemp -d)
+    pw_file="${WORK_DIR}/pg-password"
+    user_data_file="${WORK_DIR}/user-data"
+    (umask 077 && openssl rand -hex 16 | tr -d '\n' > "$pw_file")
+    build_cloud_init | fill_password "$pw_file" > "$user_data_file"
 
     suffix=$(openssl rand -hex 3)
     vm_name="${VM_NAME_PREFIX}-${suffix}"
 
     log_step "creating server ${vm_name} (${PG_VM_TYPE} @ ${PG_VM_LOCATION}, image ${PG_VM_IMAGE})"
-    payload=$(jq -n \
+    if ! body=$(jq -n \
         --arg name "$vm_name" \
         --arg image "$PG_VM_IMAGE" \
         --arg type "$PG_VM_TYPE" \
         --arg location "$PG_VM_LOCATION" \
-        --arg user_data "$user_data" \
+        --rawfile user_data "$user_data_file" \
         --arg cluster "$CLUSTER_LABEL" \
         --arg role "$ROLE_LABEL" \
         --argjson ssh_key_id "$ssh_key_id" \
@@ -576,9 +613,7 @@ provision_fresh() {
             user_data: $user_data,
             labels: {"aether-cluster": $cluster, "aether-role": $role},
             start_after_create: true
-        }')
-
-    if ! body=$(hcloud_post_json "/servers" "$payload"); then
+        }' | hcloud_post_json "/servers"); then
         exit 2
     fi
 
@@ -596,11 +631,11 @@ provision_fresh() {
         exit 2
     fi
 
-    if ! smoke_test_pg "$ip" "$pwd"; then
+    if ! smoke_test_pg "$ip"; then
         exit 2
     fi
 
-    write_env_file "$server_id" "$ip" "$pwd"
+    write_env_file "$server_id" "$ip" "$pw_file"
     log_ok "PG VM ready: id=${server_id} ip=${ip}"
 }
 

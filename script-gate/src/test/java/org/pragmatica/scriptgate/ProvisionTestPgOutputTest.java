@@ -74,6 +74,8 @@ class ProvisionTestPgOutputTest {
     private Path stubDir;
     private Path envFile;
     private Path functions;
+    /// #2385: `write_env_file` takes the path of the password file, never the password itself.
+    private Path passwordFile;
 
     @BeforeEach
     void setUp(@TempDir Path tempDir) {
@@ -82,6 +84,7 @@ class ProvisionTestPgOutputTest {
         stubDir = tempDir.resolve("stub");
         envFile = tempDir.resolve("aether-test-pg.env");
         functions = tempDir.resolve("functions.sh");
+        passwordFile = tempDir.resolve("pg-password");
         given(ScriptRunner.writeExecutable(stubDir.resolve("curl"), HetznerCurlStub.SCRIPT).mapToUnit());
         given(ScriptRunner.writeExecutable(stubDir.resolve("ssh"), INERT).mapToUnit());
         given(ScriptRunner.writeExecutable(stubDir.resolve("ssh-keygen"), INERT).mapToUnit());
@@ -140,9 +143,10 @@ class ProvisionTestPgOutputTest {
     @Test
     void freshProvision_writeEnvFile_omitsPasswordAndUrl_butFileCarriesThem() {
         given(Result.lift(() -> Files.writeString(functions, functionsBeforeMainFlow())).mapToUnit());
-        var execution = executed(runCommand("f=$1; s=$2; set --; source \"$f\"; write_env_file 42 192.0.2.10 \"$s\"",
+        given(Result.lift(() -> Files.writeString(passwordFile, SECRET)).mapToUnit());
+        var execution = executed(runCommand("f=$1; p=$2; set --; source \"$f\"; write_env_file 42 192.0.2.10 \"$p\"",
                                             functions.toString(),
-                                            SECRET));
+                                            passwordFile.toString()));
 
         assertThat(execution.exitCode()).as(execution.output()).isZero();
         assertNoCredentials(execution.output());

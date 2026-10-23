@@ -15,6 +15,7 @@ import org.pragmatica.jbct.shared.GitHubContentFetcher;
 import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.jbct.shared.PathValidation;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -147,54 +148,75 @@ public final class AiToolsInstaller {
         var installed = new ArrayList<Path>();
         var skipped = new ArrayList<Path>();
 
-        try {
-            Files.createDirectories(claudeDir);
-            copyTree(CACHE_DIR.resolve("skills"), claudeDir.resolve("skills"), installed, skipped);
-            copyTree(CACHE_DIR.resolve("agents"), claudeDir.resolve("agents"), installed, skipped);
-
-            return Result.success(AiToolsOutcome.aiToolsOutcome(installed, skipped));
-        } catch (Exception e) {
-            return Causes.cause("Failed to copy from cache: " + e.getMessage()).result();
-        }
+        return Result.lift(AiToolsInstaller::copyFailure,
+                           () -> Files.createDirectories(claudeDir))
+                     .flatMap(_ -> copyTree(CACHE_DIR.resolve("skills"),
+                                            claudeDir.resolve("skills"),
+                                            installed,
+                                            skipped))
+                     .flatMap(_ -> copyTree(CACHE_DIR.resolve("agents"),
+                                            claudeDir.resolve("agents"),
+                                            installed,
+                                            skipped))
+                     .map(_ -> AiToolsOutcome.aiToolsOutcome(installed, skipped));
     }
 
-    private void copyTree(Path source, Path target, List<Path> installed, List<Path> skipped) throws IOException {
+    private static Cause copyFailure(Throwable throwable) {
+        return Causes.cause("Failed to copy from cache: " + throwable.getMessage(),
+                            Option.some(Causes.fromThrowable(throwable)));
+    }
+
+    private Result<Unit> copyTree(Path source, Path target, List<Path> installed, List<Path> skipped) {
         if (!Files.exists(source)) {
-            return;
+            return Result.unitResult();
         }
 
-        Files.walkFileTree(source,
-                           new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                               Files.createDirectories(target.resolve(source.relativize(dir)));
-
-                               return FileVisitResult.CONTINUE;
-                           }
-
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                               copyOrSkip(file,
-                                          target.resolve(source.relativize(file)),
-                                          installed,
-                                          skipped);
-
-                               return FileVisitResult.CONTINUE;
-                           }
-        });
+        return Result.lift(AiToolsInstaller::copyFailure,
+                           () -> Files.walkFileTree(source,
+                                                    new CopyOrSkipVisitor(source, target, installed, skipped)))
+                     .mapToUnit();
     }
 
-    private void copyOrSkip(Path sourceFile, Path targetFile, List<Path> installed, List<Path> skipped) throws IOException {
-        var relativePath = claudeDir.relativize(targetFile);
+    /// Mirrors `source` under `target`, skipping files the user's global `~/.claude/` already provides.
+    /// The `throws IOException` signatures are dictated by [java.nio.file.FileVisitor]; [#copyTree] lifts them.
+    private final class CopyOrSkipVisitor extends SimpleFileVisitor<Path> {
+        private final Path source;
+        private final Path target;
+        private final List<Path> installed;
+        private final List<Path> skipped;
 
-        if (existsGlobally(relativePath)) {
-            skipped.add(relativePath);
-
-            return;
+        private CopyOrSkipVisitor(Path source, Path target, List<Path> installed, List<Path> skipped) {
+            this.source = source;
+            this.target = target;
+            this.installed = installed;
+            this.skipped = skipped;
         }
 
-        Files.copy(sourceFile, targetFile, StandardCopyOption.REPLACE_EXISTING);
-        installed.add(targetFile);
+        @Contract
+        @Override
+        public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+            Files.createDirectories(target.resolve(source.relativize(dir)));
+
+            return FileVisitResult.CONTINUE;
+        }
+
+        @Contract
+        @Override
+        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+            var targetFile = target.resolve(source.relativize(file));
+            var relativePath = claudeDir.relativize(targetFile);
+
+            if (existsGlobally(relativePath)) {
+                skipped.add(relativePath);
+
+                return FileVisitResult.CONTINUE;
+            }
+
+            Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
+            installed.add(targetFile);
+
+            return FileVisitResult.CONTINUE;
+        }
     }
 
     private static boolean existsGlobally(Path relativePath) {
