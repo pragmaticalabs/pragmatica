@@ -52,7 +52,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// **A refused retirement is retried, but only for the identity the decision read** (CTO rulings `c0b4ae539` (2), amended by `4c533461f`):
 /// each retry re-reads both keys and the committed leader, and proceeds only while the departure record is still the DEPARTED record first
-/// read (same epoch and process incarnation) or absent. A re-admitted record (ADMITTED/ACTIVE, a newer epoch) ends the retry and leaves the
+/// read (same epoch and process incarnation) or absent. A re-admitted record (ADMITTED) ends the retry and leaves the
 /// record AND the directive: the compare-and-set refusal protected an identity that changed since the decision, and a retry must not turn it
 /// into a delayed removal of the new state. The retry also ends when it commits, when neither key is left, and when the node stops. Nothing
 /// else deletes the pair under FSM2, so a transient refusal (leadership moved) dropped after one attempt would leave both in place until the
