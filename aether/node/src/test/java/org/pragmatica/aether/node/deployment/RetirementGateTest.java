@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.deployment;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
@@ -16,6 +21,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// at `NodeRemoved`, so a second delete would race it), withholds it from FSM2, or records a different binding than it applies.
 class RetirementGateTest {
     private static final TerminationRetirement RETIREMENT = _ -> Promise.unitPromise();
+
+    private static final Path AETHER_NODE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "AetherNode.java");
+
+    /// T5: the node retires through the production retirement (`TerminationRetirement.production`: the production retry policy and the node's
+    /// stop signal), never a hand-built one. Red when `AetherNode` builds its retirement any other way (a one-attempt retry, no stop signal).
+    @Test
+    void theNode_retiresThroughTheProductionRetirement() throws IOException {
+        var source = Files.readString(AETHER_NODE, StandardCharsets.UTF_8);
+
+        assertThat(source.split("TerminationRetirement\\.production\\(", -1)).as("one production retirement").hasSize(2);
+        assertThat(source).as("no hand-built retirement").doesNotContain("TerminationRetirement.directiveAndRecord(");
+        assertThat(source.replaceAll("\\s+", "")).as("with the node's stop signal")
+                                               .contains("TerminationRetirement.production(kvStore,clusterCommandApplier,periodicTasks::isCancelled)");
+    }
 
     @Test
     void underLegacy_neitherAuthorityRetires_andBothAreRecordedOff() {

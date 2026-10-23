@@ -269,6 +269,23 @@ class TerminationRetirementTest {
                                                          new KVCommand.Mutation<>(DIRECTIVE, store.get(DIRECTIVE), Option.none()))));
     }
 
+    /// T5: the production retirement retries a refused attempt (the production policy, `UNTIL_RETIRED`, real backoff from 500 ms). Red when
+    /// the production policy makes one attempt only, or the retry does not commit both removals.
+    @Test
+    void theProductionRetirement_retriesARefusedAttempt_andRetiresBoth() {
+        leaderAndBothKeys();
+        beforeFirstApply = this::moveLeadership;
+
+        TerminationRetirement.production(store, commands -> Promise.success(applyAfterTheInterloper(commands)), () -> false)
+                             .retire(GONE)
+                             .await(TimeSpan.timeSpan(30).seconds())
+                             .onFailure(cause -> fail(cause.message()));
+
+        assertThat(submitted).as("refused under the old leader, then retried by the production policy").hasSize(2);
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+    }
+
     @Test
     void aNodeWithNeitherKey_submitsNothing() {
         commitLeader();
