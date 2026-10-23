@@ -24,8 +24,9 @@ class RetirementGateTest {
 
     private static final Path AETHER_NODE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "AetherNode.java");
 
-    /// T5: the node retires through the production retirement (`TerminationRetirement.production`: the production retry policy and the node's
-    /// stop signal), never a hand-built one. Red when `AetherNode` builds its retirement any other way (a one-attempt retry, no stop signal).
+    /// T5: the node retires through the production retirement (`TerminationRetirement.production`: the production retry policy, the node's
+    /// stop signal and its operator-warning sink), never a hand-built one. Red when `AetherNode` builds its retirement any other way (a
+    /// one-attempt retry, no stop signal, no sink).
     @Test
     void theNode_retiresThroughTheProductionRetirement() throws IOException {
         var source = Files.readString(AETHER_NODE, StandardCharsets.UTF_8);
@@ -33,7 +34,7 @@ class RetirementGateTest {
         assertThat(source.split("TerminationRetirement\\.production\\(", -1)).as("one production retirement").hasSize(2);
         assertThat(source).as("no hand-built retirement").doesNotContain("TerminationRetirement.directiveAndRecord(");
         assertThat(source.replaceAll("\\s+", "")).as("with the node's stop signal")
-                                               .contains("TerminationRetirement.production(kvStore,clusterCommandApplier,periodicTasks::isCancelled)");
+                                               .contains("TerminationRetirement.production(kvStore,clusterCommandApplier,periodicTasks::isCancelled,operatorWarningSink)");
     }
 
     @Test

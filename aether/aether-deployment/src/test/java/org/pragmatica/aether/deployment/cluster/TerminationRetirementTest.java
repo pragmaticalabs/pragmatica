@@ -29,6 +29,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -276,7 +277,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = this::moveLeadership;
 
-        TerminationRetirement.production(store, commands -> Promise.success(applyAfterTheInterloper(commands)), () -> false)
+        TerminationRetirement.production(store, commands -> Promise.success(applyAfterTheInterloper(commands)), () -> false, OperatorWarningSink.logOnly())
                              .retire(GONE)
                              .await(TimeSpan.timeSpan(30).seconds())
                              .onFailure(cause -> fail(cause.message()));

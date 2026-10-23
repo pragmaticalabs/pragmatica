@@ -6,9 +6,11 @@ package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -23,14 +25,22 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// What a termination authority does to a node's deployment identity once its termination is confirmed (phase-3 design 12 item 4b, CTO
@@ -87,21 +97,84 @@ public interface TerminationRetirement {
                                                         .withJitter());
 
     /// The production retirement (B18, B19): [#directiveAndRecord] under [#UNTIL_RETIRED], ending when `stopped` reports the node stopping (the
-    /// node's periodic-task holder, the same stop signal its other retry loops read).
+    /// node's periodic-task holder, the same stop signal its other retry loops read), and raising its overdue event to `warnings`.
     static TerminationRetirement production(KVStore<AetherKey, AetherValue> store,
                                             Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                            BooleanSupplier stopped) {
-        return directiveAndRecord(store, applier, UNTIL_RETIRED, stopped);
+                                            BooleanSupplier stopped,
+                                            OperatorWarningSink warnings) {
+        return directiveAndRecord(store,
+                                  applier,
+                                  UNTIL_RETIRED,
+                                  stopped,
+                                  Overdue.overdue(warnings, System::nanoTime, OVERDUE_AFTER));
     }
 
-    /// Reads both keys and the committed leader from `store`, submits through `applier`, and retries under `retry` while the departure record
-    /// is the one first read (or absent) and `stopped` is false, until the transaction commits or the node holds neither key. A node holding
-    /// neither key writes nothing.
+    /// How long a retirement may stay refused before it is an operator's concern. Under [#UNTIL_RETIRED] two minutes is about eight attempts
+    /// (500 ms doubling to the 30 s cap), every one refused; a transient refusal (a leader change, a compare-and-set race) clears in one or
+    /// two attempts, within seconds, and a leader election in tens of seconds. So a retirement refused for two minutes is stuck, not racing.
+    TimeSpan OVERDUE_AFTER = TimeSpan.timeSpan(2).minutes();
+
+    /// [#directiveAndRecord] that raises no overdue event.
     static TerminationRetirement directiveAndRecord(KVStore<AetherKey, AetherValue> store,
                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                     Retry retry,
                                                     BooleanSupplier stopped) {
-        return node -> retireTheIdentityRead(store, applier, retry, stopped, node, store.get(new NodeDepartureKey(node)));
+        return directiveAndRecord(store,
+                                  applier,
+                                  retry,
+                                  stopped,
+                                  Overdue.overdue(OperatorWarningSink.logOnly(), System::nanoTime, OVERDUE_AFTER));
+    }
+
+    /// Reads both keys and the committed leader from `store`, submits through `applier`, and retries under `retry` while the identity is the
+    /// one first read and `stopped` is false, until the transaction commits or the node holds neither key. A node holding neither key writes
+    /// nothing. Refused past `overdue`'s bound, it raises one overdue event, and one resolved event when it ends. The retirement runs on the
+    /// one node whose authority started it (the leader's reap, or the node the operator's clear reached), so these events have one emitter.
+    static TerminationRetirement directiveAndRecord(KVStore<AetherKey, AetherValue> store,
+                                                    Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                    Retry retry,
+                                                    BooleanSupplier stopped,
+                                                    Overdue overdue) {
+        return node -> retireTheIdentityRead(store,
+                                             applier,
+                                             retry,
+                                             stopped,
+                                             node,
+                                             Identity.read(store, node),
+                                             overdue.watch(node));
+    }
+
+    /// What a retirement first read of the node's identity: its departure record and its directive.
+    record Identity(Option<AetherValue> record, Option<AetherValue> directive) {
+        static Identity read(KVStore<AetherKey, AetherValue> store, NodeId node) {
+            return new Identity(store.get(new NodeDepartureKey(node)),
+                                store.get(ActivationDirectiveKey.activationDirectiveKey(node)));
+        }
+
+        /// Whether a retry may go on, on what `store` holds now (CTO rulings `4c533461f`, `5ca85aa4e`):
+        /// - a record present: only the DEPARTED record first read (same epoch and process incarnation);
+        /// - the record absent: only while the directive is the one first read, or gone. A re-admission writes its ADMITTED record and its
+        ///   directive in separate transactions (the cluster FSM's `SubmitKind.ADMISSION` draft, `Joins`, and its `SubmitKind.DIRECTIVE`
+        ///   draft, `Directory`), so an absent record beside a new directive can be a re-admission whose record is not yet written.
+        boolean stillHolds(KVStore<AetherKey, AetherValue> store, NodeId node) {
+            return store.get(new NodeDepartureKey(node))
+                        .fold(() -> isTheDirectiveFirstRead(store.get(ActivationDirectiveKey.activationDirectiveKey(node))),
+                              this::isTheDepartureFirstRead);
+        }
+
+        private boolean isTheDirectiveFirstRead(Option<AetherValue> now) {
+            return now.isEmpty() || now.equals(directive);
+        }
+
+        private boolean isTheDepartureFirstRead(AetherValue now) {
+            return now instanceof NodeDepartureValue current
+                   && current.state() == DepartureState.DEPARTED
+                   && record.filter(NodeDepartureValue.class::isInstance)
+                            .map(NodeDepartureValue.class::cast)
+                            .filter(read -> read.epoch() == current.epoch() && read.process()
+                                                                                   .equals(current.process()))
+                            .isPresent();
+        }
     }
 
     private static Promise<Unit> retireTheIdentityRead(KVStore<AetherKey, AetherValue> store,
@@ -109,7 +182,8 @@ public interface TerminationRetirement {
                                                        Retry retry,
                                                        BooleanSupplier stopped,
                                                        NodeId node,
-                                                       Option<AetherValue> firstRead) {
+                                                       Identity firstRead,
+                                                       Overdue.Watch watch) {
         var attempts = new AtomicInteger();
 
         return retry.execute(() -> guardedAttempt(store,
@@ -117,15 +191,16 @@ public interface TerminationRetirement {
                                                   stopped,
                                                   node,
                                                   firstRead,
-                                                  attempts.getAndIncrement() == 0));
+                                                  attempts.getAndIncrement() == 0).onFailure(watch::refused))
+                    .withResult(watch::ended);
     }
 
-    /// An attempt unless the node is stopping, or (on a retry) the record is no longer the one first read.
+    /// An attempt unless the node is stopping, or (on a retry) the identity is no longer the one first read.
     private static Promise<Unit> guardedAttempt(KVStore<AetherKey, AetherValue> store,
                                                 Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                 BooleanSupplier stopped,
                                                 NodeId node,
-                                                Option<AetherValue> firstRead,
+                                                Identity firstRead,
                                                 boolean first) {
         return stopped.getAsBoolean()
                ? Stopped.FACTORY.apply(node).promise()
@@ -135,26 +210,57 @@ public interface TerminationRetirement {
     private static Promise<Unit> attemptOnTheIdentityRead(KVStore<AetherKey, AetherValue> store,
                                                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                           NodeId node,
-                                                          Option<AetherValue> firstRead,
+                                                          Identity firstRead,
                                                           boolean first) {
-        return first || isTheRecordFirstRead(store.get(new NodeDepartureKey(node)), firstRead)
+        return first || firstRead.stillHolds(store, node)
                ? attempt(store, applier, node)
                : Readmitted.FACTORY.apply(node).promise();
     }
 
-    /// Absent, or the DEPARTED record first read: same epoch and process incarnation.
-    static boolean isTheRecordFirstRead(Option<AetherValue> current, Option<AetherValue> firstRead) {
-        return current.fold(() -> true, now -> isSameDeparture(now, firstRead));
-    }
+    /// The overdue bound of a retirement and where its events go (owner rule 2026-10-03: an operator-visible condition raises one event on
+    /// entering it and one on leaving it).
+    record Overdue(OperatorWarningSink warnings, LongSupplier clockNs, TimeSpan after) {
+        static Overdue overdue(OperatorWarningSink warnings, LongSupplier clockNs, TimeSpan after) {
+            return new Overdue(warnings, clockNs, after);
+        }
 
-    private static boolean isSameDeparture(AetherValue now, Option<AetherValue> firstRead) {
-        return now instanceof NodeDepartureValue record
-               && record.state() == DepartureState.DEPARTED
-               && firstRead.filter(NodeDepartureValue.class::isInstance)
-                           .map(NodeDepartureValue.class::cast)
-                           .filter(read -> read.epoch() == record.epoch() && read.process()
-                                                                                 .equals(record.process()))
-                           .isPresent();
+        Watch watch(NodeId node) {
+            return new Watch(this, node, clockNs.getAsLong(), new AtomicBoolean());
+        }
+
+        /// One retirement's watch: raises [OperatorWarningCode#TERMINATION_RETIREMENT_OVERDUE] once, on the first refusal past the bound, and
+        /// [OperatorWarningCode#TERMINATION_RETIREMENT_RESOLVED] once, when the retirement ends, only if the overdue event was raised.
+        record Watch(Overdue overdue, NodeId node, long startedNs, AtomicBoolean raised) {
+            private static final Logger LOG = LoggerFactory.getLogger(TerminationRetirement.class);
+
+            @Contract
+            void refused(Cause cause) {
+                if (!cause.isTerminal() && overdue.clockNs().getAsLong() - startedNs >= overdue.after().nanos() && raised.compareAndSet(false,
+                                                                                                                                        true)) {
+                    OperatorWarnings.raise(LOG,
+                                           overdue.warnings(),
+                                           OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE,
+                                           node.id(),
+                                           "The directive and departure record of terminated node {} are still not retired after {}: the last attempt was refused ({}). Nothing else removes them under FSM2; the retirement keeps retrying while the record is the one first read",
+                                           node.id(),
+                                           overdue.after(),
+                                           cause.message());
+                }
+            }
+
+            @Contract
+            void ended(Result<Unit> outcome) {
+                if (raised.get()) {
+                    OperatorWarnings.raise(LOG,
+                                           overdue.warnings(),
+                                           OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED,
+                                           node.id(),
+                                           "The retirement of the directive and departure record of node {} ended: {}",
+                                           node.id(),
+                                           outcome.fold(Cause::message, _ -> "it committed, or neither key was left"));
+                }
+            }
+        }
     }
 
     /// One attempt, on what the store holds now: done when neither key is left, refused when the transaction is.

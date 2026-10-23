@@ -2648,8 +2648,12 @@ public interface AetherNode extends ManageableNode {
         clusterNode.onStateRestored(deploymentWiring.stateRestored());
         // B18, B19 (design 12 item 4b): under FSM2 the CTM's confirmed reap and the operator --force clear retire the node's directive and
         // departure record in one transaction, retried while the record is the one first read, until it commits, nothing is left, or this node
-        // stops (`periodicTasks` is cancelled first thing in `stop()`); under LEGACY they retire nothing.
-        var retirement = TerminationRetirement.production(kvStore, clusterCommandApplier, periodicTasks::isCancelled);
+        // stops (`periodicTasks` is cancelled first thing in `stop()`), raising one overdue event if still refused after its bound; under LEGACY they
+        // retire nothing.
+        var retirement = TerminationRetirement.production(kvStore,
+                                                          clusterCommandApplier,
+                                                          periodicTasks::isCancelled,
+                                                          operatorWarningSink);
 
         clusterTopologyManager.setTerminationRetirements(deploymentWiring.reaperRetirement(retirement),
                                                          deploymentWiring.forceClearRetirement(retirement));
