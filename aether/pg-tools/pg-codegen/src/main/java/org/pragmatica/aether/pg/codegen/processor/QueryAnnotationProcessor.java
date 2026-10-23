@@ -828,9 +828,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private void validateJsonbComponents(ExecutableElement execElement,
                                          org.pragmatica.aether.pg.schema.model.Table table,
                                          TypeElement record) {
-        if (record == null) {
-            return;
-        }
         for (var component : record.getEnclosedElements()) {
             if (component.getKind() != ElementKind.RECORD_COMPONENT || !isMarked(component)) {
                 continue;
