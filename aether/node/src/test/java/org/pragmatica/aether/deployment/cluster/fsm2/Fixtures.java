@@ -71,7 +71,6 @@ final class Fixtures {
                                     SwimSettings.swimSettings().suspectTimeout(),
                                     swim.lhmMaxScore(),
                                     SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
-                                    MembershipConfig.membershipConfig().splitTimeout(),
                                     GovernorAnnouncer.DEFAULT_REANNOUNCE_INTERVAL,
                                     ClusterTimeouts.clusterTimeouts().communityAbsence(),
                                     Fsm2System.suspicionLag(swim, FIXTURE_MAX_CORES, MembershipConfig.membershipConfig().splitTimeout()))

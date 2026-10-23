@@ -17,7 +17,12 @@ import org.pragmatica.lang.utils.Causes;
 /// The absence bounds of the departure backstop (spec R-2.14, R-2.14b, R-2.14c) and the core suspicion window (R-2.11 (b)), in
 /// nanoseconds of the leader-local monotonic clock. They are derived from the live configuration, never hard-coded:
 ///
-/// - `coreRemoval` (`B_rm`) = `coreSuspicion + splitTimeout`;
+/// - `coreRemoval` (`B_rm`) = `coreSuspicion`. Each wait is counted once (CTO ruling 2026-10-23, P3-F review): `B_rm` is the longest a
+///   dead core can go before membership drops it from the core view with a departure verdict, and that is exactly what `coreSuspicion`
+///   bounds, the membership's eviction backstop (`splitTimeout`) included through `suspicionLag`. Adding `splitTimeout` again, as the
+///   bound did before the lag carried it, counts the same wait twice. At the defaults (`SwimConfig.DEFAULT`, `splitTimeout` 15 s) and
+///   `maxCores` cores: `240 s + 5 s + 1 s + (maxCores - 1) x 1 s + 2 x 0.8 s + 15 s`, i.e. 264.6 s at three cores and 266.6 s at five
+///   (before P3-F: `coreSuspicion` 246 s, `coreRemoval` 261 s);
 /// - `workerRemoval` (`B_w`) = `workerSuspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER
 ///   + reannounceInterval + communityAbsence`;
 /// - `announcementFreshness` (`S_ann`) = `2 x reannounceInterval`;
@@ -62,16 +67,14 @@ public final class AbsenceBounds {
                                                TimeSpan workerSuspectTimeout,
                                                int lhmMaxScore,
                                                double clusterSizeWindowMultiplier,
-                                               TimeSpan splitTimeout,
                                                TimeSpan reannounceInterval,
                                                TimeSpan communityAbsence,
                                                TimeSpan suspicionLag) {
         var window = lhmMaxScore * clusterSizeWindowMultiplier;
         var coreSuspicion = (long)(suspectTimeout.nanos() * window) + suspicionLag.nanos();
-        var coreRemoval = coreSuspicion + splitTimeout.nanos();
         var workerRemoval = (long)(workerSuspectTimeout.nanos() * window) + reannounceInterval.nanos() + communityAbsence.nanos();
 
-        return absenceBounds(coreRemoval, workerRemoval, 2 * reannounceInterval.nanos(), coreSuspicion);
+        return absenceBounds(coreSuspicion, workerRemoval, 2 * reannounceInterval.nanos(), coreSuspicion);
     }
 
     public long coreRemoval() {

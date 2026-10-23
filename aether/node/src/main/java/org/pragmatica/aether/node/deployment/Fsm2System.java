@@ -181,7 +181,6 @@ public final class Fsm2System {
                                           workerSuspect,
                                           swim.lhmMaxScore(),
                                           SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
-                                          splitTimeout,
                                           REANNOUNCE_INTERVAL,
                                           config.timeouts().cluster().communityAbsence(),
                                           suspicionLag(swim,

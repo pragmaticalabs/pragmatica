@@ -244,15 +244,14 @@ class SettingsSourcedTest {
     }
 
     // Red when: the suspicion window is shorter than the worst case a dead core stays listed (any term of the lag dropped), or B_rm stops being
-    // the window plus splitTimeout; the worker removal bound (170 s) and the announcement freshness (60 s) move at the real defaults; or the
+    // the window itself (each wait counted once: splitTimeout is already in the lag); the worker removal bound (170 s) and the announcement freshness (60 s) move at the real defaults; or the
     // factory scrambles its arguments.
     @Test
     void absenceBounds_deriveTheSuspicionWindow_andTheBoundsOnTopOfIt() {
         var bounds = bounds();
 
         assertThat(bounds.coreSuspicion()).as("covers the worst case a dead core stays listed").isGreaterThanOrEqualTo(worstCaseListedNanos(FIXTURE_MAX_CORES));
-        assertThat(bounds.coreRemoval()).as("B_rm = the window + splitTimeout")
-                                        .isEqualTo(bounds.coreSuspicion() + MembershipConfig.membershipConfig().splitTimeout().nanos());
+        assertThat(bounds.coreRemoval()).as("B_rm = the window, splitTimeout counted once (in the lag)").isEqualTo(bounds.coreSuspicion());
         assertThat(ms(bounds.workerRemoval())).as("B_w").isEqualTo(170_000L);
         assertThat(ms(bounds.announcementFreshness())).as("S_ann").isEqualTo(60_000L);
         var built = AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap();
@@ -332,7 +331,6 @@ class SettingsSourcedTest {
                                         TimeSpan.timeSpan(5).seconds(),
                                         8,
                                         3.0,
-                                        TimeSpan.timeSpan(15).seconds(),
                                         TimeSpan.timeSpan(30).seconds(),
                                         TimeSpan.timeSpan(60).seconds(),
                                         TimeSpan.timeSpan(0).seconds())
