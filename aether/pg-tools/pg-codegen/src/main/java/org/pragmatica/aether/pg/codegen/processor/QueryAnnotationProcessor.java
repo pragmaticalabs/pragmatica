@@ -86,7 +86,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private final Map<String, Result<CstNode>> sqlParseCache = new HashMap<>();
     /// The `@Jsonb` codecs of the interface being processed.
     private JsonbCodecs jsonbCodecs;
-    /// Record components mapped as JSON documents (marked or inferred) in the interface being processed.
+    /// Record components mapped as JSON documents (marked or inferred). Kept for the whole compilation: a component is
+    /// skipped by the import collector only, and one that another interface does not map as a document fails that
+    /// interface anyway.
     private final Set<Element> documentElements = new HashSet<>();
     /// A failure already reported to the messager.
     private static final org.pragmatica.lang.Cause REPORTED = org.pragmatica.lang.utils.Causes.cause("reported");
@@ -177,7 +179,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         runMigrationLintOnce(configPath);
         note("Generating " + interfaceName + "Factory", interfaceElement);
         jsonbCodecs = new JsonbCodecs(processingEnv, packageName, interfaceName);
-        documentElements.clear();
         var methods = analyzeMethods(interfaceElement, schemaOpt);
         jsonbCodecs.write(interfaceElement)
                    .onFailure(cause -> error(cause.message(), interfaceElement));
