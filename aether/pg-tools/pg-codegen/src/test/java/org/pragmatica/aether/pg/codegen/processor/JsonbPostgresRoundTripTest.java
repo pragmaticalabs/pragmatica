@@ -104,9 +104,32 @@ class JsonbPostgresRoundTripTest {
         }
         """;
 
+    private static final String INFERRED_SCENARIO = """
+        package inferred;
+
+        import java.util.List;
+
+        import org.pragmatica.aether.resource.db.PgSqlConnector;
+        import org.pragmatica.lang.Option;
+
+        public final class InferredScenario {
+            static final Address HOME = new Address("Київ", "01001");
+            static final Profile EVE = new Profile("Єва 😀", Option.some("єва"), List.of(HOME), HOME);
+            static final InferredRow ROW = new InferredRow(11L, EVE, Option.none(), EVE, "inferred", Option.none());
+
+            public static List<Object> roundTrip(PgSqlConnector db) {
+                var repo = InferredRepoFactory.inferredRepo(db);
+                repo.insert(ROW).await().unwrap();
+                return List.of(Option.some(ROW), repo.findById(11L).await().unwrap(),
+                               List.of(ROW), repo.findByProfile(EVE).await().unwrap());
+            }
+        }
+        """;
+
     private static PostgreSQLContainer<?> postgres;
     private static PgSqlConnector connector;
     private static Class<?> scenario;
+    private static Class<?> inferredScenario;
 
     @TempDir
     static Path tempDir;
@@ -147,6 +170,18 @@ class JsonbPostgresRoundTripTest {
         assertThat(count("SELECT count(*) FROM documents WHERE profile ->> 'name' = 'Іван 😀' AND legacy ->> 'name' = 'Bob'"))
             .as("the documents are stored as JSON the server can query")
             .isEqualTo(1L);
+    }
+
+    /// #2401: the same documents with no `@Jsonb` anywhere: the CRUD table says the columns are json/jsonb, so the
+    /// record components, the `Option` component and the `findByProfile` condition param are documents.
+    @Test
+    void inferredDocuments_roundTripWithoutMarkers() throws Exception {
+        assertPairs(List.of(inferredScenario.getMethods())
+                        .stream()
+                        .filter(method -> method.getName().equals("roundTrip"))
+                        .findFirst()
+                        .orElseThrow()
+                        .invoke(null, connector));
     }
 
     @Test
@@ -311,13 +346,20 @@ class JsonbPostgresRoundTripTest {
         var result = TestCompilationHelper.compileAndCompileGenerated(List.of(new TestCompilationHelper.SourceEntry("test/DocRepo.java",
                                                                                                                     JsonbMappingTest.DOC_REPO),
                                                                               new TestCompilationHelper.SourceEntry("test/Scenario.java",
-                                                                                                                    SCENARIO)),
+                                                                                                                    SCENARIO),
+                                                                              new TestCompilationHelper.SourceEntry("inferred/InferredRepo.java",
+                                                                                                                    JsonbMappingTest.INFERRED_REPO.replace("package test;",
+                                                                                                                                                           "package inferred;")),
+                                                                              new TestCompilationHelper.SourceEntry("inferred/InferredScenario.java",
+                                                                                                                    INFERRED_SCENARIO)),
                                                                       tempDir);
 
         assertThat(result.success()).as(result.diagnostics()).isTrue();
 
         var loader = new URLClassLoader(new URL[]{tempDir.resolve("classes").toUri().toURL()},
                                         JsonbPostgresRoundTripTest.class.getClassLoader());
+
+        inferredScenario = loader.loadClass("inferred.InferredScenario");
 
         return loader.loadClass("test.Scenario");
     }

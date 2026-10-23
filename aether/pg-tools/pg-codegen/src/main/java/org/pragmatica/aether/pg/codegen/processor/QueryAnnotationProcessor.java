@@ -86,6 +86,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private final Map<String, Result<CstNode>> sqlParseCache = new HashMap<>();
     /// The `@Jsonb` codecs of the interface being processed.
     private JsonbCodecs jsonbCodecs;
+    /// Record components mapped as JSON documents (marked or inferred) in the interface being processed.
+    private final Set<Element> documentElements = new HashSet<>();
     /// A failure already reported to the messager.
     private static final org.pragmatica.lang.Cause REPORTED = org.pragmatica.lang.utils.Causes.cause("reported");
     private static final String OPTION_TYPE = "org.pragmatica.lang.Option";
@@ -175,6 +177,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         runMigrationLintOnce(configPath);
         note("Generating " + interfaceName + "Factory", interfaceElement);
         jsonbCodecs = new JsonbCodecs(processingEnv, packageName, interfaceName);
+        documentElements.clear();
         var methods = analyzeMethods(interfaceElement, schemaOpt);
         jsonbCodecs.write(interfaceElement)
                    .onFailure(cause -> error(cause.message(), interfaceElement));
@@ -262,17 +265,20 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             return null;
         }
         var expansion = expandRecordParams(execElement, sql, originalParams);
-        var boundBody = boundBodyParams(execElement, expansion.bodyParams());
+        var jsonTargets = schemaOpt.map(schema -> queryJsonBindTargets(expansion, schema))
+                                   .or(Set.of());
+        var boundBody = boundBodyParams(execElement, expansion.bodyParams(), jsonTargets);
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
                                                               expansion.sql(),
                                                               expansion.allParamNames(),
                                                               boundBody,
                                                               schema));
+        schemaOpt.onPresent(schema -> validateExpandedJsonBinds(execElement, expansion, boundBody, schema));
         var rewritten = QueryRewriter.rewriteNamedParams(expansion.sql(), expansion.allParamNames());
         var parsedCst = sqlParseCache.computeIfAbsent(rewritten.sql(), sqlParser::parseCst);
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
-        var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
+        var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved), Set.of());
         var documentColumn = documentRepr.map(repr -> documentColumn(repr, rewritten.sql(), resolved.kind()));
         var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
         // #648: the generated method OVERRIDES the interface method, so its signature is the
@@ -430,13 +436,18 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var table = tableOpt.expect("checked with isEmpty above");
         validateCrudColumns(execElement, parsed, table);
         validateInsertCoverage(execElement, parsed, table, inputFieldNames);
+        var rawBody = recordExpansion.hasExpansion()
+                      ? recordExpansion.bodyParams()
+                      : params;
         var boundBody = boundBodyParams(execElement,
-                                        recordExpansion.hasExpansion()
-                                        ? recordExpansion.bodyParams()
-                                        : params);
+                                        rawBody,
+                                        crudJsonBindTargets(parsed, table, rawBody));
         validateCrudParamTypes(execElement, parsed, table, boundBody);
         if (recordExpansion.hasExpansion()) {
             validateJsonbComponents(execElement, table, recordParamElement(execElement));
+        }
+        if (isInsertOrSave(parsed.operation())) {
+            validateInsertJsonBinds(execElement, table, boundBody);
         }
         if (resolved.needsMapper()) {
             validateJsonbComponents(execElement, table, TypeMirrorResolver.innerTypeElement(execElement.getReturnType()));
@@ -454,7 +465,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.needsMapper()
                                                ? FactoryGenerator.resolveMapperColumns(table,
                                                                                        extractReturnFieldNames(execElement, resolved))
-                                               : List.<FactoryGenerator.MapperColumn>of());
+                                               : List.<FactoryGenerator.MapperColumn>of(),
+                                               jsonColumnNames(extractReturnFieldNames(execElement, resolved), table));
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                crudSql,
@@ -480,11 +492,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     RecordExpansionResult recordExpansion) {
         var selectColumns = List.<String>of();
         var sql = generateCrudSqlWithoutSchema(parsed, tableName, selectColumns, inputFieldNames, resolved.kind());
-        var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
+        var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved), Set.of());
         var boundBody = boundBodyParams(execElement,
                                         recordExpansion.hasExpansion()
                                         ? recordExpansion.bodyParams()
-                                        : params);
+                                        : params,
+                                        Set.of());
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                sql,
@@ -630,30 +643,49 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     /// How `element` (a param or record component) crosses the column boundary when its type is not a plain column
-    /// type: a `@Jsonb` document, a value object's `ValueMapping`, or an `Option` of a column type or value object.
-    /// Empty when it is none of these.
-    private Option<ColumnRepr> reprFor(Element element, ExecutableElement site) {
+    /// type: a `@Jsonb` document, a value object's `ValueMapping`, a document inferred from a json/jsonb column the
+    /// schema knows (`onJsonColumn`), or an `Option` of a column type or value object. Empty when it is none of these.
+    private Option<ColumnRepr> reprFor(Element element, ExecutableElement site, boolean onJsonColumn) {
         var type = element.asType();
         if (isMarked(element)) {
-            return Option.some(documentRepr(element, type, site));
+            return Option.some(documentRepr(element, type, site, false));
         }
         var binding = ValueMappingResolver.resolve(type);
         if (binding.isPresent()) {
             return binding.map(ColumnRepr.class::cast);
         }
+        if (onJsonColumn && isInferredDocument(type)) {
+            return Option.some(documentRepr(element, type, site, true));
+        }
         return optionElement(type).flatMap(QueryAnnotationProcessor::nullableRepr);
+    }
+
+    /// A record (or `Option` of one) without a `ValueMapping` is a document when its column is json/jsonb. An enum is
+    /// not inferred: it may as well be text, so a JSON enum document stays marked.
+    private static boolean isInferredDocument(TypeMirror type) {
+        var target = optionElement(type).or(type);
+        return target instanceof DeclaredType declared && declared.asElement()
+                                                                  .getKind() == ElementKind.RECORD && ValueMappingResolver.resolve(target)
+                                                                                                                           .isEmpty();
     }
 
     // An unsupported document type is reported here; the placeholder keeps the generated source well-formed while the
     // reported error fails the compilation.
-    private ColumnRepr documentRepr(Element element, TypeMirror type, ExecutableElement site) {
+    private ColumnRepr documentRepr(Element element, TypeMirror type, ExecutableElement site, boolean inferred) {
         var optionElement = optionElement(type);
         var documentType = optionElement.or(type);
+        var target = element.getSimpleName().toString();
+        if (element.getKind() == ElementKind.RECORD_COMPONENT) {
+            documentElements.add(element);
+        }
         var document = jsonbCodecs.field(documentType)
-                                  .onFailure(cause -> error(ProcessorError.jsonbUnsupportedType(element.getSimpleName()
-                                                                                                       .toString(),
-                                                                                                documentType.toString(),
-                                                                                                cause.message()),
+                                  .onFailure(cause -> error(inferred
+                                                            ? ProcessorError.jsonColumnUnsupportedType(target,
+                                                                                                       documentType.toString(),
+                                                                                                       cause.message())
+                                                            : ProcessorError.jsonbUnsupportedType(target,
+                                                                                                  documentType.toString(),
+                                                                                                  cause.message()),
                                                             site))
                                   .fold(_ -> new ColumnRepr.JsonDocument("null"), ColumnRepr.JsonDocument::new);
         return optionElement.isPresent()
@@ -684,8 +716,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     /// represented target to lower it to its column value (exposing the column-side type for schema validation and
     /// the lowering expression for binding).
     private List<FactoryGenerator.MethodParam> boundBodyParams(ExecutableElement execElement,
-                                                               List<FactoryGenerator.MethodParam> rawBodyParams) {
-        var reprs = collectBindReprs(execElement);
+                                                               List<FactoryGenerator.MethodParam> rawBodyParams,
+                                                               Set<String> jsonTargets) {
+        var reprs = collectBindReprs(execElement, jsonTargets);
 
         validateBindReprs(execElement, rawBodyParams, reprs);
 
@@ -694,16 +727,17 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     /// Maps each bind target (a method param, or a component of an expanded payload record) to its column
     /// representation when it has one.
-    private Map<String, ColumnRepr> collectBindReprs(ExecutableElement execElement) {
+    private Map<String, ColumnRepr> collectBindReprs(ExecutableElement execElement, Set<String> jsonTargets) {
         var reprs = new HashMap<String, ColumnRepr>();
 
         for (var param : execElement.getParameters()) {
-            var direct = reprFor(param, execElement);
+            var name = param.getSimpleName().toString();
+            var direct = reprFor(param, execElement, jsonTargets.contains(name));
 
             if (direct.isPresent()) {
-                reprs.put(param.getSimpleName().toString(), direct.expect("checked with isPresent above"));
+                reprs.put(name, direct.expect("checked with isPresent above"));
             } else if (isRecordType(param)) {
-                collectRecordFieldReprs(execElement, param, reprs);
+                collectRecordFieldReprs(execElement, param, reprs, jsonTargets);
             }
         }
 
@@ -712,10 +746,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     private void collectRecordFieldReprs(ExecutableElement execElement,
                                          VariableElement recordParam,
-                                         Map<String, ColumnRepr> reprs) {
+                                         Map<String, ColumnRepr> reprs,
+                                         Set<String> jsonTargets) {
         for (var component : ((TypeElement) ((DeclaredType) recordParam.asType()).asElement()).getEnclosedElements()) {
             if (component.getKind() == ElementKind.RECORD_COMPONENT) {
-                reprFor(component, execElement).onPresent(repr -> reprs.put(component.getSimpleName().toString(), repr));
+                var name = component.getSimpleName().toString();
+                reprFor(component, execElement, jsonTargets.contains(name)).onPresent(repr -> reprs.put(name, repr));
             }
         }
     }
@@ -752,19 +788,20 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     /// `RowDecode` cause; an `Option` through the nullable read).
     private List<FactoryGenerator.MapperColumn> boundMapperColumns(ExecutableElement execElement,
                                                                    TypeMirrorResolver.ResolvedReturn resolved,
-                                                                   List<FactoryGenerator.MapperColumn> rawColumns) {
+                                                                   List<FactoryGenerator.MapperColumn> rawColumns,
+                                                                   Set<String> jsonTargets) {
         if (!resolved.needsMapper()) {
             return rawColumns;
         }
 
-        var reprs = collectDecodeReprs(execElement);
+        var reprs = collectDecodeReprs(execElement, jsonTargets);
 
         validateDecodeReprs(execElement, resolved, reprs);
 
         return applyDecodeReprs(rawColumns, reprs);
     }
 
-    private Map<String, ColumnRepr> collectDecodeReprs(ExecutableElement execElement) {
+    private Map<String, ColumnRepr> collectDecodeReprs(ExecutableElement execElement, Set<String> jsonTargets) {
         var reprs = new HashMap<String, ColumnRepr>();
         var innerElement = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
 
@@ -774,7 +811,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
         for (var component : innerElement.getEnclosedElements()) {
             if (component.getKind() == ElementKind.RECORD_COMPONENT) {
-                reprFor(component, execElement).onPresent(repr -> reprs.put(component.getSimpleName().toString(), repr));
+                var name = component.getSimpleName().toString();
+                reprFor(component, execElement, jsonTargets.contains(name)).onPresent(repr -> reprs.put(name, repr));
             }
         }
 
@@ -845,6 +883,101 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private static boolean isJsonColumn(PgType pgType) {
         var name = canonicalPgTypeName(pgType);
         return name.equals("json") || name.equals("jsonb");
+    }
+
+    // --- Columns the schema knows to be json/jsonb: inferred documents, String binds refused ---
+
+    /// The names among `fieldNames` (camelCase) whose snake_case column in `table` is json/jsonb.
+    private static Set<String> jsonColumnNames(List<String> fieldNames, org.pragmatica.aether.pg.schema.model.Table table) {
+        var names = new HashSet<String>();
+        for (var fieldName : fieldNames) {
+            jsonColumn(table, NamingConvention.toSnakeCase(fieldName)).onPresent(_ -> names.add(fieldName));
+        }
+        return names;
+    }
+
+    private static Option<PgType> jsonColumn(org.pragmatica.aether.pg.schema.model.Table table, String columnName) {
+        return table.column(columnName)
+                    .map(column -> column.type())
+                    .filter(QueryAnnotationProcessor::isJsonColumn);
+    }
+
+    /// CRUD bind targets on json/jsonb columns: the values of an insert or save (a record's components, or the params
+    /// themselves), each named after its column, or the condition params.
+    private static Set<String> crudJsonBindTargets(MethodNameParser.ParsedMethod parsed,
+                                                   org.pragmatica.aether.pg.schema.model.Table table,
+                                                   List<FactoryGenerator.MethodParam> rawBody) {
+        if (isInsertOrSave(parsed.operation())) {
+            return jsonColumnNames(rawBody.stream().map(FactoryGenerator.MethodParam::name).toList(), table);
+        }
+        var names = new HashSet<String>();
+        var paramIdx = 0;
+        for (var condition : parsed.conditions()) {
+            var count = condition.operator().paramCount();
+            if (count > 0 && paramIdx < rawBody.size()) {
+                var name = rawBody.get(paramIdx).name();
+                jsonColumn(table, condition.columnName()).onPresent(_ -> names.add(name));
+            }
+            paramIdx += count;
+        }
+        return names;
+    }
+
+    /// `@Query` bind targets on json/jsonb columns: `column <op> :param` pairs without a cast in the SQL, and components
+    /// of a record expanded into `VALUES (:record)` / `SET :record`, against the statement's table.
+    private static Set<String> queryJsonBindTargets(QueryExpansionResult expansion, Schema schema) {
+        var tableName = extractTableNameFromSql(expansion.sql());
+        if (tableName == null) {
+            return Set.of();
+        }
+        return schema.table(tableName)
+                     .map(table -> queryJsonBindTargets(expansion, table))
+                     .or(Set.of());
+    }
+
+    private static Set<String> queryJsonBindTargets(QueryExpansionResult expansion,
+                                                    org.pragmatica.aether.pg.schema.model.Table table) {
+        var names = jsonColumnNames(expansion.expandedFieldNames(), table);
+        for (var pair : extractColumnParamPairs(expansion.sql(), expansion.allParamNames())) {
+            if (!pair.cast()) {
+                jsonColumn(table, pair.columnName()).onPresent(_ -> names.add(pair.paramName()));
+            }
+        }
+        return names;
+    }
+
+    /// The values of an insert or save, checked against their json/jsonb columns (a String is refused).
+    private void validateInsertJsonBinds(ExecutableElement execElement,
+                                         org.pragmatica.aether.pg.schema.model.Table table,
+                                         List<FactoryGenerator.MethodParam> boundBody) {
+        for (var param : boundBody) {
+            var columnName = NamingConvention.toSnakeCase(param.name());
+            jsonColumn(table, columnName).onPresent(pgType -> validateTypeCompatibility(execElement,
+                                                                                         param.name(),
+                                                                                         param.typeName(),
+                                                                                         columnName,
+                                                                                         table.name(),
+                                                                                         pgType,
+                                                                                         false));
+        }
+    }
+
+    /// The components of a record expanded in `@Query` SQL, checked against their json/jsonb columns.
+    private void validateExpandedJsonBinds(ExecutableElement execElement,
+                                           QueryExpansionResult expansion,
+                                           List<FactoryGenerator.MethodParam> boundBody,
+                                           Schema schema) {
+        var tableName = extractTableNameFromSql(expansion.sql());
+        if (tableName == null) {
+            return;
+        }
+        schema.table(tableName)
+              .onPresent(table -> validateInsertJsonBinds(execElement,
+                                                          table,
+                                                          boundBody.stream()
+                                                                   .filter(param -> expansion.expandedFieldNames()
+                                                                                             .contains(param.name()))
+                                                                   .toList()));
     }
 
     private static TypeElement recordParamElement(ExecutableElement execElement) {
@@ -923,7 +1056,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private record QueryExpansionResult(String sql,
                                         List<String> allParamNames,
                                         List<FactoryGenerator.MethodParam> bodyParams,
-                                        boolean hasExpansion){}
+                                        boolean hasExpansion,
+                                        List<String> expandedFieldNames){}
 
     private QueryExpansionResult expandRecordParams(
     ExecutableElement execElement,
@@ -933,6 +1067,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var allParamNames = new ArrayList<String>();
         var bodyParams = new ArrayList<FactoryGenerator.MethodParam>();
         var existingPositions = new LinkedHashMap<String, Integer>();
+        var expandedFieldNames = new ArrayList<String>();
         var hasExpansion = false;
         for ( int paramIdx = 0; paramIdx < originalParams.size(); paramIdx++) {
             var param = originalParams.get(paramIdx);
@@ -953,6 +1088,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                 for ( int i = 0; i < expanded.fieldNames().size(); i++) {
                     var fieldName = expanded.fieldNames().get(i);
                     allParamNames.add(fieldName);
+                    expandedFieldNames.add(fieldName);
                     var fieldType = findFieldType(fields, fieldName);
                     bodyParams.add(new FactoryGenerator.MethodParam(fieldName,
                                                                     fieldType,
@@ -966,7 +1102,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                 bodyParams.add(param);
             }
         }
-        return new QueryExpansionResult(expandedSql, allParamNames, bodyParams, hasExpansion);
+        return new QueryExpansionResult(expandedSql, allParamNames, bodyParams, hasExpansion, expandedFieldNames);
     }
 
     private record ExpandedRecord(String sql, List<String> fieldNames){}
@@ -1094,7 +1230,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                       javaType,
                                       pair.columnName(),
                                       table.name(),
-                                      colOpt.expect("checked with isEmpty above").type());
+                                      colOpt.expect("checked with isEmpty above").type(),
+                                      pair.cast());
         }
     }
 
@@ -1184,19 +1321,26 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                       param.typeName(),
                                       condition.columnName(),
                                       table.name(),
-                                      colOpt.expect("checked with isEmpty above").type());
+                                      colOpt.expect("checked with isEmpty above").type(),
+                                      false);
             paramIdx += condition.operator().paramCount();
         }
     }
 
-    /// Checks if a Java type is compatible with a PostgreSQL column type.
+    /// Checks if a Java type is compatible with a PostgreSQL column type. A String on a json/jsonb column is refused (it
+    /// is sent as varchar, which json/jsonb refuse) unless the SQL casts the parameter (`castInSql`).
     private void validateTypeCompatibility(
     ExecutableElement execElement,
     String paramName,
     String javaType,
     String columnName,
     String tableName,
-    PgType pgType) {
+    PgType pgType,
+    boolean castInSql) {
+        if (isJsonColumn(pgType) && !castInSql && "String".equals(normalizeJavaType(javaType))) {
+            error(ProcessorError.stringOnJsonColumn(paramName, columnName, tableName, pgType.name()), execElement);
+            return;
+        }
         if (ColumnRepr.JSON_TEXT.equals(javaType)) {
             if (!isJsonColumn(pgType)) {
                 error(ProcessorError.jsonbColumnMismatch(paramName, columnName, tableName, pgType.name()), execElement);
@@ -1263,7 +1407,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     Pattern.compile("(?:WHERE|AND|OR|SET)\\s+(?:[a-zA-Z_][a-zA-Z0-9_.]*\\.)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*[=<>!]+\\s*:([a-zA-Z][a-zA-Z0-9]*)",
                     Pattern.CASE_INSENSITIVE);
 
-    private record ColumnParamPair(String columnName, String paramName){}
+    /// `cast`: the parameter is followed by a `::type` cast in the SQL.
+    private record ColumnParamPair(String columnName, String paramName, boolean cast){}
 
     /// Extracts column-name to param-name pairs from WHERE/SET clauses.
     private static List<ColumnParamPair> extractColumnParamPairs(String sql, List<String> paramNames) {
@@ -1273,7 +1418,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             var columnName = matcher.group(1);
             var paramName = matcher.group(2);
             if ( paramNames.contains(paramName)) {
-            pairs.add(new ColumnParamPair(columnName, paramName));}
+            pairs.add(new ColumnParamPair(columnName, paramName, sql.startsWith("::", matcher.end())));}
         }
         return pairs;
     }
@@ -1347,12 +1492,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     /// Imports a record's component types and their type arguments, so a value-object component's
-    /// `Vo.valueMapping()` reference (also inside `Option<Vo>`) resolves. A `@Jsonb` component is skipped: its
-    /// codec constant names the type by its qualified name, and importing it could clash with another type of
-    /// the same simple name.
+    /// `Vo.valueMapping()` reference (also inside `Option<Vo>`) resolves. A document component (marked or inferred)
+    /// is skipped: its codec constant names the type by its qualified name, and importing it could clash with another
+    /// type of the same simple name.
     private void collectComponentTypeImports(TypeElement record, Set<String> imports) {
         for ( var component : record.getEnclosedElements()) {
-            if ( component.getKind() != ElementKind.RECORD_COMPONENT || isMarked(component)) {
+            if ( component.getKind() != ElementKind.RECORD_COMPONENT || isMarked(component) || documentElements.contains(component)) {
                 continue;
             }
             addImportForQualifiedName(component.asType().toString(), imports);
