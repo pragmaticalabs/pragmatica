@@ -65,6 +65,8 @@ B14.StateRestored -> fsm2:Fsm2System.onStateRestored
 B15.construction -> fsm2:Fsm2System
 B16.Seams -> fsm2:SeamPoller
 B17.ApplyRecord -> on
+B18.CtmReaperDirectiveDelete -> on
+B19.ForceClearDirectiveDelete -> on
 B2.ClusterStateNotification -> fsm2:Fsm2System.onClusterStateNotification
 B20.EngineMarkerGuard -> guard
 B20.LineageMint -> marker=FSM2

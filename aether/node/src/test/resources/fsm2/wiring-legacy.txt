@@ -25,6 +25,8 @@ B13.StopDrain -> legacy
 B14.StateRestored -> legacy
 B16.Seams -> legacy
 B17.ApplyRecord -> off
+B18.CtmReaperDirectiveDelete -> off
+B19.ForceClearDirectiveDelete -> off
 B2.ClusterStateNotification -> legacy+gate
 B20.EngineMarkerGuard -> guard
 B20.LineageMint -> marker=LEGACY

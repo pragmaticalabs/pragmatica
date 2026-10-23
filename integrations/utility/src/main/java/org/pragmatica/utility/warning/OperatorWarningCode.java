@@ -484,6 +484,17 @@ public enum OperatorWarningCode {
     /// changed between each decision and its commit. Subject is the worker. The worker takes a community when it is admitted again (restart it
     /// if it does not). Closed by [#COMMUNITY_ASSIGNMENT_PLACED].
     COMMUNITY_ASSIGNMENT_UNPLACED("community-assignment-unplaced", "community-assignment", WarningLevel.WARNING),
+    /// A terminated node's activation directive and departure record are still not retired (deployment FSM phase 3, B18/B19): the retirement
+    /// has been refused, attempt after attempt, for longer than its overdue bound. Nothing else removes them under FSM2, so the node's
+    /// identity stays in the cluster's view. The message names the node, how long and the last refusal. Subject is the node. Closed by
+    /// [#TERMINATION_RETIREMENT_RESOLVED].
+    TERMINATION_RETIREMENT_OVERDUE("termination-retirement-overdue", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#TERMINATION_RETIREMENT_OVERDUE], same subject: the retirement ended (it committed, both keys were gone, the record
+    /// was re-admitted, or the node stopped). The message says which. Raised only when the warning was, by the same node.
+    TERMINATION_RETIREMENT_RESOLVED("termination-retirement-resolved",
+                                    "deployment",
+                                    WarningLevel.INFO,
+                                    TERMINATION_RETIREMENT_OVERDUE),
     /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO, published only after a
     /// published unplaced event for the worker (#752 mechanism).
     COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",

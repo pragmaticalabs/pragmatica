@@ -103,6 +103,21 @@ class DeploymentWiringBootTest {
         assertThat(system.clusterInterpreter().deliver(new ClusterInput.Flush())).as("and the cluster FSM").isFalse();
     }
 
+    /// Delta 7 (CTO ruling 9f854db8b): the deployment engine reads tokens and incarnations through ONE admission seam, built before membership
+    /// and bound to it late. Red when: anything read an incarnation during assembly, before membership was set (`unboundReads` > 0), or the
+    /// FSM2 system reads a seam other than the wiring's.
+    @Test
+    @Timeout(value = 180, unit = SECONDS)
+    void fsm2Node_readsAdmissionsThroughOneSeam_neverBeforeMembershipIsBound() {
+        boot(DeploymentEngine.FSM2);
+        var seam = node.deploymentWiring().admissions();
+
+        assertThat(node.deploymentWiring().system().unwrap().collaborators().admissions()).as("the system reads the wiring's seam").isSameAs(seam);
+        assertThat(seam.unboundReads()).as("no incarnation was read before membership was bound").isZero();
+        seam.admission(node.self());
+        assertThat(seam.unboundReads()).as("bound by now: a read is not counted").isZero();
+    }
+
     /// v-2204 F4: the collaborators `AetherNode` hands the FSM2 system are the node's real ones. An absent route publisher or invoker makes
     /// PUBLISH_ROUTES report done and publish nothing, and a swallowed router makes every event the FSMs raise vanish: none of these showed in a cluster
     /// run, because the scenario slices have no routes.

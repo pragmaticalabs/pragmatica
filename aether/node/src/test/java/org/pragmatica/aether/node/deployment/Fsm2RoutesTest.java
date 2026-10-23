@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.TreeSet;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
@@ -86,7 +87,7 @@ class Fsm2RoutesTest {
         long slot;
 
         Rig() {
-            this(read -> read);
+            this((UnaryOperator<Supplier<Long>>) read -> read);
         }
 
         /// `hop` runs the stamp read; the identity is the production behaviour (the dispatching thread), a mutant moves it elsewhere.
@@ -97,19 +98,42 @@ class Fsm2RoutesTest {
         /// `replaying` stands in for the store's replay flag when given: a test sets it on the committing thread, as the store does for a replayed
         /// notification, so a route that reads it elsewhere reads `false`.
         Rig(UnaryOperator<Supplier<Long>> hop, BooleanSupplier replaying) {
-            var routes = Fsm2Routes.fsm2Routes(new Fsm2Routes.Targets(SELF,
-                                                                      () -> hop.apply(store::notificationRevision).get(),
-                                                                      replaying == null
-                                                                      ? store::isReplaying
-                                                                      : replaying,
-                                                                      tokens::tokenOf,
-                                                                      (input, revision, replay) -> node.add(new Delivered<>(input, revision, replay)),
-                                                                      (input, revision, replay) -> cluster.add(new Delivered<>(input, revision, replay))));
+            this((Function<Rig, Fsm2Routes.Targets>) rig -> new Fsm2Routes.Targets(SELF,
+                                               () -> hop.apply(rig.store::notificationRevision).get(),
+                                               replaying == null
+                                               ? rig.store::isReplaying
+                                               : replaying,
+                                               rig.tokens::tokenOf,
+                                               rig::toNode,
+                                               rig::toCluster));
+        }
+
+        /// The routes over the targets `targets` builds from this rig's store and sinks.
+        Rig(Function<Rig, Fsm2Routes.Targets> targets) {
+            var routes = Fsm2Routes.fsm2Routes(targets.apply(this));
             var builder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class);
 
             routes.register(builder);
             builder.build().asRouteEntries().forEach(this::register);
             routes.leaderEntries().forEach(this::register);
+        }
+
+        /// The routes as the deployment wiring builds them (`DeploymentWiring.routeTargets`), over `seam`.
+        static Rig throughTheWiring(AdmissionSeam seam) {
+            return new Rig((Function<Rig, Fsm2Routes.Targets>) rig -> DeploymentWiring.routeTargets(new DeploymentWiring.Node(SELF,
+                                                                                          rig.store::notificationRevision,
+                                                                                          rig.store::isReplaying,
+                                                                                          seam),
+                                                                rig::toNode,
+                                                                rig::toCluster));
+        }
+
+        boolean toNode(NodeFsmInput input, long revision, boolean replay) {
+            return node.add(new Delivered<>(input, revision, replay));
+        }
+
+        boolean toCluster(ClusterInput input, long revision, boolean replay) {
+            return cluster.add(new Delivered<>(input, revision, replay));
         }
 
         @SuppressWarnings({"unchecked", "rawtypes"})
@@ -314,6 +338,20 @@ class Fsm2RoutesTest {
                                                  new NodeFsmInput.ObservedRemove(PEER, ORDERS));
         }
 
+        /// Delta 7 (CTO ruling 9f854db8b): the wiring's routes read the writer's token through the node's admission seam, never a source of
+        /// their own. Red when an `ObservedPut` routed through the wiring does not carry the seam's (distinctive) token for the writer.
+        @Test
+        void observedRows_throughTheWiring_carryTheAdmissionSeamsToken() {
+            var rig = Rig.throughTheWiring(AdmissionSeam.admissionSeam(node -> node.equals(PEER)
+                                                                               ? 0x5EA4L
+                                                                               : 0L,
+                                                                       _ -> 0L));
+
+            rig.put(SliceObservedKey.sliceObservedKey(PEER, ORDERS), observed(1L));
+
+            assertThat(rig.node).extracting(Delivered::input).containsExactly(new NodeFsmInput.ObservedPut(PEER, ORDERS, observed(1L), 0x5EA4L));
+        }
+
         @Test
         void targetsAndRoutings_reachTheNodeFsm_putAndRemove() {
             var rig = new Rig();
@@ -378,7 +416,7 @@ class Fsm2RoutesTest {
         /// positive control of the test below: it shows the zero a hop would produce.
         @Test
         void aHop_readsZero_outsideTheDispatch() {
-            var rig = new Rig(read -> () -> hopped(read));
+            var rig = new Rig((UnaryOperator<Supplier<Long>>) read -> () -> hopped(read));
 
             rig.put(SliceObservedKey.sliceObservedKey(SELF, ORDERS), observed(1L));
 

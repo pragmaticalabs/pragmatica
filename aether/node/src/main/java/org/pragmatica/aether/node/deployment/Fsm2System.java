@@ -40,8 +40,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
-import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.io.TimeSpan;
@@ -78,7 +78,6 @@ public final class Fsm2System {
                                 TimeSpan splitTimeout,
                                 KVStore<AetherKey, AetherValue> store,
                                 Supplier<ClusterNode<KVCommand<AetherKey>>> cluster,
-                                BootTokens bootTokens,
                                 SliceRuntimeAdapter.Collaborators adapter,
                                 Supplier<Set<Artifact>> loaded,
                                 Runnable selfReady,
@@ -139,12 +138,32 @@ public final class Fsm2System {
                                                                        config.protocol().applyTimeout()));
     }
 
-    /// The lag between SWIM's verdict and the leader's view of it, outside SWIM's own window: the core view is sampled every
-    /// `SeamPoller.INTERVAL_MS`, and SWIM reaches a verdict on a probe period (v-2204 F2).
-    static TimeSpan suspicionLag(SwimConfig swim) {
+    /// How long a dead core can stay listed in this leader's core view beyond SWIM's own suspicion window (cluster assessment delta 3).
+    /// The core view is `MembershipFsm.coreMembers()`, MEMBER + SUSPECT, so the terms are:
+    /// - the probe lead: SWIM probes least-recently-probed first, so a dead core is first probed up to `(maxCores - 1)` periods after it died;
+    /// - `2 x probeTimeout`: the direct probe, then the indirect ones, before SWIM suspects it;
+    /// - one probe period of tick quantisation of the suspicion's expiry (v-2204 F2);
+    /// - `splitTimeout`: the membership's eviction backstop keeps a SUSPECT core counted that long;
+    /// - `SeamPoller.INTERVAL_MS`: the core view is sampled, not pushed.
+    ///
+    /// `maxCores` is the largest core set the bound must cover: SWIM's least-recently-probed rotation visits every probable member once per round
+    /// `[guess: the core SWIM ring holds cores only]`.
+    /// The configured `coreMax`; when it is unset (0, unlimited) the configured cluster size `[guess: an unlimited core set is bounded by
+    /// the cluster size it was configured with]`.
+    static int maxCores(TopologyConfig topology) {
+        return topology.coreMax() > 0
+               ? topology.coreMax()
+               : topology.clusterSize();
+    }
+
+    static TimeSpan suspicionLag(SwimConfig swim, int maxCores, TimeSpan splitTimeout) {
         return TimeSpan.timeSpan(SeamPoller.INTERVAL_MS)
                        .millis()
-                       .plus(swim.period());
+                       .plus(swim.period())
+                       .plus(TimeSpan.timeSpan(swim.period().nanos() * Math.max(0, maxCores - 1)).nanos())
+                       .plus(swim.probeTimeout())
+                       .plus(swim.probeTimeout())
+                       .plus(splitTimeout);
     }
 
     /// The cluster FSM's settings: the atomicity and sizing the node is configured with, the absence bounds derived from the SWIM and
@@ -162,10 +181,11 @@ public final class Fsm2System {
                                           workerSuspect,
                                           swim.lhmMaxScore(),
                                           SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
-                                          splitTimeout,
                                           REANNOUNCE_INTERVAL,
                                           config.timeouts().cluster().communityAbsence(),
-                                          suspicionLag(swim))
+                                          suspicionLag(swim,
+                                                       maxCores(config.topology()),
+                                                       splitTimeout))
                                   .unwrap();
         var sizing = config.deploymentDefaults().communitySizing();
 
@@ -208,7 +228,7 @@ public final class Fsm2System {
                                                                                       submitter,
                                                                                       snapshotter,
                                                                                       c.loaded(),
-                                                                                      c.bootTokens()::tokenOf,
+                                                                                      c.admissions()::tokenOf,
                                                                                       localOps,
                                                                                       c.clock(),
                                                                                       translator.nodeSink(),

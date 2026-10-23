@@ -202,6 +202,27 @@ class JoinedEvidenceTest {
         assertThat(epochOf(w, N)).as("one full window after the second listing").isEqualTo(Option.some(E + 1));
     }
 
+    // Rule (b) residual (cluster assessment delta 5; the sampler side is `e1c325fd4`): a core that died before it was counted is still listed in
+    // this leader's core view, MEMBER then SUSPECT, for up to the worst case a dead core stays listed (`Fixtures#worstCaseListedNanos`), and
+    // only then leaves it.
+    // Red when: such a core is counted, or an ADMITTED record is written for it, on a sample taken at the last instant it is still listed (the
+    // suspicion window is shorter than that worst case), or C17b does not run within one tick after it left the view.
+    @Test
+    void ruleB_aCoreThatDiedListed_forAsLongAsADeadCoreStaysListed_isNeverCounted() {
+        var w = deadCoreSeenBy(ALL_CORES).activate();
+
+        run(w, ms(worstCaseListedNanos(FIXTURE_MAX_CORES)) - 1L);
+        w.refreshSeams(s -> s.withCoreView(Option.some(ALL_CORES)));
+        assertThat(w.counts(N)).as("the last sample that still lists it").isFalse();
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        w.refreshSeams(s -> s.withCoreView(Option.some(OTHER_CORES)));
+        w.h.advance(TICK_MS);
+
+        assertThat(w.counts(N)).isFalse();
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("C17b once it left the view").isNotEmpty();
+    }
+
     // (d) Worker.
     // Red when: anything but a WorkerJoin(w) (or C11f) supersedes the record of a worker with a committed WORKER_LEAVE whose directive, roster
     // and local alive view all still list it at Rebuild.
@@ -415,15 +436,13 @@ class JoinedEvidenceTest {
     }
 
     // -- NT-133: a same-leader graceful leave is never re-admitted on a stale announcement ------------------------------------
-    private MbWorld leaderOfAWorkerThatLeaves(boolean selfShutdown) {
+    private MbWorld leaderOfAWorkerThatLeaves() {
         var w = communityOfW1(COMMUNITY).activate();
 
         w.announce(C, GOV, W1, M1, M2, M3, M4);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(COMMUNITY)));
         w.h.clearLog();
-        w.h.deliver(selfShutdown
-                    ? new ClusterInput.SelfShutdown(W1)
-                    : new ClusterInput.WorkerLeave(W1));
+        w.h.deliver(new ClusterInput.WorkerLeave(W1));
 
         return w;
     }
@@ -437,7 +456,7 @@ class JoinedEvidenceTest {
     // Red when: L writes any ADMITTED record for w, counts w, places onto w, or raises worker-readmitted-on-evidence, before a WorkerJoin(w) arrives.
     @Test
     void nt133a_gracefulLeave_isNotReadmittedByAStaleAnnouncement() {
-        var w = leaderOfAWorkerThatLeaves(false);
+        var w = leaderOfAWorkerThatLeaves();
 
         assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.DEPARTED));
         staleAnnouncement(w);
@@ -449,23 +468,11 @@ class JoinedEvidenceTest {
         assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.DEPARTED));
     }
 
-    // (b) The same for SELF_SHUTDOWN.
-    @Test
-    void nt133b_selfShutdown_isNotReadmittedByAStaleAnnouncement() {
-        var w = leaderOfAWorkerThatLeaves(true);
-
-        staleAnnouncement(w);
-
-        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
-        assertThat(w.counts(W1)).isFalse();
-        assertThat(w.h.warns("worker-readmitted-on-evidence")).isEmpty();
-    }
-
     // (c) Control.
     // Red when: a WorkerJoin(w) of the same process does not take J3: ADMITTED(e + 1) expecting DEPARTED(e).
     @Test
     void nt133c_aWorkerJoin_readmitsTheWorker() {
-        var w = leaderOfAWorkerThatLeaves(false);
+        var w = leaderOfAWorkerThatLeaves();
 
         staleAnnouncement(w);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admissionOf(W1)));
@@ -479,7 +486,7 @@ class JoinedEvidenceTest {
     // Red when: any of ten consecutive stale announcements listing w re-admits it (the cycle repeats).
     @Test
     void nt133d_tenStaleAnnouncements_neverReadmit() {
-        var w = leaderOfAWorkerThatLeaves(false);
+        var w = leaderOfAWorkerThatLeaves();
 
         for (var i = 0; i < 10; i++) {
             staleAnnouncement(w);
