@@ -468,6 +468,8 @@ class JoinedEvidenceTest {
         assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.DEPARTED));
     }
 
+    // (c) Control.
+    // Red when: a WorkerJoin(w) of the same process does not take J3: ADMITTED(e + 1) expecting DEPARTED(e).
     @Test
     void nt133c_aWorkerJoin_readmitsTheWorker() {
         var w = leaderOfAWorkerThatLeaves();
