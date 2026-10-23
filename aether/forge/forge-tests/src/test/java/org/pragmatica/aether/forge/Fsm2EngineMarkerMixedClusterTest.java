@@ -52,15 +52,17 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// W-29's cross-process arms (phase-3 design 8.2 and 9.2; MT-24, MT-29, MT-30): the engine marker keeps a node of one engine out of a cluster of
 /// the other, and **every refusal is a node refusing itself**.
 ///
-/// - (i) a slice-free 5-node LEGACY cluster and one FSM2 newcomer;
-/// - (ii) a 5-node FSM2 cluster running a slice and one LEGACY newcomer;
+/// - (i) a slice-free 5-node LEGACY cluster and one FSM2 observer newcomer;
+/// - (ii) a 5-node FSM2 cluster running a slice and one LEGACY observer newcomer;
 /// - late genesis: FSM2 members that are up before the lineage mint commits (both keys absent).
 ///
 /// Each mixed arm runs at seven cores: the five, the newcomer, and a correctly configured filler, because a core count must be odd (and a sixth
 /// core alone is drained as surplus before its window ends). The newcomer sorts below every member, and the leader is stopped inside the
 /// newcomer's WARN window, so an election takes place while the newcomer is closed.
 ///
-/// **Not reached: a newcomer that LEADS** (design 9.2 asks for one that wins an election). No joining core was seen admitted as a voter in
+/// **A newcomer that LEADS is not reached here** (design 9.2 asks for one that wins an election). CTO ruling 3 (know `c0b4ae539`) accepts it at
+/// unit level for P3-F (`EngineMarkerGuardTest`, `Fsm2SystemTest`: a mismatching node activates nothing before it exits), because Ember
+/// cannot restart an admitted voter with another engine; a restart-with-engine seam is a P3-H item. No joining core was seen admitted as a voter in
 /// this harness: the correctly configured filler stayed an observer for the four minutes a probe waited. So the newcomer cannot be elected, and
 /// refuses itself as an observer (window 15 s at seven cores). The arms assert that the closed newcomer is never admitted: with the activation
 /// gate removed (MT-30) it IS admitted, and the arms go red `[unverified: why a closed node is not admitted while an open one is, and why the
@@ -92,11 +94,11 @@ class Fsm2EngineMarkerMixedClusterTest {
         }
     }
 
-    // W-29 arm (i), the G-2 false-negative case.
+    // W-29 arm (i), with the newcomer an observer (ruling 3: the leading case is unit-covered).
     // Red when: a LEGACY member exits; the FSM2 newcomer writes an FSM2 record (`NodeDepartureKey`) or a `SliceDesiredKey`, or opens its guard;
     // the marker changes; or the newcomer does not refuse itself.
     @Test
-    void anFsm2Newcomer_leadingASliceFreeLegacyCluster_writesNothing_andOnlyItRefuses() {
+    void anFsm2ObserverNewcomer_inASliceFreeLegacyCluster_writesNothing_andOnlyItRefuses() {
         var prefix = "w29i";
 
         startCluster(prefix, DeploymentEngine.LEGACY, 26400);
@@ -110,7 +112,7 @@ class Fsm2EngineMarkerMixedClusterTest {
     // Red when: an FSM2 member exits; the LEGACY newcomer writes a `NodeArtifactKey` goal, or opens its guard; the marker changes; or the newcomer
     // does not refuse itself.
     @Test
-    void aLegacyNewcomer_leadingAnFsm2ClusterThatRunsASlice_writesNoGoal_andOnlyItRefuses() {
+    void aLegacyObserverNewcomer_inAnFsm2ClusterThatRunsASlice_writesNoGoal_andOnlyItRefuses() {
         var prefix = "w29ii";
 
         startCluster(prefix, DeploymentEngine.FSM2, 26700);
@@ -121,7 +123,7 @@ class Fsm2EngineMarkerMixedClusterTest {
         assertArm(prefix, DeploymentEngine.FSM2);
     }
 
-    // W-29 late-genesis arm (the G-2 false-positive case); MT-29 (both keys absent treated as LEGACY).
+    // W-29 late-genesis arm; MT-29 (both keys absent treated as LEGACY).
     // Red when: a member that is up while both keys are absent is ever in a mismatch state or refuses, or any member exits.
     @Test
     void fsm2Members_upBeforeTheMintCommits_waitAndNeverRefuse() {
