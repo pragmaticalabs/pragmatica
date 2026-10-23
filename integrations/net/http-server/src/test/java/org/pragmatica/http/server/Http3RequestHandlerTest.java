@@ -27,9 +27,12 @@ import java.util.concurrent.TimeUnit;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.socket.ChannelInputShutdownEvent;
+import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3Headers;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
+import io.netty.handler.codec.http3.Http3ErrorCode;
+import io.netty.handler.codec.http3.Http3Exception;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
@@ -102,7 +105,7 @@ class Http3RequestHandlerTest {
         for (int i = 0; i < 4; i++) {
             channel.writeInbound(data(1000));
         }
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).as("a body over the limit must never reach the handler, truncated or not").isEmpty();
         assertThat(responseStatus(channel)).isEqualTo("413");
@@ -117,7 +120,7 @@ class Http3RequestHandlerTest {
         channel.writeInbound(requestHeaders());
         channel.writeInbound(data(1000));
         channel.writeInbound(data(24));
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).hasSize(1);
         assertThat(dispatched.getFirst().body()).hasSize(LIMIT);
@@ -134,7 +137,7 @@ class Http3RequestHandlerTest {
         channel.writeInbound(requestHeaders());
         channel.writeInbound(data(10));
         channel.writeInbound(new DefaultHttp3HeadersFrame(trailers));
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).hasSize(1);
         var request = dispatched.getFirst();
@@ -158,7 +161,7 @@ class Http3RequestHandlerTest {
             channel.writeInbound(data(1000));
         }
         channel.writeInbound(new DefaultHttp3HeadersFrame(trailers));
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).isEmpty();
         assertThat(responseStatus(channel)).isEqualTo("413");
@@ -185,7 +188,7 @@ class Http3RequestHandlerTest {
             trailers.set("X-TRAILER-ID", "t");
             channel.writeInbound(new DefaultHttp3HeadersFrame(headers));
             channel.writeInbound(new DefaultHttp3HeadersFrame(trailers));
-            channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+            endInput(channel);
 
             assertThat(dispatched).hasSize(1);
             assertThat(dispatched.getFirst().headers().get("x-id")).isEqualTo(Option.some("h"));
@@ -203,7 +206,7 @@ class Http3RequestHandlerTest {
 
         channel.writeInbound(data(10));
         assertThat(handler.holdsBodyBuffer()).isTrue();
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).isEmpty();
         assertThat(handler.holdsBodyBuffer()).isFalse();
@@ -221,7 +224,7 @@ class Http3RequestHandlerTest {
         Thread.sleep(300);
         channel.runScheduledPendingTasks();
         channel.writeInbound(data(10));
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).as("a request past its body deadline must not be dispatched").isEmpty();
         assertThat(responseStatus(channel)).isEqualTo("408");
@@ -235,7 +238,7 @@ class Http3RequestHandlerTest {
 
         channel.writeInbound(requestHeaders());
         channel.writeInbound(data(10));
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
         Thread.sleep(400);
         channel.runScheduledPendingTasks();
 
@@ -262,7 +265,7 @@ class Http3RequestHandlerTest {
             channel.advanceTimeBy(1, TimeUnit.SECONDS);
             channel.runScheduledPendingTasks();
         }
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).isEmpty();
         assertThat(responseStatus(channel)).isEqualTo("408");
@@ -284,7 +287,7 @@ class Http3RequestHandlerTest {
             channel.advanceTimeBy(100, TimeUnit.MILLISECONDS);
             channel.runScheduledPendingTasks();
         }
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(dispatched).hasSize(1);
         assertThat(dispatched.getFirst().body()).hasSize(fiveMiB);
@@ -349,12 +352,48 @@ class Http3RequestHandlerTest {
         var config = HttpServerConfig.httpServerConfig("h3-init", 0).withMaxContentLength(100);
         var channel = new EmbeddedChannel(new Http3Server.Http3StreamInitializer(this::handle, config, Option.none()));
 
-        assertThat(channel.pipeline().first()).isInstanceOf(Http3Server.Http3RequestHandler.class);
+        assertThat(channel.pipeline().first()).as("#2386: the frame-boundary guard goes ahead of everything")
+                                              .isInstanceOf(Http3FrameBoundaryGuard.class);
+        assertThat(channel.pipeline().last()).isInstanceOf(Http3Server.Http3RequestHandler.class);
         channel.writeInbound(requestHeaders());
         channel.writeInbound(data(200));
 
         assertThat(responseStatus(channel)).isEqualTo("413");
         assertThat(dispatched).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    /// #2386: Netty raises a framing error on the stream before its input ends; the stream is then never dispatched,
+    /// even when the input-shutdown events still arrive (the bad bytes and the `FIN` came in one read).
+    @Test
+    void framingErrorBeforeInputEnds_isNeverDispatched() {
+        var channel = channel();
+        var handler = (Http3Server.Http3RequestHandler) channel.pipeline().first();
+
+        channel.writeInbound(requestHeaders());
+        channel.writeInbound(data(10));
+        channel.pipeline().fireExceptionCaught(new Http3Exception(Http3ErrorCode.H3_FRAME_UNEXPECTED, "Frame type unexpected"));
+        endInput(channel);
+
+        assertThat(dispatched).isEmpty();
+        assertThat(handler.holdsBodyBuffer()).isFalse();
+        channel.finishAndReleaseAll();
+    }
+
+    /// #2386: the input-shutdown event alone does not dispatch; Netty checks `content-length` after it and withholds
+    /// read-complete on a mismatch.
+    @Test
+    void inputShutdownWithoutReadComplete_isNotDispatched() {
+        var channel = channel();
+
+        channel.writeInbound(requestHeaders());
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+
+        assertThat(dispatched).isEmpty();
+
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
+
+        assertThat(dispatched).hasSize(1);
         channel.finishAndReleaseAll();
     }
 
@@ -369,5 +408,12 @@ class Http3RequestHandlerTest {
 
         assertThat(dispatched).isEmpty();
         assertThat(handler.holdsBodyBuffer()).isFalse();
+    }
+
+    /// The input ending as the QUIC transport ends it on a `FIN`: the input-shutdown event, then read-complete, on
+    /// which the handler dispatches (#2386).
+    private static void endInput(EmbeddedChannel channel) {
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
     }
 }

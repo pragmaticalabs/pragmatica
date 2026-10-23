@@ -124,23 +124,19 @@ class Http3FramingViolationTest {
 
             headers.headers().setInt("content-length", 3);
             stream.write(headers);
-            stream.write(body("hello"));
-            finishRaw(stream);
+            finishRaw(stream, 0x00, 0x05, 'h', 'e', 'l', 'l', 'o');
         });
     }
 
-    /// RFC 9114 §4.3: a trailer section may not carry pseudo-header fields.
+    /// RFC 9114 §4.3: a trailer section may not carry pseudo-header fields. Written raw, because the client's own codec
+    /// may refuse to send it: a HEADERS frame of three bytes, the QPACK prefix (`0x00 0x00`) and the static-table line
+    /// for `:path: /` (`0xC1`).
     @Test
     void pseudoHeaderInTrailerSection_isNeverDispatched() throws Exception {
         assertNeverDispatched(stream -> {
             stream.write(postHeaders(port));
             stream.write(body("hello"));
-
-            var trailers = new DefaultHttp3Headers();
-
-            trailers.path("/elsewhere");
-            stream.write(new DefaultHttp3HeadersFrame(trailers));
-            finishRaw(stream);
+            finishRaw(stream, 0x01, 0x03, 0x00, 0x00, 0xC1);
         });
     }
 

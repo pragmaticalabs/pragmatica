@@ -325,10 +325,11 @@ final class NettyHttpServer implements HttpServer {
             this.maxMessageLength = maxMessageLength;
         }
 
+        /// #2386: an upgrade with more than one `Host` line passes on, to be refused 400 by [HttpRequestHandler].
         @Contract
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            if (msg instanceof FullHttpRequest request && isWebSocketUpgrade(request)) {
+            if (msg instanceof FullHttpRequest request && isWebSocketUpgrade(request) && !hasMultipleHosts(request)) {
                 route(ctx, request);
             } else {
                 ctx.fireChannelRead(msg);
@@ -436,6 +437,12 @@ final class NettyHttpServer implements HttpServer {
                 return;
             }
 
+            if (hasMultipleHosts(request)) {
+                rejectMultipleHosts(ctx, requestId);
+
+                return;
+            }
+
             var requestContext = createRequestContext(requestId, request);
             var responseWriter = new NettyResponseWriter(ctx,
                                                          requestId,
@@ -463,6 +470,15 @@ final class NettyHttpServer implements HttpServer {
             pendingResponses.incrementAndGet();
             new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(status,
                                                                                                     status.message());
+        }
+
+        /// #2386: RFC 9112 §3.2 — a request with more than one `Host` line is answered 400, and the connection is
+        /// closed, since which host the client meant is ambiguous. Netty's decoder keeps every line.
+        private void rejectMultipleHosts(ChannelHandlerContext ctx, String requestId) {
+            log.debug("Rejecting request {} with 400: more than one Host header line", requestId);
+            pendingResponses.incrementAndGet();
+            new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(HttpStatus.BAD_REQUEST,
+                                                                                                    "More than one Host header");
         }
 
         /// An over-long line with no headers decoded is the request line (414); an over-long line after the headers
@@ -583,6 +599,13 @@ final class NettyHttpServer implements HttpServer {
 
             return fieldMap;
         }
+    }
+
+    /// #2386: `Host` lines counted case-insensitively, as Netty's header names are matched.
+    private static boolean hasMultipleHosts(FullHttpRequest request) {
+        return request.headers()
+                      .getAll(HttpHeaderNames.HOST)
+                      .size() > 1;
     }
 
     /// #2184: the request path exactly as sent, without the query. Netty's handshake compares the raw URI, so
