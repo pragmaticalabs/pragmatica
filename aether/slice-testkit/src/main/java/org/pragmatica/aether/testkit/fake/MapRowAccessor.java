@@ -7,6 +7,7 @@ import java.util.Map;
 
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.testkit.TestKitError;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Option.option;
@@ -50,9 +51,20 @@ record MapRowAccessor(Map<String, Object> row) implements RowMapper.RowAccessor 
         return value(column, type);
     }
 
+    /// A column scripted with a `null` value (a map that allows one) reads as SQL NULL; an absent column is unscripted.
+    @Override
+    public <V> Result<Option<V>> getOptional(String column, Class<V> type) {
+        return row.containsKey(column)
+               ? Result.success(option(row.get(column)).map(type::cast))
+               : unscripted(column).result();
+    }
+
     private <V> Result<V> value(String column, Class<V> type) {
-        return option(row.get(column)).toResult(new TestKitError.UnscriptedInteraction("No scripted column '" + column
-                                                                                      + "' in row: " + row))
+        return option(row.get(column)).toResult(unscripted(column))
                      .map(type::cast);
+    }
+
+    private TestKitError.UnscriptedInteraction unscripted(String column) {
+        return new TestKitError.UnscriptedInteraction("No scripted column '" + column + "' in row: " + row);
     }
 }

@@ -59,12 +59,12 @@ class EmberConfigBasePortTest {
                                     nodes = 3
                                     base_port = 7100
                                     management_port = 5250
-                                    dashboard_port = 8988
+                                    forge_port = 8988
                                     app_http_port = 8170"""));
 
             assertThat(config.basePort()).isEqualTo(7100);
             assertThat(config.managementPort()).isEqualTo(5250);
-            assertThat(config.dashboardPort()).isEqualTo(8988);
+            assertThat(config.forgePort()).isEqualTo(8988);
             assertThat(config.appHttpPort()).isEqualTo(8170);
         }
     }

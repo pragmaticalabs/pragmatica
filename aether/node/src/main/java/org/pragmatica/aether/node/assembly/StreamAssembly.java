@@ -1376,8 +1376,8 @@ public sealed interface StreamAssembly {
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
         // SHARED components directly — never a node record instance, of which two are constructed on
         // the management-enabled path — WARN-logs and raises one operator alert per partition violated
-        // on two consecutive ticks, through the injection path: the metrics-threshold path is
-        // evaluated only while a dashboard client is connected.
+        // on two consecutive ticks, through the injection path: a per-partition violation is not a
+        // metric, so the metrics-threshold path (AlertThresholdEvaluator) has nothing to evaluate.
         var retentionInvariantWatch = RetentionRoutes.RetentionInvariantWatch.retentionInvariantWatch(streamPartitionManager,
                                                                                                       streamSegmentIndex,
                                                                                                       kvStore,

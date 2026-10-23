@@ -18,7 +18,6 @@ package org.pragmatica.serialization.json.spi;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import tools.jackson.databind.JsonNode;
@@ -50,7 +49,10 @@ class JsonTestSuiteTest {
     static final boolean ACCEPT = true;
     static final boolean REJECT = false;
 
-    static final tools.jackson.databind.json.JsonMapper JACKSON = ((JsonMapper.JsonMapperImpl) JsonMapper.defaultJsonMapper()).mapper();
+    // A plain Jackson 3 mapper: the oracle reads trees only, which the Pragmatica module (Option and Result
+    // serializers) never touched; that module now depends on this one.
+    static final tools.jackson.databind.json.JsonMapper JACKSON = tools.jackson.databind.json.JsonMapper.builder()
+                                                                                                        .build();
 
     /// Implementation-defined files: the outcome we commit to. Jackson's, except for [#DEVIATIONS_FROM_JACKSON].
     static final Map<String, Boolean> INFORMATIVE = Map.ofEntries(entry("i_number_double_huge_neg_exp.json", ACCEPT),

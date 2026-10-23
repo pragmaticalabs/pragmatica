@@ -5,7 +5,9 @@ time: plain Java that reads and writes UTF-8 bytes directly, with no reflection,
 no Jackson. Decoding returns `Result<T>`; malformed or unacceptable input is a typed `JsonError`, never an exception.
 
 The module depends on `core` only and works outside Aether. Inside Aether, the slice processor generates the same
-codecs for HTTP route request and response types automatically; those need no annotation.
+codecs for HTTP route request and response types automatically; those need no annotation. A slice chooses their
+naming in its `routes.toml` (`[json] naming`) and their options and implementation at deploy time in its `[json]`
+configuration section (see the Aether resource reference, "JSON Codec Settings").
 
 ## Maven setup
 
@@ -73,10 +75,11 @@ Result<BuyRequest> same    = BuyRequestJson.decode("{\"customer\":\"c-1\",\"even
 byte[] json                = BuyRequestJson.encode(request.unwrap());
 
 JsonTypeCodec<BuyRequest> codec = BuyRequestJson.CODEC;           // the codec itself, to pass around
+JsonTypeCodec<BuyRequest> strict = BuyRequestJson.codec(options);  // the same codec under deploy-time options
 ```
 
-The entry point's public members are `CODEC`, the `decode(byte[])`, `decode(String)` and `encode(T)` shortcuts, and
-`CODECS`: a map from class to codec for the type and every record and enum it reaches. The entry point is also the
+The entry point's public members are `CODEC`, `codec(JsonOptions)` (see [Options](#options)), the `decode(byte[])`,
+`decode(String)` and `encode(T)` shortcuts, and `CODECS`: a map from class to codec for the type and every record and enum it reaches. The entry point is also the
 type's `ServiceLoader` provider for the lookup below, which adds a public no-argument constructor and the
 `type()` and `codec()` methods of `JsonCodecProvider`. The code behind them sits in package-private nested interfaces
 and is not part of the API.
@@ -94,6 +97,14 @@ A refused document is a failed `Result` carrying a `JsonError`:
 | `OutOfRange(position, type)` | a number that does not fit its target type |
 | `NestingTooDeep(limit, position)` | objects and arrays nested deeper than the limit |
 | `InvalidRange(offset, length, size)` | `decode(bytes, offset, length)` named a region outside the array |
+| `UnknownField(field, position)` | a member no component declares, with `failOnUnknown` set |
+| `DuplicateKey(key, position)` | a key repeated within one object, with `failOnDuplicate` set |
+| `StringTooLong(limit, position)` | a string, key or number text over `maxStringLength` |
+| `NumberTooLong(limit, position)` | a number with more digits than `maxNumberLength` |
+| `DocumentTooLarge(limit, position)` | a document over `maxDocumentSize` bytes, refused before reading |
+
+Every `position` is an offset into the input (for a key, its opening quote; for a document, the first byte past the
+limit).
 
 Factory refusals do not stop the decode: every refused field is collected, and the failure is one composite cause
 holding an `InvalidField` per field, as `Result.all` would report them.
@@ -183,6 +194,82 @@ a name.
 Only `@Json` types have a provider. A record or enum reachable only as a component of one has codec code inside that
 type's entry point, but it is not a lookup target: `codecFor` returns an empty success for it. Annotate it to make it one.
 
+### Options
+
+Everything but names is configured at deploy time, through one `JsonOptions` record that the generated codecs and the
+Jackson mapper both take, so the two keep writing one wire form and accepting the same documents under any
+configuration, not only at the defaults:
+
+```java
+var options = JsonOptions.jsonOptions(NullInclusion.EXCLUDE,  // nullInclusion: leave out empty Option components
+                                      true,                   // failOnUnknown
+                                      true,                   // failOnDuplicate
+                                      64,                     // maxDepth
+                                      1_000_000,              // maxStringLength (UTF-16 characters)
+                                      1_000,                  // maxNumberLength (digits)
+                                      4_194_304)              // maxDocumentSize (bytes)
+                         .unwrap();                           // a Result: limits must be positive, strings >= 64
+
+JsonTypeCodec<BuyRequest> codec = BuyRequestJson.codec(options);            // = BuyRequestJson.CODEC.withOptions(options)
+JsonTypeCodec<List<BuyRequest>> list = JsonTypeCodec.listOf(BuyRequestJson.CODEC).withOptions(options);
+JsonCodecs.codecFor(BuyRequest.class).map(found -> found.map(c -> c.withOptions(options)));
+
+JsonMapper jackson = JsonMapper.jsonMapper().withPragmaticaTypes().withValueObjects().withOptions(options).build();
+```
+
+| Field | Default | Effect | Jackson mapping |
+|---|---|---|---|
+| `nullInclusion` | `INCLUDE` | `EXCLUDE` leaves out an empty `Option` component; list elements, map values and a top-level `Option` stay `null` | as-property inclusion override `NON_EMPTY` for `Option` |
+| `failOnUnknown` | `false` | refuse an undeclared member instead of skipping it | `FAIL_ON_UNKNOWN_PROPERTIES` |
+| `failOnDuplicate` | `false` | refuse a repeated key (records, maps, skipped objects) instead of keeping the last value | `STRICT_DUPLICATE_DETECTION` |
+| `maxDepth` | 1000 | nesting limit, per container | `maxNestingDepth` |
+| `maxStringLength` | `Integer.MAX_VALUE` | string values read, every key, the text of an integer or a skipped number | `maxStringLength` and `maxNameLength` |
+| `maxNumberLength` | `Integer.MAX_VALUE` | digits of any number, read or skipped | `maxNumberLength` |
+| `maxDocumentSize` | `Integer.MAX_VALUE` | bytes of the document, checked before reading | `maxDocumentLength` |
+
+`JsonOptions.DEFAULTS` is exactly the behaviour of `CODEC` and of every codec built without options. Its limits accept
+everything accepted before options existed: Jackson 3's own `StreamReadConstraints` defaults (depth 500, strings
+100,000,000 characters, keys 50,000, numbers 1,000 digits) would refuse some of it, so `withOptions(DEFAULTS)` raises
+Jackson to these limits rather than the other way round. A service reading untrusted input should lower them; a long
+number costs quadratic time in `BigDecimal`. A `maxDepth` above 1000 gives up part of the stack-safety guarantee of
+[Strictness](#strictness), since generated readers recurse once per container.
+
+The configuration keys follow `JsonConfig` of the Aether HTTP client where the meaning is the same (`null_inclusion`,
+`fail_on_unknown`): `INCLUDE` and `EXCLUDE` are its constant names. Naming is not one of them: it is fixed at build time
+(see [Names](#names)). Its `NON_EMPTY` also drops empty strings and collections, which the generated codecs
+never do, so it has no counterpart.
+
+Options cost nothing on the fast path. `nullInclusion` is consulted only when a component is empty; `failOnUnknown`
+only on an unknown key; `failOnDuplicate` only when the seen-field bit mask (or a map's `put`) reports a repeat; each
+limit is at most one comparison per string, number or container, and the document size one comparison per decode.
+
+Where Jackson's enforcement is an artefact of its buffers, the generated codecs follow the rule rather than the
+artefact, and the difference is pinned by `OptionsConformanceTest`: a skipped string value is not measured (Jackson
+measures one only when its text buffer grows, from 200 characters, so it refuses some long skipped strings), and the
+text of a number is measured where Jackson measures it (integers, and any skipped number; not a floating-point number
+that is read). Declared field names are matched without a length check, which is why `maxStringLength` must be at
+least 64.
+
+### Names
+
+Names are fixed at build time. The processor option `json.naming` translates every component name of the
+compilation's `@Json` types (enum constants and map keys are never translated):
+
+```xml
+<compilerArgs>
+    <arg>-Ajson.naming=snake_case</arg>   <!-- as_declared (default), snake_case, kebab_case, pascal_case -->
+</compilerArgs>
+```
+
+`@JsonName("...")` on a record component or an enum constant overrides the strategy for that one name. It is not a
+Jackson annotation, so a type using it keeps its generated codec. A name must be non-empty and hold no quote,
+backslash or control character, and two components (or constants) of one type may not end up with the same name;
+both are compile errors.
+
+On the Jackson side, `withNaming(NamingStrategy.SNAKE_CASE)` applies the same translation (each strategy translates
+exactly as Jackson's `PropertyNamingStrategies` constant of the same meaning), and `withValueObjects()` honours
+`@JsonName`. Another code generator reaches the same choice through `new JsonCodecGenerator(env, packageName, naming)`.
+
 ### Containers
 
 `JsonTypeCodec` wraps any codec into one for a container of its type:
@@ -192,14 +279,18 @@ JsonTypeCodec<List<BuyRequest>> list          = JsonTypeCodec.listOf(BuyRequestJ
 JsonTypeCodec<Set<Level>> levels              = JsonTypeCodec.setOf(LevelJson.CODEC);
 JsonTypeCodec<Option<BuyRequest>> maybe       = JsonTypeCodec.optionOf(BuyRequestJson.CODEC);   // null <-> empty
 JsonTypeCodec<Map<String, BuyRequest>> byName = JsonTypeCodec.mapOf(BuyRequestJson.CODEC);      // String keys
+JsonTypeCodec<Map<ProductId, BuyRequest>> byId = JsonTypeCodec.mapOf(ProductIdJson.KEY, BuyRequestJson.CODEC);
+JsonTypeCodec<Map<Level, BuyRequest>> byLevel  = JsonTypeCodec.mapOf(LevelJson.KEY, BuyRequestJson.CODEC);
 
 Result<List<BuyRequest>> batch = list.decode(bytes);
 ```
 
 They write the same bytes, and accept and refuse the same input, as the code the generator emits for a component of
 that container type. Elements and map values are nested, so a value object among them is bare. Lists decode to `ArrayList`, sets to `LinkedHashSet` (a repeated element is kept once) and maps
-to `LinkedHashMap` (a repeated key keeps its last value), all in document order. A map keyed by an enum or a value
-object is available as a record component, not as a combinator. `optionOf` is no container: an option's value takes
+to `LinkedHashMap` (a repeated key keeps its last value), all in document order. A map keyed by an enum or by a value
+object over a `String` takes that type's key codec, `KEY` on its generated entry point (`JsonKeyCodec`; for an
+`@Json` enum or value object over a `String` only): the key is written and read as the generated map code does, a
+value object's through its factory, so a refused key fails the decode. `optionOf` is no container: an option's value takes
 the form of where the option stands, so `optionOf(EmailJson.CODEC)` writes `{"value":"a@b.c"}` as the whole document
 and `"a@b.c"` inside a list.
 
@@ -236,7 +327,7 @@ A region is read where it lies, so the `position` of a `JsonError` from a region
 | enum | constant name; an enum with an `UNKNOWN` constant decodes an undeclared name to it, any other enum refuses it |
 | record | object with one member per component, in declaration order |
 | value object | nested: its bare component; as the whole document: the object of its component (see below) |
-| `Option<T>` | the value, or `null` (and an absent member) for empty |
+| `Option<T>` | the value, or `null` for empty (left out under `nullInclusion` `EXCLUDE`); an absent member reads as empty |
 | `List<T>`, `Set<T>` | array |
 | `Map<K, V>` | object; `K` is a `String`, an enum, or a value object over a `String` |
 
@@ -260,12 +351,13 @@ SignupJson.encode(signup);                                // {"email":"a@b.c"}
 
 ## Strictness
 
-- Every non-`Option` component is required; a missing one fails with `MissingField`.
+- Every non-`Option` component is required; a missing one fails with `MissingField`. A repeated key keeps its last
+  value unless `failOnDuplicate` is set.
 - `null` is accepted only for an `Option`; anywhere else (a field, a list element, a map value) it fails with
   `UnexpectedNull` or `Malformed`.
-- Unknown members are skipped (their values are still validated as JSON).
-- Objects and arrays may nest at most 1000 deep (`JsonReader.MAX_DEPTH`), counted per container, so hostile input
-  fails with `NestingTooDeep` instead of overflowing the stack.
+- Unknown members are skipped (their values are still validated as JSON), unless `failOnUnknown` is set.
+- Objects and arrays may nest at most 1000 deep by default (`JsonReader.MAX_DEPTH`, `maxDepth`), counted per
+  container, so hostile input fails with `NestingTooDeep` instead of overflowing the stack.
 - Input must be UTF-8 and is validated: malformed sequences, overlong forms and lone surrogate escapes are refused.
 - Nothing but whitespace may follow the top-level value.
 - The reader passes the [JSONTestSuite](https://github.com/nst/JSONTestSuite) parsing corpus: every `y_` file
@@ -287,12 +379,14 @@ SignupJson.encode(signup);                                // {"email":"a@b.c"}
 - At most 64 components per record.
 - Records and enums must be accessible from their own package (public, or package-private in the same package), and
   so must a value object's factory.
-- No configuration yet: names are the component names, empty `Option`s are written as `null`, and there are no
-  per-codec options.
+- Naming is per compilation (`-Ajson.naming`), not per type; `@JsonName` renames single components.
+- `KEY` exists only on the entry point of an `@Json` enum or value object over a `String`. A map keyed by a type that
+  is not itself `@Json` is available as a record component, not as a combinator.
 
 ## Packages
 
-- `org.pragmatica.serialization.json`: the API (`@Json`, `JsonTypeCodec`, `JsonCodecs`, `JsonError`).
+- `org.pragmatica.serialization.json`: the API (`@Json`, `@JsonName`, `JsonTypeCodec`, `JsonCodecs`, `JsonError`,
+  `JsonOptions`, `NamingStrategy`).
 - `org.pragmatica.serialization.json.spi`: machinery for generated code (reader, writer, field-name tables, the
   provider interface). Not a stable API; only reusable `JsonReader` and `JsonWriter` instances are meant to be held
   by callers.

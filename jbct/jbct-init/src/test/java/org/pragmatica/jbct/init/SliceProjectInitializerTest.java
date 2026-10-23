@@ -99,6 +99,19 @@ class SliceProjectInitializerTest {
                   .hasSize(3);
     }
 
+    /// #2385: Forge refuses the old `dashboard_port` key at load, so a new project must carry `forge_port`.
+    @Test
+    void initialize_validParams_forgeTomlCarriesForgePortKey() throws Exception {
+        var projectDir = tempDir.resolve("forge-port-slice");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "com.test", "forge-port-slice")
+                                            .flatMap(SliceProjectInitializer::initialize);
+        assertThat(result.isSuccess())
+                  .isTrue();
+        assertThat(Files.readString(projectDir.resolve("forge.toml")))
+                  .contains("\nforge_port = 8888\n")
+                  .doesNotContain("dashboard_port");
+    }
+
     @Test
     void initialize_validParams_generatesSliceInterface() throws Exception {
         var projectDir = tempDir.resolve("inventory-service");
@@ -151,6 +164,27 @@ class SliceProjectInitializerTest {
         var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", null);
         assertThat(result.isFailure())
                   .isTrue();
+    }
+
+    @Test
+    void sliceProjectInitializer_blankArtifactId_returnsFailure() {
+        var projectDir = tempDir.resolve("blank-artifact");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "  ", null, "1.0.0", "1.0.0", "1.0.0");
+        assertThat(result.isFailure())
+                  .isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).isEqualTo("artifactId must not be null or empty"));
+    }
+
+    /// A blank explicit slice name is treated as absent: the name is derived from the artifact ID.
+    @Test
+    void initialize_blankSliceName_derivesNameFromArtifactId() {
+        var projectDir = tempDir.resolve("blank-name");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "my-slice", "  ", "1.0.0", "1.0.0", "1.0.0")
+                                            .flatMap(SliceProjectInitializer::initialize);
+        assertThat(result.isSuccess())
+                  .isTrue();
+        assertThat(projectDir.resolve("src/main/java/org/example/myslice/myslice/MySlice.java"))
+                  .exists();
     }
 
     @Test

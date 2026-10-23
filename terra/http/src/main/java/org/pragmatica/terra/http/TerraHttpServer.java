@@ -60,6 +60,10 @@ public final class TerraHttpServer {
 
     /// Ownership transfers on entry, including on failed startup. Factories outside the selected
     /// application are ignored; ambiguous or incompatible selected routes fail before binding.
+    ///
+    /// `mapper` is the Jackson fallback of a slice's routes only while the slice's JSON naming is `as_declared` and
+    /// its JSON options are the defaults (#2378). A slice built with `[json] naming` in its `routes.toml` replaces it
+    /// with `JsonMapper.valueObjectJsonMapper(naming, options)`, so a customised `mapper` is not used for that slice.
     public static Promise<TerraHttpServer> start(TerraApplication application,
                                                  TerraHttpConfig config,
                                                  HttpAuthenticator authenticator,

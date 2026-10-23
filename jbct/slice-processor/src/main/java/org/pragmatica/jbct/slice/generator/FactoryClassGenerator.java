@@ -92,13 +92,26 @@ public class FactoryClassGenerator {
     /// resolved to a single-source `Topic<T>` constant in a `TypedPublisher` bound to that constant
     /// (#396). `publisherBindings` is keyed by the publisher's `config` identifier.
     public Result<Unit> generate(SliceModel model, Map<String, ResolvedTopicConstant> publisherBindings) {
+        return generate(model, publisherBindings, false);
+    }
+
+    /// As [#generate(SliceModel, Map)]; `hasRoutes` says the slice has HTTP routes, whose JSON codec settings
+    /// (`[json]`, #2378) the factory then provisions implicitly: `provide(JsonCodecSettings.class, "json")` beside
+    /// `create()`, the adapter's `jsonCodecSettings()` returning that live handle, and a `json` branch in
+    /// `notifyConfigUpdate` refreshing it on a committed change. Never for the Terra target, which does not load
+    /// this factory.
+    public Result<Unit> generate(SliceModel model,
+                                 Map<String, ResolvedTopicConstant> publisherBindings,
+                                 boolean hasRoutes) {
+        var jsonSettings = hasRoutes && !terraTarget();
+
         try {
             var factoryName = model.simpleName() + "Factory";
             var qualifiedName = model.packageName() + "." + factoryName;
             JavaFileObject file = filer.createSourceFile(qualifiedName);
 
             try (var writer = new PrintWriter(file.openWriter())) {
-                generateFactoryClass(writer, model, factoryName, publisherBindings);
+                generateFactoryClass(writer, model, factoryName, publisherBindings, jsonSettings);
             }
 
             return Result.unitResult();
@@ -112,7 +125,8 @@ public class FactoryClassGenerator {
     private void generateFactoryClass(PrintWriter out,
                                       SliceModel model,
                                       String factoryName,
-                                      Map<String, ResolvedTopicConstant> publisherBindings) {
+                                      Map<String, ResolvedTopicConstant> publisherBindings,
+                                      boolean jsonSettings) {
         var sliceName = model.simpleName();
         var basePackage = model.packageName();
         var importTracker = new ImportTracker(basePackage);
@@ -162,6 +176,11 @@ public class FactoryClassGenerator {
         }
 
         importTracker.use("java.util.List");
+        if (jsonSettings) {
+            importTracker.use("org.pragmatica.aether.slice.JsonCodecSettings");
+            importTracker.use("org.pragmatica.aether.slice.ConfigFacade");
+        }
+
         if (allDeps.stream().anyMatch(DependencyModel::isConfigurationSection) || model.hasConfigUpdateSubscriptions()) {
             importTracker.use("org.pragmatica.aether.slice.ConfigFacade");
             importTracker.use("org.pragmatica.lang.Result");
@@ -195,12 +214,12 @@ public class FactoryClassGenerator {
         bodyOut.println();
         // createSlice() method
         if (!terraTarget()) {
-            generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker);
+            generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker, jsonSettings);
         }
-        // notifyConfigUpdate() method (only if config update methods exist)
-        if (model.hasConfigUpdateSubscriptions()) {
+        // notifyConfigUpdate() method (only if config update methods or JSON codec settings exist)
+        if (model.hasConfigUpdateSubscriptions() || jsonSettings) {
             bodyOut.println();
-            generateNotifyConfigUpdateMethod(bodyOut, model, importTracker);
+            generateNotifyConfigUpdateMethod(bodyOut, model, importTracker, jsonSettings);
         }
 
         bodyOut.println("}");
@@ -356,6 +375,9 @@ public class FactoryClassGenerator {
     }
 
     private record AllEntry(String varName, String promiseExpression) {}
+
+    /// The implicit provision of a routed slice's JSON codec settings (#2378); `resources.toml` `[json]`, live.
+    private static final String JSON_SETTINGS_PROVIDE = "ctx.resources().provide(JsonCodecSettings.class, \"json\")";
 
     private record PlainInterfaceFactoryParam(String varName, ResourceQualifierModel qualifier) {
         /// Returns the fully qualified resource type name for use in generated source code.
@@ -1278,7 +1300,8 @@ public class FactoryClassGenerator {
     private void generateCreateSliceMethod(PrintWriter out,
                                            SliceModel model,
                                            Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
-                                           ImportTracker importTracker) {
+                                           ImportTracker importTracker,
+                                           boolean jsonSettings) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
@@ -1294,7 +1317,10 @@ public class FactoryClassGenerator {
 
         out.println("    public static Promise<Slice> " + methodName + "Slice(SliceCreationContext ctx) {");
         // Generate local adapter record — add step fields when transitive methods exist
-        var recordComponents = sliceName + " delegate, ResourceProviderFacade resources";
+        var recordComponents = sliceName
+                             + " delegate, ResourceProviderFacade resources" + (jsonSettings
+                                                                                ? ", JsonCodecSettings jsonCodecSettings"
+                                                                                : "");
 
         for (var step : transitiveSteps) {
             var stepDep = findDependencyByParamName(model, step.parameterName());
@@ -1353,6 +1379,13 @@ public class FactoryClassGenerator {
         out.println("            }");
         // Generate codec() override
         generateCodecOverride(out, model, proxyMethodsCache, importTracker);
+        if (jsonSettings) {
+            out.println();
+            out.println("            @Override");
+            out.println("            public JsonCodecSettings jsonCodecSettings() {");
+            out.println("                return jsonCodecSettings;");
+            out.println("            }");
+        }
         // Generate delegate methods for the slice interface
         for (var method : methods) {
             out.println();
@@ -1418,6 +1451,10 @@ public class FactoryClassGenerator {
                     }
                 }
             }
+            // The JSON codec settings are one more value provisioned in parallel with create().
+            if (jsonSettings) {
+                stepResourceEntries.add(new AllEntry("jsonCodecSettings", JSON_SETTINGS_PROVIDE));
+            }
 
             if (stepResourceEntries.isEmpty()) {
                 // No async provisioning needed for steps — construct them synchronously in map closure
@@ -1437,8 +1474,13 @@ public class FactoryClassGenerator {
                                                 transitiveSteps,
                                                 stepResourceEntries,
                                                 stepResourceParams,
-                                                importTracker);
+                                                importTracker,
+                                                jsonSettings);
             }
+        } else if (jsonSettings) {
+            out.println("        return Promise.all(" + methodName + "(ctx), " + JSON_SETTINGS_PROVIDE + ")");
+            out.println("                      .map((impl, jsonCodecSettings) -> new " + sliceRecordName
+                       + "(impl, resources, jsonCodecSettings));");
         } else {
             out.println("        return " + methodName + "(ctx)");
             out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
@@ -1491,7 +1533,8 @@ public class FactoryClassGenerator {
                                                  List<PlainInterfaceModel> transitiveSteps,
                                                  List<AllEntry> stepResourceEntries,
                                                  Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
-                                                 ImportTracker importTracker) {
+                                                 ImportTracker importTracker,
+                                                 boolean jsonSettings) {
         // Use Promise.all to provision step resources in parallel with create()
         var leafExprs = new ArrayList<String>();
 
@@ -1518,7 +1561,8 @@ public class FactoryClassGenerator {
                                            sliceRecordName,
                                            transitiveSteps,
                                            stepResourceParams,
-                                           importTracker);
+                                           importTracker,
+                                           jsonSettings);
             out.println("        });");
         } else {
             // More than 15 provisioned values (create() + step resources): batch to stay within the
@@ -1530,7 +1574,8 @@ public class FactoryClassGenerator {
                                            sliceRecordName,
                                            transitiveSteps,
                                            stepResourceParams,
-                                           importTracker);
+                                           importTracker,
+                                           jsonSettings);
             BatchedAll.closeBatchedPromiseBody(out, openParens);
         }
     }
@@ -1540,7 +1585,8 @@ public class FactoryClassGenerator {
                                                 String sliceRecordName,
                                                 List<PlainInterfaceModel> transitiveSteps,
                                                 Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
-                                                ImportTracker importTracker) {
+                                                ImportTracker importTracker,
+                                                boolean jsonSettings) {
         for (var step : transitiveSteps) {
             var stepDep = findDependencyByParamName(model, step.parameterName());
 
@@ -1559,7 +1605,9 @@ public class FactoryClassGenerator {
             }
         }
 
-        var ctorArgs = "impl, resources";
+        var ctorArgs = jsonSettings
+                       ? "impl, resources, jsonCodecSettings"
+                       : "impl, resources";
 
         for (var step : transitiveSteps) {
             ctorArgs += ", " + step.parameterName();
@@ -2811,13 +2859,27 @@ public class FactoryClassGenerator {
     ///
     /// Generates a method that parses config sections and calls update methods on the slice
     /// only when the parsed config differs from the previous value (diff detection at call site).
-    private void generateNotifyConfigUpdateMethod(PrintWriter out, SliceModel model, ImportTracker importTracker) {
+    private void generateNotifyConfigUpdateMethod(PrintWriter out,
+                                                  SliceModel model,
+                                                  ImportTracker importTracker,
+                                                  boolean jsonSettings) {
         var sliceName = model.simpleName();
         var factoryName = sliceName + "Factory";
 
-        out.println("    private static final Logger configLog = LoggerFactory.getLogger(" + factoryName + ".class);");
-        out.println();
+        if (model.hasConfigUpdateSubscriptions()) {
+            out.println("    private static final Logger configLog = LoggerFactory.getLogger(" + factoryName
+                       + ".class);");
+            out.println();
+        }
+
         out.println("    public static void notifyConfigUpdate(Object sliceInstance, String section, ConfigFacade config) {");
+        if (jsonSettings) {
+            // The handle re-reads the slice's configuration itself; `config` is not needed.
+            out.println("        if (\"json\".equals(section) && sliceInstance instanceof Slice deployed) {");
+            out.println("            deployed.jsonCodecSettings().refresh();");
+            out.println("        }");
+        }
+
         for (var method : model.configUpdateMethods()) {
             for (var configSub : method.reactiveOfCategory("config-update")) {
                 var configSection = escapeJavaString(configSub.qualifier().configSection());

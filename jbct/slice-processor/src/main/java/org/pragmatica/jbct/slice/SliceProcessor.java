@@ -202,33 +202,38 @@ public class SliceProcessor extends AbstractProcessor {
             return;
         }
 
-        generateFactory(interfaceElement,
-                        sliceModel,
-                        topicBindings.bindings()).flatMap(_ -> generateRoutesAndManifest(interfaceElement,
-                                                                                         sliceModel,
-                                                                                         topicBindings.bindings()))
-                       .onFailure(cause -> error(interfaceElement,
-                                                 cause.message()));
+        // The route config is loaded first: whether the slice has routes decides what the factory provisions (#2378).
+        loadRouteConfig(sliceModel.packageName()).flatMap(configOpt -> generateFactory(interfaceElement,
+                                                                                       sliceModel,
+                                                                                       topicBindings.bindings(),
+                                                                                       configOpt.isPresent()).flatMap(_ -> generateRoutesAndManifest(interfaceElement,
+                                                                                                                                                      sliceModel,
+                                                                                                                                                      configOpt,
+                                                                                                                                                      topicBindings.bindings())))
+                                                 .onFailure(cause -> error(interfaceElement,
+                                                                           cause.message()));
     }
 
     private Result<Unit> generateFactory(TypeElement interfaceElement,
                                          SliceModel sliceModel,
-                                         Map<String, ResolvedTopicConstant> publisherBindings) {
-        return factoryGenerator.generate(sliceModel, publisherBindings)
+                                         Map<String, ResolvedTopicConstant> publisherBindings,
+                                         boolean hasRoutes) {
+        return factoryGenerator.generate(sliceModel, publisherBindings, hasRoutes)
                                .onSuccess(_ -> note(interfaceElement,
                                                     "Generated factory: " + sliceModel.simpleName() + "Factory"));
     }
 
     private Result<Unit> generateRoutesAndManifest(TypeElement interfaceElement,
                                                    SliceModel sliceModel,
+                                                   Option<RouteConfig> configOpt,
                                                    Map<String, ResolvedTopicConstant> topicBindings) {
-        return loadRouteConfig(sliceModel.packageName()).flatMap(configOpt -> generateRoutesClass(interfaceElement,
-                                                                                                  sliceModel,
-                                                                                                  configOpt).flatMap(routesClassOpt -> generateSliceManifest(interfaceElement,
-                                                                                                                                                             sliceModel,
-                                                                                                                                                             routesClassOpt,
-                                                                                                                                                             configOpt,
-                                                                                                                                                             topicBindings)));
+        return generateRoutesClass(interfaceElement,
+                                   sliceModel,
+                                   configOpt).flatMap(routesClassOpt -> generateSliceManifest(interfaceElement,
+                                                                                              sliceModel,
+                                                                                              routesClassOpt,
+                                                                                              configOpt,
+                                                                                              topicBindings));
     }
 
     private Result<Option<String>> generateRoutesClass(TypeElement interfaceElement,

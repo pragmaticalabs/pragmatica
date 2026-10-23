@@ -63,6 +63,12 @@ public interface Containers {
     record ItemsByName(Map<String, Item> v) {}
 
     @Json
+    record ItemsByCode(Map<Code, Item> v) {}
+
+    @Json
+    record ItemsByLevel(Map<Level, Item> v) {}
+
+    @Json
     record Codes(List<Code> v) {}
 
     @Json

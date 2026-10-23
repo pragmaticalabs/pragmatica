@@ -18,6 +18,7 @@ package org.pragmatica.serialization.json.tests;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.serialization.json.JsonError;
+import org.pragmatica.serialization.json.JsonOptions;
 import org.pragmatica.serialization.json.JsonTypeCodec;
 import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 import org.pragmatica.serialization.json.spi.JsonReader;
@@ -138,7 +139,7 @@ class JsonTypeCodecApiTest {
 
         assertEquals(Set.of("CODEC", "CODECS"), fields);
         assertEquals(Set.of("decode[class [B]", "decode[class java.lang.String]", "encode[class " + BuyRequest.class.getName() + "]",
-                            "type[]", "codec[]"),
+                            "codec[class " + JsonOptions.class.getName() + "]", "type[]", "codec[]"),
                      methods);
         assertEquals(List.of(0),
                      Arrays.stream(type.getDeclaredConstructors())

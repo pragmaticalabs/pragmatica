@@ -22,7 +22,7 @@ package org.pragmatica.aether.slice.generation;
 /// epoch from the previous run.
 ///
 /// [limit: incarnation-advances-only-with-1533] This fixes a cold restart only once the restore advances the
-/// incarnation (#1533, `ClusterIncarnation.restoreCommands`). Until #1533 lands, `GitBackedPersistence`
+/// incarnation (#1533, `ClusterIncarnation.restoring`). Until #1533 lands, `GitBackedPersistence`
 /// restores the committed `ClusterIncarnationKey` as-is, the incarnation is unchanged across a cold
 /// restart, and these epochs order exactly as they did before #1529 — never worse.
 public record RewindEpoch(long incarnation, long generation, long rewind) implements Comparable<RewindEpoch> {

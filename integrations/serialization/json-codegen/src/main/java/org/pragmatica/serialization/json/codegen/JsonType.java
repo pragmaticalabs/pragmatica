@@ -51,7 +51,9 @@ sealed interface JsonType {
     /// Keys are a string, an enum, or a value object over a string.
     record MapOf(JsonType key, JsonType value) implements JsonType {}
 
-    record Component(String name, JsonType type) {}
+    /// `name` is the Java component name (accessor and generated locals); `wireName` is its JSON name, after
+    /// `@JsonName` or the build's naming strategy.
+    record Component(String name, String wireName, JsonType type) {}
 
     /// `factory` is the JBCT construction path (`static Result<T> t(...)` over the components, in order), when
     /// the record has one. A value object is a single-component record over a scalar that has
@@ -79,5 +81,7 @@ sealed interface JsonType {
         }
     }
 
+    /// `constants` are the JSON names, in declaration order (a constant's `@JsonName`, otherwise its Java name);
+    /// `unknownIndex` is the position of the constant declared as `UNKNOWN`, or -1.
     record EnumDefinition(TypeElement element, List<String> constants, int unknownIndex) {}
 }

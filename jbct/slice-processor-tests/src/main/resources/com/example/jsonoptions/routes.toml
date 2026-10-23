@@ -1,0 +1,11 @@
+prefix = "/api/json"
+
+[routes]
+echo = "POST /echo"
+byName = "POST /by-name"
+
+[errors]
+default = 500
+
+[json]
+naming = "snake_case"

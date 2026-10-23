@@ -190,7 +190,7 @@ Three things worth knowing:
 nodes = 5                    # Number of nodes to simulate
 base_port = 6000             # Base QUIC/consensus UDP port (node i binds base_port + i)
 management_port = 5150       # Base management port
-dashboard_port = 8888        # Forge API port (key name predates the dashboard removal)
+forge_port = 8888            # Forge API port
 app_http_port = 8070         # Base app HTTP port (load target)
 start_timeout_seconds = 60   # How long to wait for the cluster to finish forming, and for the startup blueprint deploy, before exiting
 ```

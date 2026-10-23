@@ -181,6 +181,12 @@
             <artifactId>resource-interceptors</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- #2378: the implicit [json] settings every slice with HTTP routes provisions -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-json</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>
             <artifactId>HikariCP</artifactId>

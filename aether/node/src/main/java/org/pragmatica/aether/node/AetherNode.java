@@ -958,8 +958,8 @@ public interface AetherNode extends ManageableNode {
     /// up durability across an owner change.
     TimeSpan ENTITY_TIMER_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// #634-4 periodic invariant check — the tri-floor retention invariant is evaluated on every
-    /// `/api/storage/retention` read, but a violation nobody polls for must still reach an operator:
-    /// the metrics-threshold alert path only runs while a dashboard client is connected. Five minutes
+    /// `/api/storage/retention` read, but a violation nobody polls for must still reach an operator, and
+    /// it is not a metric the threshold evaluator (`AlertThresholdEvaluator`) could compare. Five minutes
     /// matches the RetentionEnforcer cadence — the only mover that can newly violate between checks.
     TimeSpan RETENTION_INVARIANT_CHECK_INTERVAL = TimeSpan.timeSpan(5).minutes();
 

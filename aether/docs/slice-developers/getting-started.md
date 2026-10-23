@@ -771,6 +771,20 @@ HTTP_400 = ["*Invalid*"]
 Each slice's `routes.toml` inherits from the base and can override or extend it.
 Child settings take precedence over parent settings.
 
+### JSON Field Naming
+
+Request and response fields are named as their record components are declared. To use another convention, declare
+it in `routes.toml` (or `routes-base.toml`):
+
+```toml
+[json]
+naming = "snake_case"   # as_declared (default) | snake_case | kebab_case | pascal_case
+```
+
+Naming is compiled into the slice. The JSON options that can change at deploy time (unknown-field refusal, empty
+`Option` handling, limits, generated codecs or Jackson) live in the slice's `[json]` configuration section; see
+[JSON Codec Settings](resource-reference.md#json-codec-settings-json).
+
 ## Step 8: Add Database Persistence
 
 Aether provisions infrastructure resources — databases, HTTP clients, caches — through a

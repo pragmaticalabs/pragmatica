@@ -804,4 +804,103 @@ class RouteConfigLoaderTest {
             result.onSuccess(rc -> assertThat(rc.errors().strict()).isFalse());
         }
     }
+
+    /// #2378: `[json] naming` is the build-time JSON naming of the generated route codecs.
+    @Nested
+    class JsonNaming {
+        @Test
+        void absent_isAsDeclared() throws IOException {
+            var config = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+                """)).unwrap();
+
+            assertThat(config.declaredJsonNaming().isPresent()).isFalse();
+            assertThat(config.jsonNaming()).isEqualTo(org.pragmatica.serialization.json.NamingStrategy.AS_DECLARED);
+        }
+
+        @Test
+        void declared_onAnUnversionedSlice() throws IOException {
+            var config = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+
+                [json]
+                naming = "snake_case"
+                """)).unwrap();
+
+            assertThat(config.jsonNaming()).isEqualTo(org.pragmatica.serialization.json.NamingStrategy.SNAKE_CASE);
+        }
+
+        @Test
+        void declared_onAVersionedSlice() throws IOException {
+            var config = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [api]
+                prefix = "/api"
+
+                [v1.routes]
+                get = "GET /{id}"
+
+                [json]
+                naming = "KEBAB_CASE"
+                """)).unwrap();
+
+            assertThat(config.isVersioned()).isTrue();
+            assertThat(config.jsonNaming()).isEqualTo(org.pragmatica.serialization.json.NamingStrategy.KEBAB_CASE);
+        }
+
+        @Test
+        void unknownValue_failsTheLoad() throws IOException {
+            var result = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+
+                [json]
+                naming = "camel"
+                """));
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void deployTimeOption_isRefused_notIgnored() throws IOException {
+            var result = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+
+                [json]
+                naming = "snake_case"
+                fail_on_unknown = true
+                """));
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("fail_on_unknown").contains("resources.toml"));
+        }
+
+        @Test
+        void merge_sliceWins_whenItDeclares_otherwiseTheBaseApplies() throws IOException {
+            writeConfig("routes-base.toml", """
+                [json]
+                naming = "pascal_case"
+                """);
+            writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+                """);
+
+            assertThat(RouteConfigLoader.loadMerged(tempDir).unwrap().jsonNaming())
+                .isEqualTo(org.pragmatica.serialization.json.NamingStrategy.PASCAL_CASE);
+
+            writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+
+                [json]
+                naming = "snake_case"
+                """);
+
+            assertThat(RouteConfigLoader.loadMerged(tempDir).unwrap().jsonNaming())
+                .isEqualTo(org.pragmatica.serialization.json.NamingStrategy.SNAKE_CASE);
+        }
+    }
 }

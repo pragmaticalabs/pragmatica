@@ -277,6 +277,60 @@ class CombinatorAgreementTest {
         assertFalse(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).decode("\"x\"").isSuccess());
     }
 
+    // ---- maps keyed by value objects and enums (#2378) ------------------------------------------
+    @Test
+    void mapOfValueObjectKeys_writesTheGeneratedMapBytes() {
+        var map = new LinkedHashMap<Code, Item>();
+
+        map.put(new Code("first"), A);
+        map.put(new Code("sécond \"key\""), B);
+        for (var value : List.<Map<Code, Item>>of(Map.of(), map)) {
+            assertSameBytes(Containers_ItemsByCodeJson.encode(new Containers.ItemsByCode(value)),
+                            JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC).encode(value));
+        }
+    }
+
+    @Test
+    void mapOfEnumKeys_writesTheGeneratedMapBytes() {
+        var map = new LinkedHashMap<Level, Item>();
+
+        map.put(Level.HIGH, A);
+        map.put(Level.LOW, B);
+        assertSameBytes(Containers_ItemsByLevelJson.encode(new Containers.ItemsByLevel(map)),
+                        JsonTypeCodec.mapOf(Containers_LevelJson.KEY, Containers_ItemJson.CODEC).encode(map));
+    }
+
+    @Test
+    void mapOfValueObjectKeys_acceptsAndRefusesWhatTheGeneratedMapDoes() {
+        assertAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC), Containers_ItemsByCodeJson::decode,
+                        Containers.ItemsByCode::v,
+                        List.of("{}", "{\"x\":{\"name\":\"a\"}}", "{\"x\":{\"name\":\"a\"},\"x\":{\"name\":\"b\"}}",
+                                "{\" \":{\"name\":\"a\"}}", "{1:{\"name\":\"a\"}}", "{\"x\":{\"name\":\"a\"}", "null", "[]"));
+        var refused = JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC)
+                                   .decode("{\" \":{\"name\":\"a\"}}");
+
+        assertFalse(refused.isSuccess());
+        refused.onFailure(cause -> assertTrue(cause.message().contains("blank"), cause.message()));
+    }
+
+    @Test
+    void mapOfEnumKeys_acceptsAndRefusesWhatTheGeneratedMapDoes() {
+        assertAgreement(JsonTypeCodec.mapOf(Containers_LevelJson.KEY, Containers_ItemJson.CODEC), Containers_ItemsByLevelJson::decode,
+                        Containers.ItemsByLevel::v,
+                        List.of("{}", "{\"HIGH\":{\"name\":\"a\"}}", "{\"MEDIUM\":{\"name\":\"a\"}}",
+                                "{\"LOW\":{\"name\":\"a\"},\"LOW\":{\"name\":\"b\"}}", "{\"LOW\" {}}"));
+    }
+
+    @Test
+    void mapOfValueObjectKeys_agreesWithTheProductionMapper() {
+        var map = new LinkedHashMap<Code, Item>();
+
+        map.put(new Code("k"), A);
+        assertEquals(jackson(map), text(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC).encode(map)));
+        assertJacksonAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC), new TypeToken<>() {},
+                               List.of("{\"k\":{\"name\":\"a\",\"qty\":1}}", "{\" \":{\"name\":\"a\"}}"));
+    }
+
     private static <T> void assertJacksonAgreement(JsonTypeCodec<T> codec, TypeToken<T> token, List<String> documents) {
         for (var document : documents) {
             var ours = codec.decode(document);

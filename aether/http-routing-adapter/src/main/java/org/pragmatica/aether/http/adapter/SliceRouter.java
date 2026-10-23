@@ -93,6 +93,18 @@ public interface SliceRouter {
                                    JsonMapper jsonMapper,
                                    RouteMountMode mountMode,
                                    JsonCodec jsonCodec) {
+        return sliceRouter(routes, errorMapper, jsonMapper, mountMode, JsonCodecSource.constant(jsonCodec));
+    }
+
+    /// As [#sliceRouter(RouteSource, ErrorMapper, JsonMapper, RouteMountMode, JsonCodec)], with the codec taken from
+    /// `jsonCodecs` once per request: that one codec decodes the request body and encodes the response, so a codec
+    /// switch (a slice's `[json]` settings changing) never splits a request between two codecs. A slice's generated
+    /// routes pass a source over the slice's JSON codec settings here.
+    static SliceRouter sliceRouter(RouteSource routes,
+                                   ErrorMapper errorMapper,
+                                   JsonMapper jsonMapper,
+                                   RouteMountMode mountMode,
+                                   JsonCodecSource jsonCodecs) {
         var composed = RouteMounting.compose(routes, mountMode);
 
         record sliceRouter(RequestRouter requestRouter,
@@ -101,7 +113,7 @@ public interface SliceRouter {
                            RouteMountMode mountMode,
                            ErrorMapper errorMapper,
                            JsonMapper jsonMapper,
-                           JsonCodec jsonCodec,
+                           JsonCodecSource jsonCodecs,
                            String sliceName,
                            VersioningMetricsSink metricsSink,
                            List<Route<?>> composedRoutes) implements SliceRouter {
@@ -118,7 +130,7 @@ public interface SliceRouter {
                                        mountMode,
                                        errorMapper,
                                        jsonMapper,
-                                       jsonCodec,
+                                       jsonCodecs,
                                        sliceName,
                                        sink,
                                        composedRoutes);
@@ -142,7 +154,7 @@ public interface SliceRouter {
                                        mountMode,
                                        errorMapper,
                                        jsonMapper,
-                                       jsonCodec,
+                                       jsonCodecs,
                                        sliceName,
                                        metricsSink,
                                        decorated);
@@ -294,21 +306,25 @@ public interface SliceRouter {
             }
 
             private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
+                // Sampled once: the body is decoded and the response encoded by this one codec.
+                var jsonCodec = jsonCodecs.current();
                 var context = SliceRequestContext.sliceRequestContext(request, route, jsonCodec);
 
                 return invokeHandler(route, context).map(result -> resultToResponse(result,
                                                                                     route.contentType(),
-                                                                                    request))
+                                                                                    request,
+                                                                                    jsonCodec))
                                     .recover(cause -> errorToResponse(cause, request));
             }
 
             private HttpResponseData resultToResponse(Object result,
                                                       ContentType contentType,
-                                                      HttpRequestContext request) {
+                                                      HttpRequestContext request,
+                                                      JsonCodec jsonCodec) {
                 return switch (result) {
-                    case Result.Success<?> success -> successToResponse(success.value(), contentType);
+                    case Result.Success<?> success -> successToResponse(success.value(), contentType, jsonCodec);
                     case Result.Failure<?> failure -> errorToResponse(failure.cause(), request);
-                    default -> successToResponse(result, contentType);
+                    default -> successToResponse(result, contentType, jsonCodec);
                 };
             }
 
@@ -317,13 +333,13 @@ public interface SliceRouter {
                             .handle(context);
             }
 
-            private HttpResponseData successToResponse(Object value, ContentType contentType) {
+            private HttpResponseData successToResponse(Object value, ContentType contentType, JsonCodec jsonCodec) {
                 return Option.option(value)
-                             .map(present -> serializeSuccess(present, contentType))
+                             .map(present -> serializeSuccess(present, contentType, jsonCodec))
                              .or(HttpResponseData.httpResponseData(204));
             }
 
-            private HttpResponseData serializeSuccess(Object value, ContentType contentType) {
+            private HttpResponseData serializeSuccess(Object value, ContentType contentType, JsonCodec jsonCodec) {
                 var headers = headersForContentType(contentType);
 
                 return ResponseSerializer.serialize(value, contentType, jsonCodec).fold(_ -> HttpResponseData.httpResponseData(500,
@@ -444,7 +460,7 @@ public interface SliceRouter {
                                mountMode,
                                errorMapper,
                                jsonMapper,
-                               jsonCodec,
+                               jsonCodecs,
                                "",
                                VersioningMetricsSink.noop(),
                                composedRoutes);

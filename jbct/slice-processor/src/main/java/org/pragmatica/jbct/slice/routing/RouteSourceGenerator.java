@@ -36,6 +36,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.NamingStrategy;
 import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 
 
@@ -278,7 +279,7 @@ public class RouteSourceGenerator {
                                                       SliceModel model,
                                                       RouteConfig routeConfig,
                                                       String holderName) {
-        var json = new JsonCodecGenerator(filer, elements, types, model.packageName());
+        var json = new JsonCodecGenerator(filer, elements, types, model.packageName(), routeConfig.jsonNaming());
         var methodMap = buildMethodMap(model.methods());
 
         for (var entry : routeConfig.routes().entrySet()) {
@@ -425,8 +426,7 @@ public class RouteSourceGenerator {
         out.println("    @Override");
         out.println("    public SliceRouter create(" + sliceName + " slice, JsonMapper jsonMapper) {");
         out.println("        var routes = new " + routesName + "(slice);");
-        jsonCodecs.onPresent(_ -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, RouteMountMode.pathMode(), jsonCodec(jsonMapper));"))
-                  .onEmpty(() -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);"));
+        out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, RouteMountMode.pathMode(), jsonCodecs(slice, jsonMapper));");
         out.println("    }");
         out.println();
         // SliceRouterFactory: create(slice, jsonMapper, mountMode) — #198 deploy-either-way (§7).
@@ -436,21 +436,10 @@ public class RouteSourceGenerator {
         out.println("    public SliceRouter create(" + sliceName
                    + " slice, JsonMapper jsonMapper, RouteMountMode mountMode) {");
         out.println("        var routes = new " + routesName + "(slice);");
-        jsonCodecs.onPresent(_ -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode, jsonCodec(jsonMapper));"))
-                  .onEmpty(() -> out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode);"));
+        out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode, jsonCodecs(slice, jsonMapper));");
         out.println("    }");
         out.println();
-        // Generated JSON codecs for this slice's route types; Jackson (the given mapper) for everything else.
-        jsonCodecs.onPresent(holder -> {
-            out.println("    private static org.pragmatica.http.JsonCodec jsonCodec(JsonMapper jsonMapper) {");
-            out.println("        return org.pragmatica.aether.http.adapter.GeneratedJsonCodec.generatedJsonCodec(" + holder
-                       + ".CODECS,");
-            out.println("                                                                                    " + holder
-                       + ".CONTAINERS,");
-            out.println("                                                                                    org.pragmatica.http.routing.JsonCodecAdapter.forMapper(jsonMapper));");
-            out.println("    }");
-            out.println();
-        });
+        generateJsonCodecMethods(out, jsonCodecs, routeConfig.jsonNaming());
         // routes() method
         generateRoutesMethod(out, model, routeConfig, sliceElement);
         out.println();
@@ -462,6 +451,54 @@ public class RouteSourceGenerator {
         // errorMapper() method
         generateErrorMapperMethod(out, errorMappings);
         out.println("}");
+    }
+
+    private static final String ADAPTER = "org.pragmatica.aether.http.adapter.";
+    private static final String SELECTION = "org.pragmatica.aether.slice.JsonCodecSelection";
+
+    /// The slice's JSON codec, chosen per its `[json]` settings (#2378): a deployed slice (the generated adapter, a
+    /// `Slice`) is read through its live settings, re-selected when they change and sampled once per request by the
+    /// router; anything else (Terra passes the user's implementation) has the defaults. A selection builds the
+    /// generated codecs under its options, with Jackson under the same naming and options as their fallback, or
+    /// Jackson alone. Naming is the build's (`[json] naming` in routes.toml), compiled in as a literal.
+    private static void generateJsonCodecMethods(PrintWriter out, Option<String> jsonCodecs, NamingStrategy naming) {
+        out.println("    private static " + ADAPTER + "JsonCodecSource jsonCodecs(Object slice, JsonMapper jsonMapper) {");
+        out.println("        return slice instanceof org.pragmatica.aether.slice.Slice deployed");
+        out.println("               ? " + ADAPTER + "SelectionCachingJsonCodecSource.selectionCachingJsonCodecSource(deployed.jsonCodecSettings()::current,");
+        out.println("                                                                                                   selection -> jsonCodec(selection, jsonMapper))");
+        out.println("               : " + ADAPTER + "JsonCodecSource.constant(jsonCodec(" + SELECTION + ".DEFAULT, jsonMapper));");
+        out.println("    }");
+        out.println();
+        out.println("    private static org.pragmatica.http.JsonCodec jsonCodec(" + SELECTION + " selection, JsonMapper jsonMapper) {");
+        out.println("        var fallback = org.pragmatica.http.routing.JsonCodecAdapter.forMapper(" + fallbackMapper(naming) + ");");
+        jsonCodecs.onPresent(holder -> {
+                      out.println();
+                      out.println("        return switch (selection.implementation()) {");
+                      out.println("            case GENERATED -> " + ADAPTER + "GeneratedJsonCodec.generatedJsonCodec(" + holder + ".CODECS,");
+                      out.println("                                                                                    " + holder + ".CONTAINERS,");
+                      out.println("                                                                                    fallback,");
+                      out.println("                                                                                    selection.options());");
+                      out.println("            case JACKSON -> fallback;");
+                      out.println("        };");
+                  })
+                  .onEmpty(() -> {
+                      out.println();
+                      out.println("        return fallback;");
+                  });
+        out.println("    }");
+        out.println();
+    }
+
+    // The mapper passed to create() is kept as it is only where nothing differs from it: names as declared and
+    // default options. Otherwise the fallback is a value-object mapper built with the naming and options, because a
+    // Jackson mapper's read limits cannot be changed on an existing instance.
+    private static String fallbackMapper(NamingStrategy naming) {
+        var configured = "JsonMapper.valueObjectJsonMapper(org.pragmatica.serialization.json.NamingStrategy." + naming.name()
+                         + ", selection.options())";
+
+        return naming == NamingStrategy.AS_DECLARED
+               ? "selection.options().equals(org.pragmatica.serialization.json.JsonOptions.DEFAULTS) ? jsonMapper : " + configured
+               : configured;
     }
 
     private void generateImports(PrintWriter out,

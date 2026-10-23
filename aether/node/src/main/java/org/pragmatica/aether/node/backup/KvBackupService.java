@@ -379,7 +379,7 @@ public final class KvBackupService {
     /// An incarnation change skips the debounce: it is flushed at once, so the first commit of a new
     /// incarnation is the one that records it. That narrows — it does not close — the window in which
     /// an incarnation runs without any backup recording it, which is the residual a restore's floor
-    /// cannot see (`ClusterIncarnation.restoreCommands`) `[unverified]`.
+    /// cannot see (`ClusterIncarnation.restoring`) `[unverified]`.
     @Contract
     private void markChanged(Object key) {
         if (key instanceof ClusterIncarnationKey) {
