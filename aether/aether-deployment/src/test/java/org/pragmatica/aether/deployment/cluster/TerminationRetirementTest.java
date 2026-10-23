@@ -373,12 +373,16 @@ class TerminationRetirementTest {
 
     /// Refuses the first `refusals` attempts, a minute apart on the retirement's clock, then applies normally.
     private TerminationRetirement refusedFor(int refusals) {
+        return refusedFor(refusals, this::isStopping);
+    }
+
+    private TerminationRetirement refusedFor(int refusals, java.util.function.BooleanSupplier stopped) {
         refusalsLeft = refusals;
 
         return TerminationRetirement.directiveAndRecord(store,
                                                         this::refuseThenApply,
                                                         MANY_ATTEMPTS,
-                                                        this::isStopping,
+                                                        stopped,
                                                         TerminationRetirement.Overdue.overdue(OperatorWarningSink.handingOffTo(warnings::add),
                                                                                               clockNs::get,
                                                                                               TimeSpan.timeSpan(2).minutes()));
@@ -426,13 +430,56 @@ class TerminationRetirementTest {
         assertThat(store.get(RECORD)).isEqualTo(Option.some(readmitted));
     }
 
+    /// T8: a terminal end is never a refusal. The only call past the bound is the attempt that ends on the stop (the stop check itself moves
+    /// the clock past the bound), so nothing is raised. Red when a terminal cause counts as a refusal (the `isTerminal` guard dropped).
+    @Test
+    void aTerminalEndPastTheBound_raisesNothing() {
+        leaderAndBothKeys();
+
+        var outcome = refusedFor(1, this::stopAfterTheBound).retire(GONE).await();
+
+        assertThat(outcome.isFailure()).as("ended by the stop").isTrue();
+        assertThat(clockNs.get()).as("the stop check moved the clock past the bound").isGreaterThanOrEqualTo(TimeSpan.timeSpan(2).minutes().nanos());
+        await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(2)).until(warnings::isEmpty);
+    }
+
+    /// The node stops on the attempt after the refused one, and reading the signal takes the clock five minutes on.
+    private boolean stopAfterTheBound() {
+        var stop = stopChecks.incrementAndGet() > 1;
+
+        if (stop) {
+            clockNs.addAndGet(TimeSpan.timeSpan(5).minutes().nanos());
+        }
+
+        return stop;
+    }
+
+    /// One emitter: two retirements of one node on one leader (a confirmed reap and an operator --force clear) share the node's `Overdue`, so
+    /// the overdue warning is raised once and closed once. Red when each retirement raises its own.
+    @Test
+    void twoRetirementsOfOneNode_raiseOneOverdueWarning_andOneResolved() {
+        var overdue = TerminationRetirement.Overdue.overdue(OperatorWarningSink.handingOffTo(warnings::add), clockNs::get, TimeSpan.timeSpan(2).minutes());
+        var reap = overdue.watch(GONE);
+        var forcedClear = overdue.watch(GONE);
+        var refusal = TerminationRetirement.Refused.FACTORY.apply(GONE);
+
+        clockNs.addAndGet(TimeSpan.timeSpan(3).minutes().nanos());
+        reap.refused(refusal);
+        forcedClear.refused(refusal);
+        reap.ended(org.pragmatica.lang.Result.unitResult());
+        forcedClear.ended(org.pragmatica.lang.Result.unitResult());
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() >= 2);
+        assertThat(codesRaised()).containsExactly(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE, OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED);
+    }
+
     @Test
     void aRetirementRefusedWithinItsBound_raisesNothing() {
         leaderAndBothKeys();
 
         refusedFor(1).retire(GONE).await().onFailure(cause -> fail(cause.message()));
 
-        assertThat(warnings).isEmpty();
+        await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(2)).until(warnings::isEmpty);
     }
 
     @Test
