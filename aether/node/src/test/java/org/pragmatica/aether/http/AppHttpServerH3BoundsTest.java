@@ -24,7 +24,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// F6: the app HTTP/3 listener, at start and as a certificate rotation rebuilds it, applies the `[app-http]` request
+/// The app HTTP/3 listener, at start and as a certificate rotation rebuilds it, applies the `[app-http]` request
 /// bounds to a real request stream, from a real HTTP/3 client. Each bound is set to a value the server default would
 /// answer differently, so a listener built from a default config fails the assertion:
 /// - `max_request_size` 1 KiB (default 64 KiB): a 4 KiB body is answered 413, where the default dispatches it;

@@ -39,7 +39,7 @@ import org.pragmatica.net.tcp.QuicSslContextFactory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// F8(f): the HTTP/3 request handler releases its body buffer on every exit, observed from a real HTTP/3 client with no
+/// The HTTP/3 request handler releases its body buffer on every exit, observed from a real HTTP/3 client with no
 /// production seam. The handler buffers the body in an unpooled heap buffer, which the leak detector does not track
 /// and the garbage collector reclaims whether or not it was released. What `release()` changes is the unpooled
 /// allocator's heap counter: it counts a buffer's array from allocation until the buffer's last release, never at

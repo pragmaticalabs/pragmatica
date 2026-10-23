@@ -27,7 +27,7 @@ import org.pragmatica.net.tcp.QuicSslContextFactory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// F6: the server's configured body limit, read timeout and minimum body rate reach every request stream a real HTTP/3
+/// The server's configured body limit, read timeout and minimum body rate reach every request stream a real HTTP/3
 /// connection opens, through the QUIC codec's connection initializer and the connection handler's stream initializer.
 /// Each bound is set to a value the server default would answer differently, so a stream handler built from a default
 /// config fails the assertion:

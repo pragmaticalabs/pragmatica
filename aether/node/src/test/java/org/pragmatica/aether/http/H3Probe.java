@@ -49,6 +49,9 @@ public final class H3Probe {
         void write(QuicStreamChannel stream) throws Exception;
     }
 
+    /// The status of a `GET /`. The answer is read when the response ends its stream (or the stream or connection
+    /// closes), up to 10 s, not at the first HEADERS frame: a listener that sends a status and never ends the stream
+    /// makes this time out instead of answering the status.
     public static String getStatus(int port) throws Exception {
         return exchange(port, stream -> stream.writeAndFlush(requestHeaders(port, "GET"))
                                               .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT)).status();
