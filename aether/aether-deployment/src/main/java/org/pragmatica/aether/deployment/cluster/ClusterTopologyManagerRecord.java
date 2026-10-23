@@ -142,7 +142,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling,
                                     ConcurrentHashMap<NodeId, SourceName> replacementSources,
                                     AtomicLong replayRunning,
-                                    AtomicLong lastSweepMs) implements ClusterTopologyManager {
+                                    AtomicLong lastSweepMs,
+                                    AtomicReference<TerminationRetirement> reapRetirement,
+                                    AtomicReference<TerminationRetirement> forcedClearRetirement) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -297,7 +299,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicLong(NOT_RUN),
-                                                new AtomicLong(0L));
+                                                new AtomicLong(0L),
+                                                new AtomicReference<>(TerminationRetirement.NONE),
+                                                new AtomicReference<>(TerminationRetirement.NONE));
     }
 
     @Override
@@ -316,6 +320,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
         return warningSink.get();
+    }
+
+    @Override
+    public Unit setTerminationRetirements(TerminationRetirement onConfirmedReap, TerminationRetirement onForcedClear) {
+        reapRetirement.set(onConfirmedReap);
+        forcedClearRetirement.set(onForcedClear);
+
+        return unit();
     }
 
     @Override
@@ -2881,6 +2893,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               cleared.providerState(),
                                                               cleared.known(),
                                                               cleared.cause());
+        if (cleared.forced()) {
+            retireIdentity(forcedClearRetirement.get(), nodeId, "forced clear");
+        }
 
         return Promise.unitPromise();
     }
@@ -3161,6 +3176,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private void reapConfirmed(NodeId nodeId) {
+        retireIdentity(reapRetirement.get(), nodeId, "confirmed reap");
         replacementSources.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
@@ -3178,6 +3194,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                   "Termination of the instance of retired node {} is now confirmed",
                                                                   nodeId.id());
         }
+    }
+
+    /// 12 item 4b (B18, B19): the termination is confirmed, so the node's directive and departure record are retired together. FER: a refused
+    /// or failed retirement is logged and not retried here; the directive and the record stay together (never one without the other), and the
+    /// cluster FSM's R-4.3.3 still collects the record whenever the directive is removed later.
+    @Contract
+    private void retireIdentity(TerminationRetirement retirement, NodeId nodeId, String authority) {
+        retirement.retire(nodeId)
+                  .onFailure(cause -> log.warn("CTM: {} of {} left its directive and departure record in place: {}",
+                                               authority,
+                                               nodeId,
+                                               cause.message()));
     }
 
     private void reapUnconfirmed(NodeId nodeId,

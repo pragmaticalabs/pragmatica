@@ -67,6 +67,8 @@ class CommunityPlacementReconcilerTest {
     private boolean safeToRetire = true;
     private Promise<Unit> createOutcome = Promise.unitPromise();
     private Runnable beforeCommit = () -> {};
+    /// Every batch the reconciler submitted, in order.
+    private final List<List<KVCommand<AetherKey>>> committed = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final CommunityPlacementReconciler.Actuator actuator = new CommunityPlacementReconciler.Actuator() {
         @Override public org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source) {
             return unavailableSources.contains(source.value())
@@ -127,6 +129,7 @@ class CommunityPlacementReconcilerTest {
     private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout, java.util.function.LongSupplier clock) {
         return CommunityPlacementReconciler.communityPlacementReconciler(self, store,
             commands -> {
+                committed.add(commands);
                 wallClockStamps.addAll(PlacementStampAudit.wallClockStamps(commands));
                 var hook = beforeCommit;
                 beforeCommit = () -> {};
@@ -548,6 +551,74 @@ class CommunityPlacementReconcilerTest {
         reconciler.reconcile().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
         assertThat(store.get(new AetherKey.ActivationDirectiveKey(OLD)).isEmpty()).isTrue();
+    }
+
+    private static final AetherValue.NodeDepartureValue DEPARTED = new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
+                                                                                                      1L,
+                                                                                                      new AetherValue.ProcessIncarnation(1L, 7L),
+                                                                                                      Option.some(AetherValue.DepartureCause.NODE_REMOVED),
+                                                                                                      1L);
+
+    private void seedRecord(NodeId node, AetherValue.NodeDepartureValue record) {
+        var key = new AetherKey.NodeDepartureKey(node);
+
+        seed(new KVCommand.LeaderTransaction<>(key,
+                                               "record-" + record.epoch(),
+                                               new LeaderValue(CORE, 1),
+                                               List.of(),
+                                               List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(record)))));
+    }
+
+    /// Up to the step whose commit is COMPLETE, the drained OLD holding its directive, its placement and a departure record.
+    private void movedUpToTheCompletingStep() {
+        initialize();
+        seedRecord(OLD, DEPARTED);
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        replacementReady();
+        reconciler.reconcile().await().unwrap();
+        reconciler.onDrainCompleted(OLD, current().operationId()).await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.TERMINATING);
+    }
+
+    private List<Boolean> identityHeld(NodeId node) {
+        return List.of(store.get(new AetherKey.ActivationDirectiveKey(node)).isPresent(),
+                       store.get(new AetherKey.NodePlacementKey(node)).isPresent(),
+                       store.get(new AetherKey.NodeDepartureKey(node)).isPresent());
+    }
+
+    /// Phase-3 design 12 item 4b (CPR COMPLETE): the directive, the placement and the departure record leave in the COMPLETE transaction, all three.
+    @Test
+    void complete_removesTheDirectiveThePlacementAndTheDepartureRecord_together() {
+        movedUpToTheCompletingStep();
+
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(false, false, false);
+        assertThat(((KVCommand.LeaderTransaction<?, ?>) committed.getLast().getFirst()).mutations()
+                                                                          .stream()
+                                                                          .map(mutation -> (Object) mutation.key())
+                                                                          .toList()).as("the record leaves first: the cluster FSM never sees a directive removed under it")
+                                                                                    .containsSubsequence(new AetherKey.NodeDepartureKey(OLD),
+                                                                                                         new AetherKey.ActivationDirectiveKey(OLD));
+    }
+
+    /// The record moved between the read and the commit: the COMPLETE transaction is refused whole, so none of the three leaves.
+    @Test
+    void complete_whoseDepartureRecordMoved_isRefusedWhole_andAllThreeStay() {
+        movedUpToTheCompletingStep();
+        beforeCommit = () -> seedRecord(OLD, new AetherValue.NodeDepartureValue(AetherValue.DepartureState.ADMITTED,
+                                                                                2L,
+                                                                                new AetherValue.ProcessIncarnation(2L, 8L),
+                                                                                Option.none(),
+                                                                                2L));
+
+        reconciler.reconcile().await();
+
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.TERMINATING);
+        assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(true, true, true);
     }
 
     @Test

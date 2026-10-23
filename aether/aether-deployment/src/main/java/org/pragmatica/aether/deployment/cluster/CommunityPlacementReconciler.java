@@ -1237,6 +1237,10 @@ record PlacementReconciler(NodeId self,
         if (value.phase() == PlacementOperationPhase.COMPLETE) {
             value.previousNode()
                  .onPresent(node -> {
+                                // 12 item 4b: the departure record leaves in the same transaction as the directive (absent under LEGACY), and
+                                // before it, so the cluster FSM never sees a directive removed under a still-mirrored DEPARTED record.
+                                addRemoval(mutations,
+                                           new AetherKey.NodeDepartureKey(node));
                                 addRemoval(mutations,
                                            new AetherKey.ActivationDirectiveKey(node));
                                 addRemoval(mutations,

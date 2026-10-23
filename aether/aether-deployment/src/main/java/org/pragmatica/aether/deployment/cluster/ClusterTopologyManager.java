@@ -311,6 +311,13 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();
     }
 
+    /// Phase-3 design 12 item 4b, B18/B19: what a confirmed reap and an operator `--force` clear do to the node's directive and departure
+    /// record. The node binds them per deployment engine; default: nothing (LEGACY deletes the directive at `NodeRemoved`).
+    default org.pragmatica.lang.Unit setTerminationRetirements(TerminationRetirement onConfirmedReap,
+                                                               TerminationRetirement onForcedClear) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
     default org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
         return org.pragmatica.lang.Unit.unit();

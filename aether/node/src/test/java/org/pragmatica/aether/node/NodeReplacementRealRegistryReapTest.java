@@ -14,6 +14,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
 import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
@@ -547,6 +548,88 @@ class NodeReplacementRealRegistryReapTest {
 
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10))
                 .untilAsserted(() -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-confirmed:" + OLD.id())));
+    }
+
+    // ---- phase-3 design 12 item 4b: the termination authorities retire the directive and the departure record together (B18, B19) ----
+
+    private static final AetherValue.NodeDepartureValue DEPARTED = new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
+                                                                                                      1L,
+                                                                                                      new AetherValue.ProcessIncarnation(1L, 7L),
+                                                                                                      Option.some(AetherValue.DepartureCause.NODE_REMOVED),
+                                                                                                      1L);
+
+    private void identityOf(NodeId node) {
+        put(AetherKey.ActivationDirectiveKey.activationDirectiveKey(node), AetherValue.ActivationDirectiveValue.core());
+        put(new AetherKey.NodeDepartureKey(node), DEPARTED);
+    }
+
+    private boolean holds(AetherKey key) {
+        return store.get(key).isPresent();
+    }
+
+    /// B18 under the FSM2 binding. Red when: a confirmed reap leaves the directive or the departure record, or removes one without the other.
+    @Test
+    void aConfirmedReap_retiresTheDirectiveAndTheDepartureRecordTogether_underTheFsm2Binding() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        identityOf(OLD);
+        ctmUnderTest.setTerminationRetirements(TerminationRetirement.directiveAndRecord(store, this::process),
+                                               TerminationRetirement.NONE);
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        retire(OLD);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10))
+                .untilAsserted(() -> assertThat(List.of(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD)), holds(new AetherKey.NodeDepartureKey(OLD))))
+                                         .as("directive and record leave together").containsExactly(false, false));
+    }
+
+    /// B18 under the LEGACY binding (NONE): the confirmed reap leaves both, as LEGACY deletes the directive at NodeRemoved instead.
+    @Test
+    void aConfirmedReap_retiresNothing_underTheLegacyBinding() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        identityOf(OLD);
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        retire(OLD);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> assertThat(terminates.get()).isEqualTo(1));
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> assertThat(reservation(OLD).isEmpty()).as("confirmed").isTrue());
+        assertThat(List.of(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD)), holds(new AetherKey.NodeDepartureKey(OLD)))).containsExactly(true, true);
+    }
+
+    private void unconfirmedReapOf(NodeId node) {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        identityOf(node);
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        retire(node);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(20))
+                .untilAsserted(() -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + node.id())));
+    }
+
+    /// B19 under the FSM2 binding. Red when: an operator --force clear leaves the directive or the departure record, or removes one without the
+    /// other.
+    @Test
+    void aForcedClear_retiresTheDirectiveAndTheDepartureRecordTogether_underTheFsm2Binding() {
+        unconfirmedReapOf(OLD);
+        ctmUnderTest.setTerminationRetirements(TerminationRetirement.NONE,
+                                               TerminationRetirement.directiveAndRecord(store, this::process));
+
+        ctmUnderTest.clearUnconfirmed(OLD, "operator", "unknown", true).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10))
+                .untilAsserted(() -> assertThat(List.of(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD)), holds(new AetherKey.NodeDepartureKey(OLD))))
+                                         .as("directive and record leave together").containsExactly(false, false));
+    }
+
+    /// B19 under the LEGACY binding: the forced clear leaves both.
+    @Test
+    void aForcedClear_retiresNothing_underTheLegacyBinding() {
+        unconfirmedReapOf(OLD);
+
+        ctmUnderTest.clearUnconfirmed(OLD, "operator", "unknown", true).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+
+        assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-cleared:" + OLD.id()));
+        assertThat(List.of(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD)), holds(new AetherKey.NodeDepartureKey(OLD)))).containsExactly(true, true);
     }
 
     /// An EXTERNAL node (operator-started) retired through the same path makes no provider call; its reservation is returned.

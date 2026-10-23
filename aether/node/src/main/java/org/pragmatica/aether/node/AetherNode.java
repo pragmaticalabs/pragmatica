@@ -59,6 +59,7 @@ import org.pragmatica.aether.node.deployment.EffectTranslator;
 import org.pragmatica.aether.node.deployment.Fsm2System;
 import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementService;
 import org.pragmatica.aether.deployment.cluster.UpgradeRunService;
@@ -2645,6 +2646,12 @@ public interface AetherNode extends ManageableNode {
         var drainReportTarget = deploymentWiring.drainReport(clusterDeploymentManager::onNodeDraining);
         // B14 (design 4.4): under FSM2 a core's leader FSM is judged when the committed snapshot is restored; under LEGACY this adds nothing.
         clusterNode.onStateRestored(deploymentWiring.stateRestored());
+        // B18, B19 (design 12 item 4b): under FSM2 the CTM's confirmed reap and the operator --force clear retire the node's directive and
+        // departure record in one transaction; under LEGACY they retire nothing.
+        var retirement = TerminationRetirement.directiveAndRecord(kvStore, clusterCommandApplier);
+
+        clusterTopologyManager.setTerminationRetirements(deploymentWiring.reaperRetirement(retirement),
+                                                         deploymentWiring.forceClearRetirement(retirement));
         var appHttpServerOut = SliceRuntimeAssembly.appHttpServer(new SliceRuntimeAssembly.AppHttpServerInputs(config,
                                                                                                                clusterNode,
                                                                                                                serializer,

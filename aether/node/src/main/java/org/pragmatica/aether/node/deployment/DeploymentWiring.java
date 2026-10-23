@@ -23,6 +23,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -365,6 +366,23 @@ public final class DeploymentWiring {
                      : "off");
 
         return isFsm2();
+    }
+
+    /// B18 (Q1b, 12 item 4b): what the CTM's confirmed reap retires. Under FSM2 the node's directive and departure record, in one transaction;
+    /// under LEGACY nothing (the legacy cluster FSM deletes the directive at `NodeRemoved`, and a second delete would race it).
+    public TerminationRetirement reaperRetirement(TerminationRetirement retirement) {
+        return gatedRetirement("B18.CtmReaperDirectiveDelete", retirement);
+    }
+
+    /// B19 (C3, 12 item 4b): what the operator `--force` clear retires, gated like [#reaperRetirement].
+    public TerminationRetirement forceClearRetirement(TerminationRetirement retirement) {
+        return gatedRetirement("B19.ForceClearDirectiveDelete", retirement);
+    }
+
+    private TerminationRetirement gatedRetirement(String point, TerminationRetirement retirement) {
+        return isFsm2()
+               ? recorded(point, "on", retirement)
+               : recorded(point, "off", TerminationRetirement.NONE);
     }
 
     /// B20: the engine marker guard's own triggers: the three keys it reads, and the leader edge. Bound under both engines.
