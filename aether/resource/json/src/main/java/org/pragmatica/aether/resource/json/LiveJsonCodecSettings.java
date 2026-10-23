@@ -25,10 +25,10 @@ import org.slf4j.LoggerFactory;
 /// samples it once per request decodes and encodes that request under one selection, the old one or the new one,
 /// never a mix. Nodes switch independently: each applies its own copy of the committed configuration.
 ///
-/// **One writer, by mechanism.** [#refresh] is `synchronized`; the node calls it from its single config-notification
-/// thread, and the lock makes that a property of this class rather than of its caller. Each refresh binds the whole
-/// section as it stands, so a run of KV writes that passes through invalid states (`default` written before its
-/// codec) converges on the last valid one.
+/// **Refreshes are serialized.** [#refresh] is `synchronized`, and the node calls it from its single
+/// config-notification thread; no test exercises concurrent refreshes, so the lock's effect under contention rests on
+/// reading, not on a test. Each refresh binds the whole section as it stands, so a run of KV writes that passes
+/// through invalid states (`default` written before its codec) converges on the last valid one.
 ///
 /// **An invalid configuration keeps the previous selection** (owner ruling, #2378): it is reported through
 /// [OperatorWarnings#raise] with [OperatorWarningCode#JSON_CONFIG_REJECTED] (ERROR log, operator warning and cluster

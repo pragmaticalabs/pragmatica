@@ -234,8 +234,9 @@ Jackson to these limits rather than the other way round. A service reading untru
 number costs quadratic time in `BigDecimal`. A `maxDepth` above 1000 gives up part of the stack-safety guarantee of
 [Strictness](#strictness), since generated readers recurse once per container.
 
-The keys follow `JsonConfig` of the Aether HTTP client (`naming`, `null_inclusion`, `fail_on_unknown`): `INCLUDE` and
-`EXCLUDE` are its constant names. Its `NON_EMPTY` also drops empty strings and collections, which the generated codecs
+The configuration keys follow `JsonConfig` of the Aether HTTP client where the meaning is the same (`null_inclusion`,
+`fail_on_unknown`): `INCLUDE` and `EXCLUDE` are its constant names. Naming is not one of them: it is fixed at build time
+(see [Names](#names)). Its `NON_EMPTY` also drops empty strings and collections, which the generated codecs
 never do, so it has no counterpart.
 
 Options cost nothing on the fast path. `nullInclusion` is consulted only when a component is empty; `failOnUnknown`

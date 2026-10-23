@@ -1427,6 +1427,10 @@ the deploy-time options applied to it. The generated factory provisions it for e
 `@ResourceQualifier` to write. A slice without `[json]` keys gets the generated codecs under default options, which
 is exactly the behaviour before the section existed.
 
+**`json` is a reserved section name for routed slices.** A slice with HTTP routes must not use a section named `json`
+for a resource of its own: its keys are read as JSON codec settings, refused as unknown, and the slice fails at
+activation (the deploy pre-flight does not catch it, because the section is implicit). Rename such a section.
+
 ### Configuration
 
 ```toml

@@ -29,6 +29,13 @@ public interface SliceRouterFactory<T> {
 
     SliceRouter create(T slice);
 
+    /// Create a slice router with `jsonMapper` as the Jackson fallback for the types the slice's generated JSON codecs
+    /// do not cover.
+    ///
+    /// A generated factory uses `jsonMapper` only while the slice's JSON naming is `as_declared` and its selected JSON
+    /// options are the defaults (#2378). Under a build-time `[json] naming`, or non-default `[json]` options, it
+    /// replaces `jsonMapper` with `JsonMapper.valueObjectJsonMapper(naming, options)`, because a mapper's read limits
+    /// cannot be changed on an existing instance; customisations of the passed mapper are then not applied.
     SliceRouter create(T slice, JsonMapper jsonMapper);
 
     /// Create a slice router that mounts this slice's routes in the given #198 detection mode.
@@ -37,7 +44,8 @@ public interface SliceRouterFactory<T> {
     /// default delegates to [#create(Object, JsonMapper)] so existing factories stay path-mode.
     ///
     /// @param slice      the slice instance to route to
-    /// @param jsonMapper the JSON mapper for body binding and serialization
+    /// @param jsonMapper the Jackson fallback for body binding and serialization, under the conditions of
+    ///                   [#create(Object, JsonMapper)]
     /// @param mountMode  the deploy-time API-version detection mode
     /// @return a slice router mounting routes per the mode
     default SliceRouter create(T slice, JsonMapper jsonMapper, RouteMountMode mountMode) {
