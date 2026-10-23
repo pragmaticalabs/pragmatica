@@ -11,7 +11,6 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
-import java.util.function.ToLongFunction;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -21,7 +20,6 @@ import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
-import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -63,13 +61,15 @@ public final class DeploymentWiring {
     private static final String LEGACY_TARGET = "legacy";
     private static final String DROPPED_TARGET = "dropped";
 
-    /// What the wiring reads from the node: its identity, the store's thread-scoped stamp accessors and the boot-token registry.
-    public record Node(NodeId self, LongSupplier revision, BooleanSupplier replaying, ToLongFunction<NodeId> tokenOf) {}
+    /// What the wiring reads from the node: its identity, the store's thread-scoped stamp accessors and the admission seam (the one reader
+    /// of tokens and incarnations, delta 7).
+    public record Node(NodeId self, LongSupplier revision, BooleanSupplier replaying, AdmissionSeam admissions) {}
 
     private final DeploymentEngine engine;
     private final boolean worker;
     private final MeterRegistry registry;
     private final EngineMarkerGuard guard;
+    private final AdmissionSeam admissions;
     private final Fsm2Routes routes;
     private final Map<String, String> bindings = new ConcurrentSkipListMap<>();
     private volatile Option<Fsm2System> system = Option.none();
@@ -83,6 +83,7 @@ public final class DeploymentWiring {
         this.worker = worker;
         this.registry = registry;
         this.guard = guard;
+        this.admissions = node.admissions();
         bindings.put("B13.Stop", engineTarget("fsm2:Fsm2System.deactivateCluster"));
         bindings.put("B13.StopDrain", engineTarget("fsm2:Fsm2System.drainNode"));
         bindings.put("B16.Seams", engineTarget("fsm2:SeamPoller"));
@@ -90,7 +91,7 @@ public final class DeploymentWiring {
         this.routes = Fsm2Routes.fsm2Routes(new Fsm2Routes.Targets(node.self(),
                                                                    node.revision(),
                                                                    node.replaying(),
-                                                                   node.tokenOf(),
+                                                                   node.admissions()::tokenOf,
                                                                    this::deliverToNode,
                                                                    this::deliverToCluster));
     }
@@ -100,7 +101,7 @@ public final class DeploymentWiring {
     public static DeploymentWiring deploymentWiring(AetherNodeConfig config,
                                                     boolean worker,
                                                     KVStore<AetherKey, AetherValue> store,
-                                                    BootTokens bootTokens,
+                                                    AdmissionSeam admissions,
                                                     MeterRegistry registry,
                                                     OperatorWarningSink warnings,
                                                     Runnable exit) {
@@ -119,10 +120,7 @@ public final class DeploymentWiring {
                                 worker,
                                 registry,
                                 guard,
-                                new Node(config.self(),
-                                         store::notificationRevision,
-                                         store::isReplaying,
-                                         bootTokens::tokenOf));
+                                new Node(config.self(), store::notificationRevision, store::isReplaying, admissions));
     }
 
     /// The routes resolve the interpreters when an input arrives, not when the routes are built: the system is assembled after the route table
@@ -175,6 +173,11 @@ public final class DeploymentWiring {
 
     public EngineMarkerGuard guard() {
         return guard;
+    }
+
+    /// The admission seam the routes, the seam poller and the FSM2 system read tokens and incarnations through (delta 7).
+    public AdmissionSeam admissions() {
+        return admissions;
     }
 
     // -- the FSM2 engine -------------------------------------------------------------------------------------------

@@ -40,7 +40,6 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
-import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.TerminalOperation;
@@ -78,7 +77,6 @@ public final class Fsm2System {
                                 TimeSpan splitTimeout,
                                 KVStore<AetherKey, AetherValue> store,
                                 Supplier<ClusterNode<KVCommand<AetherKey>>> cluster,
-                                BootTokens bootTokens,
                                 SliceRuntimeAdapter.Collaborators adapter,
                                 Supplier<Set<Artifact>> loaded,
                                 Runnable selfReady,
@@ -208,7 +206,7 @@ public final class Fsm2System {
                                                                                       submitter,
                                                                                       snapshotter,
                                                                                       c.loaded(),
-                                                                                      c.bootTokens()::tokenOf,
+                                                                                      c.admissions()::tokenOf,
                                                                                       localOps,
                                                                                       c.clock(),
                                                                                       translator.nodeSink(),

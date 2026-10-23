@@ -133,7 +133,7 @@ final class Fsm2Harness implements AutoCloseable {
             this.wiring = DeploymentWiring.deploymentWiring(configFor(engine),
                                                             worker,
                                                             store,
-                                                            bootTokens,
+                                                            AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L),
                                                             registry,
                                                             OperatorWarningSink.handingOffTo(warnings::add),
                                                             () -> exits.add("exit"));
@@ -144,7 +144,7 @@ final class Fsm2Harness implements AutoCloseable {
                                                             worker,
                                                             registry,
                                                             guard,
-                                                            new DeploymentWiring.Node(SELF, store::notificationRevision, store::isReplaying, bootTokens::tokenOf));
+                                                            new DeploymentWiring.Node(SELF, store::notificationRevision, store::isReplaying, AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L)));
         }
     }
 
@@ -256,7 +256,6 @@ final class Fsm2Harness implements AutoCloseable {
                                             TimeSpan.timeSpan(15).seconds(),
                                             store,
                                             () -> cluster,
-                                            bootTokens,
                                             new SliceRuntimeAdapter.Collaborators(SELF, failingStore(), null, null, Option.none(), Option.none(), null, store, () -> cluster, System::currentTimeMillis, () -> OperatorWarningSink.logOnly()),
                                             Set::of,
                                             this::selfReadied,

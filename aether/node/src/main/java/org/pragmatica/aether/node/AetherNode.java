@@ -25,6 +25,7 @@ import java.util.function.LongSupplier;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.function.ToLongFunction;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -2488,10 +2489,15 @@ public interface AetherNode extends ManageableNode {
         // transport), read by the FSM2 routes at delivery; the engine marker guard; and the one place every engine-dependent hook is bound.
         var bootTokens = BootTokens.bootTokens(bootToken);
         var deploymentMeters = new CompositeMeterRegistry();
+        // Delta 7: ONE admission seam, the deployment engine's only reader of the boot-token registry and of membership's incarnations.
+        // Membership is assembled later, so its incarnations are bound through the holder; nothing reads them before it is set
+        // (`AdmissionSeam.unboundReads` stays 0, DeploymentWiringBootTest).
+        var admissionSeam = AdmissionSeam.boundLate(bootTokens::tokenOf,
+                                                    () -> Option.option(membershipFsmRef.get()).map(AetherNode::incarnationsOf));
         var deploymentWiring = DeploymentWiring.deploymentWiring(config,
                                                                  configuredWorker(config),
                                                                  kvStore,
-                                                                 bootTokens,
+                                                                 admissionSeam,
                                                                  deploymentMeters,
                                                                  operatorWarningSink,
                                                                  identityRefusedExit);
@@ -3345,7 +3351,6 @@ public interface AetherNode extends ManageableNode {
                                                                                        membershipConfig.splitTimeout(),
                                                                                        kvStore,
                                                                                        () -> switchableCluster,
-                                                                                       bootTokens,
                                                                                        new SliceRuntimeAdapter.Collaborators(config.self(),
                                                                                                                              sliceStore,
                                                                                                                              invocationHandler,
@@ -3377,11 +3382,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                               Map::of,
                                                                                                               () -> membershipFsm.memberDescriptors()
                                                                                                                                  .keySet(),
-                                                                                                              bootTokens::tokenOf),
-                                                                                       AdmissionSeam.admissionSeam(bootTokens::tokenOf,
-                                                                                                                   peer -> membershipFsm.memberIncarnations()
-                                                                                                                                        .getOrDefault(peer,
-                                                                                                                                                      0L)),
+                                                                                                              admissionSeam::tokenOf),
+                                                                                       admissionSeam,
                                                                                        deploymentWiring.guard(),
                                                                                        FsmTimers.sharedScheduler())));
         }
@@ -4407,6 +4409,12 @@ public interface AetherNode extends ManageableNode {
                               AetherValue.ActivationDirectiveValue.class)
                     .flatMap(directive -> store.getTyped(new AetherKey.CommunityPlacementOperationKey(directive.communityId()),
                                                          AetherValue.CommunityPlacementOperationValue.class));
+    }
+
+    /// Membership's SWIM incarnation high-water per node, the admission seam's incarnation source (delta 7).
+    private static ToLongFunction<NodeId> incarnationsOf(MembershipFsm membershipFsm) {
+        return peer -> membershipFsm.memberIncarnations()
+                                    .getOrDefault(peer, 0L);
     }
 
     /// The membership `source` label per tracked node, for the FSM2 seams (B-070, worker community choice).
