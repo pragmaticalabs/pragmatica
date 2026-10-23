@@ -415,15 +415,13 @@ class JoinedEvidenceTest {
     }
 
     // -- NT-133: a same-leader graceful leave is never re-admitted on a stale announcement ------------------------------------
-    private MbWorld leaderOfAWorkerThatLeaves(boolean selfShutdown) {
+    private MbWorld leaderOfAWorkerThatLeaves() {
         var w = communityOfW1(COMMUNITY).activate();
 
         w.announce(C, GOV, W1, M1, M2, M3, M4);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(COMMUNITY)));
         w.h.clearLog();
-        w.h.deliver(selfShutdown
-                    ? new ClusterInput.SelfShutdown(W1)
-                    : new ClusterInput.WorkerLeave(W1));
+        w.h.deliver(new ClusterInput.WorkerLeave(W1));
 
         return w;
     }
@@ -437,7 +435,7 @@ class JoinedEvidenceTest {
     // Red when: L writes any ADMITTED record for w, counts w, places onto w, or raises worker-readmitted-on-evidence, before a WorkerJoin(w) arrives.
     @Test
     void nt133a_gracefulLeave_isNotReadmittedByAStaleAnnouncement() {
-        var w = leaderOfAWorkerThatLeaves(false);
+        var w = leaderOfAWorkerThatLeaves();
 
         assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.DEPARTED));
         staleAnnouncement(w);
@@ -449,23 +447,9 @@ class JoinedEvidenceTest {
         assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.DEPARTED));
     }
 
-    // (b) The same for SELF_SHUTDOWN.
-    @Test
-    void nt133b_selfShutdown_isNotReadmittedByAStaleAnnouncement() {
-        var w = leaderOfAWorkerThatLeaves(true);
-
-        staleAnnouncement(w);
-
-        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
-        assertThat(w.counts(W1)).isFalse();
-        assertThat(w.h.warns("worker-readmitted-on-evidence")).isEmpty();
-    }
-
-    // (c) Control.
-    // Red when: a WorkerJoin(w) of the same process does not take J3: ADMITTED(e + 1) expecting DEPARTED(e).
     @Test
     void nt133c_aWorkerJoin_readmitsTheWorker() {
-        var w = leaderOfAWorkerThatLeaves(false);
+        var w = leaderOfAWorkerThatLeaves();
 
         staleAnnouncement(w);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admissionOf(W1)));
@@ -479,7 +463,7 @@ class JoinedEvidenceTest {
     // Red when: any of ten consecutive stale announcements listing w re-admits it (the cycle repeats).
     @Test
     void nt133d_tenStaleAnnouncements_neverReadmit() {
-        var w = leaderOfAWorkerThatLeaves(false);
+        var w = leaderOfAWorkerThatLeaves();
 
         for (var i = 0; i < 10; i++) {
             staleAnnouncement(w);

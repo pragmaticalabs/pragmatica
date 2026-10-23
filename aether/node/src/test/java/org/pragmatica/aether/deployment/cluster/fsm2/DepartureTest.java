@@ -69,11 +69,11 @@ class DepartureTest {
     // Red when: C17 is not ONE transaction carrying the fenced DEPARTED Put (expected = the observed record), the desired
     // removes and the route removes; or it contains an observed removal or a directive mutation.
     @Test
-    void selfShutdown_isOneFencedTransaction_withoutObservedOrDirectiveMutations() {
+    void departure_isOneFencedTransaction_withoutObservedOrDirectiveMutations() {
         var w = world().activate();
 
         w.h.clearLog();
-        w.h.deliver(new ClusterInput.SelfShutdown(CORE_2));
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         var departures = w.h.submits(SubmitKind.DEPARTURE);
 
         assertThat(departures).hasSize(1);
@@ -82,7 +82,7 @@ class DepartureTest {
         assertThat(mutations.getFirst().key()).isEqualTo(new NodeDepartureKey(CORE_2));
         assertThat(mutations.getFirst().expected().isEmpty()).as("expects the observed record: absent").isTrue();
         assertThat(mutations.getFirst().replacement().map(v -> ((NodeDepartureValue) v).state())).isEqualTo(Option.some(DepartureState.DEPARTED));
-        assertThat(mutations.getFirst().replacement().map(v -> ((NodeDepartureValue) v).cause())).isEqualTo(Option.some(Option.some(DepartureCause.SELF_SHUTDOWN)));
+        assertThat(mutations.getFirst().replacement().map(v -> ((NodeDepartureValue) v).cause())).isEqualTo(Option.some(Option.some(DepartureCause.NODE_REMOVED)));
         assertThat(mutations).extracting(m -> m.key())
                   .contains(new SliceDesiredKey(CORE_2, ORDERS),
                             new NodeRoutesKey(CORE_2, ORDERS));

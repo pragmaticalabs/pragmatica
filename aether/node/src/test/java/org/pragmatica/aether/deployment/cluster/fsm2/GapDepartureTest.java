@@ -61,7 +61,6 @@ class GapDepartureTest {
         w.h.clearLog();
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
-        w.h.deliver(new ClusterInput.SelfShutdown(CORE_2));
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).hasSize(1);
     }
 

@@ -152,4 +152,14 @@ class ArchitectureTest {
         assertThat(violations(planted)).anyMatch(v -> v.startsWith("Planted.java: constructs a bare Put"))
                   .anyMatch(v -> v.startsWith("Planted2.java: desiredKey()"));
     }
+
+    /// Cluster-assessment delta 6 (`TransportObservation.SelfShutdown` is never emitted; CTO ruling 9f854db8b, parity with LEGACY: the
+    /// leader acts on `NodeRemoved`). Red when: a cluster FSM source consumes a self-shutdown input again.
+    @Test
+    void theClusterFsm_consumesNoSelfShutdownInput() throws IOException {
+        var real = sources();
+
+        assertThat(real).as("the scan sees the package").containsKeys("ClusterInput.java", "Handlers.java");
+        assertThat(real).allSatisfy((name, text) -> assertThat(text).as(name).doesNotContain("SelfShutdown"));
+    }
 }

@@ -51,9 +51,6 @@ public sealed interface ClusterInput {
     /// CI-9: a worker left (`WorkerLeaveDecision`).
     record WorkerLeave(NodeId node) implements ClusterInput {}
 
-    /// CI-9: a node reported its own shutdown (`TransportObservation.SelfShutdown`).
-    record SelfShutdown(NodeId node) implements ClusterInput {}
-
     /// CI-15b: the seam reports a token for `node` that it reported as unknown before.
     record ProcessKnown(NodeId node, long token) implements ClusterInput {}
 

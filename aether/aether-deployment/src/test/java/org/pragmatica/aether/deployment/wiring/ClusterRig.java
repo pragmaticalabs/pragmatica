@@ -207,10 +207,11 @@ final class ClusterRig implements AutoCloseable {
 
     ClusterRig settle() {
         var mark = barrier.incrementAndGet();
-        var before = countOf("SelfShutdown");
+        var before = countOf("ProcessKnown");
 
-        interpreter.deliver(new ClusterInput.SelfShutdown(NodeId.nodeId("barrier-" + mark).unwrap()));
-        await().atMost(Duration.ofSeconds(10)).until(() -> countOf("SelfShutdown") > before);
+        // An inert input: an unknown node's token 0 is what the admission already holds for it, so it changes no row and no clock.
+        interpreter.deliver(new ClusterInput.ProcessKnown(NodeId.nodeId("barrier-" + mark).unwrap(), 0L));
+        await().atMost(Duration.ofSeconds(10)).until(() -> countOf("ProcessKnown") > before);
 
         return this;
     }

@@ -31,5 +31,5 @@ cluster Flush              # end of drain: the intents become transactions
 # node: TimerFired (a clean deploy cancels every write timer before it fires; the probe/confirm firing is T's fault-injected arm and the WriteProbe unit tests),
 #       QuorumDisappeared (no quorum loss), RoutingPut/RoutingRemove/TargetRemove (no rolling update, no undeploy),
 #       DesiredRemove, ObservedRemove (no removal), ConfigChanged (no config section registered), ReconcileActivation (only while Dormant)
-# cluster: Deactivate (until stop), WorkerJoin, WorkerLeave (cores only), NodeRemoved, SelfShutdown, NodeDraining, ProcessKnown (tokens known at first sample),
+# cluster: Deactivate (until stop), WorkerJoin, WorkerLeave (cores only), NodeRemoved, NodeDraining, ProcessKnown (tokens known at first sample),
 #          WitnessStale (no leader change mid-write), KvRemove
