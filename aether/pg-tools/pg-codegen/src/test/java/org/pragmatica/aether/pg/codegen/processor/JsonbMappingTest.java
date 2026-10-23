@@ -339,7 +339,8 @@ class JsonbMappingTest {
         void crudConditionParamOnJsonColumn_isDocument() throws Exception {
             var generated = factory(compile(INFERRED_REPO, "test/InferredRepo.java"), "test.InferredRepoFactory");
 
-            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, profile)");
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, profile)")
+                                 .contains("title, org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, legacy)");
         }
 
         @Test
@@ -1218,6 +1219,9 @@ class JsonbMappingTest {
 
             @Table(DocumentRow.class)
             Promise<List<DocumentRow>> findByProfile(Profile profile);
+
+            @Table(DocumentRow.class)
+            Promise<List<DocumentRow>> findByTitleAndLegacy(String title, Profile legacy);
 
             @Query("SELECT count(*) FROM documents WHERE profile = :probe")
             Promise<Long> countEqual(Probe probe);
