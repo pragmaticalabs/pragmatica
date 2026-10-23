@@ -241,6 +241,7 @@ An `Option<T>` record component reads a nullable column: SQL `NULL` is `Option.n
 with a `ValueMapping`, or a `@Jsonb` document.
 
 ```java
+// Assumes a nullable column: ALTER TABLE users ADD COLUMN nickname TEXT;
 record UserRow(long id, String name, Option<String> nickname) {}
 
 @Query("UPDATE users SET nickname = :nickname WHERE id = :id")
@@ -255,15 +256,26 @@ Mark a value stored as a JSON document with `@Jsonb` (from `org.pragmatica.aethe
 generated factory encodes and decodes it with a generated JSON codec: the same compile-time codec generator the slice
 router uses for HTTP bodies. There is no reflection and no Jackson.
 
+```sql
+-- The table the example below reads and writes
+CREATE TABLE user_docs (
+    id BIGINT PRIMARY KEY,
+    profile JSONB NOT NULL,
+    previous JSONB
+);
+```
+
 ```java
 record Address(String city, String zip) {}
 record Profile(String name, Option<String> nickname, List<Address> addresses) {}
+record ProfileProbe(String name) {}
 
 // A row record: each marked component is one json/jsonb column.
 record UserDocRow(long id, @Jsonb Profile profile, @Jsonb Option<Profile> previous) {}
 
 @PgSql
 public interface UserDocs {
+    @Table(UserDocRow.class)
     Promise<Unit> insert(UserDocRow row);                     // CRUD: marked components are encoded
     Promise<Option<UserDocRow>> findById(long id);           // CRUD: marked components are decoded
 
@@ -281,7 +293,7 @@ public interface UserDocs {
 | Where | Meaning |
 |---|---|
 | Record component | That column of a row record, read and written. `Option<T>`: `NULL` reads as empty and empty writes `NULL` |
-| Method | The single result column (`Promise<T>`, `Promise<Option<T>>`, `Promise<List<T>>`); needs `@Query` |
+| Method | The single result column (`Promise<T>`, `Promise<Option<T>>`, `Promise<List<T>>`); needs `@Query`. `Option` means zero or one row: a missing row is empty, but a row whose column is `NULL` fails the read. Read a nullable document through a row record with an `Option<T>` component instead |
 | Parameter | The argument is bound as the document instead of being expanded into its components |
 
 - **Types.** A marked type must be a record or enum the codec generator supports. Anything else is a compile error that
@@ -290,16 +302,20 @@ public interface UserDocs {
 - **Schema check.** Where the column's type is known (CRUD methods, `WHERE column = :param` pairs), a `@Jsonb` target
   must map to a `json` or `jsonb` column. Otherwise the build fails.
 - **Binding.** A document is bound as `JsonText`, text with no declared type, so one value binds to `json` and `jsonb`
-  columns and works as a `jsonb` operator operand (`@>`). A `String` parameter is declared `varchar`, which a `jsonb`
-  column and its operators refuse. Bind such a value as `JsonText.jsonText(text)`, or cast it in SQL
+  columns and works as a `jsonb` operator operand (`@>`). A `String` parameter is declared `varchar`. A `jsonb`
+  column or operator refuses it when the statement is prepared fresh, but the driver caches prepared statements by SQL
+  text, so a `String` bind that reuses a statement prepared earlier on the connection with an untyped parameter is
+  accepted. Neither outcome can be relied on: bind such a value as `JsonText.jsonText(text)`, or cast it in SQL
   (`CAST(:doc AS jsonb)`).
 - **Unmarked columns.** An unmarked `String` component still reads a `json`/`jsonb` column as its raw text.
 - **Fixed codec settings.** Stored documents use the codec's fixed defaults (component names as written, empty `Option`
   written as `null`). Deploy-time JSON settings for HTTP routes never apply to them, because a stored document is a
   durable contract.
 - **Evolving stored documents.** Add new components as `Option<T>` only. A document written before the component
-  existed decodes with it empty. A new required component makes every older row unreadable, and so does renaming or
-  removing a component. Unknown fields are skipped, so older code reads documents written by newer code.
+  existed decodes with it empty. A new required component makes every older row unreadable. Renaming a component drops
+  the value stored under the old name (or makes older rows unreadable if the new name is required). Removing a
+  component is safe: the old field becomes an unknown field, and unknown fields are skipped, which is also why older
+  code reads documents written by newer code.
 - **Decode failures.** A document the codec refuses fails the row read. The failure names the column.
 - jOOQ (`db-jooq-async`) has no `@Jsonb` mapping yet.
 

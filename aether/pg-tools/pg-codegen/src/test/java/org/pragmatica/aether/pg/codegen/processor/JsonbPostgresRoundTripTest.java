@@ -31,9 +31,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /// connector: a record with a nested record, an `Option` field (present and empty) and a list round-trips through a
 /// `jsonb` column and a `json` column of the same row; an empty `Option<T>` component is stored as SQL NULL and read
 /// back as empty; a `@Jsonb` param drives a containment query; a corrupt stored document fails the row, naming the
-/// column. It also pins the binding premise: a `String` parameter is declared `varchar`, which the server accepts for
-/// assignment to a `jsonb` column but not as a `jsonb` operator's operand, while `JsonText` (type unspecified) works for
-/// both. Self-skips when no Docker daemon is reachable.
+/// column. It also pins the binding premise: a `String` parameter is declared `varchar`, which a `jsonb` column refuses
+/// for assignment and a `jsonb` operator refuses as an operand on a freshly prepared statement, while `JsonText` (type
+/// unspecified) works for both; and `JsonText` is untyped rather than `jsonb`-typed, which only a `json`-only function
+/// can show, since `json` and `jsonb` have assignment casts both ways. Self-skips when no Docker daemon is reachable.
 class JsonbPostgresRoundTripTest {
     private static final String DDL = """
         CREATE TABLE documents (

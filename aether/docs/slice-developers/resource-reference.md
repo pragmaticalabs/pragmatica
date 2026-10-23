@@ -487,7 +487,9 @@ PostgreSQL is the document store for slices: keep a document in a `jsonb` column
 - **Hand-written queries on the async transport (`async_url`):** bind a document as `JsonText`
   (`org.pragmatica.aether.resource.db.JsonText`) and read it with `row.getObject(column, JsonText.class)`. `JsonText`
   is sent as text with no declared type, so it fits `json` and `jsonb` columns and `jsonb` operators such as `@>`. A
-  `String` parameter is declared `varchar`, which `jsonb` refuses.
+  `String` parameter is declared `varchar`: `jsonb` refuses it on a freshly prepared statement, but accepts it when the
+  connection reuses a statement already prepared for the same SQL with an untyped parameter. Do not rely on either
+  outcome.
 - **Nullable columns:** `row.getOptional(column, type)` reads SQL `NULL` as `Option.none()`. The async transport and the
   slice test kit's fake connector implement it. Other row accessors refuse it rather than guess.
 - **Index for containment:** `CREATE INDEX ... USING gin (column jsonb_path_ops)` serves `@>` queries.

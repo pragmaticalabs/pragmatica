@@ -14,7 +14,8 @@ import java.lang.annotation.Target;
 /// supports, otherwise compilation fails with the generator's reason.
 ///
 /// - On a method: the method's single result column is the document (`Promise<T>`, `Promise<Option<T>>` or
-///   `Promise<List<T>>`).
+///   `Promise<List<T>>`). `Option` means zero or one row: a missing row is empty, but a row whose column is SQL NULL
+///   fails the read. A nullable document is read through an `Option<T>` record component.
 /// - On a method parameter: the argument is bound as the document.
 /// - On a record component: that column of a row record (read or written) is the document. An `Option<T>`
 ///   component reads SQL NULL as empty and writes empty as NULL.
