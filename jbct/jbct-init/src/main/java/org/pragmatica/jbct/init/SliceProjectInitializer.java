@@ -7,9 +7,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -24,6 +26,8 @@ public final class SliceProjectInitializer {
     private static final String DEFAULT_JBCT_VERSION = GitHubVersionResolver.defaultJbctVersion();
     private static final String DEFAULT_PRAGMATICA_VERSION = GitHubVersionResolver.defaultPragmaticaVersion();
     private static final String DEFAULT_AETHER_VERSION = GitHubVersionResolver.defaultAetherVersion();
+    private static final Cause ARTIFACT_ID_MISSING = Causes.cause("artifactId must not be null or empty");
+    private static final Cause GROUP_ID_MISSING = Causes.cause("groupId must not be null or empty");
 
     private final Path projectDir;
     private final String groupId;
@@ -86,32 +90,19 @@ public final class SliceProjectInitializer {
     }
 
     /// Create initializer with explicit slice name and version resolver.
+    /// The resolver is consulted only once the coordinates are valid.
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId,
                                                                           String sliceName,
                                                                           GitHubVersionResolver resolver) {
-        if (artifactId == null || artifactId.isBlank()) {
-            return Causes.cause("artifactId must not be null or empty").result();
-        }
-
-        if (groupId == null || groupId.isBlank()) {
-            return Causes.cause("groupId must not be null or empty").result();
-        }
-
-        var basePackage = groupId + "." + artifactId.replace("-", "");
-        var effectiveName = (sliceName != null && !sliceName.isBlank())
-                            ? sliceName
-                            : ProjectFiles.toCamelCase(artifactId);
-
-        return Result.success(new SliceProjectInitializer(projectDir,
-                                                          groupId,
-                                                          artifactId,
-                                                          basePackage,
-                                                          effectiveName,
-                                                          resolver.jbctVersion(),
-                                                          resolver.pragmaticaLiteVersion(),
-                                                          resolver.aetherVersion()));
+        return validateCoordinates(groupId, artifactId).flatMap(_ -> sliceProjectInitializer(projectDir,
+                                                                                             groupId,
+                                                                                             artifactId,
+                                                                                             sliceName,
+                                                                                             resolver.jbctVersion(),
+                                                                                             resolver.pragmaticaLiteVersion(),
+                                                                                             resolver.aetherVersion()));
     }
 
     /// Create initializer with explicit versions (no GitHub resolution).
@@ -122,27 +113,33 @@ public final class SliceProjectInitializer {
                                                                           String jbctVersion,
                                                                           String pragmaticaVersion,
                                                                           String aetherVersion) {
-        if (artifactId == null || artifactId.isBlank()) {
-            return Causes.cause("artifactId must not be null or empty").result();
-        }
+        return validateCoordinates(groupId, artifactId).map(_ -> new SliceProjectInitializer(projectDir,
+                                                                                             groupId,
+                                                                                             artifactId,
+                                                                                             basePackage(groupId,
+                                                                                                         artifactId),
+                                                                                             effectiveSliceName(sliceName,
+                                                                                                                artifactId),
+                                                                                             jbctVersion,
+                                                                                             pragmaticaVersion,
+                                                                                             aetherVersion));
+    }
 
-        if (groupId == null || groupId.isBlank()) {
-            return Causes.cause("groupId must not be null or empty").result();
-        }
+    private static Result<Unit> validateCoordinates(String groupId, String artifactId) {
+        return Verify.ensure(artifactId, Verify.Is::present, ARTIFACT_ID_MISSING)
+                     .flatMap(_ -> Verify.ensure(groupId, Verify.Is::present, GROUP_ID_MISSING))
+                     .mapToUnit();
+    }
 
-        var basePackage = groupId + "." + artifactId.replace("-", "");
-        var effectiveName = (sliceName != null && !sliceName.isBlank())
-                            ? sliceName
-                            : ProjectFiles.toCamelCase(artifactId);
+    private static String basePackage(String groupId, String artifactId) {
+        return groupId + "." + artifactId.replace("-", "");
+    }
 
-        return Result.success(new SliceProjectInitializer(projectDir,
-                                                          groupId,
-                                                          artifactId,
-                                                          basePackage,
-                                                          effectiveName,
-                                                          jbctVersion,
-                                                          pragmaticaVersion,
-                                                          aetherVersion));
+    /// The explicit slice name when one is given, otherwise derived from the artifact ID.
+    private static String effectiveSliceName(String sliceName, String artifactId) {
+        return Option.option(sliceName)
+                     .filter(Verify.Is::notBlank)
+                     .or(() -> ProjectFiles.toCamelCase(artifactId));
     }
 
     /// Initialize the slice project structure.
@@ -832,7 +829,7 @@ public final class SliceProjectInitializer {
         [cluster]
         nodes = 5
         management_port = 5150
-        dashboard_port = 8888
+        forge_port = 8888
         app_http_port = 8070
 
         [observability]

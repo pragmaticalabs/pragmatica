@@ -98,8 +98,8 @@ class ConnectivityWiringTest {
                                               .containsOnly(ClusterIncarnationValue.GENESIS);
     }
 
-    /// Every commit that changes the incarnation reaches the reports: genesis, a restore (Remove + Put in one
-    /// batch), and `declare-genesis` (two leader transactions).
+    /// Every commit that changes the incarnation reaches the reports: genesis, a restore and `declare-genesis` (both
+    /// the replace write: two leader transactions in one batch).
     @Test
     void reportedIncarnation_followsGenesisRestoreAndDeclareGenesis() {
         assertThat(reportedIncarnation()).as("before genesis").isEqualTo(ClusterIncarnation.NONE);
@@ -107,16 +107,21 @@ class ConnectivityWiringTest {
         genesis();
         assertThat(reportedIncarnation()).as("genesis").isEqualTo(ClusterIncarnation.current(kvStore)).isEqualTo(1);
 
-        applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 5, "id-a-5"),
-                                                      7,
-                                                      "restore-id"));
+        applyBatch(List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER)));
+        applyBatch(ClusterIncarnation.replaceCommands(LEADER,
+                                                      "restore:test",
+                                                      ClusterIncarnation.committed(kvStore),
+                                                      ClusterIncarnation.restoring(ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 5, "id-a-5"),
+                                                                                   7,
+                                                                                   "restore-id"),
+                                                      List.of(),
+                                                      List.of()));
         assertThat(reportedIncarnation()).as("restore").isEqualTo(ClusterIncarnation.current(kvStore)).isEqualTo(8);
 
         var current = ClusterIncarnation.committed(kvStore)
                                         .unwrap();
         var next = ClusterIncarnation.superseding(current, 3, current.incarnation(), "declared-id");
 
-        applyBatch(List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER)));
         applyBatch(ClusterIncarnation.supersedeCommands(LEADER, "declare-genesis:test", current, next));
         assertThat(reportedIncarnation()).as("declare-genesis").isEqualTo(ClusterIncarnation.current(kvStore)).isEqualTo(9);
     }

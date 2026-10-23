@@ -5,14 +5,21 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 
 /// Adds a new slice to an existing Aether slice project.
 public final class SliceAdder {
     private static final Pattern JAVA_IDENTIFIER = Pattern.compile("[A-Z][a-zA-Z0-9]*");
+    private static final Cause SLICE_NAME_MISSING = Causes.cause("Slice name must not be null or empty");
+
+    private static final Fn1<Cause, String> INVALID_SLICE_NAME = Causes.forOneValue("Slice name must be a valid Java identifier starting with uppercase: %s");
 
     private final Path projectDir;
     private final String groupId;
@@ -107,15 +114,9 @@ public final class SliceAdder {
     }
 
     private static Result<Unit> validateSliceName(String sliceName) {
-        if (sliceName == null || sliceName.isBlank()) {
-            return Causes.cause("Slice name must not be null or empty").result();
-        }
-
-        if (!JAVA_IDENTIFIER.matcher(sliceName).matches()) {
-            return Causes.cause("Slice name must be a valid Java identifier starting with uppercase: " + sliceName).result();
-        }
-
-        return Result.success(Unit.unit());
+        return Verify.ensure(sliceName, Verify.Is::present, SLICE_NAME_MISSING)
+                     .flatMap(name -> Verify.ensure(name, Verify.Is::matches, JAVA_IDENTIFIER, INVALID_SLICE_NAME))
+                     .mapToUnit();
     }
 
     private static Result<SliceAdder> buildSliceAdder(Path projectDir,
@@ -140,11 +141,10 @@ public final class SliceAdder {
     }
 
     private static String resolveSlicePackage(ProjectConfig config, String sliceName, String packageOverride) {
-        if (packageOverride == null || packageOverride.isBlank()) {
-            return config.basePackage() + "." + sliceName.toLowerCase();
-        }
-
-        return config.resolvePackage(packageOverride);
+        return Option.option(packageOverride)
+                     .filter(Verify.Is::notBlank)
+                     .map(config::resolvePackage)
+                     .or(() -> config.basePackage() + "." + sliceName.toLowerCase());
     }
 
     private String substituteVariables(String template) {

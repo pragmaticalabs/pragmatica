@@ -84,6 +84,43 @@ class ValueMappingMappingTest {
     }
 
     @Nested
+    class BindWhole {
+        /// `VALUES (:record)` expands an ordinary record param into its components; a value object is one column.
+        @Test
+        void valueObjectParam_inValuesList_isLoweredNotExpanded() throws Exception {
+            var source = """
+                package test;
+
+                import java.util.UUID;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.lang.Unit;
+
+                record AccountId(UUID value) {
+                    static Result<AccountId> accountId(UUID raw) { return Result.success(new AccountId(raw)); }
+                    static ValueMapping<AccountId, UUID> valueMapping() { return ValueMapping.of(AccountId::value, AccountId::accountId); }
+                }
+
+                @PgSql
+                public interface AccountRepo {
+                    @Query("INSERT INTO ledger (account_id) VALUES (:accountId)")
+                    Promise<Unit> open(AccountId accountId);
+                }
+                """;
+
+            var result = compile(source, "test/AccountRepo.java");
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.AccountRepoFactory")).contains("AccountId.valueMapping().lower().apply(accountId)")
+                                                                         .doesNotContain("accountId.value()");
+        }
+    }
+
+    @Nested
     class Decode {
         @Test
         void valueObjectField_decodesViaLift_guardedByTypedCause() throws Exception {

@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class SliceAdderTest {
     @TempDir
@@ -120,6 +121,18 @@ class SliceAdderTest {
         var result = SliceAdder.sliceAdder(projectDir, "  ");
         assertThat(result.isFailure())
                   .isTrue();
+    }
+
+    /// The missing-name check runs first, so a blank or absent name is reported as missing, not as a bad identifier.
+    @Test
+    void addSlice_blankOrNullName_failsAsMissingName() throws Exception {
+        var projectDir = setupProject();
+        SliceAdder.sliceAdder(projectDir, "  ")
+                  .onSuccess(adder -> fail("a blank name must be refused"))
+                  .onFailure(cause -> assertThat(cause.message()).isEqualTo("Slice name must not be null or empty"));
+        SliceAdder.sliceAdder(projectDir, null)
+                  .onSuccess(adder -> fail("an absent name must be refused"))
+                  .onFailure(cause -> assertThat(cause.message()).isEqualTo("Slice name must not be null or empty"));
     }
 
     @Test

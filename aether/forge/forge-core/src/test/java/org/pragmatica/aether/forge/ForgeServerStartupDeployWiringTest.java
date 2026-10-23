@@ -33,7 +33,7 @@ class ForgeServerStartupDeployWiringTest {
         var config = new EmberConfig(base.nodes(),
                                      base.basePort(),
                                      base.managementPort(),
-                                     base.dashboardPort(),
+                                     base.forgePort(),
                                      base.appHttpPort(),
                                      base.h2Config(),
                                      base.observability(),
