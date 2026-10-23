@@ -58,6 +58,20 @@ class Http3FrameBoundaryGuardTest {
         assertThat(boundaryAfter(0x00, 0x40, 0x05, 1, 2, 3, 4, 5)).isTrue();
     }
 
+    /// `0x41 0x00`: a two-byte length of 256, so the high byte counts.
+    @Test
+    void twoByteLength_withAHighByte_isFollowed() {
+        var header = new int[] {0x00, 0x41, 0x00};
+        var almost = new int[header.length + 255];
+        var whole = new int[header.length + 256];
+
+        System.arraycopy(header, 0, almost, 0, header.length);
+        System.arraycopy(header, 0, whole, 0, header.length);
+
+        assertThat(boundaryAfter(almost)).isFalse();
+        assertThat(boundaryAfter(whole)).isTrue();
+    }
+
     /// `0x80 0x00 0x00 0x02`: a four-byte length of 2.
     @Test
     void fourByteLength_isFollowed() {

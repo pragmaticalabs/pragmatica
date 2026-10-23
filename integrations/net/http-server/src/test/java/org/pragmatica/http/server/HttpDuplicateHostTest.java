@@ -81,6 +81,13 @@ class HttpDuplicateHostTest {
         assertRefused("GET / HTTP/1.1\r\nHost: localhost\r\nHost: evil.example\r\nConnection: close\r\n\r\n");
     }
 
+    /// The connection is closed after the 400, even when the client asked to keep it: which host was meant is
+    /// ambiguous, so nothing more is read from it.
+    @Test
+    void twoHostLines_closeTheConnection() throws IOException {
+        assertRefused("GET / HTTP/1.1\r\nHost: localhost\r\nHost: evil.example\r\n\r\n");
+    }
+
     /// Field names are case-insensitive: `Host` and `host` are two lines of the same field.
     @Test
     void twoHostLines_differingInCase_areRefused400() throws IOException {

@@ -390,6 +390,7 @@ final class Http3Server {
             if (evt == ChannelInputShutdownReadComplete.INSTANCE) {
                 inputComplete(ctx);
             }
+
             super.userEventTriggered(ctx, evt);
         }
 

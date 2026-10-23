@@ -25,6 +25,7 @@ import io.netty.handler.codec.http3.Http3Exception;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamFrame;
 
+
 /// #2386: RFC 9114 §7.1 — a stream that ends inside a frame is a connection error of type `H3_FRAME_ERROR`. Netty's
 /// frame codec does not check it: it passes on the bytes of a DATA frame cut short and drops the rest of a cut frame
 /// without a word, so a request whose last frame was truncated reached the handler as if complete.
@@ -48,23 +49,28 @@ final class Http3FrameBoundaryGuard extends ChannelInboundHandlerAdapter {
         } else if (msg instanceof QuicStreamFrame frame) {
             track(frame.content());
         }
+
         ctx.fireChannelRead(msg);
     }
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
         if (evt == ChannelInputShutdownEvent.INSTANCE && !atFrameBoundary()) {
-            ctx.fireExceptionCaught(new Http3Exception(Http3ErrorCode.H3_FRAME_ERROR, "Request stream ended inside a frame"));
+            ctx.fireExceptionCaught(new Http3Exception(Http3ErrorCode.H3_FRAME_ERROR,
+                                                       "Request stream ended inside a frame"));
             if (ctx.channel() instanceof QuicStreamChannel stream) {
                 stream.parent().close(true, Http3ErrorCode.H3_FRAME_ERROR.code(), Unpooled.EMPTY_BUFFER);
             }
         }
+
         ctx.fireUserEventTriggered(evt);
     }
 
     /// Package-private so a test can drive the boundary tracking without a QUIC stream.
     boolean atFrameBoundary() {
-        return payloadRemaining == 0 && varintRemaining == 0 && !readingLength;
+        return payloadRemaining == 0
+               && varintRemaining == 0
+               && !readingLength;
     }
 
     private void track(ByteBuf bytes) {
@@ -93,10 +99,12 @@ final class Http3FrameBoundaryGuard extends ChannelInboundHandlerAdapter {
             varint = (varint << 8) | value;
             varintRemaining--;
         }
+
         if (varintRemaining == 0) {
             if (readingLength) {
                 payloadRemaining = varint;
             }
+
             readingLength = !readingLength;
         }
     }
