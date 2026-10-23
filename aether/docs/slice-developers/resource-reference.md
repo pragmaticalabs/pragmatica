@@ -1433,6 +1433,99 @@ Validated at compile time by the annotation processor:
 
 ---
 
+## JSON Codec Settings (`[json]`)
+
+**Resource type:** `JsonCodecSettings` (provisioned implicitly; never declared)
+**Config section:** `json`
+**Factory:** `JsonCodecSettingsFactory` (module `resource-json`, shipped inside the node)
+
+Every slice with HTTP routes encodes and decodes its JSON request bodies and responses with its generated codecs, and
+falls back to Jackson for the types they do not cover. The `[json]` section chooses which codec its routes use and
+the deploy-time options applied to it. The generated factory provisions it for every routed slice: there is no
+`@ResourceQualifier` to write. A slice without `[json]` keys gets the generated codecs under default options, which
+is exactly the behaviour before the section existed.
+
+**`json` is a reserved section name for routed slices.** A slice with HTTP routes must not use a section named `json`
+for a resource of its own: its keys are read as JSON codec settings, refused as unknown, and the slice fails at
+activation (the deploy pre-flight does not catch it, because the section is implicit). Rename such a section.
+
+### Configuration
+
+```toml
+[json]
+default = "strict"                 # which declared codec the routes use; optional when exactly one is declared
+
+[json.codecs.strict]
+implementation = "generated"       # generated | jackson (required)
+null_inclusion = "exclude"         # include (default) | exclude: an empty Option component is written as null, or left out
+fail_on_unknown = true             # default false: refuse an object member no component declares
+fail_on_duplicate = true           # default false: refuse a key repeated within one object
+max_depth = 64                     # default 1000
+max_string_length = 65536          # default unlimited; at least 64
+max_number_length = 100            # default unlimited
+max_document_size = 1048576        # default unlimited (bytes)
+
+[json.codecs.lenient]
+implementation = "jackson"
+```
+
+| Key | Values | Default | Description |
+|-----|--------|---------|-------------|
+| `default` | a declared codec name | the only declared codec | The codec the slice's routes use. Required when two or more codecs are declared. |
+| `codecs.<name>.implementation` | `generated` / `jackson` | none (required) | `generated`: the slice's generated codecs, with Jackson for uncovered types. `jackson`: Jackson for every type. |
+| `codecs.<name>.null_inclusion` | `include` / `exclude` | `include` | What an empty `Option` record component becomes on write. |
+| `codecs.<name>.fail_on_unknown` | `boolean` | `false` | Refuse an unknown object member instead of skipping it. |
+| `codecs.<name>.fail_on_duplicate` | `boolean` | `false` | Refuse a repeated key instead of keeping its last value. |
+| `codecs.<name>.max_depth` | `int` ≥ 1 | `1000` | Deepest nesting of objects and arrays accepted. |
+| `codecs.<name>.max_string_length` | `int` ≥ 64 | unlimited | Longest string accepted, in UTF-16 characters. |
+| `codecs.<name>.max_number_length` | `int` ≥ 1 | unlimited | Most digits a number may have. |
+| `codecs.<name>.max_document_size` | `int` ≥ 1 | unlimited | Largest document accepted, in bytes. |
+
+The options apply alike to the generated codecs and to the Jackson fallback, so covered and uncovered types accept,
+refuse and write the same documents. A request refused under these options is answered `400`.
+
+**Validation.** Any key under `json.` makes the section present, and a present section is strict: one read reports
+every fault, each naming its key and value. An unknown key (including an option written directly under `[json]`
+instead of under a codec), an unknown implementation, a missing `implementation`, a `default` naming no declared codec,
+two or more codecs without a `default`, and an option that does not parse or is below its minimum are all refused.
+At provisioning, a refused section fails the slice's activation.
+
+**Naming is build-time.** `json.naming` is refused: field names are compiled into the generated codecs. Declare it in
+the slice's `routes.toml` instead, where the slice processor reads it:
+
+```toml
+[json]
+naming = "snake_case"   # as_declared (default) | snake_case | kebab_case | pascal_case
+```
+
+`routes.toml` `[json]` holds only `naming`; a deploy-time option there is a compile error rather than silently
+ignored. The same naming applies to the Jackson fallback of the slice's routes. `@JsonName` on a record component or
+an enum constant overrides it.
+
+### Changing it at runtime
+
+The section is read through the slice's configuration provider, so a codec selected or changed through the
+cluster's configuration store (`aether config set json.default lenient`) applies without a redeploy:
+
+- **What a request sees.** Each request takes one codec when it starts and uses it to decode the body and encode the
+  response, so a change never splits one request between two codecs. A request that started before the change
+  completes under the old one.
+- **When it applies.** Each node applies the committed change on its own; nodes do not switch at the same instant.
+- **An invalid change is not applied.** The routes keep the selection they had. The node logs the refusal at ERROR
+  with every fault and the selection kept, and raises the `json-config-rejected` operator event (CRITICAL, subject
+  `<slice artifact>/json`) once, on the transition into refusal; `json-config-applied` (INFO) follows once a valid
+  configuration is adopted. Each refresh reads the whole section as it stands, so a sequence of writes that passes
+  through an invalid state (`default` written before its codec) converges on the last valid one.
+- **The same configuration fails the next provisioning.** Whatever is refused live fails the slice's next
+  activation (restart, redeploy), so fix or remove the keys rather than leaving them.
+
+**Configuration-store keys are cluster-wide.** A `json.*` key set through the configuration store (without
+`--node`) applies to every routed slice in the cluster, because the configuration store has no per-slice scope. A
+slice whose own `resources.toml` does not declare the codec that `json.default` names keeps its previous selection
+live (the change is refused for it, with the operator event above), and fails at its next provisioning. Select a
+codec cluster-wide only when every routed slice declares it, or declare per-slice choices in each slice's
+`resources.toml`.
+
 ## ResourceFactory SPI
 
 All resource types are discovered via Java `ServiceLoader`. Each factory implements `ResourceFactory<T, C>`:

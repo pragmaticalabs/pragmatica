@@ -89,6 +89,9 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// The rule lives in [#valueObjectFactory] alone; `ValueObjectRuleAgreementTest` (json-tests) pins it to the
 /// generator's.
+///
+/// The module also reads `@JsonName` ([JsonNameIntrospector]), the generated codecs' rename annotation, so a mapper
+/// with value objects (the one slice routes use) writes the names the generated codecs compile in.
 public class ValueObjectModule extends SimpleModule {
     private static final Set<Class<?>> SCALARS = Set.of(int.class,
                                                         Integer.class,
@@ -121,6 +124,7 @@ public class ValueObjectModule extends SimpleModule {
         context.addKeySerializers(new ValueObjectSerializers(true));
         context.addDeserializers(new ValueObjectDeserializers());
         context.addKeyDeserializers(ValueObjectModule::keyDeserializer);
+        context.insertAnnotationIntrospector(new JsonNameIntrospector());
     }
 
     /// The factory of `type` when it is a value object, made callable from here; empty when it is not one.

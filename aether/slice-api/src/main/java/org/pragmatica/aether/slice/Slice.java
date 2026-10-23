@@ -24,4 +24,10 @@ public interface Slice {
     default SliceCodec codec(SliceCodec parent) {
         return parent;
     }
+
+    /// The JSON codec selection this slice's HTTP routes encode and decode with. The generated factory of a slice
+    /// with routes overrides it with the live handle it provisions; every other slice keeps the defaults.
+    default JsonCodecSettings jsonCodecSettings() {
+        return JsonCodecSettings.defaults();
+    }
 }

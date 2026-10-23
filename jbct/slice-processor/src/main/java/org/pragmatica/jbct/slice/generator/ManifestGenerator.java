@@ -75,6 +75,10 @@ public class ManifestGenerator {
 
     /// Generate per-slice manifest with optional Routes class.
     /// Written to META-INF/slice/{SliceName}.manifest
+    /// The manifest key naming the section a routed slice's JSON codec settings are bound from (#2378).
+    public static final String JSON_SETTINGS_SECTION_KEY = "json.settings.section";
+    public static final String JSON_SETTINGS_SECTION = "json";
+
     public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass) {
         return generateSliceManifest(model, routesClass, Option.none(), Map.of());
     }
@@ -228,6 +232,11 @@ public class ManifestGenerator {
             // No generation timestamp: a manifest that differs run to run makes the slice jar non-reproducible, and
             // a write-once artifact repository then refuses a rebuilt jar of an unchanged commit (#1778).
             props.setProperty("envelope.version", String.valueOf(ENVELOPE_FORMAT_VERSION));
+            // #2378: a slice with routes provisions its JSON codec settings from this section implicitly, and the node
+            // registers it for config-change notification. Deliberately not a `reactive.N` entry, so the route
+            // coverage and orphan readers never see it, and not a `resource.N` one, so the deploy pre-flight never
+            // demands the section.
+            routesClass.onPresent(_ -> props.setProperty(JSON_SETTINGS_SECTION_KEY, JSON_SETTINGS_SECTION));
             // Write to META-INF/slice/{SliceName}.manifest
             var resourcePath = "META-INF/slice/" + sliceName + ".manifest";
             var resource = filer.createResource(StandardLocation.CLASS_OUTPUT, "", resourcePath);

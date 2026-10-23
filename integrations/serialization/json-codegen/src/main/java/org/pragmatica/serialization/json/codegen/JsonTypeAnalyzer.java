@@ -36,6 +36,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.json.NamingStrategy;
 
 
 /// Classifies Java types into [JsonType]s and collects the record and enum definitions a codec needs.
@@ -45,6 +46,7 @@ import org.pragmatica.lang.Option;
 final class JsonTypeAnalyzer {
     private static final String OPTION = "org.pragmatica.lang.Option";
     private static final String RESULT = "org.pragmatica.lang.Result";
+    private static final String JSON_NAME = "org.pragmatica.serialization.json.JsonName";
     // Generated readers track seen and required fields as bits of one long: field i is `1L << i`, so bits
     // 0..63 exist and a 65th component would wrap onto bit 0.
     static final int MAX_COMPONENTS = Long.SIZE;
@@ -62,12 +64,16 @@ final class JsonTypeAnalyzer {
     private final Set<String> inProgress = new HashSet<>();
     private final String holderPackage;
 
+    private final NamingStrategy naming;
+
     /// `holderPackage` is where the generated codecs will live: types and factories there need only be
-    /// non-private; anywhere else they must be public.
-    JsonTypeAnalyzer(Elements elements, Types types, String holderPackage) {
+    /// non-private; anywhere else they must be public. `naming` turns a component name into its JSON name, unless
+    /// the component carries `@JsonName`.
+    JsonTypeAnalyzer(Elements elements, Types types, String holderPackage, NamingStrategy naming) {
         this.elements = elements;
         this.types = types;
         this.holderPackage = holderPackage;
+        this.naming = naming;
     }
 
     Map<String, JsonType.RecordDefinition> records() {
@@ -223,9 +229,9 @@ final class JsonTypeAnalyzer {
         }
 
         if (element.getKind() == ElementKind.ENUM) {
-            enums.computeIfAbsent(name, _ -> enumDefinition(element));
-
-            return Option.some(new JsonType.EnumRef(element));
+            return enums.containsKey(name)
+                   ? Option.some(new JsonType.EnumRef(element))
+                   : addEnum(name, element);
         }
 
         if (!element.getTypeParameters().isEmpty()) {
@@ -256,11 +262,21 @@ final class JsonTypeAnalyzer {
                             "component " + component.getSimpleName() + ": " + reason(component.asType()));
             }
 
-            type.onPresent(present -> components.add(new JsonType.Component(component.getSimpleName().toString(),
+            var componentName = component.getSimpleName().toString();
+
+            type.onPresent(present -> components.add(new JsonType.Component(componentName,
+                                                                            jsonName(component).or(() -> naming.apply(componentName)),
                                                                             present)));
         }
 
         inProgress.remove(name);
+        var badName = nameProblem(components.stream().map(JsonType.Component::wireName).toList(),
+                                  "components");
+
+        if (badName.isPresent()) {
+            return badName.flatMap(reason -> fail(name, reason));
+        }
+
         var definition = new JsonType.RecordDefinition(element, List.copyOf(components), findFactory(element));
         // The value-object rule must not depend on where the holder lives (Jackson cannot know it): a value
         // object whose factory this holder cannot call is left to the fallback, never re-shaped into an object.
@@ -369,15 +385,67 @@ final class JsonTypeAnalyzer {
         };
     }
 
-    private JsonType.EnumDefinition enumDefinition(TypeElement element) {
+    private Option<JsonType> addEnum(String name, TypeElement element) {
+        var definition = enumDefinition(element);
+        var badName = nameProblem(definition.constants(), "constants");
+
+        if (badName.isPresent()) {
+            return badName.flatMap(reason -> fail(name, reason));
+        }
+
+        enums.put(name, definition);
+
+        return Option.some(new JsonType.EnumRef(element));
+    }
+
+    private static JsonType.EnumDefinition enumDefinition(TypeElement element) {
         var constants = element.getEnclosedElements()
                                .stream()
                                .filter(enclosed -> enclosed.getKind() == ElementKind.ENUM_CONSTANT)
-                               .map(enclosed -> enclosed.getSimpleName()
-                                                        .toString())
                                .toList();
+        var javaNames = constants.stream().map(constant -> constant.getSimpleName()
+                                                                   .toString()).toList();
+        var wireNames = constants.stream()
+                                 .map(constant -> jsonName(constant).or(() -> constant.getSimpleName()
+                                                                                      .toString()))
+                                 .toList();
 
-        return new JsonType.EnumDefinition(element, constants, constants.indexOf("UNKNOWN"));
+        return new JsonType.EnumDefinition(element, wireNames, javaNames.indexOf("UNKNOWN"));
+    }
+
+    // The value of a `@JsonName` on `element` (a record component or an enum constant), read by name: the generator
+    // needs no runtime class on its path.
+    private static Option<String> jsonName(Element element) {
+        return Option.from(element.getAnnotationMirrors()
+                                  .stream()
+                                  .filter(mirror -> ((TypeElement) mirror.getAnnotationType()
+                                                                         .asElement()).getQualifiedName()
+                                                                                      .contentEquals(JSON_NAME))
+                                  .flatMap(mirror -> mirror.getElementValues()
+                                                           .values()
+                                                           .stream())
+                                  .map(value -> String.valueOf(value.getValue()))
+                                  .findFirst());
+    }
+
+    // Why these JSON names cannot be compiled into a name table, if they cannot: FieldNames writes them without
+    // escaping and matches them by bytes, so each must be non-empty and free of quotes, backslashes and control
+    // characters, and no two may be equal (Jackson refuses such a type as well).
+    private static Option<String> nameProblem(List<String> wireNames, String what) {
+        var seen = new HashSet<String>();
+
+        for (var wireName : wireNames) {
+            if (wireName.isEmpty() || wireName.chars().anyMatch(c -> c == '"' || c == '\\' || c < 0x20)) {
+                return Option.some("JSON name '" + wireName
+                                  + "' is empty or holds a quote, a backslash or a control character");
+            }
+
+            if (!seen.add(wireName)) {
+                return Option.some("two " + what + " have the JSON name '" + wireName + "'");
+            }
+        }
+
+        return Option.none();
     }
 
     // The JBCT factory: static, not private, named after the type in lower camel case, taking exactly the

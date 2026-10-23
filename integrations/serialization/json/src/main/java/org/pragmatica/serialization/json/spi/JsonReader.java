@@ -24,8 +24,12 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Currency;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import org.pragmatica.lang.Cause;
@@ -33,6 +37,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.json.JsonError;
+import org.pragmatica.serialization.json.JsonOptions;
 
 
 /// Pull reader over a UTF-8 `byte[]` region, called by generated codecs.
@@ -41,13 +46,18 @@ import org.pragmatica.serialization.json.JsonError;
 /// The first failure is recorded in a single error slot and the cursor jumps to the end of input, so
 /// every later read returns a neutral value and every loop terminates. Generated code ignores
 /// intermediate values and calls [#result] once to lift the outcome.
+///
+/// Options ([JsonOptions], set by [#reset(byte\[\], int, int, JsonOptions)]) cost nothing on the fast scan: a limit
+/// is at most one comparison per string, number or container (the depth limit is the comparison that was always
+/// there), the document size is checked once in `reset`, and the other options are consulted only on their own rare
+/// path (an unknown key, a repeated key).
 @Contract
 public final class JsonReader {
     public static final int END_OF_OBJECT = -1;
     public static final int UNKNOWN_FIELD = -2;
-    /// Deepest nesting of objects and arrays accepted, counted per container, as Jackson's `StreamReadConstraints`
-    /// does. One limit covers generated readers (which recurse once per container) and skipped values (which nest in
-    /// an explicit stack, on top of the reader's current depth). 1000 rather than Jackson's 500: a recursive record
+    /// Deepest nesting of objects and arrays accepted by default ([JsonOptions#maxDepth]), counted per container, as
+    /// Jackson's `StreamReadConstraints` does. One limit covers generated readers (which recurse once per container)
+    /// and skipped values (which nest in an explicit stack, on top of the reader's current depth). 1000 rather than Jackson's 500: a recursive record
     /// costs two containers per level (`{"children":[...]}`), and 400 such levels must decode.
     public static final int MAX_DEPTH = 1000;
 
@@ -108,6 +118,19 @@ public final class JsonReader {
     private int escapeAt;
     // Set by scanString: whether the bytes before the special byte it stopped at were all ASCII.
     private boolean scannedAscii;
+    // The options of the current input (see reset).
+    private int maxDepth = MAX_DEPTH;
+    private int maxStringLength = Integer.MAX_VALUE;
+    private int maxNumberLength = Integer.MAX_VALUE;
+    // min(maxNumberLength, maxStringLength): a number whose text is measured (see fitsNumber) and is no longer than
+    // this passes both of its limits, so only a longer one pays for counting its digits.
+    private int numberTextLimit = Integer.MAX_VALUE;
+    private boolean failOnUnknown;
+    private boolean failOnDuplicate;
+    // Opening quote of the last map key read: where a repeated key is reported.
+    private int keyAt;
+    // Keys of each level of the value being skipped, kept only while failOnDuplicate is set; allocated on first use.
+    private List<Set<String>> skippedKeys;
 
     private JsonReader() {}
 
@@ -115,8 +138,15 @@ public final class JsonReader {
         return new JsonReader();
     }
 
-    /// Points the reader at `buf[offset, offset + length)` without copying and clears the error slot.
+    /// Points the reader at `buf[offset, offset + length)` without copying and clears the error slot; reads under
+    /// [JsonOptions#DEFAULTS].
     public JsonReader reset(byte[] buf, int offset, int length) {
+        return reset(buf, offset, length, JsonOptions.DEFAULTS);
+    }
+
+    /// As [#reset(byte\[\], int, int)], reading under `options`. A region larger than `options.maxDocumentSize()` is
+    /// refused here, before anything is read.
+    public JsonReader reset(byte[] buf, int offset, int length, JsonOptions options) {
         this.buf = buf;
         this.pos = offset;
         this.begin = offset;
@@ -124,6 +154,17 @@ public final class JsonReader {
         this.depth = 0;
         this.error = null;
         this.failures = null;
+        this.maxDepth = options.maxDepth();
+        this.maxStringLength = options.maxStringLength();
+        this.maxNumberLength = options.maxNumberLength();
+        this.numberTextLimit = Math.min(maxNumberLength, maxStringLength);
+        this.failOnUnknown = options.failOnUnknown();
+        this.failOnDuplicate = options.failOnDuplicate();
+        if (length > options.maxDocumentSize()) {
+            error = JsonError.DocumentTooLarge.FACTORY.apply(options.maxDocumentSize(),
+                                                             offset + options.maxDocumentSize());
+            pos = end;
+        }
 
         return this;
     }
@@ -187,9 +228,9 @@ public final class JsonReader {
         return consumeValue('{', "'{'") && enter();
     }
 
-    // Counts a container just opened against MAX_DEPTH.
+    // Counts a container just opened against the depth limit.
     private boolean enter() {
-        if (++depth > MAX_DEPTH) {
+        if (++depth > maxDepth) {
             pos--;
             nestingTooDeep();
 
@@ -273,6 +314,97 @@ public final class JsonReader {
         }
     }
 
+    /// Field `field` was already seen in this object (generated code tests its bit in the seen mask): its value is
+    /// read again and the last one kept, unless the options refuse duplicates. Called just after the key's colon.
+    public void repeatedField(FieldNames names, int field) {
+        if (failOnDuplicate) {
+            var at = keyStart();
+
+            duplicateKey(names.name(field), at);
+        }
+    }
+
+    /// Skips the value of a member no component declares (its key just read), unless the options refuse unknown
+    /// members. `unknown` holds the unknown keys of this object seen so far, kept (and returned, allocated on first
+    /// use) only while the options refuse duplicates; generated code keeps it in a local that starts as `null`, which
+    /// is what scopes it to one object.
+    public Set<String> skipUnknown(Set<String> unknown) {
+        if (failOnUnknown) {
+            var at = keyStart();
+
+            unknownField(keyText(at), at);
+
+            return unknown;
+        }
+
+        var keys = failOnDuplicate
+                   ? withUnknownKey(unknown)
+                   : unknown;
+
+        skipValue();
+
+        return keys;
+    }
+
+    private Set<String> withUnknownKey(Set<String> unknown) {
+        var keys = unknown == null
+                   ? new HashSet<String>()
+                   : unknown;
+        var at = keyStart();
+        var key = keyText(at);
+
+        if (!keys.add(key)) {
+            duplicateKey(key, at);
+        }
+
+        return keys;
+    }
+
+    /// The map key just read repeats an earlier key of the same map (its `put` replaced a value): the last value is
+    /// kept, unless the options refuse duplicates.
+    public void repeatedKey() {
+        if (failOnDuplicate) {
+            duplicateKey(keyText(keyAt), keyAt);
+        }
+    }
+
+    // The opening quote of the key whose colon ends just before pos. Scans backwards over whitespace to the closing
+    // quote, then to the first quote not escaped by an odd run of backslashes; only a rare path pays for it.
+    private int keyStart() {
+        var i = pos - 2;
+
+        while (buf[i] != '"') {
+            i--;
+        }
+
+        i--;
+        while (buf[i] != '"' || isEscaped(i)) {
+            i--;
+        }
+
+        return i;
+    }
+
+    private boolean isEscaped(int quote) {
+        var backslashes = 0;
+
+        for (int i = quote - 1; i >= begin && buf[i] == '\\'; i--) {
+            backslashes++;
+        }
+
+        return (backslashes & 1) != 0;
+    }
+
+    // The decoded text of the (already validated) string whose opening quote is at `open`; the cursor is kept.
+    private String keyText(int open) {
+        var saved = pos;
+        var text = decodeEscaped(open + 1);
+
+        pos = saved;
+
+        return text;
+    }
+
     private boolean matches(boolean inRange, FieldNames names, int index, boolean withComma) {
         if (!inRange) {
             return false;
@@ -318,14 +450,22 @@ public final class JsonReader {
         }
 
         if (close < 0) {
-            var decoded = decodeEscaped(start).getBytes(StandardCharsets.UTF_8);
+            var text = decodeEscaped(start);
 
-            return error != null
-                   ? -1
-                   : names.lookup(decoded, 0, decoded.length);
+            if (error != null || !fitsString(text.length(), start - 1)) {
+                return -1;
+            }
+
+            var decoded = text.getBytes(StandardCharsets.UTF_8);
+
+            return names.lookup(decoded, 0, decoded.length);
         }
 
         if (!scannedAscii && !isValidUtf8(start, close)) {
+            return -1;
+        }
+        // UTF-8 never takes fewer bytes than UTF-16 takes characters: only a string over the limit in bytes is counted.
+        if (close - start > maxStringLength && !fitsString(utf16Length(buf, start, close), start - 1)) {
             return -1;
         }
 
@@ -431,6 +571,8 @@ public final class JsonReader {
     public int readEnumKey(FieldNames constants) {
         skipWhitespace();
         var start = pos;
+
+        keyAt = start;
         var index = consume('"', "map key")
                     ? declared(lookupString(constants), start)
                     : -1;
@@ -442,6 +584,8 @@ public final class JsonReader {
 
     /// Reads a map key and the colon after it.
     public String readKey() {
+        skipWhitespace();
+        keyAt = pos;
         var key = consume('"', "map key")
                   ? stringBody()
                   : "";
@@ -818,10 +962,19 @@ public final class JsonReader {
                : "";
     }
 
-    // The rest of a string whose opening quote was consumed. Non-ASCII bytes are validated as UTF-8 first: the
-    // JDK decoder would silently turn malformed sequences into U+FFFD.
+    // The rest of a string whose opening quote was consumed, within the string length limit.
     private String stringBody() {
         var start = pos;
+        var text = stringContent(start);
+
+        return fitsString(text.length(), start - 1)
+               ? text
+               : "";
+    }
+
+    // Non-ASCII bytes are validated as UTF-8 first: the JDK decoder would silently turn malformed sequences into
+    // U+FFFD.
+    private String stringContent(int start) {
         var close = scanString(start);
 
         if (close < 0) {
@@ -897,6 +1050,10 @@ public final class JsonReader {
         }
 
         if (!isValidIntegerEnd(digitsStart, negative)) {
+            return 0;
+        }
+        // The text is never shorter than its digits: only a number over the limit in characters counts them.
+        if (pos - start > numberTextLimit && !fitsNumber(pos - digitsStart, true, pos - start, start)) {
             return 0;
         }
 
@@ -1010,8 +1167,10 @@ public final class JsonReader {
     /// Skips one complete value of any kind, validating it against the full RFC 8259 grammar: brackets match,
     /// members are `"key":value` pairs separated by commas, literals are exactly `true` / `false` / `null`, numbers
     /// follow the number grammar, strings hold valid escapes, no control bytes and well-formed UTF-8. Iterative:
-    /// open containers live in a bit stack, never on the call stack, and nesting is bounded by [#MAX_DEPTH] together
-    /// with the reader's current depth. With [#finish] it validates a whole document.
+    /// open containers live in a bit stack, never on the call stack, and nesting is bounded by the depth limit together
+    /// with the reader's current depth. Keys and numbers are held to the options' limits, and keys to being unique in
+    /// their object when duplicates are refused, as Jackson holds every token it parses; a skipped string value is not
+    /// measured, as Jackson does not measure one. With [#finish] it validates a whole document.
     public void skipValue() {
         skipWhitespace();
         if (pos < end && (buf[pos] == '{' || buf[pos] == '[')) {
@@ -1058,8 +1217,11 @@ public final class JsonReader {
         return false;
     }
 
-    // Number grammar only: nothing is accumulated.
+    // Number grammar only: nothing is accumulated. A skipped number is held to the number limit, as Jackson holds every
+    // number token it parses, and its whole text to the string limit (see fitsNumber).
     private void skipNumber() {
+        var start = pos;
+
         if (pos < end && buf[pos] == '-') {
             pos++;
         }
@@ -1073,24 +1235,43 @@ public final class JsonReader {
             return;
         }
 
-        if (pos < end && buf[pos] == '.') {
+        var digits = pos - intStart;
+        var fraction = pos < end && buf[pos] == '.';
+
+        if (fraction) {
             pos++;
+            var fracStart = pos;
+
             if (!skipDigits()) {
                 fail("digit after '.'");
 
                 return;
             }
+
+            digits += pos - fracStart;
         }
 
-        if (pos < end && (buf[pos] == 'e' || buf[pos] == 'E')) {
+        var exponent = pos < end && (buf[pos] == 'e' || buf[pos] == 'E');
+
+        if (exponent) {
             pos++;
             if (pos < end && (buf[pos] == '-' || buf[pos] == '+')) {
                 pos++;
             }
 
+            var expStart = pos;
+
             if (!skipDigits()) {
                 fail("exponent digits");
+
+                return;
             }
+
+            digits += pos - expStart;
+        }
+
+        if (pos - start > numberTextLimit) {
+            fitsNumber(digits, true, pos - start, start);
         }
     }
 
@@ -1162,14 +1343,14 @@ public final class JsonReader {
                 level = afterValue(b, level, isObjectLevel(objects, level));
                 expectValue = b == ',';
             } else if (b == '{' || b == '[') {
-                if (depth + ++level > MAX_DEPTH) {
+                if (depth + ++level > maxDepth) {
                     nestingTooDeep();
 
                     return;
                 }
 
                 objects = markLevel(objects, level, b == '{');
-                expectValue = openContainer(b == '{');
+                expectValue = openContainer(b == '{', level);
                 level -= expectValue
                          ? 0
                          : 1;
@@ -1185,9 +1366,13 @@ public final class JsonReader {
     }
 
     // Just after `{` or `[` (at pos): false when the container closed at once, true when a value follows (an
-    // object's first key and colon already consumed).
-    private boolean openContainer(boolean object) {
+    // object's first key and colon already consumed). An object at `level` starts with no keys seen.
+    private boolean openContainer(boolean object, int level) {
         pos++;
+        if (object && failOnDuplicate) {
+            levelKeys(level).clear();
+        }
+
         skipWhitespace();
         if (pos < end && buf[pos] == (object
                                       ? '}'
@@ -1198,7 +1383,7 @@ public final class JsonReader {
         }
 
         if (object) {
-            skipKey();
+            skipKey(level);
         }
 
         return true;
@@ -1210,7 +1395,7 @@ public final class JsonReader {
         if (b == ',') {
             pos++;
             if (object) {
-                skipKey();
+                skipKey(level);
             }
 
             return level;
@@ -1231,7 +1416,9 @@ public final class JsonReader {
         return level;
     }
 
-    private void skipKey() {
+    // A key of the skipped object at `level`, held to the string length limit (Jackson checks every key it parses) and,
+    // while duplicates are refused, to being new in its object.
+    private void skipKey(int level) {
         skipWhitespace();
         if (pos >= end || buf[pos] != '"') {
             fail("field name");
@@ -1239,8 +1426,38 @@ public final class JsonReader {
             return;
         }
 
+        var open = pos;
+
         skipString();
+        if (error == null && pos - open - 2 > maxStringLength) {
+            fitsString(keyText(open).length(), open);
+        }
+
+        if (error == null && failOnDuplicate) {
+            noteSkippedKey(level, open);
+        }
+
         consume(':', "':'");
+    }
+
+    private void noteSkippedKey(int level, int open) {
+        var key = keyText(open);
+
+        if (!levelKeys(level).add(key)) {
+            duplicateKey(key, open);
+        }
+    }
+
+    private Set<String> levelKeys(int level) {
+        if (skippedKeys == null) {
+            skippedKeys = new ArrayList<>();
+        }
+
+        while (skippedKeys.size() <= level) {
+            skippedKeys.add(new HashSet<>());
+        }
+
+        return skippedKeys.get(level);
     }
 
     private long markLevel(long objects, int level, boolean object) {
@@ -1250,8 +1467,10 @@ public final class JsonReader {
                    : objects & ~(1L << level);
         }
 
-        if (deepObjects == null) {
-            deepObjects = new boolean[MAX_DEPTH + 1];
+        if (deepObjects == null || deepObjects.length <= level) {
+            deepObjects = deepObjects == null
+                          ? new boolean[maxDepth + 1]
+                          : Arrays.copyOf(deepObjects, maxDepth + 1);
         }
 
         deepObjects[level] = object;
@@ -1326,6 +1545,7 @@ public final class JsonReader {
 
     // Validates JSON number grammar and collects up to 18 significant digits.
     private Scanned scanNumber() {
+        var start = pos;
         var negative = pos < end && buf[pos] == '-';
 
         if (negative) {
@@ -1367,8 +1587,11 @@ public final class JsonReader {
         }
         // Integer digits beyond the kept 18 scale the mantissa; dropped fraction digits do not.
         var exponent = (long) dropped;
+        // Every digit of the text (integer, fraction and exponent), for the number length limit.
+        var allDigits = pos - intStart;
+        var fraction = pos < end && buf[pos] == '.';
 
-        if (pos < end && buf[pos] == '.') {
+        if (fraction) {
             pos++;
             var fracStart = pos;
 
@@ -1392,9 +1615,13 @@ public final class JsonReader {
 
                 return ZERO_NUMBER;
             }
+
+            allDigits += pos - fracStart;
         }
 
-        if (pos < end && (buf[pos] == 'e' || buf[pos] == 'E')) {
+        var scientific = pos < end && (buf[pos] == 'e' || buf[pos] == 'E');
+
+        if (scientific) {
             pos++;
             var expNegative = pos < end && buf[pos] == '-';
 
@@ -1419,9 +1646,19 @@ public final class JsonReader {
                 return ZERO_NUMBER;
             }
 
+            allDigits += pos - expStart;
             exponent += expNegative
                         ? -exp
                         : exp;
+        }
+
+        var integer = !fraction && !scientific;
+        var textLimit = integer
+                        ? numberTextLimit
+                        : maxNumberLength;
+
+        if (pos - start > textLimit && !fitsNumber(allDigits, integer, pos - start, start)) {
+            return ZERO_NUMBER;
         }
         // digits > 18 means precision was dropped: force the exact slow path.
         return new Scanned(mantissa,
@@ -1906,7 +2143,74 @@ public final class JsonReader {
 
     private void nestingTooDeep() {
         if (error == null) {
-            error = JsonError.NestingTooDeep.FACTORY.apply(MAX_DEPTH, pos);
+            error = JsonError.NestingTooDeep.FACTORY.apply(maxDepth, pos);
+        }
+
+        pos = end;
+    }
+
+    // Whether a string of `length` characters starting at `at` is within the limit; records the failure if not.
+    private boolean fitsString(int length, int at) {
+        if (length <= maxStringLength) {
+            return true;
+        }
+
+        if (error == null) {
+            error = JsonError.StringTooLong.FACTORY.apply(maxStringLength, at);
+        }
+
+        pos = end;
+
+        return false;
+    }
+
+    // Whether a number starting at `at`, of `digits` digits and `textLength` characters, is within the limits: the
+    // digits against the number limit, and, when `textIsString`, the whole text (sign, point and exponent included)
+    // against the string limit. Jackson measures the text of every skipped number and of an integer it reads into a
+    // BigDecimal or a double, but not of a floating-point number it reads; the callers do the same, measuring an int or
+    // long too, which is harmless: its at most 20 characters never reach JsonOptions.MIN_STRING_LENGTH.
+    private boolean fitsNumber(int digits, boolean textIsString, int textLength, int at) {
+        if (digits > maxNumberLength) {
+            if (error == null) {
+                error = JsonError.NumberTooLong.FACTORY.apply(maxNumberLength, at);
+            }
+
+            pos = end;
+
+            return false;
+        }
+
+        return ! textIsString || fitsString(textLength, at);
+    }
+
+    // UTF-16 length of the well-formed UTF-8 in bytes[from, to): one character per lead byte, two for a 4-byte one.
+    static int utf16Length(byte[] bytes, int from, int to) {
+        var length = 0;
+
+        for (int i = from; i < to; i++) {
+            var b = bytes[i] & 0xFF;
+
+            if ((b & 0xC0) != 0x80) {
+                length += b >= 0xF0
+                          ? 2
+                          : 1;
+            }
+        }
+
+        return length;
+    }
+
+    private void unknownField(String field, int at) {
+        if (error == null) {
+            error = JsonError.UnknownField.FACTORY.apply(field, at);
+        }
+
+        pos = end;
+    }
+
+    private void duplicateKey(String key, int at) {
+        if (error == null) {
+            error = JsonError.DuplicateKey.FACTORY.apply(key, at);
         }
 
         pos = end;

@@ -25,6 +25,7 @@
         <module>db-jooq-async</module>
         <module>http</module>
         <module>interceptors</module>
+        <module>json</module>
         <module>services</module>
         <module>notification</module>
         <module>durable-entity</module>

@@ -40,12 +40,17 @@ import static org.pragmatica.lang.Option.some;
 /// a collection route body is decoded by generated code with static element calls instead of a combinator.
 ///
 /// An **entry point** ([#emitEntryPoint], one `@Json` root) is a public final class named after the root
-/// (`<Flat>Json`, [JsonNames]) whose public members are the API: `CODEC`, the `decode` and `encode` shortcuts, and
-/// `CODECS`. It is also the root's `ServiceLoader` provider (`JsonCodecProvider`, with the public no-argument
-/// constructor a class-path provider needs), serving `CODEC` for `JsonCodecs.codecFor`. The code for the root and
-/// every record and enum it reaches sits in package-private nested `<Flat>JsonCodec` interfaces, so it is reachable
-/// through `CODECS` but is not the surface a caller sees. The class leaves room for later public members (a
-/// `codec(options)` factory beside `CODEC`).
+/// (`<Flat>Json`, [JsonNames]) whose public members are the API: `CODEC`, `codec(JsonOptions)` (the same codec under
+/// deploy-time options), the `decode` and `encode` shortcuts, `CODECS`, and, for an enum or a value object over a
+/// `String`, `KEY` (the type as a map key, for `JsonTypeCodec.mapOf(KEY, values)`). It is also the root's `ServiceLoader`
+/// provider (`JsonCodecProvider`, with the public no-argument constructor a class-path provider needs), serving
+/// `CODEC` for `JsonCodecs.codecFor`. The code for the root and every record and enum it reaches sits in
+/// package-private nested `<Flat>JsonCodec` interfaces, so it is reachable through `CODECS` but is not the surface a
+/// caller sees.
+///
+/// Options never reach the generated code as a parameter: they live in the `JsonReader` and `JsonWriter` a decode or
+/// encode is given, and the generated code consults them only on their rare paths (an empty `Option` component, an
+/// unknown or repeated key), through reader and writer calls.
 ///
 /// Nested codec names are the reached types' flat names. A flat name is unique within a package only, so types of
 /// different packages that share one (`y.Foo` and `z.Foo`) are numbered: names are given the root first (an entry
@@ -115,6 +120,21 @@ final class JsonCodecEmitter {
         out.add("public final class " + holderName + " implements " + SPI + "JsonCodecProvider {");
         out.add("    public static final " + RT + "JsonTypeCodec<" + type + "> CODEC = " + codecName(root) + ".CODEC;");
         out.add("");
+        out.add("    /// The codec reading and writing under `options`.");
+        out.add("    public static " + RT + "JsonTypeCodec<" + type + "> codec(" + RT + "JsonOptions options) {");
+        out.add("        return CODEC.withOptions(options);");
+        out.add("    }");
+        out.add("");
+        mapKey(root).onPresent(key -> {
+            out.add("    /// The type as a map key, for `JsonTypeCodec.mapOf(KEY, values)`: the generated map code's own key form.");
+            out.add("    public static final " + RT
+                   + "JsonKeyCodec<" + type
+                   + "> KEY = " + RT
+                   + "JsonKeyCodec.jsonKeyCodec((out, key) -> " + writeKey(key, "key")
+                   + ",");
+            out.add("                                                                     in -> " + readKey(key) + ");");
+            out.add("");
+        });
         out.addAll(emitRegistry("public static final "));
         out.add("");
         out.add("    /// The ServiceLoader's instance; the codec itself is the CODEC constant.");
@@ -408,7 +428,7 @@ final class JsonCodecEmitter {
     private static List<String> objectConstants(JsonType.RecordDefinition definition) {
         var components = definition.components();
         var nameList = String.join(", ",
-                                   components.stream().map(c -> "\"" + c.name() + "\"").toList());
+                                   components.stream().map(c -> "\"" + c.wireName() + "\"").toList());
         var required = 0L;
 
         for (int i = 0; i < components.size(); i++) {
@@ -432,10 +452,7 @@ final class JsonCodecEmitter {
         for (int i = 0; i < components.size(); i++) {
             var component = components.get(i);
 
-            lines.add("            out.writeRaw(NAMES." + (i == 0
-                                                           ? "first"
-                                                           : "next") + "(" + i + "));");
-            lines.addAll(writeField(component, "value." + component.name() + "()", "            "));
+            lines.addAll(writeMember(component, i, "            "));
         }
 
         if (components.isEmpty()) {
@@ -467,8 +484,16 @@ final class JsonCodecEmitter {
 
         lines.add("            var seen = 0L;");
         lines.add("            var expected = 0;");
+        lines.add("            java.util.Set<java.lang.String> unknown = null;");
         lines.add("            for (var field = in.firstField(NAMES); field != " + SPI
                  + "JsonReader.END_OF_OBJECT; field = in.nextField(NAMES, expected)) {");
+        lines.add("                if (field >= 0) {");
+        lines.add("                    if ((seen & 1L << field) != 0) {");
+        lines.add("                        in.repeatedField(NAMES, field);");
+        lines.add("                    }");
+        lines.add("                    seen |= 1L << field;");
+        lines.add("                    expected = field + 1;");
+        lines.add("                }");
         lines.add("                switch (field) {");
         for (int i = 0; i < components.size(); i++) {
             var component = components.get(i);
@@ -479,11 +504,7 @@ final class JsonCodecEmitter {
                      + ";");
         }
 
-        lines.add("                    default -> in.skipValue();");
-        lines.add("                }");
-        lines.add("                if (field >= 0) {");
-        lines.add("                    seen |= 1L << field;");
-        lines.add("                    expected = field + 1;");
+        lines.add("                    default -> unknown = in.skipUnknown(unknown);");
         lines.add("                }");
         lines.add("            }");
         for (int i = 0; i < components.size(); i++) {
@@ -516,8 +537,38 @@ final class JsonCodecEmitter {
     }
 
     // ---- writing -------------------------------------------------------------------------------
-    private List<String> writeField(JsonType.Component component, String expr, String ind) {
-        return writeValue(component.type(), expr, ind);
+    // One member: its pre-encoded name, then its value. An `Option` component writes its name only when present and
+    // leaves an empty one to `writeEmpty`, which writes the name and `null`, or nothing when the options exclude empty
+    // values: the option is consulted on the empty path alone.
+    private List<String> writeMember(JsonType.Component component, int index, String ind) {
+        var name = "NAMES." + (index == 0
+                               ? "first"
+                               : "next") + "(" + index + ")";
+        var expr = "value." + component.name() + "()";
+
+        if (! (component.type() instanceof JsonType.OptionalOf optional)) {
+            var lines = new ArrayList<String>();
+
+            lines.add(ind + "out.writeRaw(" + name + ");");
+            lines.addAll(writeValue(component.type(), expr, ind));
+
+            return lines;
+        }
+
+        var boxed = javaType(optional.element());
+        var lines = new ArrayList<String>();
+
+        lines.add(ind + "switch (" + expr + ") {");
+        lines.add(ind + "    case org.pragmatica.lang.Option.Some<" + boxed + ">(var present) -> {");
+        lines.add(ind + "        out.writeRaw(" + name + ");");
+        depth++;
+        lines.addAll(writeValue(optional.element(), "present", ind + "        "));
+        depth--;
+        lines.add(ind + "    }");
+        lines.add(ind + "    case org.pragmatica.lang.Option.None<" + boxed + "> _ -> out.writeEmpty(" + name + ");");
+        lines.add(ind + "}");
+
+        return lines;
     }
 
     private List<String> writeValue(JsonType type, String expr, String ind) {
@@ -626,6 +677,20 @@ final class JsonCodecEmitter {
         return wrapped;
     }
 
+    // The root as a map key, when the generator accepts it as one: an enum, or a value object over a String.
+    private Option<JsonType> mapKey(TypeElement root) {
+        if (root.getKind() == javax.lang.model.element.ElementKind.ENUM) {
+            return some(new JsonType.EnumRef(root));
+        }
+
+        return Option.option(analyzer.records().get(typeName(root)))
+                     .filter(JsonType.RecordDefinition::isValueObject)
+                     .filter(definition -> definition.components()
+                                                     .stream()
+                                                     .anyMatch(component -> component.type() instanceof JsonType.Scalar scalar && scalar.kind() == JsonType.ScalarKind.STRING))
+                     .map(_ -> new JsonType.RecordRef(root));
+    }
+
     private String writeKey(JsonType key, String expr) {
         return switch (key) {
             case JsonType.EnumRef ref -> "out.writeRaw(" + codecName(ref.element()) + ".CONSTANTS.quoted(" + expr + ".ordinal()))";
@@ -718,7 +783,9 @@ final class JsonCodecEmitter {
             case JsonType.MapOf map -> List.of(ind + "var values = new java.util.LinkedHashMap<" + javaType(map.key()) + ", " + javaType(map.value()) + ">();",
                                                ind + "if (in.beginObject()) {",
                                                ind + "    for (var more = in.firstEntry(); more; more = in.nextEntry()) {",
-                                               ind + "        values.put(" + readKey(map.key()) + ", " + readElement(map.value()) + ");",
+                                               ind + "        if (values.put(" + readKey(map.key()) + ", " + readElement(map.value()) + ") != null) {",
+                                               ind + "            in.repeatedKey();",
+                                               ind + "        }",
                                                ind + "    }",
                                                ind + "}",
                                                ind + "return values;");

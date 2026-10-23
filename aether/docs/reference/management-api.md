@@ -522,6 +522,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `community-placement-parked` (WARNING — a community placement operation is parked in `DRAIN_UNCERTAIN` or `BLOCKED` and needs an operator unless it resumes by itself; `subject` is the community, the message names the operation, phase, both nodes and the command to clear it, issue #241)
 - `community-placement-resumed` (INFO — the recovery: the operation left the parked phase by itself, a late drain acknowledgement or its target observed; may be published by a node other than the one that raised the warning)
 - `community-placement-cleared` (INFO — the other recovery: an operator cleared the operation; names the operator, the reason, the phase and both nodes, which the clear left as they were; also closes the warning cluster-wide)
+- `json-config-rejected` (CRITICAL — a committed `[json]` change was refused for a slice and its HTTP routes keep the JSON codec selection they had; `subject` is `<slice artifact>/json`, the message names each refused key, its value and why, and the selection kept; raised once per node on the transition into refusal; the same configuration fails the slice's next provisioning, issue #2378)
+- `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 

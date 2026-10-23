@@ -53,11 +53,45 @@ public sealed interface JsonError extends Cause {
                                                                                                UnexpectedNull::new);
     }
 
-    /// Objects and arrays nest deeper than the reader's limit. A typed failure rather than a stack overflow: generated
+    /// Objects and arrays nest deeper than the reader's limit ([JsonOptions#maxDepth]). A typed failure rather than a stack overflow: generated
     /// readers recurse once per level, so the limit is what keeps hostile input from exhausting the stack.
     record NestingTooDeep(int limit, int position, String message) implements JsonError {
         public static final Fn2<NestingTooDeep, Integer, Integer> FACTORY = Causes.forTwoValues("Nesting deeper than %d levels at offset %d",
                                                                                                 NestingTooDeep::new);
+    }
+
+    /// An object member no component declares, refused because [JsonOptions#failOnUnknown] is set; `position` is the
+    /// offset of the key's opening quote.
+    record UnknownField(String field, int position, String message) implements JsonError {
+        public static final Fn2<UnknownField, String, Integer> FACTORY = Causes.forTwoValues("Unknown field %s at offset %d",
+                                                                                             UnknownField::new);
+    }
+
+    /// A key repeated within one object (a record, a map, or an object skipped as an unknown member's value), refused
+    /// because [JsonOptions#failOnDuplicate] is set; `position` is the offset of the repeated key's opening quote.
+    record DuplicateKey(String key, int position, String message) implements JsonError {
+        public static final Fn2<DuplicateKey, String, Integer> FACTORY = Causes.forTwoValues("Duplicate key %s at offset %d",
+                                                                                             DuplicateKey::new);
+    }
+
+    /// A string, an object key, or a number's text (see [JsonOptions#maxStringLength]) longer than the limit
+    /// characters; `position` is the offset where it starts.
+    record StringTooLong(int limit, int position, String message) implements JsonError {
+        public static final Fn2<StringTooLong, Integer, Integer> FACTORY = Causes.forTwoValues("String longer than %d characters at offset %d",
+                                                                                               StringTooLong::new);
+    }
+
+    /// A number with more than [JsonOptions#maxNumberLength] digits; `position` is the offset where it starts.
+    record NumberTooLong(int limit, int position, String message) implements JsonError {
+        public static final Fn2<NumberTooLong, Integer, Integer> FACTORY = Causes.forTwoValues("Number longer than %d digits at offset %d",
+                                                                                               NumberTooLong::new);
+    }
+
+    /// A document larger than [JsonOptions#maxDocumentSize] bytes, refused before anything is read; `position` is the
+    /// offset of the first byte past the limit.
+    record DocumentTooLarge(int limit, int position, String message) implements JsonError {
+        public static final Fn2<DocumentTooLarge, Integer, Integer> FACTORY = Causes.forTwoValues("Document larger than %d bytes (offset %d is past the limit)",
+                                                                                                  DocumentTooLarge::new);
     }
 
     /// `decode(json, offset, length)` named a region that does not lie inside `json`; nothing was read.

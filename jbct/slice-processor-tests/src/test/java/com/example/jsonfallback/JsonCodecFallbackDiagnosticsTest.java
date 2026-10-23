@@ -117,11 +117,11 @@ class JsonCodecFallbackDiagnosticsTest {
         }
 
         @Test
-        void routesFactory_isThePreCodecForm_withValueObjectMapperDefault() throws Exception {
+        void routesFactory_isJacksonOnly_withValueObjectMapperDefault() throws Exception {
             var routes = generated("com/example/nocodecfixture/NoCodecSliceRoutes.java");
 
-            assertThat(routes).contains(PRE_CODEC_FACTORY)
-                              .doesNotContain("jsonCodec")
+            assertThat(routes).contains(NO_CODEC_FACTORY)
+                              .contains("        return fallback;")
                               .doesNotContain("GeneratedJsonCodec")
                               .doesNotContain("JsonCodecs");
         }
@@ -166,10 +166,10 @@ class JsonCodecFallbackDiagnosticsTest {
                      .toList();
     }
 
-    /// What `RouteSourceGenerator` wrote for every slice before it generated JSON codecs, except the one owner-ruled
-    /// change shared with the codec path: `create(slice)` defaults to `valueObjectJsonMapper()`, the mapper the node
-    /// passes, rather than `defaultJsonMapper()`.
-    private static final String PRE_CODEC_FACTORY = """
+    /// What `RouteSourceGenerator` writes for a slice with no generated codec: `create(slice)` defaults to
+    /// `valueObjectJsonMapper()`, the mapper the node passes (owner ruling), and the router takes its codec from the
+    /// slice's JSON codec settings (#2378), which for such a slice is always Jackson, under the selected options.
+    private static final String NO_CODEC_FACTORY = """
             @Override
             public SliceRouter create(NoCodecSlice slice) {
                 return create(slice, JsonMapper.valueObjectJsonMapper());
@@ -178,13 +178,13 @@ class JsonCodecFallbackDiagnosticsTest {
             @Override
             public SliceRouter create(NoCodecSlice slice, JsonMapper jsonMapper) {
                 var routes = new NoCodecSliceRoutes(slice);
-                return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);
+                return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, RouteMountMode.pathMode(), jsonCodecs(slice, jsonMapper));
             }
 
             @Override
             public SliceRouter create(NoCodecSlice slice, JsonMapper jsonMapper, RouteMountMode mountMode) {
                 var routes = new NoCodecSliceRoutes(slice);
-                return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode);
+                return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode, jsonCodecs(slice, jsonMapper));
             }
 
         """;

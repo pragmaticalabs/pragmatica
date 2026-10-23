@@ -16,7 +16,6 @@
 package org.pragmatica.serialization.json.spi;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -39,7 +38,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// The reader's strictness: full-grammar skipping, nesting limit, UTF-8 well-formedness, canonical UUIDs, exact
 /// decimal exponents and non-finite doubles.
 class JsonReaderValidationTest {
-    static final JsonMapper JACKSON = JsonMapper.defaultJsonMapper();
+    // Plain Jackson 3: the oracle writes scalars only, which the Pragmatica module never touched; that module now
+    // depends on this one.
+    static final tools.jackson.databind.json.JsonMapper JACKSON = tools.jackson.databind.json.JsonMapper.builder()
+                                                                                                        .build();
 
     static byte[] utf8(String json) {
         return json.getBytes(StandardCharsets.UTF_8);
@@ -495,7 +497,7 @@ class JsonReaderValidationTest {
             var out = JsonWriter.jsonWriter(64);
 
             out.writeDouble(value);
-            assertEquals(new String(JACKSON.writeAsBytes(value).unwrap(), StandardCharsets.UTF_8),
+            assertEquals(new String(JACKSON.writeValueAsBytes(value), StandardCharsets.UTF_8),
                          new String(out.toByteArray(), StandardCharsets.UTF_8));
             assertEquals(Double.doubleToLongBits(value), Double.doubleToLongBits(readDouble(new String(out.toByteArray(),
                                                                                                         StandardCharsets.UTF_8)).unwrap()));

@@ -17,21 +17,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.serialization.json.NamingStrategy;
 import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 import org.pragmatica.serialization.json.codegen.JsonNames;
 
 
 @SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor", CodecProcessor.JSON})
-@SupportedOptions({"codec.registry.suffix"})
+@SupportedOptions({"codec.registry.suffix", CodecProcessor.JSON_NAMING})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class CodecProcessor extends AbstractProcessor {
     /// JSON is a separate opt-in (`@Json`), processed in the same pass but never as a binary codec, so adopting
     /// JSON cannot change a type's binary wire contract.
     static final String JSON = "org.pragmatica.serialization.json.Json";
 
+    /// The processor option naming the BUILD-time naming strategy of every `@Json` codec of the compilation
+    /// (`-Ajson.naming=snake_case`; see `NamingStrategy#namingStrategy` for the accepted spellings). Absent means
+    /// `AS_DECLARED`.
+    static final String JSON_NAMING = "json.naming";
+
     private CodecClassGenerator generator;
     private JsonServices jsonServices;
     private String registrySuffix = "";
+    private NamingStrategy jsonNaming;
 
     @Override
     public synchronized void init(javax.annotation.processing.ProcessingEnvironment processingEnv) {
@@ -45,6 +54,7 @@ public class CodecProcessor extends AbstractProcessor {
                               ? ""
                               : suffix;
         this.jsonServices = new JsonServices(processingEnv.getFiler(), processingEnv.getElementUtils());
+        this.jsonNaming = jsonNaming(processingEnv.getOptions().get(JSON_NAMING));
         // FER: outside javac there is no task to listen to; the processor works on without the local @Json check (a
         // local @Json type is then ignored, as annotation processing itself ignores it; see LocalJsonTypes), and the
         // note says so. The failure is the expected answer of a non-javac environment, so its detail is not printed.
@@ -193,7 +203,7 @@ public class CodecProcessor extends AbstractProcessor {
             return;
         }
 
-        var json = new JsonCodecGenerator(processingEnv, packageName);
+        var json = new JsonCodecGenerator(processingEnv, packageName, jsonNaming);
         var unsupported = json.addRoot(type.asType());
 
         if (unsupported.isPresent()) {
@@ -496,6 +506,20 @@ public class CodecProcessor extends AbstractProcessor {
         return capitalized + "Codecs" + (suffix == null
                                          ? ""
                                          : suffix);
+    }
+
+    // FER: an unknown strategy name is reported as a compile error, which fails the build; AS_DECLARED only lets the
+    // round go on, so the compilation's other diagnostics are reported too.
+    private NamingStrategy jsonNaming(String raw) {
+        return Option.option(raw)
+                     .map(NamingStrategy::namingStrategy)
+                     .or(() -> Result.success(NamingStrategy.AS_DECLARED))
+                     .onFailure(cause -> error("-A" + JSON_NAMING + ": " + cause.message()))
+                     .or(NamingStrategy.AS_DECLARED);
+    }
+
+    private void error(String message) {
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, message);
     }
 
     private void error(Element element, String message) {
