@@ -115,7 +115,7 @@ class JsonbPostgresRoundTripTest {
         public final class InferredScenario {
             static final Address HOME = new Address("Київ", "01001");
             static final Profile EVE = new Profile("Єва 😀", Option.some("єва"), List.of(HOME), HOME);
-            static final InferredRow ROW = new InferredRow(11L, EVE, Option.none(), EVE, "inferred", Option.none());
+            static final DocumentRow ROW = new DocumentRow(11L, EVE, Option.none(), EVE, "inferred", Option.none());
 
             public static List<Object> roundTrip(PgSqlConnector db) {
                 var repo = InferredRepoFactory.inferredRepo(db);

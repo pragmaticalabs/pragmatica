@@ -1112,20 +1112,20 @@ class JsonbMappingTest {
 
         record Probe(String name) {}
 
-        record InferredRow(long id, Profile profile, Option<Profile> previous, Profile legacy, String title, Option<String> nick) {}
+        record DocumentRow(long id, Profile profile, Option<Profile> previous, Profile legacy, String title, Option<String> nick) {}
 
         record Entry(long id, Profile profile, Profile legacy, String title) {}
 
         @PgSql
         public interface InferredRepo {
-            @Table(InferredRow.class)
-            Promise<Unit> insert(InferredRow row);
+            @Table(DocumentRow.class)
+            Promise<Unit> insert(DocumentRow row);
 
-            @Table(InferredRow.class)
-            Promise<Option<InferredRow>> findById(long id);
+            @Table(DocumentRow.class)
+            Promise<Option<DocumentRow>> findById(long id);
 
-            @Table(InferredRow.class)
-            Promise<List<InferredRow>> findByProfile(Profile profile);
+            @Table(DocumentRow.class)
+            Promise<List<DocumentRow>> findByProfile(Profile profile);
 
             @Query("SELECT count(*) FROM documents WHERE profile = :probe")
             Promise<Long> countEqual(Probe probe);
