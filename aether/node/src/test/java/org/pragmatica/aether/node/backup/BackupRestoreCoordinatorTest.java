@@ -471,7 +471,7 @@ class BackupRestoreCoordinatorTest {
         /// backup-enabled leader then resumes and finishes. A pre-phase-3 backup carries no marker, so the finish removes the minted one: the
         /// restored cluster reads "incarnation present, marker absent" (LEGACY).
         @Disabled("#1533: a restore resumed after another lineage's genesis never finishes (the finish's incarnation write is refused by the "
-                  + "version fence); enable with the finish fix, and drop the tripwire below")
+                  + "version fence); enable with the restore-finish fix (PR #2397) once merged forward, and drop the tripwire below")
         @Test
         void aMarkerMintedMidRestoreByALeaderWithoutBackup_isRemoved_byAPrePhase3Restore() {
             var remote = bareRemote(temp.resolve("remote.git"));
@@ -488,7 +488,7 @@ class BackupRestoreCoordinatorTest {
 
         /// The same path over a phase-3 backup: the finish leaves the backup's own marker, never the one minted mid-restore.
         @Disabled("#1533: a restore resumed after another lineage's genesis never finishes (the finish's incarnation write is refused by the "
-                  + "version fence); enable with the finish fix, and drop the tripwire below")
+                  + "version fence); enable with the restore-finish fix (PR #2397) once merged forward, and drop the tripwire below")
         @Test
         void aMarkerMintedMidRestoreByALeaderWithoutBackup_isReplaced_byAPhase3BackupsOwn() {
             var remote = bareRemote(temp.resolve("remote.git"));
@@ -519,7 +519,8 @@ class BackupRestoreCoordinatorTest {
             coordinator.activate();
             fireRetries(20);
 
-            assertThat(coordinator.isComplete()).as("#1533 is fixed: the finish completes after an ungated mint. Enable the two W-34 arms above "
+            assertThat(coordinator.isComplete()).as("the restore-finish fix (PR #2397, release-1.0.0-rc5) has reached this branch: the finish completes "
+                                                    + "after an ungated mint. Enable the two W-34 arms above "
                                                     + "(aMarkerMintedMidRestoreByALeaderWithoutBackup_*) and delete this tripwire")
                                                 .isFalse();
             assertThat(outcome()).isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
