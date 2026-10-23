@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.node.ReplaceWriteCheck;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
@@ -457,6 +458,37 @@ class BackupRestoreCoordinatorTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
         }
 
+        /// A restore resumed after another lineage's genesis finishes. A leader without `[backup]` has no restore gate, so
+        /// while this restore was `IN_PROGRESS` it committed an incarnation of its own lineage (the incarnation alone; it is
+        /// excluded from the chunks). The finish must replace it: before the fix its remove and put of the one key folded
+        /// into one mutation, which the successor fence refused on every retry, so the decision never completed.
+        /// Red when the decision does not complete, or the restored lineage is not the one committed.
+        @Test
+        void aRestoreResumedAfterAnotherLineagesGenesis_finishes_andKeepsTheRestoredLineage() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            var commit = git(Path.of(remote), "rev-parse", "backup").strip();
+
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                                                  LINEAGE,
+                                                                                  3,
+                                                                                  40,
+                                                                                  commit)));
+            applyDirect(new KVCommand.Put<>(ClusterIncarnationKey.clusterIncarnationKey(),
+                                            ClusterIncarnationValue.genesis("ungated-lineage", "ungated-incarnation")));
+
+            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(ClusterIncarnation.committed(kvStore).map(ClusterIncarnationValue::lineageId)).isEqualTo(Option.some(LINEAGE));
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
+            assertThat(ReplaceWriteCheck.unimpliedPreconditions(finishBatch())).as("T1's acceptance establishes every precondition of T2")
+                                                                               .isEmpty();
+            assertThat(finishBatch()).as("the finish replaced the committed incarnation: T1 and T2").hasSize(2);
+        }
+
         /// The finish applies at most once (v1533 MY6). Two leaders both decided to resume the same
         /// `IN_PROGRESS` restore; the first finished it. The second builds its finish only afterwards, and its
         /// finish is guarded on the `IN_PROGRESS` marker it resumed from, so it is refused: the incarnation rises
@@ -735,6 +767,21 @@ class BackupRestoreCoordinatorTest {
 
     private void applyDirect(KVCommand<AetherKey> command) {
         applyDirect(List.of(command));
+    }
+
+    /// The last batch this node submitted whose transactions are the restore's finish.
+    private List<KVCommand<AetherKey>> finishBatch() {
+        return submitted.stream()
+                        .filter(commands -> commands.stream()
+                                                    .anyMatch(BackupRestoreCoordinatorTest::isFinish))
+                        .reduce((first, second) -> second)
+                        .orElseThrow();
+    }
+
+    private static boolean isFinish(KVCommand<AetherKey> command) {
+        return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+               && transaction.transactionId()
+                             .startsWith(RestoreGate.RESTORE_TRANSACTION_PREFIX + "finish:");
     }
 
     private BackupRestoreOutcome outcome() {

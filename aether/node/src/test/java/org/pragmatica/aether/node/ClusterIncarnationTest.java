@@ -16,11 +16,15 @@ import java.util.function.Function;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
@@ -43,6 +47,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// operations run against a real [KVStore] applier, whose version fence is what makes them safe.
 class ClusterIncarnationTest {
     private static final ClusterIncarnationKey KEY = ClusterIncarnationKey.clusterIncarnationKey();
+    private static final LeaderValue LEADER = LeaderValue.leaderValue(NodeId.nodeId("node-1")
+                                                                            .unwrap(),
+                                                                      1L);
 
     private KVStore<AetherKey, AetherValue> kvStore;
 
@@ -135,8 +142,7 @@ class ClusterIncarnationTest {
         void restoreCommands_keepTheRestoredLineage_atTheNextIncarnation() {
             var restored = ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, "id-lineage-backup-5");
 
-            ClusterIncarnation.restoreCommands(restored, restored.incarnation(), "restore-id")
-                              .forEach(ClusterIncarnationTest.this::apply);
+            restore(restored, restored.incarnation(), "restore-id");
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 6, "restore-id")));
         }
@@ -148,7 +154,7 @@ class ClusterIncarnationTest {
             ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-fresh", () -> "id-new")
                               .onPresent(ClusterIncarnationTest.this::apply);
 
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, "id-lineage-backup-5"), 5, "restore-id"));
+            restore(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, "id-lineage-backup-5"), 5, "restore-id");
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 6, "restore-id")));
         }
@@ -159,7 +165,7 @@ class ClusterIncarnationTest {
         void restoreOfAnOlderBackup_landsAboveTheHighestRecorded_notBelowIt() {
             apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("L1", 7, "id-L1-7")));
 
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 3, "id-L1-3"), 7, "restore-id"));
+            restore(ClusterIncarnationValue.clusterIncarnationValue("L1", 3, "id-L1-3"), 7, "restore-id");
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1", 8, "restore-id")));
         }
@@ -168,7 +174,7 @@ class ClusterIncarnationTest {
         /// that already names another history. The floor lands it at L@8.
         @Test
         void restoreOfAMiddleBackup_neverReusesARecordedIncarnation() {
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, "id-L1-5"), 7, "restore-id"));
+            restore(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, "id-L1-5"), 7, "restore-id");
 
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
@@ -179,7 +185,7 @@ class ClusterIncarnationTest {
         void restoreCommands_commitAFreshIncarnationId_notTheRestoredOne() {
             var restored = ClusterIncarnationValue.clusterIncarnationValue("L1", 5, "id-of-the-backup");
 
-            applyBatch(ClusterIncarnation.restoreCommands(restored, 5, "fresh-restore-id"));
+            restore(restored, 5, "fresh-restore-id");
 
             assertThat(ClusterIncarnation.currentId(kvStore)).isEqualTo(Option.some("fresh-restore-id"));
         }
@@ -188,7 +194,7 @@ class ClusterIncarnationTest {
         /// (adopted from v1621's probe `OK_floorBelowRestored_landsAtRestoredPlusOne`).
         @Test
         void restoreWithAFloorBelowTheRestored_landsAtRestoredPlusOne() {
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, "id-L1-5"), 3, "restore-id"));
+            restore(ClusterIncarnationValue.clusterIncarnationValue("L1", 5, "id-L1-5"), 3, "restore-id");
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1",
                                                                                                                                      6,
@@ -202,6 +208,83 @@ class ClusterIncarnationTest {
             apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-b", 5, "id-lineage-b-5")));
 
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(1);
+        }
+    }
+
+    /// The replace write's all-or-none argument ([ClusterIncarnation#replaceCommands]): when T1 is present, every
+    /// precondition of T2 is established by T1's acceptance. Red when a guard is added to T2 alone, when T2 expects a
+    /// value T1 does not witness, or when T1 and T2 name different leaders.
+    @Nested
+    class Replace {
+        private static final AetherKey MARKER = ConfigKey.forKey("marker");
+
+        @Test
+        void t2Preconditions_areAllEstablishedByT1() {
+            var current = ClusterIncarnationValue.clusterIncarnationValue("L1", 3, "id-L1-3");
+            var witnessed = ConfigValue.configValue("marker", "in-progress");
+            var commands = ClusterIncarnation.replaceCommands(LEADER,
+                                                              "replace:test",
+                                                              Option.some(current),
+                                                              ClusterIncarnationValue.clusterIncarnationValue("L2", 9, "id-L2-9"),
+                                                              List.of(new KVCommand.ReadWitness<>(MARKER, Option.some(witnessed))),
+                                                              List.of(new KVCommand.Mutation<>(MARKER,
+                                                                                               Option.some(witnessed),
+                                                                                               Option.some(ConfigValue.configValue("marker", "done")))));
+
+            assertThat(commands).hasSize(2);
+            assertThat(ReplaceWriteCheck.unimpliedPreconditions(commands)).isEmpty();
+        }
+
+        @Test
+        void withNothingCommitted_onlyT2_carryingTheGuards() {
+            var guard = new KVCommand.ReadWitness<AetherKey>(MARKER, Option.some(ConfigValue.configValue("marker", "in-progress")));
+            var commands = ClusterIncarnation.replaceCommands(LEADER,
+                                                              "replace:test",
+                                                              Option.none(),
+                                                              ClusterIncarnationValue.clusterIncarnationValue("L2", 9, "id-L2-9"),
+                                                              List.of(guard),
+                                                              List.of());
+
+            assertThat(commands).hasSize(1);
+            assertThat(ReplaceWriteCheck.transactionOf(commands.getFirst()).guards()).containsExactly(guard);
+        }
+
+        /// Red when the write counts as accepted with one of its transactions refused (T1 in, T2 out would leave no incarnation).
+        @Test
+        void replaceAccepted_needsEveryTransaction() {
+            var commands = ClusterIncarnation.replaceCommands(LEADER,
+                                                              "replace:test",
+                                                              Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1", 3, "id-L1-3")),
+                                                              ClusterIncarnationValue.clusterIncarnationValue("L2", 9, "id-L2-9"),
+                                                              List.of(),
+                                                              List.of());
+            var t1 = ReplaceWriteCheck.transactionOf(commands.getFirst()).transactionId();
+            var t2 = ReplaceWriteCheck.transactionOf(commands.getLast()).transactionId();
+
+            assertThat(ClusterIncarnation.replaceAccepted(List.of(new KVCommand.TransactionResult(t1, true),
+                                                                  new KVCommand.TransactionResult(t2, false)),
+                                                          commands)).isFalse();
+            assertThat(ClusterIncarnation.replaceAccepted(List.of(new KVCommand.TransactionResult(t1, true),
+                                                                  new KVCommand.TransactionResult(t2, true)),
+                                                          commands)).isTrue();
+        }
+
+        @Test
+        void aPlantedGuardOnT2Alone_isFlagged() {
+            var commands = ClusterIncarnation.replaceCommands(LEADER,
+                                                              "replace:test",
+                                                              Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1", 3, "id-L1-3")),
+                                                              ClusterIncarnationValue.clusterIncarnationValue("L2", 9, "id-L2-9"),
+                                                              List.of(),
+                                                              List.of());
+            var t2 = ReplaceWriteCheck.transactionOf(commands.getLast());
+            var planted = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(t2.key(),
+                                                                                  t2.transactionId(),
+                                                                                  t2.leader(),
+                                                                                  List.of(new KVCommand.ReadWitness<>(MARKER, Option.none())),
+                                                                                  t2.mutations());
+
+            assertThat(ReplaceWriteCheck.unimpliedPreconditions(List.of(commands.getFirst(), planted))).hasSize(1);
         }
     }
 
@@ -362,6 +445,23 @@ class ClusterIncarnationTest {
 
             return new NeverFires();
         }
+    }
+
+    /// A restore's incarnation write, as the coordinator's finish commits it ([ClusterIncarnation#replaceCommands]).
+    private void restore(ClusterIncarnationValue restored, long highestRecordedForLineage, String incarnationId) {
+        commitLeader();
+        applyBatch(ClusterIncarnation.replaceCommands(LEADER,
+                                                      "restore:test",
+                                                      ClusterIncarnation.committed(kvStore),
+                                                      ClusterIncarnation.restoring(restored, highestRecordedForLineage, incarnationId),
+                                                      List.of(),
+                                                      List.of()));
+    }
+
+    /// The leader record a leader transaction is witnessed by (a `LeaderKey` is not an `AetherKey`, so the batch is raw).
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void commitLeader() {
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER))));
     }
 
     private void apply(KVCommand<AetherKey> command) {
