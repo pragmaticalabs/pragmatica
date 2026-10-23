@@ -226,8 +226,9 @@ public interface TerminationRetirement {
     /// through an active topology manager (`ClusterTopologyManagerRecord.clearUnconfirmed` refuses with `NotActive` otherwise, and the manager
     /// is active only on the leader: `AetherNode.toggleCtmOnLeaderChange`). The two can still overlap on that one node for the same terminated
     /// node, so `open` holds the subjects whose overdue warning is raised: a second retirement of the same node raises nothing while the first
-    /// one's warning is open. `[limit: a retirement started under an earlier leader keeps retrying after leadership moved; if the new leader
-    /// starts one for the same node, each node raises its own]`.
+    /// one's warning is open. **Accepted limit** (CTO ruling `41eb76809`): a retirement started under an earlier leader keeps retrying after leadership moved, so if
+    /// the new leader starts one for the same node, each node raises its own warning. The event aggregator dedupes per node instance and the
+    /// operator-warning sink is not owner-gated, a product-wide property to be fixed at the aggregator, not here.
     record Overdue(OperatorWarningSink warnings, LongSupplier clockNs, TimeSpan after, Set<NodeId> open) {
         static Overdue overdue(OperatorWarningSink warnings, LongSupplier clockNs, TimeSpan after) {
             return new Overdue(warnings, clockNs, after, ConcurrentHashMap.newKeySet());
