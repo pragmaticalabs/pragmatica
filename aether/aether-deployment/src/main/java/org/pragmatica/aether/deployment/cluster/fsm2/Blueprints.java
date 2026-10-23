@@ -538,6 +538,7 @@ public sealed interface Blueprints {
     /// A draft that is dropped without being sent (suspension), fails, or expires no longer holds its target puts in flight, so the next
     /// reconcile re-drives an open apply at once instead of at the awaited-target bound (G1). Only a pending put this draft carries, at its
     /// exact value, is released: an entry a newer declaration has replaced is kept, and a draft of another kind carries no pending put.
+    /// A put whose base no open apply owns is kept: nothing would re-drive it, and the awaited-target watch re-sends it at its bound (NT-11).
     static ClusterModel releaseUnsent(ClusterModel m, TxDraft draft) {
         draft.mutations().forEach(mutation -> releaseTarget(m, mutation));
 
@@ -549,10 +550,25 @@ public sealed interface Blueprints {
             m.pendingTargetPuts.get(key.artifactBase())
                                .filter(pending -> mutation.replacement()
                                                           .equals(Option.some((AetherValue) pending)))
+                               .filter(_ -> reDriven(m,
+                                                     key.artifactBase()))
                                .onPresent(_ -> m.pendingTargetPuts = m.pendingTargetPuts.remove(key.artifactBase()));
         }
 
         return m;
+    }
+
+    /// The blueprint that owns the base has an open apply, so the intake re-drive (R-4.1.4) re-sends the batch once the put is released.
+    private static boolean reDriven(ClusterModel m, ArtifactBase base) {
+        return m.ownerByBase.get(base)
+                            .filter(id -> hasOpenApply(m, id))
+                            .isPresent();
+    }
+
+    private static boolean hasOpenApply(ClusterModel m, BlueprintId id) {
+        return m.applies.get(id)
+                        .filter(apply -> isOpen(m, id, apply))
+                        .isPresent();
     }
 
     private static ClusterModel redeclare(ClusterModel m, Ctx ctx, BlueprintId id, ExpandedBlueprint expanded) {

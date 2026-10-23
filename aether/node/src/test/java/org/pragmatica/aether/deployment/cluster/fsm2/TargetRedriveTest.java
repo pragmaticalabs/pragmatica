@@ -4,9 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.lang.Option;
 
@@ -20,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// P3-G, G1: the intake re-drive (R-4.1.4) re-submits an open apply's target batch only when a target is neither committed nor in flight.
 /// The first declaration's put is in flight until it commits, is refused (the awaited-target sweep re-sends it at its bound, 6.2), or is
 /// dropped unsent: a suspension, a failed settlement or an expiry releases it, so those paths re-drive at their next reconcile as before.
+/// A put whose base no open apply owns is not released: the awaited-target watch keeps re-sending it at its bound (NT-11, `SlBlueprintTest`).
 /// NT-107 (`LifecycleTest`) is the suspension arm's pin.
 class TargetRedriveTest {
     private static final String APP = "org.example:app:1.0.0";
@@ -108,6 +115,47 @@ class TargetRedriveTest {
         h.advance(h.settings.timing().retryBase() + 500L);
 
         assertThat(h.submits(SubmitKind.TARGETS)).as("re-driven one retryBase later").hasSize(2);
+    }
+
+    /// Red when: a failed put whose base no open apply owns is released: nothing would re-drive it, so it must stay watched and be re-sent by
+    /// the awaited-target watch at its bound (NT-11's failure arm).
+    @Test
+    void aFailedPut_withNoOpenApply_staysWatched_andIsResentAtTheBound() {
+        var h = active();
+
+        h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
+        h.seed(new AppBlueprintKey(blueprintId(APP)), blueprint(APP, false, ATTEMPT, slice(ORDERS, 3, 1, Set.of())));
+        h.drain();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.held.clear();
+        assertThat(h.model().pendingTargetPuts.containsKey(ORDERS.base())).as("the put stays watched").isTrue();
+        h.advance(h.settings.timing().retryBase() + 500L);
+        assertThat(h.submits(SubmitKind.TARGETS)).as("control: no open apply, so no re-drive").hasSize(1);
+        h.advance(h.settings.timing().awaitedTarget() + 30_000L);
+
+        assertThat(h.submits(SubmitKind.TARGETS)).as("re-sent by the awaited-target watch").hasSize(2);
+    }
+
+    /// Red when: a failed put is released while its blueprint's apply record is present but closed (a terminal outcome for its attempt): the
+    /// re-drive serves open applies only, so the put must stay watched and be re-sent at the bound.
+    @Test
+    void aFailedPut_withAClosedApply_staysWatched_andIsResentAtTheBound() {
+        var h = active();
+        var value = blueprint(APP, false, ATTEMPT, slice(ORDERS, 3, 1, Set.of()));
+        var id = value.blueprint().id();
+
+        h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
+        h.seed(new DeploymentOutcomeKey(id), DeploymentOutcomeValue.failed(List.of(), "closed", h.wallMs, 1L, ATTEMPT));
+        h.seed(new DeploymentApplyKey(id), new DeploymentApplyValue(ATTEMPT, Option.none(), h.wallMs));
+        h.seed(new AppBlueprintKey(id), value);
+        h.drain();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.held.clear();
+        assertThat(h.submits(SubmitKind.TARGETS)).as("control: the declaration's batch").hasSize(1);
+        assertThat(h.model().pendingTargetPuts.containsKey(ORDERS.base())).as("the put stays watched").isTrue();
+        h.advance(h.settings.timing().awaitedTarget() + 30_000L);
+
+        assertThat(h.submits(SubmitKind.TARGETS)).as("re-sent by the awaited-target watch").hasSize(2);
     }
 
     /// Red when: a failed batch releases a put that a newer declaration has replaced, so the next reconcile re-drives a batch that is in
