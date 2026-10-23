@@ -381,7 +381,68 @@ class JsonbMappingTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("'profile' maps to a json/jsonb column, so its type 'test.Task' is read and written as a JSON document")
-                                            .contains("component action: neither a record nor an enum");
+                                            .contains("component action: neither a record nor an enum")
+                                            .contains(". Write a 'static ValueMapping<test.Task, JsonText> valueMapping()' for it, or bind JsonText.");
+        }
+
+        /// A `ValueMapping` beats inference: an `Option` of a value object on a json column stays a nullable value object.
+        @Test
+        void optionValueObjectOnJsonColumn_staysValueMapping() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.JsonText;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Result;
+
+                record Settings(String raw) {
+                    static Result<Settings> settings(JsonText text) { return Result.success(new Settings(text.value())); }
+                    static ValueMapping<Settings, JsonText> valueMapping() {
+                        return ValueMapping.of(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
+                    }
+                }
+
+                record DocumentRow(long id, Option<Settings> previous) {}
+
+                @PgSql
+                public interface SettingsRowRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var generated = factory(compile(source, "test/SettingsRowRepo.java"), "test.SettingsRowRepoFactory");
+
+            assertThat(generated).contains("RowDecodeError.liftOptional(raw, Settings.valueMapping().lift())")
+                                 .doesNotContain("jsonCodec");
+        }
+
+        /// A `::type` cast hands the SQL the conversion, so a cast parameter is not inferred as a document.
+        @Test
+        void castRecordParam_isNotInferred() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface CastRepo {
+                    @Query("UPDATE documents SET profile = :profile::jsonb WHERE id = :id")
+                    Promise<Unit> store(long id, Profile profile);
+                }
+                """;
+
+            var result = compile(source, "test/CastRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Parameter 'profile'").contains("mark a json/jsonb column @Jsonb");
         }
 
         @Test
@@ -466,6 +527,37 @@ class JsonbMappingTest {
                 public interface StringRepo {
                     @Query("UPDATE documents SET profile = :raw WHERE id = :id")
                     Promise<Unit> store(long id, String raw);
+                }
+                """, "'raw' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void queryPairStringParam_messageNamesTheWaysOut() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                @PgSql
+                public interface StringRepo {
+                    @Query("UPDATE documents SET profile = :raw WHERE id = :id")
+                    Promise<Unit> store(long id, String raw);
+                }
+                """, "A String parameter is sent as varchar, which json/jsonb refuse: bind a record (a JSON document), "
+                     + "JsonText, or cast the parameter in the SQL (CAST(:raw AS jsonb))");
+        }
+
+        @Test
+        void valueObjectLoweredToString_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.Result;
+
+                record Raw(String text) {
+                    static Result<Raw> raw(String text) { return Result.success(new Raw(text)); }
+                    static ValueMapping<Raw, String> valueMapping() { return ValueMapping.of(Raw::text, Raw::raw); }
+                }
+
+                @PgSql
+                public interface StringRepo {
+                    @Query("UPDATE documents SET profile = :raw WHERE id = :id")
+                    Promise<Unit> store(long id, Raw raw);
                 }
                 """, "'raw' is a String bound to column 'documents.profile' of type jsonb");
         }
