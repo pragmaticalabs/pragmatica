@@ -29,14 +29,16 @@ import org.pragmatica.messaging.MessageRouter;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 
-/// The worker-side reader of a retired directive (P3-F plan §2 G1, B18): every node's community directory reacts to an `ActivationDirectiveKey`
+/// **A notification-count pin** for the worker-side reader of a retired directive (P3-F plan §2 G1, B18): every node's community directory
+/// reacts to an `ActivationDirectiveKey`
 /// removal through an `onRemove` route (`WorkerHierarchyAssembly`, the `communityDirectoryRouter`). When the CTM's confirmed reap retires a
 /// departed node's directive and departure record, that reaction must fire once, and never twice: not again for the record's removal, not for
 /// a second retirement (a later `--force` clear, or the retry), and not for the cluster FSM's R-4.3.3 fallback.
 ///
-/// The reader here is registered on the store's notification router exactly as the assembly registers it (a `KVNotificationRouter`
-/// `onRemove(ActivationDirectiveKey)` route) `[instrument: the same registration shape, not the assembly's own lambda]`.
-/// Red when: the reaction fires zero times, or more than once.
+/// What it pins is the number of `ActivationDirectiveKey` removal notifications the store publishes for the retired node, through a reader
+/// registered the way the assembly registers its own (a `KVNotificationRouter` `onRemove(ActivationDirectiveKey)` route). It does not drive
+/// `WorkerHierarchyAssembly`'s lambda itself, which reacts to each such notification once (it is a plain route on the same router).
+/// Red when: the store publishes zero, or more than one, removal of the retired directive.
 class B18ReapDeleteReadersTest {
     private static final long TOKEN_2 = 0x2222L;
     private static final Retry ONE_ATTEMPT = Retry.retry()
@@ -90,7 +92,7 @@ class B18ReapDeleteReadersTest {
     }
 
     @Test
-    void aConfirmedReap_firesTheDirectoryReaderOnce_andAForcedClearAndTheFsmFireNothingMore() {
+    void aConfirmedReap_publishesOneDirectiveRemoval_andASecondRetirementAndTheFsmPublishNone() {
         var w = departedAndCleaned();
         var removed = directoryReader(w.h.router);
         var retirement = retirementOver(w.h);
