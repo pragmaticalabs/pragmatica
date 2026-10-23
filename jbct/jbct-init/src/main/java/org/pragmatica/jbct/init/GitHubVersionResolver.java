@@ -244,8 +244,8 @@ public final class GitHubVersionResolver {
                            () -> {
                                Files.createDirectories(CACHE_FILE.getParent());
                                try (var writer = Files.newBufferedWriter(CACHE_FILE)) {
-                               cache.store(writer, "JBCT version cache");
-                           }
+                                   cache.store(writer, "JBCT version cache");
+                               }
                            });
     }
 

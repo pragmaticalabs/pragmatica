@@ -43,6 +43,11 @@ final class TestCompilationHelper {
 
     record SourceEntry(String fileName, String sourceCode) {}
 
+    /// Several sources, compiled with the processor and the generated sources all the way to bytecode.
+    static CompilationResult compileAndCompileGenerated(List<SourceEntry> sources, Path tempDir) throws Exception {
+        return compile(sources, tempDir, false);
+    }
+
     static CompilationResult compileWithProcessor(List<SourceEntry> sources, Path tempDir) throws Exception {
         return compile(sources, tempDir, true);
     }

@@ -14,7 +14,7 @@ import org.pragmatica.serialization.Codec;
 /// previous run. Within one incarnation the order is the pre-#1529 `(rabiaTerm, localCounter)`.
 ///
 /// [limit: incarnation-advances-only-with-1533] This fixes a cold restart only once the restore advances the
-/// incarnation (#1533, `ClusterIncarnation.restoreCommands`). Until #1533 lands, `GitBackedPersistence`
+/// incarnation (#1533, `ClusterIncarnation.restoring`). Until #1533 lands, `GitBackedPersistence`
 /// restores the committed `ClusterIncarnationKey` as-is, the incarnation is unchanged across a cold
 /// restart, and these epochs order exactly as they did before #1529 — never worse.
 @Codec

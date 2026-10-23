@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class EventAdderTest {
     @TempDir
@@ -93,6 +94,18 @@ class EventAdderTest {
         var result = EventAdder.eventAdder(projectDir, "  ");
         assertThat(result.isFailure())
                   .isTrue();
+    }
+
+    /// The missing-name check runs first, so a blank or absent name is reported as missing, not as a bad name.
+    @Test
+    void addEvent_blankOrNullName_failsAsMissingName() throws Exception {
+        var projectDir = setupProject();
+        EventAdder.eventAdder(projectDir, "  ")
+                  .onSuccess(adder -> fail("a blank name must be refused"))
+                  .onFailure(cause -> assertThat(cause.message()).isEqualTo("Event name must not be null or empty"));
+        EventAdder.eventAdder(projectDir, null)
+                  .onSuccess(adder -> fail("an absent name must be refused"))
+                  .onFailure(cause -> assertThat(cause.message()).isEqualTo("Event name must not be null or empty"));
     }
 
     @Test

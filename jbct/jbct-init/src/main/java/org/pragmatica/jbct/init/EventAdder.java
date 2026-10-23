@@ -5,14 +5,21 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 
 /// Adds pub-sub event annotation files to an existing Aether slice project.
 public final class EventAdder {
     private static final Pattern KEBAB_CASE = Pattern.compile("[a-z][a-z0-9]*(-[a-z0-9]+)*");
+    private static final Cause EVENT_NAME_MISSING = Causes.cause("Event name must not be null or empty");
+
+    private static final Fn1<Cause, String> INVALID_EVENT_NAME = Causes.forOneValue("Event name must be kebab-case (e.g., 'expensive-order'): %s");
 
     private final Path projectDir;
     private final String eventName;
@@ -126,15 +133,9 @@ public final class EventAdder {
     }
 
     private static Result<Unit> validateEventName(String eventName) {
-        if (eventName == null || eventName.isBlank()) {
-            return Causes.cause("Event name must not be null or empty").result();
-        }
-
-        if (!KEBAB_CASE.matcher(eventName).matches()) {
-            return Causes.cause("Event name must be kebab-case (e.g., 'expensive-order'): " + eventName).result();
-        }
-
-        return Result.success(Unit.unit());
+        return Verify.ensure(eventName, Verify.Is::present, EVENT_NAME_MISSING)
+                     .flatMap(name -> Verify.ensure(name, Verify.Is::matches, KEBAB_CASE, INVALID_EVENT_NAME))
+                     .mapToUnit();
     }
 
     private static Result<EventAdder> buildEventAdder(Path projectDir,
@@ -144,9 +145,7 @@ public final class EventAdder {
                                                       ProjectConfig config) {
         var camelCase = ProjectFiles.toCamelCase(eventName);
         var annotationPackage = config.resolvePackage(packageOverride);
-        var configKey = (configKeyOverride != null && !configKeyOverride.isBlank())
-                        ? configKeyOverride
-                        : "messaging." + eventName;
+        var configKey = Option.option(configKeyOverride).filter(Verify.Is::notBlank).or(() -> "messaging." + eventName);
 
         return Result.success(new EventAdder(projectDir, eventName, camelCase, annotationPackage, configKey));
     }

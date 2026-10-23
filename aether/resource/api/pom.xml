@@ -34,6 +34,11 @@
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
         </dependency>
+        <!-- JsonText and the generated json/jsonb column codecs of pg-codegen factories -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>toml</artifactId>

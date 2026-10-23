@@ -1737,7 +1737,7 @@ public sealed interface AetherValue {
     /// mint against an absent key is first-wins, and a Put through the fence is accepted only as the
     /// immediate successor of the committed value. A Remove is NOT fenced, and a restore deliberately goes
     /// Remove-then-Put to bypass the fence; a restore's monotonicity comes from the floor in
-    /// `ClusterIncarnation.restoreCommands`, not from this fence.
+    /// `ClusterIncarnation.restoring`, not from this fence.
     record ClusterIncarnationValue(String lineageId, long incarnation, String incarnationId) implements AetherValue, VersionFenced {
         public static final long GENESIS = 1L;
 

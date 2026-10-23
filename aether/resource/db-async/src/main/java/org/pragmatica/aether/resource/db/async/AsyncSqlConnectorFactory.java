@@ -53,6 +53,7 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
         builder.database(config.effectiveDatabase(DatabaseConnectorConfig.Transport.ASYNC));
         config.effectiveUsername(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::username);
         config.effectivePassword(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::password);
+        builder.converters(JsonTextConverter.INSTANCE);
     }
 
     private static void configurePool(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {

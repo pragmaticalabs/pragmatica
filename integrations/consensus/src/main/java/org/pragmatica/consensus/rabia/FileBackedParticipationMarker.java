@@ -151,18 +151,18 @@ record FileBackedParticipationMarker(Path markerFile, AtomicReference<Participat
                                var temp = Files.createTempFile(parent, ".participation-", ".tmp");
 
                                try {
-                               Files.writeString(temp, token, StandardCharsets.UTF_8);
-                               try (var channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
-                               channel.force(true);
-                           }
+                                   Files.writeString(temp, token, StandardCharsets.UTF_8);
+                                   try (var channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
+                                       channel.force(true);
+                                   }
 
-                               Files.move(temp,
-                                          markerFile,
-                                          StandardCopyOption.REPLACE_EXISTING,
-                                          StandardCopyOption.ATOMIC_MOVE);
-                           } finally {
-                               Files.deleteIfExists(temp);
-                           }
+                                   Files.move(temp,
+                                              markerFile,
+                                              StandardCopyOption.REPLACE_EXISTING,
+                                              StandardCopyOption.ATOMIC_MOVE);
+                               } finally {
+                                   Files.deleteIfExists(temp);
+                               }
 
                                return Unit.unit();
                            });

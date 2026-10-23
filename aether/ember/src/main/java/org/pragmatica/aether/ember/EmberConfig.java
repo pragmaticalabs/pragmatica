@@ -11,11 +11,12 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 
 /// #1008 — `basePort` is the cluster's QUIC/consensus UDP base port: node `i` binds `basePort + i`,
 /// so a cluster of `nodes` occupies `basePort .. basePort + nodes - 1`. It was the one port Forge
-/// could not move — management, dashboard and app HTTP were configurable while this stayed pinned
+/// could not move — management, Forge API and app HTTP were configurable while this stayed pinned
 /// at [EmberCluster#DEFAULT_BASE_PORT] — which is precisely what made a second Forge instance
 /// collide invisibly: relocating the three configurable ports removed the loud TCP guard while
 /// leaving the QUIC range fixed. Configurability alone did not make that collision visible: the duplicate
@@ -29,13 +30,14 @@ import org.pragmatica.lang.Result;
 /// are numerically equal and serve unrelated purposes, and no evidence of a real relationship was
 /// found.
 ///
-/// `dashboardPort` is the port of Forge's own HTTP API (load and chaos control). The name, and the
-/// `dashboard_port` TOML key, predate the removal of the web dashboard and are kept so existing
-/// `forge.toml` files keep working; renaming the key is a separate, config-breaking decision.
+/// `forgePort` is the port of Forge's own HTTP API (load and chaos control), read from the
+/// `forge_port` TOML key. #2385: the key was `dashboard_port` until the web dashboard's removal made
+/// the name wrong. There is no alias (pre-GA): a file still carrying the old key is refused at load,
+/// naming the new one, because ignoring it would silently run Forge on the default port.
 public record EmberConfig(int nodes,
                           int basePort,
                           int managementPort,
-                          int dashboardPort,
+                          int forgePort,
                           int appHttpPort,
                           EmberH2Config h2Config,
                           ObservabilityConfig observability,
@@ -52,7 +54,7 @@ public record EmberConfig(int nodes,
     /// callers need not reach into the cluster class for a default.
     public static final int DEFAULT_BASE_PORT = EmberCluster.DEFAULT_BASE_PORT;
     public static final int DEFAULT_MANAGEMENT_PORT = 5150;
-    public static final int DEFAULT_DASHBOARD_PORT = 8888;
+    public static final int DEFAULT_FORGE_PORT = 8888;
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final boolean DEFAULT_LB_ENABLED = true;
     public static final int DEFAULT_LB_PORT = 8080;
@@ -62,7 +64,7 @@ public record EmberConfig(int nodes,
     public static final EmberConfig DEFAULT = new EmberConfig(DEFAULT_NODES,
                                                               DEFAULT_BASE_PORT,
                                                               DEFAULT_MANAGEMENT_PORT,
-                                                              DEFAULT_DASHBOARD_PORT,
+                                                              DEFAULT_FORGE_PORT,
                                                               DEFAULT_APP_HTTP_PORT,
                                                               EmberH2Config.disabled(),
                                                               ObservabilityConfig.DEFAULT,
@@ -71,10 +73,10 @@ public record EmberConfig(int nodes,
                                                               DEFAULT_CORE_MAX,
                                                               DEFAULT_START_TIMEOUT_SECONDS);
 
-    public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort) {
+    public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int forgePort) {
         return emberConfig(nodes,
                            managementPort,
-                           dashboardPort,
+                           forgePort,
                            DEFAULT_APP_HTTP_PORT,
                            EmberH2Config.disabled(),
                            ObservabilityConfig.DEFAULT,
@@ -83,10 +85,10 @@ public record EmberConfig(int nodes,
                            DEFAULT_CORE_MAX);
     }
 
-    public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort, int appHttpPort) {
+    public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int forgePort, int appHttpPort) {
         return emberConfig(nodes,
                            managementPort,
-                           dashboardPort,
+                           forgePort,
                            appHttpPort,
                            EmberH2Config.disabled(),
                            ObservabilityConfig.DEFAULT,
@@ -97,12 +99,12 @@ public record EmberConfig(int nodes,
 
     public static Result<EmberConfig> emberConfig(int nodes,
                                                   int managementPort,
-                                                  int dashboardPort,
+                                                  int forgePort,
                                                   int appHttpPort,
                                                   EmberH2Config h2Config) {
         return emberConfig(nodes,
                            managementPort,
-                           dashboardPort,
+                           forgePort,
                            appHttpPort,
                            h2Config,
                            ObservabilityConfig.DEFAULT,
@@ -113,13 +115,13 @@ public record EmberConfig(int nodes,
 
     public static Result<EmberConfig> emberConfig(int nodes,
                                                   int managementPort,
-                                                  int dashboardPort,
+                                                  int forgePort,
                                                   int appHttpPort,
                                                   EmberH2Config h2Config,
                                                   ObservabilityConfig observability) {
         return emberConfig(nodes,
                            managementPort,
-                           dashboardPort,
+                           forgePort,
                            appHttpPort,
                            h2Config,
                            observability,
@@ -130,7 +132,7 @@ public record EmberConfig(int nodes,
 
     public static Result<EmberConfig> emberConfig(int nodes,
                                                   int managementPort,
-                                                  int dashboardPort,
+                                                  int forgePort,
                                                   int appHttpPort,
                                                   EmberH2Config h2Config,
                                                   ObservabilityConfig observability,
@@ -138,7 +140,7 @@ public record EmberConfig(int nodes,
                                                   int lbPort) {
         return emberConfig(nodes,
                            managementPort,
-                           dashboardPort,
+                           forgePort,
                            appHttpPort,
                            h2Config,
                            observability,
@@ -149,7 +151,7 @@ public record EmberConfig(int nodes,
 
     public static Result<EmberConfig> emberConfig(int nodes,
                                                   int managementPort,
-                                                  int dashboardPort,
+                                                  int forgePort,
                                                   int appHttpPort,
                                                   EmberH2Config h2Config,
                                                   ObservabilityConfig observability,
@@ -159,7 +161,7 @@ public record EmberConfig(int nodes,
         return emberConfig(nodes,
                            DEFAULT_BASE_PORT,
                            managementPort,
-                           dashboardPort,
+                           forgePort,
                            appHttpPort,
                            h2Config,
                            observability,
@@ -175,7 +177,7 @@ public record EmberConfig(int nodes,
     public static Result<EmberConfig> emberConfig(int nodes,
                                                   int basePort,
                                                   int managementPort,
-                                                  int dashboardPort,
+                                                  int forgePort,
                                                   int appHttpPort,
                                                   EmberH2Config h2Config,
                                                   ObservabilityConfig observability,
@@ -205,15 +207,15 @@ public record EmberConfig(int nodes,
             return EmberConfigError.invalidValue("management_port", managementPort, "must be valid port").result();
         }
 
-        if (dashboardPort < 1 || dashboardPort > 65535) {
-            return EmberConfigError.invalidValue("dashboard_port", dashboardPort, "must be valid port").result();
+        if (forgePort < 1 || forgePort > 65535) {
+            return EmberConfigError.invalidValue("forge_port", forgePort, "must be valid port").result();
         }
 
         if (appHttpPort < 1 || appHttpPort > 65535) {
             return EmberConfigError.invalidValue("app_http_port", appHttpPort, "must be valid port").result();
         }
 
-        if (managementPort == dashboardPort) {
+        if (managementPort == forgePort) {
             return EmberConfigError.portConflict(managementPort).result();
         }
 
@@ -229,7 +231,7 @@ public record EmberConfig(int nodes,
         return Result.success(new EmberConfig(nodes,
                                               basePort,
                                               managementPort,
-                                              dashboardPort,
+                                              forgePort,
                                               appHttpPort,
                                               h2Config,
                                               observability,
@@ -260,8 +262,17 @@ public record EmberConfig(int nodes,
     // #1455: every typed read here answers Option and takes the default for a present-but-wrong-typed
     // value; the document records those reads and the load refuses naming every one.
     private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
-        return assembleFromDocument(doc, baseDir).flatMap(config -> doc.requireNoTypeMismatches()
-                                                                       .map(_ -> config));
+        return refuseRenamedKeys(doc).flatMap(_ -> assembleFromDocument(doc, baseDir))
+                                .flatMap(config -> doc.requireNoTypeMismatches()
+                                                      .map(_ -> config));
+    }
+
+    private static Result<Unit> refuseRenamedKeys(org.pragmatica.config.toml.TomlDocument doc) {
+        if (doc.hasKey("cluster", "dashboard_port")) {
+            return EmberConfigError.renamedKey("cluster", "dashboard_port", "forge_port").result();
+        }
+
+        return Result.unitResult();
     }
 
     private static Result<EmberConfig> assembleFromDocument(org.pragmatica.config.toml.TomlDocument doc,
@@ -269,7 +280,7 @@ public record EmberConfig(int nodes,
         int nodes = doc.getInt("cluster", "nodes").or(DEFAULT_NODES);
         int basePort = doc.getInt("cluster", "base_port").or(DEFAULT_BASE_PORT);
         int managementPort = doc.getInt("cluster", "management_port").or(DEFAULT_MANAGEMENT_PORT);
-        int dashboardPort = doc.getInt("cluster", "dashboard_port").or(DEFAULT_DASHBOARD_PORT);
+        int forgePort = doc.getInt("cluster", "forge_port").or(DEFAULT_FORGE_PORT);
         int appHttpPort = doc.getInt("cluster", "app_http_port").or(DEFAULT_APP_HTTP_PORT);
         var h2Config = parseH2Config(doc, baseDir);
         var observability = parseObservabilityConfig(doc);
@@ -281,7 +292,7 @@ public record EmberConfig(int nodes,
         return emberConfig(nodes,
                            basePort,
                            managementPort,
-                           dashboardPort,
+                           forgePort,
                            appHttpPort,
                            h2Config,
                            observability,
@@ -340,7 +351,15 @@ public record EmberConfig(int nodes,
         record PortConflict(int port) implements EmberConfigError {
             @Override
             public String message() {
-                return "management_port and dashboard_port cannot be the same: " + port;
+                return "management_port and forge_port cannot be the same: " + port;
+            }
+        }
+
+        /// A key renamed without an alias; the message names the replacement.
+        record RenamedKey(String section, String oldKey, String newKey) implements EmberConfigError {
+            @Override
+            public String message() {
+                return "[" + section + "] " + oldKey + " was renamed to " + newKey + "; rename the key in forge.toml";
             }
         }
 
@@ -350,6 +369,10 @@ public record EmberConfig(int nodes,
 
         static EmberConfigError portConflict(int port) {
             return new PortConflict(port);
+        }
+
+        static EmberConfigError renamedKey(String section, String oldKey, String newKey) {
+            return new RenamedKey(section, oldKey, newKey);
         }
     }
 }

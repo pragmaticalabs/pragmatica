@@ -931,8 +931,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                           if (ctx.currentLeader()
                                  .filter(leader::equals)
                                  .isPresent()) {
-                          return;
-                      }
+                              return;
+                          }
                           // FIX 1: do NOT gate the KV-pull adoption on transport topology presence. The prior
                           // `if (!currentTopology().contains(leader)) return;` silently skipped FOREVER on every
                           // 500ms tick when the committed leader was absent from the transport view — the second
@@ -941,14 +941,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                           // is logged WARN here; the `adoptLeaderUnconditionally` handler emits the adoption WARN.
                           if (!ctx.currentTopology()
                                   .contains(leader)) {
-                          log.warn("KV-pull: committed leader {} NOT in transport topology {} — adopting anyway "
-                                  + "(consensus decision overrides observed state, FIX 1)",
-                                   leader,
-                                   ctx.currentTopology());
-                      } else {
-                          log.info("Adopting leader from KV-Store: {} (push-notification path missed)",
-                                   leader);
-                      }
+                              log.warn("KV-pull: committed leader {} NOT in transport topology {} — adopting anyway "
+                                      + "(consensus decision overrides observed state, FIX 1)",
+                                       leader,
+                                       ctx.currentTopology());
+                          } else {
+                              log.info("Adopting leader from KV-Store: {} (push-notification path missed)",
+                                       leader);
+                          }
 
                           dispatchSelf(ctx,
                                        new LeaderCommitted(leader));
