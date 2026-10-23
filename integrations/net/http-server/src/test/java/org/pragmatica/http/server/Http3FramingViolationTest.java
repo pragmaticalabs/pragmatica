@@ -26,6 +26,7 @@ import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3Headers;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
+import io.netty.handler.codec.http3.Http3ErrorCode;
 import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.junit.jupiter.api.AfterEach;
@@ -148,6 +149,20 @@ class Http3FramingViolationTest {
             stream.write(postHeaders(port));
             finishRaw(stream, 0x00, 0x0A, 'h', 'e', 'l', 'l', 'o');
         });
+    }
+
+    /// RFC 9114 §7.1 makes a stream that ends inside a frame a connection error: the server closes the connection with
+    /// H3_FRAME_ERROR, not only the stream.
+    @Test
+    void streamEndingInsideAFrame_closesTheConnectionWithFrameError() throws Exception {
+        var close = Http3TestClient.peerClose(port, stream -> {
+            stream.write(postHeaders(port));
+            finishRaw(stream, 0x00, 0x0A, 'h', 'e', 'l', 'l', 'o');
+        });
+
+        assertThat(close.isApplicationClose()).isTrue();
+        assertThat(close.error()).isEqualTo(Http3ErrorCode.H3_FRAME_ERROR.code());
+        assertThat(recorder.requests()).isEmpty();
     }
 
     /// RFC 9114 §7.1: the same for a trailer section cut short (a HEADERS frame declaring 5 bytes and carrying 1).

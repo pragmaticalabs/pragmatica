@@ -285,9 +285,10 @@ final class Http3Server {
     ///
     /// Accumulates headers and data frames, then dispatches
     /// to the shared request handler when input closes.
+    /// Each stream gets its own instance — no @Sharable needed.
+    ///
     /// A stream that breaks HTTP/3 framing is never dispatched, not even its valid prefix (#2386): see
     /// [#exceptionCaught] and [#userEventTriggered].
-    /// Each stream gets its own instance — no @Sharable needed.
     ///
     /// A body over `maxContentLength` is answered 413 as soon as it crosses the limit and is never dispatched
     /// (I1: it was cut to the limit and dispatched as if complete). The trailer section, when the client sends one, is

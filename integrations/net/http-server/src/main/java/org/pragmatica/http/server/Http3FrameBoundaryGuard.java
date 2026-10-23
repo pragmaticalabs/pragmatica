@@ -23,6 +23,7 @@ import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.handler.codec.http3.Http3ErrorCode;
 import io.netty.handler.codec.http3.Http3Exception;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.codec.quic.QuicStreamFrame;
 
 /// #2386: RFC 9114 §7.1 — a stream that ends inside a frame is a connection error of type `H3_FRAME_ERROR`. Netty's
 /// frame codec does not check it: it passes on the bytes of a DATA frame cut short and drops the rest of a cut frame
@@ -41,8 +42,11 @@ final class Http3FrameBoundaryGuard extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        // the same two forms Netty's frame codec reads
         if (msg instanceof ByteBuf bytes) {
             track(bytes);
+        } else if (msg instanceof QuicStreamFrame frame) {
+            track(frame.content());
         }
         ctx.fireChannelRead(msg);
     }

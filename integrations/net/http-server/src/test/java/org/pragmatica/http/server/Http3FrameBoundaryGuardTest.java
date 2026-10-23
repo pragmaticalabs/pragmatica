@@ -22,6 +22,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.handler.codec.http3.Http3ErrorCode;
 import io.netty.handler.codec.http3.Http3Exception;
+import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,6 +70,21 @@ class Http3FrameBoundaryGuardTest {
     void eightByteTypeAndLength_areFollowed() {
         assertThat(boundaryAfter(0xC0, 0, 0, 0, 0, 0, 0, 0x21, 0xC0, 0, 0, 0, 0, 0, 0, 0x01)).isFalse();
         assertThat(boundaryAfter(0xC0, 0, 0, 0, 0, 0, 0, 0x21, 0xC0, 0, 0, 0, 0, 0, 0, 0x01, 9)).isTrue();
+    }
+
+    /// Netty's frame codec also reads QUIC stream frames; the guard follows their content the same way.
+    @Test
+    void quicStreamFrames_areFollowed() {
+        var channel = new EmbeddedChannel(new Http3FrameBoundaryGuard());
+
+        channel.writeInbound(new DefaultQuicStreamFrame(bytes(0x00, 0x02, 'a'), false));
+
+        assertThat(guard(channel).atFrameBoundary()).isFalse();
+
+        channel.writeInbound(new DefaultQuicStreamFrame(bytes('b'), true));
+
+        assertThat(guard(channel).atFrameBoundary()).isTrue();
+        channel.finishAndReleaseAll();
     }
 
     @Test
