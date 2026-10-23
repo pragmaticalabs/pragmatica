@@ -43,10 +43,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// status route: the blueprint's outcome is SUCCEEDED and stays so, the apply record has been completed, the leader holds three ACTIVE goals, and
 /// each core holds one current ACTIVE row of its own.
 ///
-/// **Rounds are counted at submission** (`submissions_total{outcome=submitted}`, the cluster FSM per transaction, the node FSM per write), never at
-/// settlement: a clean deploy's row echo clears a node's write before its settlement is stepped, so an `accepted` count omits most node rounds by
-/// construction (v-2204 F1). Leader and nodes are counted apart. The enabled assertion pins **the counts measured on the current head, with a
-/// stated slack**; the design's leader budget (7.1: 3 to 4) is the `@Disabled` assertion beside it, which names the finding. The nodes' measured count meets 7.1 (4 per instance), so 7.1 is their enabled bound.
+/// **Leader rounds are applies** (P3-G ruling Q1): spec 7 counts a round as one `apply(List)`, so the leader is read from
+/// `applies_total{fsm=cluster}`, one per apply the interpreter sent (O4 proxy: the design's O4 counts committed batches, and one apply stands for
+/// one only while NT-90 stays unverified). Its transactions (`submissions_total{fsm=cluster,outcome=submitted}`) are read beside it. **Node rounds
+/// are counted at submission** (`submissions_total{fsm=node,outcome=submitted}`, one per write, and each write is one apply), never at settlement:
+/// a clean deploy's row echo clears a node's write before its settlement is stepped, so an `accepted` count omits most node rounds by construction
+/// (v-2204 F1). The enabled assertion pins **the leader's applies measured on the current head, with a stated slack**; the design's leader budget
+/// is the `@Disabled` assertion beside it. The nodes' measured count meets 7.1 (4 per instance), so 7.1 is their enabled bound.
 /// The design's O4 instrument (distinct notification revisions over the union key families, 9.5 criterion 4) is a phase-4 entry criterion and is not
 /// built here.
 ///
@@ -65,9 +68,10 @@ class Fsm2DeployE01Test {
     /// Design 7.1: the leader's clean deploy takes 3 to 4 rounds, each node 4 per instance.
     private static final double SPEC_LEADER_ROUNDS = 4;
     private static final double SPEC_NODE_ROUNDS = NODES * 4;
-    /// MEASURED, not the budget: the leader's rounds of one clean deploy on the head under test (9, 10 of 10 runs agreed), plus a stated slack of 1.
+    /// MEASURED, not the budget: the leader's applies of one clean deploy (target, LOAD, ACTIVATE, SUCCEEDED, plus one when the ACTIVATE rows
+    /// land in two drains: 4 or 5 after P3-G's G1; 5, 6, 6 in three probe runs before it), plus a stated slack of 1.
     /// The nodes' measured count (12) meets the budget exactly, so the budget itself is the enabled bound for them.
-    private static final double MEASURED_LEADER_ROUNDS = 9;
+    private static final double MEASURED_LEADER_APPLIES = 5;
     private static final double SLACK = 1;
 
     private static final String EXPECTED_WARNS = "/fsm2/expected-warns-e01.txt";
@@ -107,15 +111,16 @@ class Fsm2DeployE01Test {
         assertThat(activeGoals(artifact)).as("goals ACTIVE x 3").isEqualTo(NODES);
         assertThat(activeRows(artifact)).as("3 ACTIVE rows").isEqualTo(NODES);
         cluster.allNodes().forEach(node -> assertThat(currentRow(node, artifact)).as("a current row of " + node.self().id()).isTrue());
-        var leaderRounds = rounds("cluster");
-        var nodeRounds = rounds("node");
+        var leaderApplies = leaderApplies();
+        var leaderTransactions = submitted("cluster");
+        var nodeRounds = submitted("node");
 
-        System.out.printf("E01 outcomeVersion=%d leaderRounds=%.0f (spec %.0f, measured pin %.0f) nodeRounds=%.0f (spec %.0f)%n",
-                          version, leaderRounds, SPEC_LEADER_ROUNDS, MEASURED_LEADER_ROUNDS, nodeRounds, SPEC_NODE_ROUNDS);
-        assertThat(leaderRounds).as("TRIPWIRE: the leader's rounds are today's measured count (+ slack), NOT the 7.1 budget; see leaderRounds_withinTheSpecBudget")
-                                .isLessThanOrEqualTo(MEASURED_LEADER_ROUNDS + SLACK);
-        assertThat(leaderRounds).as("TRIPWIRE, lower side: the leader now takes fewer rounds than the pin - delete me, enable leaderRounds_withinTheSpecBudget")
-                                .isGreaterThanOrEqualTo(MEASURED_LEADER_ROUNDS - SLACK);
+        System.out.printf("E01 outcomeVersion=%d leaderApplies=%.0f (spec %.0f, measured pin %.0f) leaderTransactions=%.0f nodeRounds=%.0f (spec %.0f)%n",
+                          version, leaderApplies, SPEC_LEADER_ROUNDS, MEASURED_LEADER_APPLIES, leaderTransactions, nodeRounds, SPEC_NODE_ROUNDS);
+        assertThat(leaderApplies).as("TRIPWIRE: the leader's applies are today's measured count (+ slack), NOT the 7.1 budget; see leaderRounds_withinTheSpecBudget")
+                                 .isLessThanOrEqualTo(MEASURED_LEADER_APPLIES + SLACK);
+        assertThat(leaderApplies).as("TRIPWIRE, lower side: the leader now takes fewer applies than the pin - delete me, enable leaderRounds_withinTheSpecBudget")
+                                 .isGreaterThanOrEqualTo(MEASURED_LEADER_APPLIES - SLACK);
         assertThat(nodeRounds).as("design 7.1: 4 rounds per instance, counted at submission").isLessThanOrEqualTo(SPEC_NODE_ROUNDS);
         assertThat(sensorViolations()).as("E-01 against fsm2/expected-warns-e01.txt and the O6 metrics (no fault: silent)").isEmpty();
     }
@@ -127,7 +132,7 @@ class Fsm2DeployE01Test {
     void leaderRounds_withinTheSpecBudget() {
         deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(), BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
 
-        assertThat(rounds("cluster")).as("design 7.1: leader, clean deploy, 3 to 4 rounds").isLessThanOrEqualTo(SPEC_LEADER_ROUNDS);
+        assertThat(leaderApplies()).as("design 7.1: leader, clean deploy, 3 to 4 rounds (applies)").isLessThanOrEqualTo(SPEC_LEADER_ROUNDS);
     }
 
     private long deployedVersion = -1;
@@ -227,8 +232,23 @@ class Fsm2DeployE01Test {
         return row(node, artifact).map(row -> row.incarnation().bootToken() != 0L).or(false);
     }
 
-    private double rounds(String fsm) {
+    private double submitted(String fsm) {
         return cluster.allNodes().stream().mapToDouble(node -> Fsm2Sensors.armCount(node, fsm, "submitted")).sum();
+    }
+
+    /// The leader's `apply(List)` calls, summed over the nodes (only the leader's cluster FSM submits).
+    private double leaderApplies() {
+        return cluster.allNodes()
+                      .stream()
+                      .mapToDouble(node -> node.deploymentWiring()
+                                               .meters()
+                                               .find("aether_deployment_fsm_applies_total")
+                                               .tags("fsm", "cluster")
+                                               .counters()
+                                               .stream()
+                                               .mapToDouble(counter -> counter.count())
+                                               .sum())
+                      .sum();
     }
 
     private AetherNode leader() {
