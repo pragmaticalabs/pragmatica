@@ -25,6 +25,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.socket.ChannelInputShutdownEvent;
+import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3Headers;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
@@ -158,7 +159,7 @@ class Http3BodyBufferReleaseTest {
 
         assertThat(usedHeap() - before).as("control: the counter sees the held body").isGreaterThanOrEqualTo(BODY);
 
-        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        endInput(channel);
 
         assertThat(channel.isOpen()).as("control: the stream has not closed").isTrue();
         assertThat(usedHeap() - before).as("released when the input closed").isLessThan(SLACK);
@@ -244,5 +245,12 @@ class Http3BodyBufferReleaseTest {
 
     private static long usedHeap() {
         return UnpooledByteBufAllocator.DEFAULT.metric().usedHeapMemory();
+    }
+
+    /// The input ending as the QUIC transport ends it on a `FIN`: the input-shutdown event, then read-complete, on
+    /// which the handler dispatches (#2386).
+    private static void endInput(EmbeddedChannel channel) {
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
     }
 }

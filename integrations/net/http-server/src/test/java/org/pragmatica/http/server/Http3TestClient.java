@@ -23,16 +23,21 @@ import java.util.concurrent.TimeUnit;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelInitializer;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
+import io.netty.handler.codec.http3.DefaultHttp3Headers;
 import io.netty.handler.codec.http3.Http3DataFrame;
+import io.netty.handler.codec.http3.Http3Headers;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
 import io.netty.handler.codec.quic.QuicChannel;
+import io.netty.handler.codec.quic.QuicConnectionCloseEvent;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
@@ -43,9 +48,9 @@ import io.netty.util.ReferenceCountUtil;
 final class Http3TestClient {
     private Http3TestClient() {}
 
-    /// The response to one request: its status and body. The status is `closed` when the stream or the connection ended
-    /// without one.
-    record Answer(String status, String body) {}
+    /// The response to one request: its status, body and header section. The status is `closed`, and the headers empty,
+    /// when the stream or the connection ended without one.
+    record Answer(String status, String body, Http3Headers headers) {}
 
     /// Writes one request on a fresh request stream. It may block (to stall or trickle a body), and need not end the
     /// stream's output.
@@ -70,6 +75,22 @@ final class Http3TestClient {
 
     /// Opens a connection, lets `writer` write one request, and waits up to 10 s after it returns for the response.
     static Answer exchange(int port, RequestWriter writer) throws Exception {
+        return connect(port, writer, (reader, _) -> reader.answer.get(10, TimeUnit.SECONDS));
+    }
+
+    /// Opens a connection, lets `writer` write one request, and waits up to 10 s after it returns for the server to close
+    /// the connection: the close the client received, with its error code.
+    static QuicConnectionCloseEvent peerClose(int port, RequestWriter writer) throws Exception {
+        return connect(port, writer, (_, peerClose) -> peerClose.get(10, TimeUnit.SECONDS));
+    }
+
+    /// What a connection waits for once the request is written.
+    @FunctionalInterface
+    private interface Outcome<T> {
+        T await(AnswerReader reader, CompletableFuture<QuicConnectionCloseEvent> peerClose) throws Exception;
+    }
+
+    private static <T> T connect(int port, RequestWriter writer, Outcome<T> outcome) throws Exception {
         var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 
         try {
@@ -91,8 +112,16 @@ final class Http3TestClient {
                                          .channel();
 
             try {
+                var peerClose = new CompletableFuture<QuicConnectionCloseEvent>();
                 var quic = QuicChannel.newBootstrap(channel)
-                                      .handler(new Http3ClientConnectionHandler())
+                                      .handler(new ChannelInitializer<QuicChannel>() {
+                                          @Override
+                                          protected void initChannel(QuicChannel ch) {
+                                              ch.pipeline()
+                                                .addLast(new Http3ClientConnectionHandler(),
+                                                         new PeerCloseRecorder(peerClose));
+                                          }
+                                      })
                                       .remoteAddress(new InetSocketAddress("127.0.0.1", port))
                                       .connect()
                                       .get(10, TimeUnit.SECONDS);
@@ -104,11 +133,11 @@ final class Http3TestClient {
 
                 writer.write(stream);
 
-                var answer = reader.answer.get(10, TimeUnit.SECONDS);
+                var result = outcome.await(reader, peerClose);
 
                 quic.close().sync();
 
-                return answer;
+                return result;
             } finally {
                 channel.close().sync();
             }
@@ -117,18 +146,37 @@ final class Http3TestClient {
         }
     }
 
-    /// Collects the first status and the body. Completes when the stream's input ends, when the stream or the
-    /// connection closes, or when the stream fails.
+    /// Completes with the CONNECTION_CLOSE the server sent.
+    private static final class PeerCloseRecorder extends ChannelInboundHandlerAdapter {
+        private final CompletableFuture<QuicConnectionCloseEvent> peerClose;
+
+        PeerCloseRecorder(CompletableFuture<QuicConnectionCloseEvent> peerClose) {
+            this.peerClose = peerClose;
+        }
+
+        @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+            if (evt instanceof QuicConnectionCloseEvent close) {
+                peerClose.complete(close);
+            }
+            super.userEventTriggered(ctx, evt);
+        }
+    }
+
+    /// Collects the first status, its header section, and the body. Completes when the stream's input ends, when the
+    /// stream or the connection closes, or when the stream fails.
     private static final class AnswerReader extends Http3RequestStreamInboundHandler {
         private final CompletableFuture<Answer> answer = new CompletableFuture<>();
         private final StringBuilder body = new StringBuilder();
         private String status = "closed";
+        private Http3Headers headers = new DefaultHttp3Headers();
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
             synchronized (body) {
                 if ("closed".equals(status)) {
                     status = String.valueOf(frame.headers().status());
+                    headers = frame.headers();
                 }
             }
         }
@@ -160,7 +208,7 @@ final class Http3TestClient {
 
         void finish() {
             synchronized (body) {
-                answer.complete(new Answer(status, body.toString()));
+                answer.complete(new Answer(status, body.toString(), headers));
             }
         }
     }
