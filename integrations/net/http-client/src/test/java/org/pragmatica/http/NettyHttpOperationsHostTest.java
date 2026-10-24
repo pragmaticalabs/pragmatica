@@ -102,6 +102,26 @@ class NettyHttpOperationsHostTest {
         /// the authority.
         @Test
         void callerHost_becomesTheAuthority_andNoHostFieldIsSent() {
+            var port = startServerAndClient();
+
+            assertThat(send(URI.create("https://127.0.0.1:" + port + "/"), Map.of("Host", List.of("api.example"))))
+                .isEqualTo(200);
+            assertThat(received.getFirst().headers().getAll(":authority")).containsExactly("api.example");
+            assertThat(received.getFirst().headers().getAll("host")).isEmpty();
+        }
+
+        /// With no caller `host`, the URI's host is the authority, and the caller's other headers still arrive.
+        @Test
+        void noCallerHost_sendsTheUriHostAsAuthority_andKeepsTheCallersOtherHeaders() {
+            var port = startServerAndClient();
+
+            assertThat(send(URI.create("https://127.0.0.1:" + port + "/"), Map.of("x-other", List.of("v"))))
+                .isEqualTo(200);
+            assertThat(received.getFirst().headers().getAll(":authority")).containsExactly("127.0.0.1");
+            assertThat(received.getFirst().headers().getAll("x-other")).containsExactly("v");
+        }
+
+        private int startServerAndClient() {
             var port = freeUdpPort();
 
             server = HttpServer.http3Server(HttpServerConfig.httpServerConfig("client-host-h3", port),
@@ -115,10 +135,7 @@ class NettyHttpOperationsHostTest {
                                                                                   .applicationProtocols(Http3.supportedApplicationProtocols())
                                                                                   .build());
 
-            assertThat(send(URI.create("https://127.0.0.1:" + port + "/"), Map.of("Host", List.of("api.example"))))
-                .isEqualTo(200);
-            assertThat(received.getFirst().headers().getAll(":authority")).containsExactly("api.example");
-            assertThat(received.getFirst().headers().getAll("host")).isEmpty();
+            return port;
         }
     }
 

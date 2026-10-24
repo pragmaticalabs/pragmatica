@@ -22,6 +22,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.socket.ChannelInputShutdownEvent;
+import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.handler.codec.http3.Http3ErrorCode;
 import io.netty.handler.codec.http3.Http3Exception;
 import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
@@ -174,6 +175,20 @@ class Http3FrameBoundaryGuardTest {
         channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
 
         channel.checkException();
+        channel.finishAndReleaseAll();
+    }
+
+    /// Only the end of the input is judged: any other user event on a stream cut mid-frame passes through, since
+    /// raising `H3_FRAME_ERROR` on it would close the whole QUIC connection.
+    @Test
+    void otherUserEvent_insideAFrame_raisesNothing_andLeavesTheChannelOpen() {
+        var channel = new EmbeddedChannel(new Http3FrameBoundaryGuard());
+
+        channel.writeInbound(bytes(0x00, 0x0A, 'h', 'e', 'l', 'l', 'o'));
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
+
+        channel.checkException();
+        assertThat(channel.isOpen()).isTrue();
         channel.finishAndReleaseAll();
     }
 
