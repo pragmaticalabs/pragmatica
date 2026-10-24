@@ -229,6 +229,8 @@ public interface StorageInstance {
     ///      existing record may belong to a write still in flight;
     ///   2. `refName` is pointed at the block, with [#putRef]'s counting;
     ///   3. [AppendLog#sealedThrough] advances to `toOffset`, which is what lets [AppendLog#truncate] pass it.
+    /// The maximum block size does not apply to a seal: the sealer chooses the range, and `streams`, the only
+    /// instance that seals, has no cap.
     /// A failure at any step leaves the log's seal bound where it was, so its records stay. "Durable" here
     /// means a tier reporting [StorageTier#isDurable] -- the local disk, or an S3 tier built from config (#249): an
     /// in-memory DHT tier never counts (#1544), and an instance with no
