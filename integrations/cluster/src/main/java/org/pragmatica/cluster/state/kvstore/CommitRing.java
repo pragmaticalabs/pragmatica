@@ -18,6 +18,9 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /// The commit ring of the worker replica feed: the effects of recently committed batches, in apply order, byte-bounded, with the position
 /// bookkeeping a subscriber needs to resume (floor, frontier, incarnation tag, the last [#ANCHOR_PAIRS] effect pairs).
@@ -30,6 +33,7 @@ import org.pragmatica.lang.Unit;
 /// enqueued under that lock, so a heartbeat is always enqueued after every entry for batches up to its `nextSlot`. Closing a subscriber under the
 /// lock is a flag; the transport close runs after the lock is released, on the close executor.
 public final class CommitRing {
+    private static final Logger log = LoggerFactory.getLogger(CommitRing.class);
     /// The number of `(slot, batchId)` pairs a position carries.
     public static final int ANCHOR_PAIRS = 8;
     public static final long DEFAULT_BUDGET_BYTES = 8L * 1024 * 1024;
@@ -50,7 +54,9 @@ public final class CommitRing {
     public enum CloseReason {
         EVICTED,
         INCARNATION_MISMATCH,
-        OVERFLOW
+        OVERFLOW,
+        /// A writer appended a slot behind the frontier; the ring did not record it. The subscriber resubscribes and its anchors decide.
+        OUT_OF_ORDER
     }
 
     public sealed interface Subscribe permits Granted, Refused {}
@@ -328,8 +334,10 @@ public final class CommitRing {
             return;
         }
         // Guard: never append behind the frontier, so an older slot cannot reorder the chain or move `coveredTo` back. The store's
-        // `applyEffects` is the single enforcer of the `slot < applied` skip; this only keeps the ring itself in apply order.
+        // `applyEffects` is the single enforcer of the `slot < applied` skip; this keeps the ring itself in apply order, and never in silence.
         if (slot < nextSlot) {
+            refuseBehindFrontierLocked(closes, slot);
+
             return;
         }
 
@@ -350,6 +358,16 @@ public final class CommitRing {
         pushAnchor(new AnchorPair(slot, batchId));
         offerToSubscribers(closes, entry);
         evict();
+    }
+
+    /// I-W1 for a batch the ring cannot record in order: every live sink is closed `OUT_OF_ORDER` and resubscribes, where its anchors decide.
+    /// The entries, the floor and the frontier stay as they are, since the ring cannot prove any other value for them.
+    private void refuseBehindFrontierLocked(Closes closes, long slot) {
+        log.warn("Commit ring refused an append at slot {} behind its frontier {}; closing {} live subscription(s)",
+                 slot,
+                 nextSlot,
+                 subscriptions.size());
+        closeAll(closes, CloseReason.OUT_OF_ORDER);
     }
 
     private void advanceLocked(Closes closes, IncarnationTag current, long newNextSlot) {
