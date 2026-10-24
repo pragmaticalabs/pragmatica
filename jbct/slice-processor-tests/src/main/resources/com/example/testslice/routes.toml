@@ -11,8 +11,9 @@ getOrders = "GET /{userId:Long}/orders?status&limit:Integer"
 health = "GET /health"
 exportCsv = { route = "GET /export/{id:Long}", produces = "text/csv" }
 download = { route = "GET /download/{id:Long}", produces = "application/octet-stream" }
-uploadText = { route = "POST /upload-text", consumes = "text/plain" }
-uploadForm = { route = "POST /upload-form", consumes = "multipart/form-data" }
+uploadText = { route = "POST /upload-text", consumes = "text/plain", max_size = "1MB" }
+uploadForm = { route = "POST /upload-form", consumes = "multipart/form-data", max_size = "50MB", max_duration = "30m" }
+uploadBlob = { route = "POST /upload-blob", consumes = "application/octet-stream" }
 
 [errors]
 default = 500

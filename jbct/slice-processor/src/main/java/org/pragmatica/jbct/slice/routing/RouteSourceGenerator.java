@@ -822,7 +822,7 @@ public class RouteSourceGenerator {
                     ? ","
                     : "";
         var security = securityExpression(routeConfig, handlerName);
-        var trailer = versionedTrailer(version) + outputCall(routeDsl) + comma;
+        var trailer = uploadTrailer(routeDsl) + versionedTrailer(version) + outputCall(routeDsl) + comma;
         // A refused route (F2) is still emitted, as a body-only route, so its one clear error is the only one: emitting
         // the parameter merge would add a misleading "add a record component" error for a MultipartRequest body.
         var hasPath = routeDsl.hasPathParams() && !paramsRefused;
@@ -988,6 +988,20 @@ public class RouteSourceGenerator {
 
     /// The `.versioned(N)` call to tag a versioned route, or empty string for an unversioned route
     /// (keeps unversioned generated output byte-identical).
+    /// The route's ingest declaration, for the node that accepts the request: a binary or multipart `consumes` marks an
+    /// upload route (it gets the upload bounds), and `max_size` / `max_duration` carry the declared limits. A route that
+    /// is neither emits nothing, so every other route's generated source is unchanged.
+    private String uploadTrailer(RouteDsl routeDsl) {
+        var category = routeDsl.consumes().category();
+        var upload = "BINARY".equals(category) || "MULTIPART".equals(category);
+        var limits = routeDsl.limits();
+
+        return upload || limits.declared()
+               ? ".withUpload(org.pragmatica.http.routing.UploadSpec.uploadSpec(" + upload + ", " + limits.maxSizeBytes()
+                 + "L, " + limits.maxDurationMillis() + "L))"
+               : "";
+    }
+
     private String versionedTrailer(int version) {
         return version > 0
                ? ".versioned(" + version + ")"

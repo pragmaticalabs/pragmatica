@@ -29,15 +29,32 @@ import org.pragmatica.lang.utils.Causes;
 /// @param queryParams  extracted query parameters
 /// @param consumes     request body media type ([MediaType#JSON] by default)
 /// @param produces     response body media type ([MediaType#JSON] by default)
+/// @param limits       the ingest limits the route declares (`max_size`, `max_duration`); [RouteLimits#NONE] by default
 public record RouteDsl(String method,
                        String pathTemplate,
                        List<PathParam> pathParams,
                        List<QueryParam> queryParams,
                        MediaType consumes,
-                       MediaType produces) {
+                       MediaType produces,
+                       RouteLimits limits) {
     public RouteDsl {
         pathParams = List.copyOf(pathParams);
         queryParams = List.copyOf(queryParams);
+    }
+
+    /// A route that declares no ingest limits.
+    public RouteDsl(String method,
+                    String pathTemplate,
+                    List<PathParam> pathParams,
+                    List<QueryParam> queryParams,
+                    MediaType consumes,
+                    MediaType produces) {
+        this(method, pathTemplate, pathParams, queryParams, consumes, produces, RouteLimits.NONE);
+    }
+
+    /// This route with the ingest limits it declares.
+    public RouteDsl withLimits(RouteLimits limits) {
+        return new RouteDsl(method, pathTemplate, pathParams, queryParams, consumes, produces, limits);
     }
 
     private static final Set<String> VALID_METHODS = Set.of("GET", "POST", "PUT", "DELETE", "PATCH");

@@ -185,6 +185,19 @@ HTTP_429 = ["*RateLimit*", "*TooMany*"]
 OrderNotFoundButValid = 200
 ```
 
+### Inline route keys
+
+An inline-table route takes these keys: `route` (required), `consumes`, `produces`, `security`, `method` (versioned bind keys only), and the per-route ingest limits `max_size` and `max_duration`:
+
+```toml
+[routes]
+uploadAvatar = { route = "POST /avatar", consumes = "multipart/form-data", max_size = "5MB", max_duration = "2m" }
+```
+
+- `max_size` is a size string (`"5GB"`, `"512KB"`) or an integer number of bytes; `max_duration` is a duration string (`"6h"`, `"90s"`). Both must be greater than zero.
+- The generated route carries them as `.withUpload(UploadSpec.uploadSpec(upload, maxSizeBytes, maxDurationMillis))`, where `upload` is true for a binary or multipart `consumes`. The node that accepts the request enforces them before it reads the body; a route that declares neither and consumes JSON, text or XML generates no `withUpload` call.
+- Any other key is a compile error naming it and the valid keys. The per-part keys `max_file_size`, `max_files`, `max_fields`, `max_field_size`, `resumable` and `unclaimed_ttl` are refused as not enforced yet, not ignored.
+
 ## Generated Code
 
 ### Input
