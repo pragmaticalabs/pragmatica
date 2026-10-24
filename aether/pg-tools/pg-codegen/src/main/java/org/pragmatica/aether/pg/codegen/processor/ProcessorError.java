@@ -139,6 +139,24 @@ public final class ProcessorError {
              + "))";
     }
 
+    public static String jsonAndOtherColumn(String target, String jsonColumn, String otherColumn) {
+        return PREFIX
+             + "'" + target
+             + "' is bound to json/jsonb column '" + jsonColumn
+             + "', so it is sent as a JSON document, and also to column '" + otherColumn
+             + "', which cannot take that document. Bind the other column to a parameter of its own type";
+    }
+
+    public static String stringNotPlaced(String target, String table) {
+        return PREFIX
+             + "'" + target
+             + "' is a String used where its column cannot be determined from the SQL, in a statement on table '" + table
+             + "', which has json/jsonb columns. A String parameter is sent as varchar, which json/jsonb refuse: cast it "
+             + "in the SQL to the type it is meant to be (:" + target
+             + "::text, CAST(:" + target
+             + " AS jsonb)), or write it directly against its column";
+    }
+
     public static String jsonbColumnMismatch(String target, String column, String table, String pgType) {
         return PREFIX
              + "@Jsonb target '" + target

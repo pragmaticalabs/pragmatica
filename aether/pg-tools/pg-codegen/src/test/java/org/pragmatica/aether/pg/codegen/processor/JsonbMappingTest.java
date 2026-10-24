@@ -360,6 +360,38 @@ class JsonbMappingTest {
         }
 
         @Test
+        void crudEnumComponentOnJsonColumn_isAJsonString() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Table;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                enum Mood { CALM, BUSY }
+
+                record DocumentRow(long id, Mood profile, Mood legacy, String title) {}
+
+                @PgSql
+                public interface EnumRepo {
+                    @Table(DocumentRow.class)
+                    Promise<Unit> insert(DocumentRow row);
+
+                    @Table(DocumentRow.class)
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileAndCompileGenerated(source, "test/EnumRepo.java", tempDir);
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.EnumRepoFactory")).contains("text.decode(MOOD_JSON)")
+                                                                     .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(MOOD_JSON, row.profile())");
+        }
+
+        @Test
         void inferredTypeTheGeneratorCannotHandle_isCompileErrorWithItsReason() throws Exception {
             var source = """
                 package test;
@@ -743,21 +775,23 @@ class JsonbMappingTest {
         }
 
         @Test
-        void unmarkedEnumOnJsonColumn_isNotInferred() throws Exception {
+        void unmarkedEnumInQueryResultComponent_isNotInferred() throws Exception {
             var source = """
                 package test;
 
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
                 enum Mood { CALM, BUSY }
 
-                record DocumentRow(long id, Mood profile) {}
+                record MoodRow(long id, Mood profile) {}
 
                 @PgSql
                 public interface EnumRepo {
-                    Promise<Option<DocumentRow>> findById(long id);
+                    @Query("SELECT id, profile FROM documents WHERE id = :id")
+                    Promise<Option<MoodRow>> find(long id);
                 }
                 """;
 
@@ -1395,12 +1429,15 @@ class JsonbMappingTest {
         }
         """;
 
-    /// #2401 round 2: `INSERT INTO t (c1, .., cn) VALUES (:p1, .., :pn)` names each column by position. Every other
-    /// insert shape stays as it was: no inference, no refusal.
+    /// #2401: parameters are paired with their columns off the pg-parser syntax tree, so comments, whitespace, letter
+    /// case and clause order cannot change a pairing. A String the tree cannot place, in an INSERT, UPDATE or DELETE
+    /// whose table has json/jsonb columns, is refused unless cast.
     @Nested
-    class PositionalInsert {
+    class TreePairing {
         private static final String PROFILE_RECORD = "record Profile(String name) {}\n\n";
+        private static final String NOT_PLACED = "is a String used where its column cannot be determined from the SQL";
 
+        // --- INSERT: the n-th value of every row with the n-th column ---
         @Test
         void plainInsert_stringOnJsonColumn_isCompileErrorNamingTheColumn() throws Exception {
             var result = compile(STRING_REPO_HEADER + """
@@ -1413,6 +1450,7 @@ class JsonbMappingTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb")
+                                            .contains("'legacy' is a String bound to column 'documents.legacy' of type json")
                                             .contains("A String parameter is sent as varchar, which json/jsonb refuse");
         }
 
@@ -1426,146 +1464,406 @@ class JsonbMappingTest {
 
         @Test
         void plainInsert_textColumnFirst_jsonColumnSecond_isPairedInOrder() throws Exception {
-            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
-                @PgSql
-                public interface OrderRepo {
-                    @Query("INSERT INTO documents (title, profile, id, legacy) VALUES (:t, :doc, :id, :old)")
-                    Promise<Unit> store(long id, String t, Profile doc, Profile old);
-                }
-                """, "test/OrderRepo.java"), "test.OrderRepoFactory");
-
-            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)")
-                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, old)");
+            assertDocuments("INSERT INTO documents (title, profile, id, legacy) VALUES (:t, :doc, :id, :old)",
+                            "long id, String t, Profile doc, Profile old",
+                            "doc",
+                            "old");
         }
 
         @Test
         void plainInsert_jsonColumnFirst_textColumnSecond_isPairedInOrder() throws Exception {
-            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
-                @PgSql
-                public interface OrderRepo {
-                    @Query("INSERT INTO documents (profile, title, id, legacy) VALUES (:doc, :t, :id, :old)")
-                    Promise<Unit> store(String t, long id, Profile doc, Profile old);
-                }
-                """, "test/OrderRepo.java"), "test.OrderRepoFactory");
-
-            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)")
-                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, old)");
+            assertDocuments("INSERT INTO documents (profile, title, id, legacy) VALUES (:doc, :t, :id, :old)",
+                            "String t, long id, Profile doc, Profile old",
+                            "doc",
+                            "old");
         }
 
         @Test
-        void plainInsert_textColumnsAreNotChecked_soStringOnTextStaysAllowed() throws Exception {
-            var generated = factory(compile(STRING_REPO_HEADER + """
-                @PgSql
-                public interface TextRepo {
-                    @Query("INSERT INTO documents (title, nick) VALUES (:title, :nick)")
-                    Promise<Unit> store(String title, String nick);
-                }
-                """, "test/TextRepo.java"), "test.TextRepoFactory");
-
-            assertThat(generated).doesNotContain("JsonText");
+        void plainInsert_stringOnTextColumns_compiles() throws Exception {
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, title, nick) VALUES (:id, :title, :nick)",
+                                           "long id, String title, String nick");
         }
 
         @Test
-        void countMismatch_moreColumnsThanValues_isNotPositional() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile, title) VALUES (:id, :raw)",
-                               "long id, String raw");
+        void insertWithoutSpaces_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents(id,profile)VALUES(:id,:raw)", "long id, String raw");
         }
 
         @Test
-        void countMismatch_moreValuesThanColumns_isNotPositional() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw, :extra)",
-                               "long id, String raw, String extra");
+        void insertWithExtraSpaces_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents ( id , profile ) VALUES ( :id , :raw )", "long id, String raw");
         }
 
         @Test
-        void expressionInValues_staysAsToday() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, to_jsonb(:raw::text))",
-                               "long id, String raw");
+        void lowerCaseKeywords_arePaired() throws Exception {
+            assertStringOnJsonRefused("insert into documents (id, profile) values (:id, :raw) returning id", "long id, String raw");
         }
 
         @Test
-        void expressionWithoutParentheses_staysAsToday() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw || :more)",
-                               "long id, String raw, String more");
+        void leadingSpace_isPaired() throws Exception {
+            assertStringOnJsonRefused(" INSERT INTO documents (id, profile) VALUES (:id, :raw)", "long id, String raw");
         }
 
         @Test
-        void statementWithPrefix_staysAsToday() throws Exception {
-            assertStaysAsToday("/* audit */ INSERT INTO documents (id, profile) VALUES (:id, :raw)",
-                               "long id, String raw");
+        void trailingSemicolon_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw);", "long id, String raw");
         }
 
         @Test
-        void castInValues_staysAsToday() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw::jsonb)",
-                               "long id, String raw");
+        void trailingSemicolonAndSpace_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw); ", "long id, String raw");
         }
 
         @Test
-        void multiRowValues_staysAsToday() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw), (:id2, :raw2)",
-                               "long id, String raw, long id2, String raw2");
+        void newlineAndTabBetweenClauses_arePaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile)\n\tVALUES (:id, :raw)\nRETURNING id", "long id, String raw");
         }
 
         @Test
-        void insertSelect_staysAsToday() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) SELECT :id, :raw",
-                               "long id, String raw");
+        void returningRightAfterTheValues_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw)RETURNING id", "long id, String raw");
         }
 
         @Test
-        void returning_tail_isPairedLikeThePlainForm() throws Exception {
-            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) RETURNING id",
+        void commentRightAfterTheValues_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw)/*c*/RETURNING id", "long id, String raw");
+        }
+
+        @Test
+        void commentBeforeTheTail_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) /* c */ RETURNING id", "long id, String raw");
+        }
+
+        @Test
+        void commentInTheColumnList_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, /* c */ profile) VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void lineCommentBeforeValues_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) -- c\nVALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void commentBeforeTheStatement_isPaired() throws Exception {
+            assertStringOnJsonRefused("/* audit */ INSERT INTO documents (id, profile) VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void cteBeforeTheInsert_isPaired() throws Exception {
+            assertStringOnJsonRefused("WITH x AS (SELECT 1) INSERT INTO documents (id, profile) VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void upperCaseColumn_foldsToTheLowerCaseColumn() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, PROFILE) VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void upperCaseTable_foldsToTheLowerCaseTable() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO Documents (id, profile) VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void quotedLowerCaseColumn_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, \"profile\") VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void quotedColumn_keepsItsCase() throws Exception {
+            assertRefused("INSERT INTO kw (id, \"Doc\") VALUES (:id, :raw)",
+                          "long id, String raw",
+                          "'raw' is a String bound to column 'kw.Doc' of type jsonb");
+            assertCompilesWithoutDocuments("INSERT INTO kw (id, doc) VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void keywordNamedColumns_arePaired() throws Exception {
+            assertRefused("INSERT INTO kw (id, value) VALUES (:id, :raw)",
+                          "long id, String raw",
+                          "'raw' is a String bound to column 'kw.value' of type jsonb");
+            assertRefused("INSERT INTO kw (id, \"order\") VALUES (:id, :raw)",
+                          "long id, String raw",
+                          "'raw' is a String bound to column 'kw.order' of type jsonb");
+        }
+
+        @Test
+        void tableAlias_keepsTheColumnList() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents AS d (id, profile) VALUES (:id, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void everyRowOfAMultiRowInsert_isPaired() throws Exception {
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, :doc), (:id2, :raw2)",
+                          "long id, Profile doc, long id2, String raw2",
+                          "'raw2' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void defaultAmongTheValues_keepsThePositions() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, title, profile) VALUES (:id, DEFAULT, :raw)", "long id, String raw");
+        }
+
+        @Test
+        void castValue_isAllowed_andNotInferred() throws Exception {
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, :raw::jsonb)", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, :raw ::jsonb)", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, to_jsonb(:raw::text))", "long id, String raw");
+        }
+
+        @Test
+        void castRecordValue_isNotInferred() throws Exception {
+            var result = compileSql("INSERT INTO documents (id, profile) VALUES (:id, :doc::jsonb)", "long id, Profile doc");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Parameter 'doc' has type 'test.Profile' which is neither a supported column type");
+        }
+
+        // --- tails ---
+        @Test
+        void returning_tail_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) RETURNING profile", "long id, String raw");
+        }
+
+        @Test
+        void onConflictDoNothing_tail_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id, title) DO NOTHING",
                                       "long id, String raw");
         }
 
         @Test
-        void onConflictDoNothing_tail_isPairedLikeThePlainForm() throws Exception {
-            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO NOTHING",
+        void onConflictOnANewLine_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON\nCONFLICT (id) DO NOTHING",
                                       "long id, String raw");
         }
 
         @Test
-        void onConflictDoUpdate_tail_isPairedLikeThePlainForm() throws Exception {
-            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET profile = EXCLUDED.profile",
-                                      "long id, String raw");
-        }
-
-        @Test
-        void onConflictDoUpdate_tailWithReturning_isPairedLikeThePlainForm() throws Exception {
-            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET title = 'x' RETURNING id",
+        void onConflictDoUpdate_tail_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title WHERE documents.id > 0",
                                       "long id, String raw");
         }
 
         @Test
         void returning_tail_recordOnJsonColumn_isDocument() throws Exception {
-            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
-                @PgSql
-                public interface TailRepo {
-                    @Query("INSERT INTO documents (id, profile) VALUES (:id, :doc) ON CONFLICT (id) DO NOTHING RETURNING id")
-                    Promise<Long> store(long id, Profile doc);
-                }
-                """, "test/TailRepo.java"), "test.TailRepoFactory");
-
-            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)");
+            assertDocuments("INSERT INTO documents (id, profile) VALUES (:id, :doc) ON CONFLICT (id) DO NOTHING RETURNING profile",
+                            "long id, Profile doc",
+                            "doc");
         }
 
-        /// The `SET col = :p` pair is existing behaviour, not part of the positional pairing: a String there is refused
-        /// today, and this PR adds no refusal and removes none.
         @Test
-        void onConflictDoUpdate_setPair_stringOnJsonColumn_isStillRefusedByTheExistingPair() throws Exception {
-            var result = compile(STRING_REPO_HEADER + """
-                @PgSql
-                public interface SetPairRepo {
-                    @Query("INSERT INTO documents (id, title) VALUES (:id, :title) ON CONFLICT (id) DO UPDATE SET profile = :raw")
-                    Promise<Unit> store(long id, String title, String raw);
-                }
-                """, "test/SetPairRepo.java");
+        void onConflictDoUpdate_setItem_isPairedWithTheTarget() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, title) VALUES (:id, :title) ON CONFLICT (id) DO UPDATE SET profile = :raw",
+                                      "long id, String title, String raw");
+        }
+
+        @Test
+        void onConflictWhere_excludedIsTheTarget() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, title) VALUES (:id, :title) ON CONFLICT (id) DO UPDATE SET title = :title WHERE excluded.profile = :raw",
+                                      "long id, String title, String raw");
+        }
+
+        // --- the table comes from the statement's own target, never from a FROM in a tail ---
+        @Test
+        void tailSelectingFromAnotherTable_keepsTheTarget_forAString() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET title = (SELECT o.name FROM other o WHERE o.id = 1)",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void tailSelectingFromAnotherTable_keepsTheTarget_forARecord() throws Exception {
+            assertDocuments("INSERT INTO documents (id, profile) VALUES (:id, :doc) ON CONFLICT (id) DO UPDATE SET title = (SELECT o.name FROM other o WHERE o.id = 1)",
+                            "long id, Profile doc",
+                            "doc");
+        }
+
+        @Test
+        void textTargetWithATailSelectingFromDocuments_recordIsTheTypeError_notADocument() throws Exception {
+            var result = compileSql("INSERT INTO other (id, profile) VALUES (:id, :doc) ON CONFLICT (id) DO UPDATE SET name = (SELECT d.title FROM documents d WHERE d.id = 1)",
+                                    "long id, Profile doc");
 
             assertThat(result.success()).isFalse();
-            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb");
+            assertThat(result.diagnostics()).contains("Parameter 'doc' has type 'test.Profile' which is neither a supported column type")
+                                            .doesNotContain("documents.profile");
         }
 
+        @Test
+        void textTargetWithATailSelectingFromDocuments_stringCompiles() throws Exception {
+            assertCompilesWithoutDocuments("INSERT INTO other (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET name = (SELECT d.title FROM documents d WHERE d.id = 1)",
+                                           "long id, String raw");
+        }
+
+        // --- one parameter, two columns ---
+        @Test
+        void sameRecordOnAJsonAndATextColumn_isRefused() throws Exception {
+            assertRefused("INSERT INTO documents (id, profile, title) VALUES (:id, :doc, :doc)",
+                          "long id, Profile doc",
+                          "'doc' is bound to json/jsonb column 'documents.profile', so it is sent as a JSON document, and also to column 'documents.title'");
+        }
+
+        @Test
+        void sameRecordOnTwoJsonColumns_isDocument() throws Exception {
+            assertDocuments("INSERT INTO documents (id, profile, legacy) VALUES (:id, :doc, :doc)", "long id, Profile doc", "doc");
+        }
+
+        @Test
+        void sameStringOnAJsonAndATextColumn_isRefused() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, title, profile) VALUES (:id, :raw, :raw)", "long id, String raw");
+        }
+
+        // --- UPDATE, DELETE and SELECT pairs ---
+        @Test
+        void setItem_isPaired() throws Exception {
+            assertStringOnJsonRefused("UPDATE documents SET profile = :raw WHERE id = :id", "long id, String raw");
+        }
+
+        @Test
+        void setItemWithAKeywordOrQuotedColumn_isPaired() throws Exception {
+            assertRefused("UPDATE kw SET value = :raw WHERE id = :id",
+                          "long id, String raw",
+                          "'raw' is a String bound to column 'kw.value' of type jsonb");
+            assertRefused("UPDATE kw SET \"order\" = :raw WHERE id = :id",
+                          "long id, String raw",
+                          "'raw' is a String bound to column 'kw.order' of type jsonb");
+        }
+
+        @Test
+        void setColumnList_isPairedByPosition() throws Exception {
+            assertStringOnJsonRefused("UPDATE documents SET (title, profile) = (:t, :raw) WHERE id = :id", "long id, String t, String raw");
+        }
+
+        @Test
+        void wherePair_upperCaseColumn_isPaired() throws Exception {
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE PROFILE = :raw", "String raw");
+        }
+
+        @Test
+        void wherePair_reversed_isPaired() throws Exception {
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE :raw = profile", "String raw");
+        }
+
+        @Test
+        void wherePair_secondTableOfAJoin_isPairedThroughItsAlias() throws Exception {
+            assertStringOnJsonRefused("SELECT d.id FROM other o JOIN documents d ON d.id = o.id WHERE d.profile = :raw", "String raw");
+        }
+
+        @Test
+        void wherePair_castAfterASpace_isAllowed() throws Exception {
+            assertCompilesWithoutDocuments("SELECT id FROM documents WHERE profile = :raw ::jsonb", "String raw");
+        }
+
+        @Test
+        void inLikeBetweenAndDistinct_arePairedWithTheirColumn() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE title LIKE :p AND nick BETWEEN :a AND :b AND title IN (:i, :j) AND nick IS DISTINCT FROM :n",
+                                           "String t, String p, String a, String b, String i, String j, String n");
+            assertStringOnJsonRefused("DELETE FROM documents WHERE profile IN (:raw)", "String raw");
+        }
+
+        @Test
+        void updateFromAnotherTable_resolvesItsQualifiedColumns() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE documents d SET title = :t FROM other o WHERE o.profile = :p AND d.id = o.id",
+                                           "String t, String p");
+        }
+
+        @Test
+        void subqueryColumn_resolvesInTheSubquery() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE documents SET title = (SELECT o.name FROM other o WHERE o.profile = :p) WHERE id = :id",
+                                           "long id, String p");
+        }
+
+        @Test
+        void targetAlias_qualifiesColumns() throws Exception {
+            assertStringOnJsonRefused("UPDATE documents d SET title = :t WHERE d.profile = :raw", "String t, String raw");
+        }
+
+        @Test
+        void parenthesisedValue_isPaired() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, (:raw))", "long id, String raw");
+        }
+
+        @Test
+        void correlatedColumn_resolvesInTheEnclosingStatement() throws Exception {
+            assertRefused("UPDATE documents SET title = (SELECT o.name FROM other o WHERE o.id = 1 AND legacy = :raw)",
+                          "String raw",
+                          "'raw' is a String bound to column 'documents.legacy' of type json");
+            assertStringOnJsonRefused("UPDATE documents SET title = (SELECT o.name FROM other o WHERE o.id = documents.id AND documents.profile = :raw)",
+                                      "String raw");
+        }
+
+        @Test
+        void nestedSelectTables_stayInTheirSelect() throws Exception {
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE profile = :raw AND id IN (SELECT o.id FROM other o)", "String raw");
+        }
+
+        @Test
+        void ambiguousBareColumn_isNotPlaced() throws Exception {
+            assertNotPlaced("UPDATE documents SET title = :t FROM other WHERE profile = :p AND documents.id = other.id",
+                            "String t, String p",
+                            "p");
+        }
+
+        @Test
+        void derivedTableColumn_blocksBareResolution() throws Exception {
+            assertNotPlaced("UPDATE documents SET title = :t FROM (SELECT 1 AS id) s WHERE legacy = :p AND documents.id = s.id",
+                            "String t, String p",
+                            "p");
+            assertNotPlaced("WITH x AS (SELECT 1 AS id) UPDATE documents SET title = :t FROM x WHERE legacy = :p AND documents.id = x.id",
+                            "String t, String p",
+                            "p");
+            assertNotPlaced("UPDATE documents SET title = :t FROM generate_series(1, 2) g WHERE legacy = :p",
+                            "String t, String p",
+                            "p");
+        }
+
+        @Test
+        void insertSelectSource_doesNotSeeTheTarget() throws Exception {
+            assertNotPlaced("INSERT INTO documents (id, title) SELECT o.id, o.name FROM other o WHERE legacy = :p", "String p", "p");
+        }
+
+        @Test
+        void enumOnAJsonColumn_isAJsonString() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + """
+                enum Mood { CALM, BUSY }
+
+                @PgSql
+                public interface MoodRepo {
+                    @Query("UPDATE documents SET profile = :mood WHERE id = :id")
+                    Promise<Unit> store(long id, Mood mood);
+                }
+                """, "test/MoodRepo.java"), "test.MoodRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(MOOD_JSON, mood)");
+        }
+
+        // --- a String the tree cannot place ---
+        @Test
+        void unplacedString_inAStatementOnAJsonTable_isRefused() throws Exception {
+            assertNotPlaced("INSERT INTO documents (id, profile) SELECT :id, :raw", "long id, String raw", "raw");
+            assertNotPlaced("INSERT INTO documents (id, profile) VALUES (:id, coalesce(:raw, '{}'))", "long id, String raw", "raw");
+            assertNotPlaced("INSERT INTO documents (id, profile) VALUES (:id, :raw || :more)", "long id, String raw, String more", "more");
+            assertNotPlaced("INSERT INTO documents (id, profile, title) VALUES (:id, :raw)", "long id, String raw", "raw");
+            assertNotPlaced("INSERT INTO documents VALUES (:id, :raw)", "long id, String raw", "raw");
+            assertNotPlaced("UPDATE documents SET title = lower(:t) WHERE id = :id", "long id, String t", "t");
+            assertNotPlaced("DELETE FROM documents WHERE title = lower(:t)", "String t", "t");
+        }
+
+        @Test
+        void unplacedString_withACast_compiles() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE documents SET title = lower(:t::text) WHERE id = :id", "long id, String t");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) SELECT :id, CAST(:raw AS jsonb)", "long id, String raw");
+        }
+
+        @Test
+        void unplacedString_onATableWithoutJsonColumns_orInASelect_compiles() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE other SET name = lower(:t) WHERE id = :id", "long id, String t");
+            assertCompilesWithoutDocuments("SELECT id FROM documents WHERE lower(title) = lower(:t)", "String t");
+        }
+
+        @Test
+        void unplacedNonString_compiles() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE id = abs(:id)", "long id, String t");
+        }
+
+        // --- record expansion: the column list is read off the tree ---
         @Test
         void columnList_oneJsonColumn_recordIsDocument_notExpanded() throws Exception {
             var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
@@ -1581,14 +1879,13 @@ class JsonbMappingTest {
         }
 
         @Test
+        void columnListAfterATableAlias_recordIsNotExpanded() throws Exception {
+            assertDocuments("INSERT INTO documents AS d (profile) VALUES (:p)", "Profile p", "p");
+        }
+
+        @Test
         void columnList_recordOnTextColumn_isTheExistingTypeError_notAParseFailure() throws Exception {
-            var result = compile(STRING_REPO_HEADER + PROFILE_RECORD + """
-                @PgSql
-                public interface ListRepo {
-                    @Query("INSERT INTO documents (title) VALUES (:p)")
-                    Promise<Unit> store(Profile p);
-                }
-                """, "test/ListRepo.java");
+            var result = compileSql("INSERT INTO documents (title) VALUES (:p)", "Profile p");
 
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("Parameter 'p' has type 'test.Profile' which is neither a supported column type")
@@ -1597,46 +1894,102 @@ class JsonbMappingTest {
 
         @Test
         void noColumnList_recordStillExpands() throws Exception {
+            assertExpanded("INSERT INTO documents VALUES (:p)");
+        }
+
+        @Test
+        void commentWithParenthesesBeforeValues_isNotAColumnList() throws Exception {
+            assertExpanded("INSERT INTO documents -- (x)\nVALUES (:p)");
+            assertExpanded("INSERT INTO documents /* (x) */ VALUES (:p)");
+        }
+
+        @Test
+        void parenthesesBeforeTheInsert_areNotAColumnList() throws Exception {
+            assertExpanded("WITH c AS (SELECT 1) INSERT INTO documents VALUES (:p)");
+        }
+
+        private void assertExpanded(String sql) throws Exception {
             var generated = factory(compile(STRING_REPO_HEADER + """
                 record TitleOnly(String title) {}
 
                 @PgSql
                 public interface ExpandRepo {
-                    @Query("INSERT INTO documents VALUES (:p)")
+                    @Query("%s")
                     Promise<Unit> store(TitleOnly p);
                 }
-                """, "test/ExpandRepo.java"), "test.ExpandRepoFactory");
+                """.formatted(escaped(sql)), "test/ExpandRepo.java"), "test.ExpandRepoFactory");
 
-            assertThat(generated).contains("INSERT INTO documents (title) VALUES ($1)")
+            assertThat(generated).contains("(title) VALUES ($1)")
                                  .contains("p.title()");
         }
 
         private void assertStringOnJsonRefused(String sql, String params) throws Exception {
-            var result = compile(STRING_REPO_HEADER + """
-                @PgSql
-                public interface TailRepo {
-                    @Query("%s")
-                    Promise<Long> store(%s);
-                }
-                """.formatted(sql, params), "test/TailRepo.java");
-
-            assertThat(result.success()).isFalse();
-            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb");
+            assertRefused(sql, params, "'raw' is a String bound to column 'documents.profile' of type jsonb");
         }
 
-        /// The String on a json column is the proof of "no refusal": the same bind in the plain form is refused.
-        private void assertStaysAsToday(String sql, String params) throws Exception {
-            var result = compile(STRING_REPO_HEADER + """
+        private void assertNotPlaced(String sql, String params, String param) throws Exception {
+            assertRefused(sql, params, "'" + param + "' " + NOT_PLACED + ", in a statement on table 'documents'");
+        }
+
+        private void assertRefused(String sql, String params, String expected) throws Exception {
+            var result = compileSql(sql, params);
+
+            assertThat(result.success()).as(sql).isFalse();
+            assertThat(result.diagnostics()).as(sql).contains(expected);
+        }
+
+        private void assertDocuments(String sql, String params, String... documents) throws Exception {
+            var generated = factory(compileSql(sql, params), "test.PairRepoFactory");
+
+            for (var document : documents) {
+                assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, " + document + ")");
+            }
+        }
+
+        private void assertCompilesWithoutDocuments(String sql, String params) throws Exception {
+            var result = compileSql(sql, params);
+
+            assertThat(result.success()).as(sql + "\n" + result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.PairRepoFactory")).as(sql).doesNotContain("JsonText");
+        }
+
+        private TestCompilationHelper.CompilationResult compileSql(String sql, String params) throws Exception {
+            return compile(STRING_REPO_HEADER + PROFILE_RECORD + """
                 @PgSql
-                public interface ExcludedRepo {
+                public interface PairRepo {
                     @Query("%s")
                     Promise<Unit> store(%s);
                 }
-                """.formatted(sql, params), "test/ExcludedRepo.java");
-
-            assertThat(result.success()).as(result.diagnostics()).isTrue();
-            assertThat(result.generatedSource("test.ExcludedRepoFactory")).doesNotContain("JsonText");
+                """.formatted(escaped(sql), params), "test/PairRepo.java");
         }
+
+        private static String escaped(String sql) {
+            return sql.replace("\\", "\\\\")
+                      .replace("\"", "\\\"")
+                      .replace("\n", "\\n")
+                      .replace("\t", "\\t");
+        }
+    }
+
+    /// The CRUD condition walk skips a condition that takes no parameter (`IsNull`), so the next parameter keeps its
+    /// own column.
+    @Test
+    void crudNoParamCondition_doesNotShiftTheNextParam() throws Exception {
+        var result = compile(STRING_REPO_HEADER + """
+            record TitleOnly(String title) {}
+
+            record DocumentRow(long id, String title) {}
+
+            @PgSql
+            public interface CrudRepo {
+                @Table(DocumentRow.class)
+                Promise<List<DocumentRow>> findByPreviousIsNullAndTitle(TitleOnly title);
+            }
+            """, "test/CrudRepo.java");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.diagnostics()).contains("Parameter 'title' has type 'test.TitleOnly' which is neither a supported column type")
+                                        .doesNotContain("[PG-VALIDATE] @Jsonb");
     }
 
     // --- helpers ---

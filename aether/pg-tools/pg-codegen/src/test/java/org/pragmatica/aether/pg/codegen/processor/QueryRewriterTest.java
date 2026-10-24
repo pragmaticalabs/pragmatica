@@ -150,29 +150,6 @@ class QueryRewriterTest {
         }
 
         @Test
-        void explicitColumnListStopsExpansion() {
-            var result = expandInsertRecord(
-                "INSERT INTO users (profile) VALUES (:request)",
-                "request",
-                List.of(new RecordField("name", "name")),
-                Map.of()
-            );
-            assertThat(result.sql()).isEqualTo("INSERT INTO users (profile) VALUES (:request)");
-            assertThat(result.parameterOrder()).isEmpty();
-        }
-
-        @Test
-        void parenthesisBeforeInsertIsNotAColumnList() {
-            var result = expandInsertRecord(
-                "WITH c AS (SELECT 1) INSERT INTO users VALUES (:request)",
-                "request",
-                List.of(new RecordField("name", "name")),
-                Map.of()
-            );
-            assertThat(result.sql()).isEqualTo("WITH c AS (SELECT 1) INSERT INTO users (name) VALUES ($1)");
-        }
-
-        @Test
         void noMatchReturnsUnchanged() {
             var result = expandInsertRecord(
                 "INSERT INTO users (name) VALUES ($1)",
