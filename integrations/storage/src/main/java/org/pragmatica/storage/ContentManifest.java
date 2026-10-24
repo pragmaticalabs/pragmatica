@@ -49,10 +49,7 @@ public record ContentManifest(long totalSize, int chunkCount, List<String> chunk
         var size = Byte.BYTES + Long.BYTES + Integer.BYTES + idBytes.stream()
                                                                     .mapToInt(id -> Integer.BYTES + id.length)
                                                                     .sum();
-        var body = ByteBuffer.allocate(size)
-                             .put(FORMAT_VERSION)
-                             .putLong(totalSize)
-                             .putInt(chunkCount);
+        var body = ByteBuffer.allocate(size).put(FORMAT_VERSION).putLong(totalSize).putInt(chunkCount);
 
         idBytes.forEach(id -> body.putInt(id.length)
                                   .put(id));
@@ -134,10 +131,7 @@ public record ContentManifest(long totalSize, int chunkCount, List<String> chunk
         return none();
     }
 
-    private static Option<ContentManifest> matchingCount(long totalSize,
-                                                         int declared,
-                                                         int count,
-                                                         List<String> ids) {
+    private static Option<ContentManifest> matchingCount(long totalSize, int declared, int count, List<String> ids) {
         return declared == count
                ? some(contentManifest(totalSize, ids))
                : none();

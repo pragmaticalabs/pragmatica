@@ -40,7 +40,6 @@ public interface StorageInstance {
     /// fails with [StorageError.BlockTooLarge] before anything is claimed or written. Callers that split larger content
     /// (the content store, the artifact store) cut it into blocks well below this.
     int DEFAULT_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
-
     /// Store content -- computes SHA-256, deduplicates, writes through tiers. Content over the instance's maximum
     /// block size fails with [StorageError.BlockTooLarge].
     Promise<BlockId> put(byte[] content);
@@ -837,11 +836,11 @@ final class DefaultStorageInstance implements StorageInstance {
         return content.length > maxBlockBytes
                ? StorageError.BlockTooLarge.blockTooLarge(content.length, maxBlockBytes).promise()
                : claimOrAwait(id,
-                            content,
-                            sentinelFor(id),
-                            this::writeThroughTiers,
-                            this::deduplicateBlock,
-                            this::handlePut);
+                              content,
+                              sentinelFor(id),
+                              this::writeThroughTiers,
+                              this::deduplicateBlock,
+                              this::handlePut);
     }
 
     /// #1567: one writer per id at a time. The caller registers its own promise in [#writing] before it
