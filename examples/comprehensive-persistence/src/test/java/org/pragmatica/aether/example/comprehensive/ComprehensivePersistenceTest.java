@@ -185,7 +185,8 @@ class ComprehensivePersistenceTest {
         @Override public Promise<CustomerRow> save(CustomerRow customer) { return Promise.success(customer); }
         @Override public Promise<Option<CustomerRow>> findById(Long id) {
             return Promise.success(Option.some(new CustomerRow(id, "Alice", "a@example.com",
-                                                                true, NOW, null, "gold", "{}")));
+                                                                true, NOW, null, "gold",
+                                                                new CrudPersistence.Preferences(Option.none(), Option.none()))));
         }
         @Override public Promise<Unit> deleteById(Long id) { return Promise.success(Unit.unit()); }
         @Override public Promise<Long> countByActive(Boolean active) { return Promise.success(0L); }

@@ -319,6 +319,506 @@ class JsonbMappingTest {
         }
     }
 
+    /// #2401: where the schema knows the column is json/jsonb, an unmarked record (or `Option` of one) is a document.
+    @Nested
+    class Inference {
+        @Test
+        void crudComponentsOnJsonColumns_areDocuments_withoutMarker() throws Exception {
+            var result = TestCompilationHelper.compileAndCompileGenerated(INFERRED_REPO, "test/InferredRepo.java", tempDir);
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.InferredRepoFactory"))
+                .contains("RowDecodeError.guard(\"profile\", row.getObject(\"profile\", org.pragmatica.aether.resource.db.JsonText.class)"
+                          + ".flatMap(text -> text.decode(PROFILE_JSON)))")
+                .contains("row.getOptional(\"previous\", org.pragmatica.aether.resource.db.JsonText.class)")
+                .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, row.legacy())")
+                .contains("row.previous().map(present$ -> org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, present$))");
+        }
+
+        @Test
+        void crudConditionParamOnJsonColumn_isDocument() throws Exception {
+            var generated = factory(compile(INFERRED_REPO, "test/InferredRepo.java"), "test.InferredRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, profile)")
+                                 .contains("title, org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, legacy)");
+        }
+
+        @Test
+        void queryPairOnJsonColumn_isDocument() throws Exception {
+            var generated = factory(compile(INFERRED_REPO, "test/InferredRepo.java"), "test.InferredRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROBE_JSON, probe)")
+                                 .contains("previous.map(present$ -> org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, present$))");
+        }
+
+        @Test
+        void recordExpandedInQueryValues_componentOnJsonColumnIsDocument() throws Exception {
+            var generated = factory(compile(INFERRED_REPO, "test/InferredRepo.java"), "test.InferredRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, entry.profile())")
+                                 .contains("entry.title()");
+        }
+
+        @Test
+        void inferredTypeTheGeneratorCannotHandle_isCompileErrorWithItsReason() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Task(Runnable action) {}
+
+                record DocumentRow(long id, Task profile) {}
+
+                @PgSql
+                public interface InferredTaskRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = compile(source, "test/InferredTaskRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'profile' maps to a json/jsonb column, so its type 'test.Task' is read and written as a JSON document")
+                                            .contains("component action: neither a record nor an enum")
+                                            .contains(". Write a 'static ValueMapping<test.Task, JsonText> valueMapping()' for it, or bind JsonText.");
+        }
+
+        /// A `ValueMapping` beats inference: an `Option` of a value object on a json column stays a nullable value object.
+        @Test
+        void optionValueObjectOnJsonColumn_staysValueMapping() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.JsonText;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Result;
+
+                record Settings(String raw) {
+                    static Result<Settings> settings(JsonText text) { return Result.success(new Settings(text.value())); }
+                    static ValueMapping<Settings, JsonText> valueMapping() {
+                        return ValueMapping.of(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
+                    }
+                }
+
+                record DocumentRow(long id, Option<Settings> previous) {}
+
+                @PgSql
+                public interface SettingsRowRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var generated = factory(compile(source, "test/SettingsRowRepo.java"), "test.SettingsRowRepoFactory");
+
+            assertThat(generated).contains("RowDecodeError.liftOptional(raw, Settings.valueMapping().lift())")
+                                 .doesNotContain("jsonCodec");
+        }
+
+        /// A `::type` cast hands the SQL the conversion, so a cast parameter is not inferred as a document.
+        @Test
+        void castRecordParam_isNotInferred() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface CastRepo {
+                    @Query("UPDATE documents SET profile = :profile::jsonb WHERE id = :id")
+                    Promise<Unit> store(long id, Profile profile);
+                }
+                """;
+
+            var result = compile(source, "test/CastRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Parameter 'profile'").contains("mark a json/jsonb column @Jsonb");
+        }
+
+        /// The component name maps to its column as the mapper maps it (camelCase to snake_case).
+        @Test
+        void camelCaseComponentOnJsonColumn_isDocument() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Extra(String note) {}
+
+                record DocumentRow(long id, Option<Extra> extraDoc) {}
+
+                @PgSql
+                public interface ExtraRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var generated = factory(compile(source, "test/ExtraRepo.java"), "test.ExtraRepoFactory");
+
+            assertThat(generated).contains("row.getOptional(\"extra_doc\", org.pragmatica.aether.resource.db.JsonText.class)");
+        }
+
+        /// Only a json/jsonb column infers a document; an unmarked record on a text column stays an error.
+        @Test
+        void recordOnTextColumn_isNotInferred() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Title(String text) {}
+
+                record DocumentRow(long id, Title title) {}
+
+                @PgSql
+                public interface TextRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = compile(source, "test/TextRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Field 'title'").contains("mark a json/jsonb column @Jsonb");
+        }
+
+        @Test
+        void inferredTwinSimpleNames_compile() throws Exception {
+            var otherProfile = """
+                package other;
+
+                public record Profile(String nickname) {}
+                """;
+            var repo = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                record DocumentRow(long id, Profile profile, other.Profile legacy) {}
+
+                @PgSql
+                public interface InferredTwinRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileAndCompileGenerated(java.util.List.of(new TestCompilationHelper.SourceEntry("other/Profile.java", otherProfile),
+                                                                                            new TestCompilationHelper.SourceEntry("test/InferredTwinRepo.java", repo)),
+                                                                          tempDir);
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.InferredTwinRepoFactory")).contains("PROFILE_JSON2 = jsonCodec(other.Profile.class)");
+        }
+    }
+
+    /// #2401: a String bound to a column the schema knows is json/jsonb is a compile error; casts and String reads stay.
+    @Nested
+    class StringOnJsonColumn {
+        @Test
+        void crudInsertStringComponent_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                record DocumentRow(long id, String profile, String legacy, String title) {}
+
+                @PgSql
+                public interface StringRepo {
+                    @Table(DocumentRow.class)
+                    Promise<Unit> insert(DocumentRow row);
+                }
+                """, "'profile' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void crudInsertStringOnCamelCaseJsonColumn_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                record DocumentRow(long id, String title) {}
+
+                @PgSql
+                public interface StringRepo {
+                    @Table(DocumentRow.class)
+                    Promise<Unit> insert(long id, String extraDoc);
+                }
+                """, "'extraDoc' is a String bound to column 'documents.extra_doc' of type jsonb");
+        }
+
+        @Test
+        void crudInsertScalarStringParam_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                record DocumentRow(long id, String title) {}
+
+                @PgSql
+                public interface StringRepo {
+                    @Table(DocumentRow.class)
+                    Promise<Unit> insert(long id, String profile, String legacy, String title);
+                }
+                """, "'legacy' is a String bound to column 'documents.legacy' of type json");
+        }
+
+        @Test
+        void crudConditionStringParam_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                record DocumentRow(long id, String title) {}
+
+                @PgSql
+                public interface StringRepo {
+                    @Table(DocumentRow.class)
+                    Promise<List<DocumentRow>> findByProfile(String profile);
+                }
+                """, "'profile' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void queryPairStringParam_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                @PgSql
+                public interface StringRepo {
+                    @Query("UPDATE documents SET profile = :raw WHERE id = :id")
+                    Promise<Unit> store(long id, String raw);
+                }
+                """, "'raw' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void queryPairStringParam_messageNamesTheWaysOut() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                @PgSql
+                public interface StringRepo {
+                    @Query("UPDATE documents SET profile = :raw WHERE id = :id")
+                    Promise<Unit> store(long id, String raw);
+                }
+                """, "A String parameter is sent as varchar, which json/jsonb refuse: bind a record (a JSON document), "
+                     + "JsonText, or cast the parameter in the SQL (CAST(:raw AS jsonb))");
+        }
+
+        @Test
+        void valueObjectLoweredToString_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.Result;
+
+                record Raw(String text) {
+                    static Result<Raw> raw(String text) { return Result.success(new Raw(text)); }
+                    static ValueMapping<Raw, String> valueMapping() { return ValueMapping.of(Raw::text, Raw::raw); }
+                }
+
+                @PgSql
+                public interface StringRepo {
+                    @Query("UPDATE documents SET profile = :raw WHERE id = :id")
+                    Promise<Unit> store(long id, Raw raw);
+                }
+                """, "'raw' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void queryOptionStringParam_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                @PgSql
+                public interface StringRepo {
+                    @Query("UPDATE documents SET previous = :raw WHERE id = :id")
+                    Promise<Unit> store(long id, Option<String> raw);
+                }
+                """, "'raw' is a String bound to column 'documents.previous' of type jsonb");
+        }
+
+        @Test
+        void queryExpandedStringComponent_isCompileError() throws Exception {
+            assertRefused(STRING_REPO_HEADER + """
+                record Entry(long id, String profile, String legacy, String title) {}
+
+                @PgSql
+                public interface StringRepo {
+                    @Query("INSERT INTO documents VALUES(:entry)")
+                    Promise<Unit> add(Entry entry);
+                }
+                """, "'profile' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void castInSql_stringReads_andJsonText_areAllowed() throws Exception {
+            var source = STRING_REPO_HEADER + """
+                import org.pragmatica.aether.resource.db.JsonText;
+
+                record DocumentRow(long id, String profile, String legacy) {}
+
+                @PgSql
+                public interface AllowedRepo {
+                    @Query("UPDATE documents SET profile = :raw::jsonb WHERE id = :id")
+                    Promise<Unit> storeCast(long id, String raw);
+
+                    @Query("UPDATE documents SET profile = CAST(:raw AS jsonb) WHERE id = :id")
+                    Promise<Unit> storeCastFunction(long id, String raw);
+
+                    @Query("UPDATE documents SET profile = :text WHERE id = :id")
+                    Promise<Unit> storeText(long id, JsonText text);
+
+                    @Query("SELECT id FROM documents WHERE profile ->> 'name' = :name")
+                    Promise<List<Long>> idsByName(String name);
+
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = compile(source, "test/AllowedRepo.java");
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.AllowedRepoFactory")).contains("row.getString(\"profile\")");
+        }
+
+        private void assertRefused(String source, String expected) throws Exception {
+            var result = compile(source, "test/StringRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains(expected)
+                                            .contains("A String parameter is sent as varchar, which json/jsonb refuse");
+        }
+    }
+
+    /// #2401: where the schema is silent, the marker stays the only signal.
+    @Nested
+    class SchemaSilent {
+        @Test
+        void unmarkedRecordParam_inValuesList_isExpanded() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                record Titled(long id, String title) {}
+
+                @PgSql
+                public interface ExpandRepo {
+                    @Query("INSERT INTO documents VALUES(:doc)")
+                    Promise<Unit> add(Titled doc);
+                }
+                """;
+
+            var generated = factory(compile(source, "test/ExpandRepo.java"), "test.ExpandRepoFactory");
+
+            assertThat(generated).contains("doc.id()").contains("doc.title()").doesNotContain("jsonCodec");
+        }
+
+        @Test
+        void unmarkedQueryMethodRecordResult_isRowRecord() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface RowRepo {
+                    @Query("SELECT profile FROM documents WHERE id = :id")
+                    Promise<Option<Profile>> profileOf(long id);
+                }
+                """;
+
+            var generated = factory(compile(source, "test/RowRepo.java"), "test.RowRepoFactory");
+
+            assertThat(generated).contains("row.getString(\"name\")").doesNotContain("jsonCodec");
+        }
+
+        @Test
+        void unmarkedEnumOnJsonColumn_isNotInferred() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                enum Mood { CALM, BUSY }
+
+                record DocumentRow(long id, Mood profile) {}
+
+                @PgSql
+                public interface EnumRepo {
+                    Promise<Option<DocumentRow>> findById(long id);
+                }
+                """;
+
+            var result = compile(source, "test/EnumRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Field 'profile'").contains("mark a json/jsonb column @Jsonb");
+        }
+
+        @Test
+        void unmarkedRecordInQueryResultComponent_isNotInferred() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                record ProfileRow(long id, Profile profile) {}
+
+                @PgSql
+                public interface QueryRowRepo {
+                    @Query("SELECT id, profile FROM documents WHERE id = :id")
+                    Promise<Option<ProfileRow>> find(long id);
+                }
+                """;
+
+            var result = compile(source, "test/QueryRowRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("mark a json/jsonb column @Jsonb");
+        }
+
+        @Test
+        void unmarkedRecordInExpression_isNotInferred() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                record Profile(String name) {}
+
+                @PgSql
+                public interface ExpressionRepo {
+                    @Query("SELECT count(*) FROM documents WHERE jsonb_typeof(profile) = 'object' AND profile = coalesce(:probe, profile)")
+                    Promise<Long> countLike(Profile probe);
+                }
+                """;
+
+            var result = compile(source, "test/ExpressionRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Parameter 'probe'").contains("mark a json/jsonb column @Jsonb");
+        }
+    }
+
     @Nested
     class EscapeHatch {
         @Test
@@ -585,7 +1085,7 @@ class JsonbMappingTest {
 
                 @PgSql
                 public interface UnmarkedParamRepo {
-                    @Query("SELECT count(*) FROM documents WHERE profile = :probe")
+                    @Query("SELECT count(*) FROM documents WHERE profile @> :probe")
                     Promise<Long> countLike(Profile probe);
                 }
                 """;
@@ -751,6 +1251,70 @@ class JsonbMappingTest {
         }
         """;
 
+    static final String INFERRED_REPO = """
+        package test;
+
+        import java.util.List;
+
+        import org.pragmatica.aether.pg.codegen.annotation.Query;
+        import org.pragmatica.aether.pg.codegen.annotation.Table;
+        import org.pragmatica.aether.resource.db.PgSql;
+        import org.pragmatica.lang.Option;
+        import org.pragmatica.lang.Promise;
+        import org.pragmatica.lang.Unit;
+
+        record Address(String city, String zip) {}
+
+        record Profile(String name, Option<String> nick, List<Address> addresses, Address home) {}
+
+        record Probe(String name) {}
+
+        record DocumentRow(long id, Profile profile, Option<Profile> previous, Profile legacy, String title, Option<String> nick) {}
+
+        record Entry(long id, Profile profile, Profile legacy, String title) {}
+
+        @PgSql
+        public interface InferredRepo {
+            @Table(DocumentRow.class)
+            Promise<Unit> insert(DocumentRow row);
+
+            @Table(DocumentRow.class)
+            Promise<Option<DocumentRow>> findById(long id);
+
+            @Table(DocumentRow.class)
+            Promise<List<DocumentRow>> findByProfile(Profile profile);
+
+            @Table(DocumentRow.class)
+            Promise<List<DocumentRow>> findByTitleAndLegacy(String title, Profile legacy);
+
+            @Query("SELECT count(*) FROM documents WHERE profile = :probe")
+            Promise<Long> countEqual(Probe probe);
+
+            @Query("UPDATE documents SET previous = :previous WHERE id = :id")
+            Promise<Unit> replacePrevious(long id, Option<Profile> previous);
+
+            @Query("INSERT INTO documents VALUES(:entry)")
+            Promise<Unit> add(Entry entry);
+
+            @Query("INSERT INTO documents (title, profile, legacy, id) VALUES (:title, :profile, :legacy, :id)")
+            Promise<Unit> addPositional(long id, String title, Profile profile, Profile legacy);
+        }
+        """;
+
+    private static final String STRING_REPO_HEADER = """
+        package test;
+
+        import java.util.List;
+
+        import org.pragmatica.aether.pg.codegen.annotation.Query;
+        import org.pragmatica.aether.pg.codegen.annotation.Table;
+        import org.pragmatica.aether.resource.db.PgSql;
+        import org.pragmatica.lang.Option;
+        import org.pragmatica.lang.Promise;
+        import org.pragmatica.lang.Unit;
+
+        """;
+
     private static final String OPTION_SCALAR_REPO = """
         package test;
 
@@ -831,6 +1395,250 @@ class JsonbMappingTest {
         }
         """;
 
+    /// #2401 round 2: `INSERT INTO t (c1, .., cn) VALUES (:p1, .., :pn)` names each column by position. Every other
+    /// insert shape stays as it was: no inference, no refusal.
+    @Nested
+    class PositionalInsert {
+        private static final String PROFILE_RECORD = "record Profile(String name) {}\n\n";
+
+        @Test
+        void plainInsert_stringOnJsonColumn_isCompileErrorNamingTheColumn() throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface PositionalRepo {
+                    @Query("INSERT INTO documents (id, profile, legacy, title) VALUES (:id, :raw, :legacy, :title)")
+                    Promise<Unit> store(long id, String raw, String legacy, String title);
+                }
+                """, "test/PositionalRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb")
+                                            .contains("A String parameter is sent as varchar, which json/jsonb refuse");
+        }
+
+        @Test
+        void plainInsert_recordOnJsonColumn_isDocument_pairedByPositionNotByName() throws Exception {
+            var generated = factory(compile(INFERRED_REPO, "test/InferredRepo.java"), "test.InferredRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, profile)")
+                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, legacy)");
+        }
+
+        @Test
+        void plainInsert_textColumnFirst_jsonColumnSecond_isPairedInOrder() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface OrderRepo {
+                    @Query("INSERT INTO documents (title, profile, id, legacy) VALUES (:t, :doc, :id, :old)")
+                    Promise<Unit> store(long id, String t, Profile doc, Profile old);
+                }
+                """, "test/OrderRepo.java"), "test.OrderRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)")
+                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, old)");
+        }
+
+        @Test
+        void plainInsert_jsonColumnFirst_textColumnSecond_isPairedInOrder() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface OrderRepo {
+                    @Query("INSERT INTO documents (profile, title, id, legacy) VALUES (:doc, :t, :id, :old)")
+                    Promise<Unit> store(String t, long id, Profile doc, Profile old);
+                }
+                """, "test/OrderRepo.java"), "test.OrderRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)")
+                                 .contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, old)");
+        }
+
+        @Test
+        void plainInsert_textColumnsAreNotChecked_soStringOnTextStaysAllowed() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface TextRepo {
+                    @Query("INSERT INTO documents (title, nick) VALUES (:title, :nick)")
+                    Promise<Unit> store(String title, String nick);
+                }
+                """, "test/TextRepo.java"), "test.TextRepoFactory");
+
+            assertThat(generated).doesNotContain("JsonText");
+        }
+
+        @Test
+        void countMismatch_moreColumnsThanValues_isNotPositional() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile, title) VALUES (:id, :raw)",
+                               "long id, String raw");
+        }
+
+        @Test
+        void countMismatch_moreValuesThanColumns_isNotPositional() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw, :extra)",
+                               "long id, String raw, String extra");
+        }
+
+        @Test
+        void expressionInValues_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, to_jsonb(:raw::text))",
+                               "long id, String raw");
+        }
+
+        @Test
+        void expressionWithoutParentheses_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw || :more)",
+                               "long id, String raw, String more");
+        }
+
+        @Test
+        void statementWithPrefix_staysAsToday() throws Exception {
+            assertStaysAsToday("/* audit */ INSERT INTO documents (id, profile) VALUES (:id, :raw)",
+                               "long id, String raw");
+        }
+
+        @Test
+        void castInValues_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw::jsonb)",
+                               "long id, String raw");
+        }
+
+        @Test
+        void multiRowValues_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw), (:id2, :raw2)",
+                               "long id, String raw, long id2, String raw2");
+        }
+
+        @Test
+        void insertSelect_staysAsToday() throws Exception {
+            assertStaysAsToday("INSERT INTO documents (id, profile) SELECT :id, :raw",
+                               "long id, String raw");
+        }
+
+        @Test
+        void returning_tail_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) RETURNING id",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void onConflictDoNothing_tail_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO NOTHING",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void onConflictDoUpdate_tail_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET profile = EXCLUDED.profile",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void onConflictDoUpdate_tailWithReturning_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET title = 'x' RETURNING id",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void returning_tail_recordOnJsonColumn_isDocument() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface TailRepo {
+                    @Query("INSERT INTO documents (id, profile) VALUES (:id, :doc) ON CONFLICT (id) DO NOTHING RETURNING id")
+                    Promise<Long> store(long id, Profile doc);
+                }
+                """, "test/TailRepo.java"), "test.TailRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)");
+        }
+
+        /// The `SET col = :p` pair is existing behaviour, not part of the positional pairing: a String there is refused
+        /// today, and this PR adds no refusal and removes none.
+        @Test
+        void onConflictDoUpdate_setPair_stringOnJsonColumn_isStillRefusedByTheExistingPair() throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface SetPairRepo {
+                    @Query("INSERT INTO documents (id, title) VALUES (:id, :title) ON CONFLICT (id) DO UPDATE SET profile = :raw")
+                    Promise<Unit> store(long id, String title, String raw);
+                }
+                """, "test/SetPairRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void columnList_oneJsonColumn_recordIsDocument_notExpanded() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface ListRepo {
+                    @Query("INSERT INTO documents (profile) VALUES (:p)")
+                    Promise<Unit> store(Profile p);
+                }
+                """, "test/ListRepo.java"), "test.ListRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, p)")
+                                 .doesNotContain("p.name()");
+        }
+
+        @Test
+        void columnList_recordOnTextColumn_isTheExistingTypeError_notAParseFailure() throws Exception {
+            var result = compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface ListRepo {
+                    @Query("INSERT INTO documents (title) VALUES (:p)")
+                    Promise<Unit> store(Profile p);
+                }
+                """, "test/ListRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Parameter 'p' has type 'test.Profile' which is neither a supported column type")
+                                            .doesNotContain("SQL parse failed");
+        }
+
+        @Test
+        void noColumnList_recordStillExpands() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + """
+                record TitleOnly(String title) {}
+
+                @PgSql
+                public interface ExpandRepo {
+                    @Query("INSERT INTO documents VALUES (:p)")
+                    Promise<Unit> store(TitleOnly p);
+                }
+                """, "test/ExpandRepo.java"), "test.ExpandRepoFactory");
+
+            assertThat(generated).contains("INSERT INTO documents (title) VALUES ($1)")
+                                 .contains("p.title()");
+        }
+
+        private void assertStringOnJsonRefused(String sql, String params) throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface TailRepo {
+                    @Query("%s")
+                    Promise<Long> store(%s);
+                }
+                """.formatted(sql, params), "test/TailRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        /// The String on a json column is the proof of "no refusal": the same bind in the plain form is refused.
+        private void assertStaysAsToday(String sql, String params) throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface ExcludedRepo {
+                    @Query("%s")
+                    Promise<Unit> store(%s);
+                }
+                """.formatted(sql, params), "test/ExcludedRepo.java");
+
+            assertThat(result.success()).as(result.diagnostics()).isTrue();
+            assertThat(result.generatedSource("test.ExcludedRepoFactory")).doesNotContain("JsonText");
+        }
+    }
+
     // --- helpers ---
 
     private TestCompilationHelper.CompilationResult compile(String source) throws Exception {
@@ -839,6 +1647,16 @@ class JsonbMappingTest {
 
     private TestCompilationHelper.CompilationResult compile(String source, String fileName) throws Exception {
         return TestCompilationHelper.compileWithProcessor(source, fileName, tempDir);
+    }
+
+    private static String factory(TestCompilationHelper.CompilationResult result, String factoryName) throws Exception {
+        assertThat(result.success()).as(result.diagnostics()).isTrue();
+
+        var generated = result.generatedSource(factoryName);
+
+        assertThat(generated).isNotNull();
+
+        return generated;
     }
 
     private static String factory(TestCompilationHelper.CompilationResult result) throws Exception {

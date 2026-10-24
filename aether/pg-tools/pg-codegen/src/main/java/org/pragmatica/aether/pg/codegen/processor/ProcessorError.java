@@ -118,6 +118,27 @@ public final class ProcessorError {
              + ", JsonText> valueMapping()' for it and drop @Jsonb.";
     }
 
+    public static String jsonColumnUnsupportedType(String target, String type, String reason) {
+        return PREFIX
+             + "'" + target
+             + "' maps to a json/jsonb column, so its type '" + type
+             + "' is read and written as a JSON document, which the JSON codec generator cannot handle: " + reason
+             + ". Write a 'static ValueMapping<" + type
+             + ", JsonText> valueMapping()' for it, or bind JsonText.";
+    }
+
+    public static String stringOnJsonColumn(String target, String column, String table, String pgType) {
+        return PREFIX
+             + "'" + target
+             + "' is a String bound to column '" + table
+             + "." + column
+             + "' of type " + pgType
+             + ". A String parameter is sent as varchar, which json/jsonb refuse: bind a record (a JSON document), "
+             + "JsonText, or cast the parameter in the SQL (CAST(:" + target
+             + " AS " + pgType
+             + "))";
+    }
+
     public static String jsonbColumnMismatch(String target, String column, String table, String pgType) {
         return PREFIX
              + "@Jsonb target '" + target
