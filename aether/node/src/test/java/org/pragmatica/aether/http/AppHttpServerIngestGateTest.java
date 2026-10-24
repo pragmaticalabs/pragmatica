@@ -16,6 +16,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
@@ -98,6 +99,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Timeout(180)
 class AppHttpServerIngestGateTest {
     private static final int MIB = 1024 * 1024;
+    private static final Pattern CONTENT_LENGTH = Pattern.compile("(?im)^content-length:\\s*(\\d+)");
     private static final String KEY_A = "key-a";
     private static final String KEY_B = "key-b";
     private static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
@@ -565,7 +567,7 @@ class AppHttpServerIngestGateTest {
                                                                       : size, chunked));
 
                 writer.start();
-                var text = readAll(socket);
+                var text = readResponse(socket);
 
                 writer.join(10_000);
 
@@ -578,7 +580,7 @@ class AppHttpServerIngestGateTest {
             try (var socket = new Socket("127.0.0.1", port)) {
                 socket.setSoTimeout(15_000);
                 var text = new StringBuilder();
-                var reader = new Thread(() -> text.append(readAll(socket)));
+                var reader = new Thread(() -> text.append(readResponse(socket)));
                 var sent = 0L;
 
                 send(socket, head(path, key, "Content-Length: " + size, ""));
@@ -628,7 +630,7 @@ class AppHttpServerIngestGateTest {
             try (var socket = new Socket("127.0.0.1", port)) {
                 socket.setSoTimeout(15_000);
                 send(socket, head(path, Option.some(key), "Content-Length: 1000", "") + "0123456789");
-                var text = readAll(socket);
+                var text = readResponse(socket);
 
                 return new Reply(status(text), text);
             }
@@ -639,7 +641,7 @@ class AppHttpServerIngestGateTest {
             try (var socket = new Socket("127.0.0.1", port)) {
                 socket.setSoTimeout(15_000);
                 var text = new StringBuilder();
-                var reader = new Thread(() -> text.append(readAll(socket)));
+                var reader = new Thread(() -> text.append(readResponse(socket)));
 
                 send(socket, head(path, Option.some(key), "Content-Length: 100000", ""));
                 reader.start();
@@ -667,7 +669,7 @@ class AppHttpServerIngestGateTest {
                 send(socket, head);
                 socket.getOutputStream().write(body);
                 socket.getOutputStream().flush();
-                var text = readAll(socket);
+                var text = readResponse(socket);
 
                 return new Reply(status(text), text);
             }
@@ -712,7 +714,10 @@ class AppHttpServerIngestGateTest {
             socket.getOutputStream().flush();
         }
 
-        private String readAll(Socket socket) {
+        /// Reads until the final response is complete, framed by its `Content-Length` (an interim `100` is read past), or the
+        /// connection ends. The listener keeps an HTTP/1.1 connection open after an answer, so waiting for end-of-stream
+        /// would wait out the socket timeout on every answer that is not a close.
+        private String readResponse(Socket socket) {
             var out = new ByteArrayOutputStream();
             var buffer = new byte[4096];
 
@@ -721,12 +726,38 @@ class AppHttpServerIngestGateTest {
 
                 while ((read = socket.getInputStream().read(buffer)) != -1) {
                     out.write(buffer, 0, read);
+                    if (finalResponseComplete(out.toString(StandardCharsets.ISO_8859_1))) {
+                        break;
+                    }
                 }
             } catch (IOException e) {
                 // reset after the answer: what arrived is what counts
             }
 
             return out.toString(StandardCharsets.ISO_8859_1);
+        }
+
+        private boolean finalResponseComplete(String text) {
+            var position = 0;
+
+            while (true) {
+                var headEnd = text.indexOf("\r\n\r\n", position);
+
+                if (headEnd < 0) {
+                    return false;
+                }
+
+                var head = text.substring(position, headEnd);
+
+                if (status(head) / 100 == 1) {
+                    position = headEnd + 4;
+                    continue;
+                }
+
+                var length = CONTENT_LENGTH.matcher(head);
+
+                return length.find() && text.length() >= headEnd + 4 + Integer.parseInt(length.group(1));
+            }
         }
 
         private int status(String text) {
@@ -803,7 +834,7 @@ class AppHttpServerIngestGateTest {
         public Reply postSteady(String path, String key) throws Exception {
             var answer = H3Probe.exchange(port, stream -> {
                 stream.write(headers(path, Option.some(key), 100_000));
-                for (int index = 0; index < 100 && stream.isActive(); index++) {
+                for (int index = 0; index < 60 && stream.isActive(); index++) {
                     stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[2048])));
                     Thread.sleep(100);
                 }
