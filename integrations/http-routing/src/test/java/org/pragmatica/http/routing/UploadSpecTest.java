@@ -175,4 +175,14 @@ class UploadSpecTest {
         assertThat(UploadSpec.uploadSpec(false, 0, 0, 0, 0, 0, 1).isNone()).as("a declared part limit is not none").isFalse();
         assertThat(UploadSpec.uploadSpec(false, -1, -1, -1, -1, -1, -1)).as("negative is not declared").isEqualTo(UploadSpec.NONE);
     }
+
+    @Test
+    void aPartBreach_isA413_andAsHttpErrorKeepsTheStatusAndTheFixedText() {
+        var breach = parts(1, 0, 0, 0).partBreach(body(java.util.Map.of(), java.util.List.of(file(1), file(1)))).unwrap();
+        var wrapped = (org.pragmatica.http.HttpError) MultipartError.asHttpError(breach);
+
+        assertThat(breach.httpStatus()).isEqualTo(org.pragmatica.http.HttpStatus.REQUEST_ENTITY_TOO_LARGE);
+        assertThat(wrapped.status()).isEqualTo(org.pragmatica.http.HttpStatus.REQUEST_ENTITY_TOO_LARGE);
+        assertThat(org.pragmatica.http.HttpError.clientMessage(wrapped)).contains("Multipart body has more than 1 files");
+    }
 }
