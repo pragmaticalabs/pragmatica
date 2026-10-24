@@ -82,25 +82,30 @@ class KVStoreReplicaRingTest {
 
     private record Authorized(String text) implements LeaderAuthorized {}
 
-    /// Refused commands record nothing (D1): a `Put` of a `LeaderAuthorized` value outside a transaction (the store ignores it), and a leader
-    /// transaction from a node that is not the leader (refused whole), committed beside an applied `Put` in one batch. Only the applied `Put` is
-    /// recorded. Mutation: record a transaction's mutations before its acceptance is known, and the refused one lands in the ring.
+    /// Refused commands record nothing (D1): a `Put` of a `LeaderAuthorized` value outside a transaction (the store ignores it), a leader
+    /// transaction from a node that is not the leader (refused whole), and a `Put` whose epoch is older than the committed one (the stale-epoch
+    /// refusal), committed beside an applied `Put` in one batch. Only the applied `Put` is recorded. Mutations: record a transaction's mutations
+    /// before its acceptance is known, or record the refused `Put` after the stale-epoch refusal, and the refused write lands in the ring.
     @Test
     void refusedWrites_recordNothing_besideAnAppliedWrite() {
         var store = genesisStore();
         var leader = new LeaderValue(new NodeId("core"), 1);
         var impostor = new LeaderValue(new NodeId("impostor"), 1);
+        var committedOwner = new OwnedValue("owner", 2);
 
-        commit(store, 1, new KVCommand.Put<>(LeaderKey.INSTANCE, leader));
+        commit(store, 1, new KVCommand.Put<>(LeaderKey.INSTANCE, leader), put("owned", committedOwner));
         commit(store,
                2,
                new KVCommand.Put<>(new Key("authorized"), new Authorized("refused")),
                new KVCommand.LeaderTransaction<>(new Key("t"), "tx", impostor, List.of(),
                                                  List.of(new KVCommand.Mutation<StructuredKey, Object>(new Key("c"), Option.none(), Option.some("refused")))),
+               put("owned", new OwnedValue("stale", 1)),
                put("applied", "1"));
 
         assertThat(store.get(new Key("authorized")).isEmpty()).as("precondition: the authorized Put was refused").isTrue();
         assertThat(store.get(new Key("c")).isEmpty()).as("precondition: the impostor's transaction was refused").isTrue();
+        assertThat(store.staleEpochRefusals()).as("precondition: the stale-epoch Put was refused by the epoch fence").isEqualTo(1L);
+        assertThat(store.get(new Key("owned"))).as("precondition: the committed owner stays").isEqualTo(Option.some(committedOwner));
         assertThat(store.replicaRing().entries().getLast().effects()).as("D1: only the applied write is recorded")
                                                                     .containsExactly(new KVCommand.Put<>(new Key("applied"), "1"));
     }
@@ -305,7 +310,7 @@ class KVStoreReplicaRingTest {
 
     /// I-W4, never regress: the store's `applyEffects` is the single enforcer of the `slot < applied` skip. Replaying slot 5 after slot 9 is
     /// skipped whole: the revision, the value and the ring are untouched. Mutation: drop the skip, and the revision goes back to 6, the value
-    /// back to "5" (the ring's own guard still keeps the ring in order, `CommitRingTest#append_refusesASlotBehindTheFrontier`).
+    /// back to "5" (the ring's own guard still keeps the ring in order, `CommitRingTest#append_refusesASlotBehindTheFrontier_andClosesEveryLiveSinkOutOfOrder`).
     @Test
     void applyEffects_skipsAnEntryBelowTheRevision_andChangesNothing() {
         var replica = genesisStore();
@@ -318,6 +323,25 @@ class KVStoreReplicaRingTest {
         assertThat(replica.committedRevision()).as("the revision does not regress").isEqualTo(10L);
         assertThat(replica.get(new Key("a"))).as("the value does not regress").isEqualTo(Option.some("9"));
         assertThat(replica.replicaRing().entries()).extracting(ReplicaEntry::slot).as("the ring keeps apply order").containsExactly(5L, 9L);
+    }
+
+    /// I-W1 from a core writer: a committed batch the store hands the ring at a slot behind the ring's frontier is not recorded, and every live
+    /// sink is closed `OUT_OF_ORDER` instead of being left to miss it (it resubscribes and its anchors decide). Mutation: make the ring's guard a
+    /// silent return, and the live sink stays open.
+    @Test
+    void aCommittedBatchBehindTheRingsFrontier_closesEveryLiveSinkOutOfOrder() {
+        var store = genesisStore();
+        var closed = new CopyOnWriteArrayList<CloseReason>();
+
+        commit(store, 1, put("a", "1"));
+        commit(store, 2, put("b", "2"));
+        assertThat(store.replicaRing().subscribeFrom(TAG_A, 3, store.replicaRing().anchor(), CommitRing.subscription(closed::add)))
+                .as("control: the sink is live").isInstanceOf(Granted.class);
+
+        store.processCommitted(store.createBatch(List.of(put("c", "3"))), 2);
+
+        assertThat(closed).as("I-W1 (mutation: a silent return in the ring guard): the live sink is closed").containsExactly(CloseReason.OUT_OF_ORDER);
+        assertThat(store.replicaRing().entries()).extracting(ReplicaEntry::slot).as("the ring keeps apply order").containsExactly(1L, 2L);
     }
 
     /// The hook takes the store monitor, so the revision it publishes and the ring advance it makes are ordered with the writer and with

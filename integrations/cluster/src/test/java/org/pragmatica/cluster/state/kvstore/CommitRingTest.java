@@ -6,11 +6,14 @@ package org.pragmatica.cluster.state.kvstore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.cluster.state.kvstore.CommitRing.CloseReason;
 import org.pragmatica.cluster.state.kvstore.CommitRing.Granted;
 import org.pragmatica.cluster.state.kvstore.CommitRing.Message;
@@ -19,6 +22,7 @@ import org.pragmatica.cluster.state.kvstore.CommitRing.QueuedHeartbeat;
 import org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason;
 import org.pragmatica.cluster.state.kvstore.CommitRing.Refused;
 import org.pragmatica.cluster.state.kvstore.CommitRing.Subscribe;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -247,11 +251,17 @@ class CommitRingTest {
         assertThat(ring.subscribeFrom(TAG, 1, pairs(0, 3), sink())).as("pairs up to slot 2 with applied 1").isNotNull();
     }
 
+    /// How long one grant may wait for its first live entry, a close, or the writer's end before the wait is recorded as a violation.
+    private static final long GRANT_WAIT_NANOS = TimeUnit.SECONDS.toNanos(5);
+
     /// I-W3: the answer and the registration are one critical section. A subscriber thread subscribes 2,000 times from the ring's own latest
     /// anchor while a writer appends 20,000 effect batches; for every grant, the granted entries followed by the first entry the subscription
     /// receives live must form one contiguous chain from `applied`, with no gap and no duplicate. Mutation: register the subscription in a
-    /// second lock acquisition after the answer, and an entry appended between the two is lost (or delivered twice).
+    /// second lock acquisition after the answer, and an entry appended between the two is lost (or delivered twice). A grant that sees no
+    /// live entry, no close and no frontier past the writer's last slot within [#GRANT_WAIT_NANOS] is a violation too, so a frontier that
+    /// stops advancing fails the test instead of hanging it; `@Timeout` is the backstop.
     @Test
+    @Timeout(value = 120, unit = TimeUnit.SECONDS)
     void subscribeFrom_answersAndRegistersAtomically_underConcurrentAppends() throws InterruptedException {
         var ring = ring();
         var violations = new CopyOnWriteArrayList<String>();
@@ -261,7 +271,7 @@ class CommitRingTest {
         ring.append(TAG, 0, "id-0", effect("k0", "v0"), 1);
         var writer = new Thread(() -> fill(ring, 1, 20_000));
         var subscriber = new Thread(() -> {
-            for (var round = 0; round < 2_000 && !stop.get(); round++) {
+            for (var round = 0; round < 2_000 && !stop.get() && violations.isEmpty(); round++) {
                 checkOneGrant(ring, violations, grants);
             }
         });
@@ -287,6 +297,7 @@ class CommitRingTest {
 
         grants.incrementAndGet();
         var chain = new ArrayList<>(granted.entries());
+        var deadline = System.nanoTime() + GRANT_WAIT_NANOS;
 
         while (chain.size() == granted.entries().size()) {
             var next = subscription.poll();
@@ -295,6 +306,10 @@ class CommitRingTest {
                 chain.add(queued.entry());
             } else if (next.isEmpty() && (subscription.isClosed() || ring.nextSlot() > 20_000)) {
                 break;
+            } else if (next.isEmpty() && System.nanoTime() - deadline > 0) {
+                violations.add("applied " + applied + ": no live entry, no close and frontier " + ring.nextSlot() + " within the grant wait");
+
+                return;
             }
         }
 
@@ -437,18 +452,33 @@ class CommitRingTest {
         assertThat(ring.indexedEffectCount()).as("the index holds exactly the effect entries the ring still holds").isEqualTo(ring.entryCount());
     }
 
-    /// The ring never appends behind its frontier: an entry for an older slot would reorder the chain and move `coveredTo` back. Mutation: drop
-    /// the guard, and slot 5 lands after slot 9.
+    /// The ring never appends behind its frontier: an entry for an older slot would reorder the chain and move `coveredTo` back. It never drops
+    /// one in silence either (I-W1): every live sink is closed `OUT_OF_ORDER`, one WARN names the slot and the frontier, and the entries, the
+    /// floor and the frontier stay. Mutations: drop the guard, and slot 5 lands after slot 9; make the guard a silent return, and the live
+    /// sink stays open.
     @Test
-    void append_refusesASlotBehindTheFrontier() {
+    void append_refusesASlotBehindTheFrontier_andClosesEveryLiveSinkOutOfOrder() {
         var ring = ring();
+        var closed = new CopyOnWriteArrayList<CloseReason>();
 
         ring.append(TAG, 5, "id-5", effect("k", "5"), 6);
         ring.append(TAG, 9, "id-9", effect("k", "9"), 10);
-        ring.append(TAG, 5, "id-5", effect("k", "5"), 6);
+        var subscription = CommitRing.subscription(closed::add);
 
+        assertThat(ring.subscribeFrom(TAG, 10, ring.anchor(), subscription)).as("control: the sink is live").isInstanceOf(Granted.class);
+
+        try (var capture = LogCapture.capture(CommitRing.class, Level.WARN, false)) {
+            ring.append(TAG, 5, "id-5", effect("k", "5"), 6);
+
+            assertThat(capture.messages(Level.WARN)).as("one WARN").hasSize(1);
+            assertThat(capture.messages(Level.WARN).getFirst()).as("it names the slot and the frontier").contains("slot 5", "frontier 10");
+        }
+
+        assertThat(closed).as("I-W1 (mutation: a silent return): the live sink is closed with its own reason").containsExactly(CloseReason.OUT_OF_ORDER);
+        assertThat(subscription.closeReason()).isEqualTo(CloseReason.OUT_OF_ORDER);
         assertThat(ring.entries()).extracting(ReplicaEntry::slot).as("apply order intact").containsExactly(5L, 9L);
         assertThat(ring.nextSlot()).isEqualTo(10L);
+        assertThat(ring.floor()).as("nothing the ring cannot prove is raised").isZero();
         assertThat(ring.anchor()).containsExactly(new AnchorPair(5, "id-5"), new AnchorPair(9, "id-9"));
     }
 
