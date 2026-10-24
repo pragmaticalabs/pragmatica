@@ -148,4 +148,27 @@ class HttpRouteRegistryUploadSpecTest {
         assertThat(spec(aFirst)).isEqualTo(merged);
         assertThat(spec(bFirst)).isEqualTo(merged);
     }
+
+    @Test
+    void entriesBuiltWithEarlierShapes_declareNoPartLimits() {
+        var elevenComponents = new RouteEntry("POST", "/files/", "upload", "ACTIVE", 100, 0L, "PUBLIC", "PUBLIC", 0, List.of(), List.of());
+        var fourteenComponents = new RouteEntry("POST", "/files/", "upload", "ACTIVE", 100, 0L, "PUBLIC", "PUBLIC", 0, List.of(), List.of(), true, 5_000L, 90_000L);
+
+        assertThat(List.of(elevenComponents.maxFiles(), elevenComponents.maxFileBytes(), elevenComponents.maxFields(), elevenComponents.maxFieldBytes()))
+            .as("the shape before the ingest gate").containsOnly(0L);
+        assertThat(List.of(fourteenComponents.maxFiles(), fourteenComponents.maxFileBytes(), fourteenComponents.maxFields(), fourteenComponents.maxFieldBytes()))
+            .as("the shape with body and duration limits only").containsOnly(0L);
+        assertThat(fourteenComponents.maxBodyBytes()).isEqualTo(5_000L);
+        assertThat(fourteenComponents.maxDurationMillis()).isEqualTo(90_000L);
+        assertThat(fourteenComponents.upload()).isTrue();
+    }
+
+    @Test
+    void activeRouteWithoutPartLimits_declaresNoPartLimits_andKeepsTheBodyLimits() {
+        var entry = RouteEntry.activeRoute("POST", "/files/", "upload", "PUBLIC", "PUBLIC", 0, List.of(), List.of(), true, 5_000L, 90_000L);
+
+        assertThat(List.of(entry.maxFiles(), entry.maxFileBytes(), entry.maxFields(), entry.maxFieldBytes())).containsOnly(0L);
+        assertThat(entry.maxBodyBytes()).isEqualTo(5_000L);
+        assertThat(entry.maxDurationMillis()).isEqualTo(90_000L);
+    }
 }
