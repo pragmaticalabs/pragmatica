@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.config.UploadConfig;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -81,9 +82,7 @@ final class UploadAdmission {
     }
 
     private Integer grant(Integer count, AtomicBoolean granted) {
-        var current = count == null
-                      ? 0
-                      : count;
+        var current = Option.option(count).or(0);
 
         if (current >= maxConcurrentPerPrincipal) {
             return count;
