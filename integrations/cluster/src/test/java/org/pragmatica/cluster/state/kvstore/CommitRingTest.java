@@ -528,6 +528,27 @@ class CommitRingTest {
         assertThat(ring.anchor()).as("a marker does not change the anchor").containsExactlyElementsOf(pairs(0, 1));
     }
 
+    /// Every message a subscription receives carries the next `subSeq`, entries and heartbeats alike, so a replica can detect a lost message by a
+    /// gap (I-W4). Mutation: enqueue without advancing the sequence, and every message carries the same number.
+    @Test
+    void subSeq_isContiguousAcrossEntriesAndHeartbeats() {
+        var ring = ring();
+        var subscription = sink();
+
+        fill(ring, 0, 1);
+        ring.subscribeFrom(TAG, 1, pairs(0, 1), subscription);
+        fill(ring, 1, 2);
+        ring.flush();
+        fill(ring, 3, 1);
+
+        assertThat(drain(subscription)).extracting(message -> switch (message) {
+                                            case QueuedEntry entry -> entry.subSeq();
+                                            case QueuedHeartbeat heartbeat -> heartbeat.subSeq();
+                                        })
+                                        .as("entry, entry, heartbeat, entry")
+                                        .containsExactly(1L, 2L, 3L, 4L);
+    }
+
     // ---- NT-O41 / I-W9: no heartbeat between the revision bump and the entry offer ----
 
     /// A flusher races an append: the append's hook runs between the frontier bump and the offer, and starts the flusher there. The flusher must
