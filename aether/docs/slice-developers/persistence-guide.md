@@ -303,18 +303,19 @@ knows the column is `json`/`jsonb`:
   statement's first table) with no `::type` cast after it;
 - a component of a record expanded by `@Query` into `VALUES (:record)` or `SET :record`;
 - a `@Query` parameter in a plain explicit-column insert, `INSERT INTO t (c1, .., cn) VALUES (:p1, .., :pn)`: one row,
-  every value a bare `:param` with no cast, as many values as columns, nothing after the closing parenthesis. The n-th
+  every value a bare `:param` with no cast, as many values as columns. The statement may end with `ON CONFLICT ..`
+  (`DO NOTHING` or `DO UPDATE`) and/or `RETURNING ..`; neither changes which value belongs to which column. The n-th
   value is the n-th column's, whatever the parameters' names or order.
 
 **Marker required: the schema cannot tell.**
 - A `@Query` result: its column types are unknown, so a document component of its row record, or a method whose
   single result column is a document, is marked.
-- A record parameter in `VALUES (:record)` / `SET :record` is expanded into its components unless marked, in which
-  case it is one document.
+- A record parameter in `VALUES (:record)` (no column list) or `SET :record` is expanded into its components unless
+  marked, in which case it is one document. With a column list, `INSERT INTO t (c) VALUES (:p)`, nothing is expanded:
+  `p` is one value for its column, and a record on a `json`/`jsonb` column is a document with no marker.
 - Operands of `@>`, `<@`, `?`, function arguments, `IN (...)`, and any other expression.
 - An insert that is not the plain explicit-column form: an expression or cast among the values, several rows,
-  `INSERT .. SELECT`, `ON CONFLICT`, `RETURNING`, a column list and value list of different lengths. A single-column
-  `INSERT INTO t (c) VALUES (:p)` with a record `p` is still expanded into the record's components, as above: mark `p`.
+  `INSERT .. SELECT`, a column list and value list of different lengths. Such an insert compiles as before.
 - An enum. It is never inferred, because it may as well be text; mark a JSON enum document.
 - An interface whose migrations are not on the processor's class path.
 
@@ -333,7 +334,7 @@ knows the column is `json`/`jsonb`:
   columns and works as a `jsonb` operator operand (`@>`).
 - **No `String` binds to json/jsonb.** A `String` parameter is declared `varchar`. Where the schema knows the column
   (the sites listed under "Inferred", and the values of a CRUD insert or save, including the plain explicit-column
-  insert), binding a `String`, `Option<String>`
+  insert with or without its `ON CONFLICT`/`RETURNING` tail), binding a `String`, `Option<String>`
   or a value object lowered to `String` to a `json`/`jsonb` column is a compile error. Bind a record, bind
   `JsonText.jsonText(text)`, or cast in SQL: `:doc::jsonb` and `CAST(:doc AS jsonb)` stay allowed.
 - **Where the schema cannot tell, a `String` still compiles.** A `jsonb` column or operator refuses it when the
