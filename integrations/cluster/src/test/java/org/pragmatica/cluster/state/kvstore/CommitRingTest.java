@@ -33,8 +33,13 @@ class CommitRingTest {
         return List.of(new KVCommand.Put<>(new RingFixtures.Key(key), value));
     }
 
+    /// A ring whose subscriber closes run on the calling thread after the lock is released, so a test can assert them right after the call.
     private static CommitRing ring() {
-        var ring = CommitRing.commitRing();
+        return ring(CommitRing.DEFAULT_BUDGET_BYTES);
+    }
+
+    private static CommitRing ring(long budgetBytes) {
+        var ring = CommitRing.commitRing(budgetBytes, ValueSizeTable.valueSizeTable()::estimate, Runnable::run);
 
         ring.invalidate(TAG, 0);
 
@@ -182,20 +187,53 @@ class CommitRingTest {
     }
 
     @Test
-    void subscribeFrom_refusesEvicted_whenEveryAnchorPairIsBelowTheFloor_orThereIsNoAnchor() {
-        var ring = CommitRing.commitRing(1_000);
+    void subscribeFrom_refusesEvicted_whenEveryAnchorPairIsBelowTheFloor_orThePositionIsBelowIt() {
+        var ring = ring(1_000);
 
-        ring.invalidate(TAG, 0);
         fill(ring, 0, 40);
         var floor = ring.floor();
 
         assertThat(floor).isPositive();
         assertThat(ring.subscribeFrom(TAG, floor, List.of(new AnchorPair(0, "id-0")), sink())).as("every pair below the floor: nothing can be verified")
                                                                                               .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
-        assertThat(ring.subscribeFrom(TAG, floor, List.of(), sink())).as("an unanchored position is never resumable")
-                                                                    .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
         assertThat(ring.subscribeFrom(TAG, 0, pairs(0, 1), sink())).as("a position below the floor needs entries the ring no longer holds")
                                                                   .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
+        assertThat(ring.subscribeFrom(TAG, 0, List.of(), sink())).as("an unanchored position below the floor is EVICTED as well")
+                                                                .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
+    }
+
+    /// Section 2.4: "the anchor is absent while `applied >= floor`" is `AHEAD`. An unanchored position is never resumable; every replica
+    /// handles `AHEAD` and `EVICTED` alike (discard, snapshot), so only the reason differs. Mutation: answer `EVICTED`, and this goes red.
+    @Test
+    void subscribeFrom_refusesAnUnanchoredPositionAtOrAboveTheFloor_asAhead() {
+        var ring = ring(1_000);
+
+        fill(ring, 0, 40);
+        var floor = ring.floor();
+
+        assertThat(floor).isPositive();
+        assertThat(ring.subscribeFrom(TAG, floor, List.of(), sink())).as("unanchored, applied == floor")
+                                                                    .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.AHEAD));
+        assertThat(ring.subscribeFrom(TAG, ring.nextSlot(), List.of(), sink())).as("unanchored, applied == the frontier")
+                                                                              .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.AHEAD));
+    }
+
+    /// I-W12 hardening: a position whose anchor pairs all verify, but whose `applied` lies past effect entries the replica never received (here
+    /// slots 1 and 2, between its newest pair at 0 and its `applied` of 3). Granting it would hand over nothing and the replica would miss both
+    /// slots silently. Mutation: drop the between-the-newest-pair-and-applied check, and the position is granted with zero entries.
+    @Test
+    void subscribeFrom_refusesAPositionThatSkipsEffectsAfterItsNewestPair() {
+        var ring = ring();
+
+        fill(ring, 0, 3);
+
+        assertThat(ring.subscribeFrom(TAG, 3, pairs(0, 1), sink())).as("effects at 1 and 2 lie between the newest pair (0) and applied (3)")
+                                                                  .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.AHEAD));
+        assertThat(ring.subscribeFrom(TAG, 3, pairs(0, 3), sink())).as("control: the same position anchored at its last effect is granted")
+                                                                  .isInstanceOf(Granted.class);
+        ring.advance(TAG, 6);
+        assertThat(ring.subscribeFrom(TAG, 6, pairs(0, 3), sink())).as("control: slots with no effect between the newest pair and applied are no gap")
+                                                                  .isInstanceOf(Granted.class);
     }
 
     /// NT-O42, the collision arm: the replica's history differs from the source's, and the newest batch is byte-identical (same id at the same
@@ -274,6 +312,62 @@ class CommitRingTest {
         assertThat(closed).as("I-W11 (mutation: remove the queue bound, the sink never closes)").containsExactly(CloseReason.OVERFLOW);
         assertThat(lockHeldDuringClose.get()).as("the transport close runs after the ring lock is released").isFalse();
         assertThat(ring.nextSlot()).as("the apply went on").isEqualTo(11L);
+    }
+
+    /// I-W11: heartbeats count against the byte bound. A subscriber that stopped reading on an idle cluster (no batch, a heartbeat per flush)
+    /// is closed `OVERFLOW` after heartbeats alone. Mutation: enqueue a heartbeat without counting it, and the queue grows without limit.
+    @Test
+    void aStalledSubscriber_isClosedOverflow_byHeartbeatsAlone() {
+        var ring = ring();
+        var closed = new CopyOnWriteArrayList<CloseReason>();
+        var stalled = CommitRing.subscription(1_000, closed::add);
+
+        fill(ring, 0, 1);
+        ring.subscribeFrom(TAG, 1, pairs(0, 1), stalled);
+        IntStream.range(0, 100).forEach(_ -> ring.flush());
+
+        assertThat(closed).as("closed by heartbeats alone").containsExactly(CloseReason.OVERFLOW);
+        assertThat(stalled.closeReason()).isEqualTo(CloseReason.OVERFLOW);
+    }
+
+    /// The ring never appends behind its frontier: an entry for an older slot would reorder the chain and move `coveredTo` back. Mutation: drop
+    /// the guard, and slot 5 lands after slot 9.
+    @Test
+    void append_refusesASlotBehindTheFrontier() {
+        var ring = ring();
+
+        ring.append(TAG, 5, "id-5", effect("k", "5"), 6);
+        ring.append(TAG, 9, "id-9", effect("k", "9"), 10);
+        ring.append(TAG, 5, "id-5", effect("k", "5"), 6);
+
+        assertThat(ring.entries()).extracting(ReplicaEntry::slot).as("apply order intact").containsExactly(5L, 9L);
+        assertThat(ring.nextSlot()).isEqualTo(10L);
+        assertThat(ring.anchor()).containsExactly(new AnchorPair(5, "id-5"), new AnchorPair(9, "id-9"));
+    }
+
+    // ---- R-07: the byte measure ----
+
+    private record TextKey(String id) implements StructuredKey {
+        @Override
+        public String asString() {
+            return "text/" + id;
+        }
+    }
+
+    /// The estimate is 64 per entry plus, per effect, the length of the key's `asString()`, 16, and the value's constant from the per-class
+    /// table (256 for a class the table does not name). Mutations: size the key by `toString()`, or drop the value term, and this goes red.
+    @Test
+    void estimatedBytes_isTheKeyTextLength_plusTheValueClassConstant() {
+        var sizes = ValueSizeTable.valueSizeTable(java.util.Map.of(String.class, 1_000));
+        var key = new TextKey("abc");
+        var known = new ReplicaEntry(TAG, 0, 0, "id-0", List.of(new KVCommand.Put<>(key, "value")));
+        var unknown = new ReplicaEntry(TAG, 0, 0, "id-0", List.of(new KVCommand.Put<>(key, 7L)));
+        var removal = new ReplicaEntry(TAG, 0, 0, "id-0", List.of(new KVCommand.Remove<>(key)));
+
+        assertThat(key.asString()).as("precondition: the key's text differs from its record text").isNotEqualTo(key.toString());
+        assertThat(CommitRing.estimatedBytes(known, sizes::estimate)).as("64 + |text/abc| + 16 + 1,000").isEqualTo(64 + 8 + 16 + 1_000);
+        assertThat(CommitRing.estimatedBytes(unknown, sizes::estimate)).as("a class the table does not name: 256").isEqualTo(64 + 8 + 16 + 256);
+        assertThat(CommitRing.estimatedBytes(removal, sizes::estimate)).as("a Remove has no value term").isEqualTo(64 + 8 + 16);
     }
 
     // ---- flush: marker and heartbeat ----

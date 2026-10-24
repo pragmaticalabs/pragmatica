@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
@@ -92,19 +93,56 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// A store that feeds a worker replica: `replicaFilter` is the exclusion set of the ring and the replica snapshot, `incarnation` tells the
-    /// store which committed value is the cluster incarnation, `ringBytes` bounds the commit ring.
+    /// store which committed value is the cluster incarnation, `ringBytes` bounds the commit ring. Values are estimated by the untuned
+    /// [ValueSizeTable] and subscriber closes run on [CommitRing#asyncCloser()].
     public KVStore(MessageRouter router,
                    Serializer serializer,
                    Deserializer deserializer,
                    ReplicaKeyFilter replicaFilter,
                    IncarnationSource incarnation,
                    long ringBytes) {
+        this(router,
+             serializer,
+             deserializer,
+             replicaFilter,
+             incarnation,
+             ringBytes,
+             ValueSizeTable.valueSizeTable(),
+             CommitRing.asyncCloser());
+    }
+
+    /// As above, with the ring's value-size table and the executor that runs a subscriber's transport close after the ring lock is released.
+    /// The writer that decides a close holds `mutationLock` and the store monitor, so a close executor that runs the close on the calling
+    /// thread lets a close listener that reads the KV create a ring-to-store edge; production passes [CommitRing#asyncCloser()].
+    public KVStore(MessageRouter router,
+                   Serializer serializer,
+                   Deserializer deserializer,
+                   ReplicaKeyFilter replicaFilter,
+                   IncarnationSource incarnation,
+                   long ringBytes,
+                   ValueSizeTable valueSizes,
+                   Executor ringCloser) {
+        this(router,
+             serializer,
+             deserializer,
+             replicaFilter,
+             incarnation,
+             CommitRing.commitRing(ringBytes, valueSizes::estimate, ringCloser));
+    }
+
+    /// Test seam: a store over a ring the caller built (a test build wraps the ring lock in a ranked lock, I-W13).
+    KVStore(MessageRouter router,
+            Serializer serializer,
+            Deserializer deserializer,
+            ReplicaKeyFilter replicaFilter,
+            IncarnationSource incarnation,
+            CommitRing ring) {
         this.router = router;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.replicaFilter = replicaFilter;
         this.incarnation = incarnation;
-        this.ring = CommitRing.commitRing(ringBytes);
+        this.ring = ring;
     }
 
     public CommitRing replicaRing() {
@@ -158,14 +196,22 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// The sixth storage writer, and the only write a replica makes besides a snapshot install: applies the plain `Put`/`Remove` effects of one
     /// ring entry raw, with no fence, no witness and no merge (the core already decided them), publishes the notifications with the old values,
     /// appends the entry to this store's own ring and sets the revision to `slot + 1`. An empty effect list (a range marker) only advances.
-    /// Entries are network-decoded, so anything other than `Put` and `Remove` refuses the whole entry and changes nothing.
+    /// Entries are network-decoded, so anything other than `Put` and `Remove` refuses the whole entry and changes nothing. An entry with
+    /// `slot < committedRevision` was already applied and is skipped (I-W4): revision, values and ring stay as they are.
     @SuppressWarnings("unchecked")
     public Result<Unit> applyEffects(ReplicaEntry entry) {
         return entry.effects()
                     .stream()
                     .allMatch(effect -> effect instanceof Put<?, ?> || effect instanceof Remove<?>)
-               ? mutate(() -> applyPlainEffects(entry))
+               ? mutate(() -> applyUnlessApplied(entry))
                : NOT_A_PLAIN_EFFECT.result();
+    }
+
+    /// The single enforcer of "never regress" (I-W4): every caller of `applyEffects`, the replica applier included, relies on this skip.
+    private Result<Unit> applyUnlessApplied(ReplicaEntry entry) {
+        return entry.slot() < committedRevision
+               ? Result.unitResult()
+               : applyPlainEffects(entry);
     }
 
     @SuppressWarnings("unchecked")

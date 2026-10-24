@@ -76,8 +76,17 @@ final class RingFixtures {
         return store(ReplicaKeyFilter.includeAll(), CommitRing.DEFAULT_BUDGET_BYTES);
     }
 
+    /// Subscriber closes run on the thread that decided them, after the ring lock is released, so a test can assert them right after the
+    /// write. The production default (an async close executor) is pinned by `KVStoreReplicaRingTest`.
     static KVStore<StructuredKey, Object> store(ReplicaKeyFilter filter, long ringBytes) {
-        return new KVStore<>(MessageRouter.mutable(), TEXT, deserializerReturning(Map.of()), filter, SOURCE, ringBytes);
+        return new KVStore<>(MessageRouter.mutable(),
+                             TEXT,
+                             deserializerReturning(Map.of()),
+                             filter,
+                             SOURCE,
+                             ringBytes,
+                             ValueSizeTable.valueSizeTable(),
+                             Runnable::run);
     }
 
     static KVCommand<StructuredKey> put(String key, Object value) {

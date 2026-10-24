@@ -11,6 +11,7 @@ import java.util.TreeMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.LongFunction;
 import java.util.function.ToIntFunction;
 
 import org.pragmatica.lang.Contract;
@@ -35,7 +36,8 @@ public final class CommitRing {
     public static final long DEFAULT_QUEUE_BYTES = 8L * 1024 * 1024;
     static final int ENTRY_OVERHEAD_BYTES = 64;
     static final int EFFECT_OVERHEAD_BYTES = 16;
-    static final int DEFAULT_VALUE_BYTES = 256;
+    /// What a queued heartbeat counts against its subscriber's byte bound: a stalled subscriber on an idle cluster still overflows.
+    static final int HEARTBEAT_BYTES = 64;
 
     public enum RefusalReason {
         EVICTED,
@@ -84,14 +86,17 @@ public final class CommitRing {
         /// The next message, if any. Consumer side: takes only the queue lock.
         public Option<Message> poll() {
             synchronized (queueLock) {
-                var message = queue.pollFirst();
+                var message = Option.option(queue.pollFirst());
 
-                queuedBytes -= sizes.isEmpty() || !(message instanceof QueuedEntry)
-                               ? 0
-                               : sizes.removeFirst();
+                message.onPresent(_ -> releaseHead());
 
-                return Option.option(message);
+                return message;
             }
+        }
+
+        /// The consumer took the head message: its bytes no longer count against the bound.
+        private void releaseHead() {
+            queuedBytes -= sizes.removeFirst();
         }
 
         public boolean isClosed() {
@@ -108,6 +113,15 @@ public final class CommitRing {
 
         /// Ring side, under the ring lock. Returns false when the subscription is (now) closed.
         boolean offerEntry(ReplicaEntry entry, int bytes) {
+            return offer(bytes, subSeq -> new QueuedEntry(subSeq, entry));
+        }
+
+        /// A heartbeat counts against the same byte bound as an entry, so a subscriber that stopped reading is closed even when no batch commits.
+        boolean offerHeartbeat(IncarnationTag tag, long nextSlot) {
+            return offer(HEARTBEAT_BYTES, subSeq -> new QueuedHeartbeat(subSeq, tag, nextSlot));
+        }
+
+        private boolean offer(int bytes, LongFunction<Message> message) {
             synchronized (queueLock) {
                 if (closed != null) {
                     return false;
@@ -121,19 +135,7 @@ public final class CommitRing {
 
                 queuedBytes += bytes;
                 sizes.addLast(bytes);
-                queue.addLast(new QueuedEntry(nextSubSeq++, entry));
-
-                return true;
-            }
-        }
-
-        boolean offerHeartbeat(IncarnationTag tag, long nextSlot) {
-            synchronized (queueLock) {
-                if (closed != null) {
-                    return false;
-                }
-
-                queue.addLast(new QueuedHeartbeat(nextSubSeq++, tag, nextSlot));
+                queue.addLast(message.apply(nextSubSeq++));
 
                 return true;
             }
@@ -157,7 +159,7 @@ public final class CommitRing {
         }
     }
 
-    private final ReentrantLock lock = new ReentrantLock();
+    private final ReentrantLock lock;
     private final long budgetBytes;
     private final ToIntFunction<Object> valueSizer;
     private final Executor closer;
@@ -173,10 +175,11 @@ public final class CommitRing {
 
     private Runnable betweenBumpAndOffer = () -> {};
 
-    private CommitRing(long budgetBytes, ToIntFunction<Object> valueSizer, Executor closer) {
+    private CommitRing(long budgetBytes, ToIntFunction<Object> valueSizer, Executor closer, ReentrantLock lock) {
         this.budgetBytes = budgetBytes;
         this.valueSizer = valueSizer;
         this.closer = closer;
+        this.lock = lock;
     }
 
     public static CommitRing commitRing() {
@@ -184,13 +187,29 @@ public final class CommitRing {
     }
 
     public static CommitRing commitRing(long budgetBytes) {
-        return commitRing(budgetBytes, _ -> DEFAULT_VALUE_BYTES, Runnable::run);
+        return commitRing(budgetBytes, ValueSizeTable.valueSizeTable()::estimate, asyncCloser());
     }
 
     /// `valueSizer` estimates a value's heap bytes (a per-value-class table; never an encode inside the store's mutation); `closer` runs the
     /// transport close of a subscription after the ring lock is released.
     public static CommitRing commitRing(long budgetBytes, ToIntFunction<Object> valueSizer, Executor closer) {
-        return new CommitRing(budgetBytes, valueSizer, closer);
+        return commitRing(budgetBytes, valueSizer, closer, new ReentrantLock());
+    }
+
+    /// Test seam: the ring lock is supplied, so a test build can wrap it in a ranked lock that throws on an out-of-order acquire (I-W13).
+    static CommitRing commitRing(long budgetBytes,
+                                 ToIntFunction<Object> valueSizer,
+                                 Executor closer,
+                                 ReentrantLock lock) {
+        return new CommitRing(budgetBytes, valueSizer, closer, lock);
+    }
+
+    /// The production close executor: every transport close runs on its own virtual thread, so it holds neither the ring lock nor the store's
+    /// monitor and `mutationLock` that the writer which decided the close still holds (a close listener may read the KV).
+    public static Executor asyncCloser() {
+        return close -> Thread.ofVirtual()
+                              .name("replica-ring-close")
+                              .start(close);
     }
 
     /// A new subscription queue with the default bound. Not registered until a [#subscribeFrom] grants it.
@@ -274,6 +293,11 @@ public final class CommitRing {
         return underLock(_ -> List.copyOf(entries));
     }
 
+    /// How many effect entries the slot index holds. Lets a test assert that eviction drops an entry from the index too, not only from the deque.
+    int indexedEffectCount() {
+        return underLock(_ -> effectEntriesBySlot.size());
+    }
+
     /// True while the CALLING thread holds the ring lock. Lets a test assert that no transport or store code runs under it.
     public boolean isLockHeldByCurrentThread() {
         return lock.isHeldByCurrentThread();
@@ -301,6 +325,11 @@ public final class CommitRing {
         if (tag.isNone()) {
             nextSlot = Math.max(nextSlot, newNextSlot);
 
+            return;
+        }
+        // Guard: never append behind the frontier, so an older slot cannot reorder the chain or move `coveredTo` back. The store's
+        // `applyEffects` is the single enforcer of the `slot < applied` skip; this only keeps the ring itself in apply order.
+        if (slot < nextSlot) {
             return;
         }
 
@@ -398,7 +427,7 @@ public final class CommitRing {
             return new Refused(RefusalReason.EVICTED, floor, tag);
         }
 
-        return verifyAnchor(pairs).<Subscribe> map(refusal -> refusal)
+        return verifyAnchor(applied, pairs).<Subscribe> map(refusal -> refusal)
                            .or(() -> grant(closes, applied, subscription));
     }
 
@@ -409,8 +438,14 @@ public final class CommitRing {
         return new Granted(entriesFrom(applied), nextSlot, subscription);
     }
 
-    /// Every pair at or above the floor must be present with an equal batch id, at least one pair must be verifiable. Empty means verified.
-    private Option<Refused> verifyAnchor(List<AnchorPair> pairs) {
+    /// Called with `applied >= floor`. An unanchored position is `AHEAD` (section 2.4: anchor absent while `applied >= floor`). Otherwise every
+    /// pair at or above the floor must be present with an equal batch id, at least one pair must be verifiable (none: `EVICTED`), and the ring
+    /// must hold no effect entry between the newest pair and `applied`, which the replica would never receive. Empty means verified.
+    private Option<Refused> verifyAnchor(long applied, List<AnchorPair> pairs) {
+        if (pairs.isEmpty()) {
+            return Option.some(new Refused(RefusalReason.AHEAD, floor, tag));
+        }
+
         var verifiable = pairs.stream().filter(pair -> pair.slot() >= floor).toList();
 
         if (verifiable.isEmpty()) {
@@ -418,9 +453,18 @@ public final class CommitRing {
         }
 
         return verifiable.stream()
-                         .allMatch(this::presentWithEqualId)
+                         .allMatch(this::presentWithEqualId) && !missesAnEffect(applied, pairs)
                ? Option.none()
                : Option.some(new Refused(RefusalReason.AHEAD, floor, tag));
+    }
+
+    /// True when the ring holds an effect entry strictly between the position's newest anchor pair and its `applied`: the position claims slots
+    /// whose effects it never applied. One ordered-index lookup.
+    private boolean missesAnEffect(long applied, List<AnchorPair> pairs) {
+        var newest = pairs.stream().mapToLong(AnchorPair::slot).max().orElse(applied);
+
+        return newest < applied && !effectEntriesBySlot.subMap(newest, false, applied, false)
+                                                       .isEmpty();
     }
 
     private boolean presentWithEqualId(AnchorPair pair) {
@@ -485,7 +529,8 @@ public final class CommitRing {
     }
 
     // ---- estimate ----
-    /// Heap-byte estimate of an entry: a fixed overhead, then per effect the key's text, a fixed overhead and the value estimate. Never an encode.
+    /// Heap-byte estimate of an entry (R-07): a fixed overhead, then per effect the length of the key's `asString()`, a fixed overhead and the
+    /// value estimate. Never an encode.
     static int estimatedBytes(ReplicaEntry entry, ToIntFunction<Object> valueSizer) {
         var total = ENTRY_OVERHEAD_BYTES;
 
@@ -498,8 +543,8 @@ public final class CommitRing {
 
     private static int effectBytes(KVCommand<?> effect, ToIntFunction<Object> valueSizer) {
         return switch (effect) {
-            case KVCommand.Put<?, ?> put -> String.valueOf(put.key()).length() + EFFECT_OVERHEAD_BYTES + valueSizer.applyAsInt(put.value());
-            case KVCommand.Remove<?> remove -> String.valueOf(remove.key()).length() + EFFECT_OVERHEAD_BYTES;
+            case KVCommand.Put<?, ?> put -> put.key().asString().length() + EFFECT_OVERHEAD_BYTES + valueSizer.applyAsInt(put.value());
+            case KVCommand.Remove<?> remove -> remove.key().asString().length() + EFFECT_OVERHEAD_BYTES;
             default -> EFFECT_OVERHEAD_BYTES;
         };
     }

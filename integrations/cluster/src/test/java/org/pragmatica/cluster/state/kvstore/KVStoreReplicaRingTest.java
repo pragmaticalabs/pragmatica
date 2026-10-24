@@ -277,6 +277,55 @@ class KVStoreReplicaRingTest {
         assertThat(replica.replicaRing().anchor()).as("a marker does not change the anchor").isEmpty();
     }
 
+    /// I-W4, never regress: the store's `applyEffects` is the single enforcer of the `slot < applied` skip. Replaying slot 5 after slot 9 is
+    /// skipped whole: the revision, the value and the ring are untouched. Mutation: drop the skip, and the revision goes back to 6, the value
+    /// back to "5" (the ring's own guard still keeps the ring in order, `CommitRingTest#append_refusesASlotBehindTheFrontier`).
+    @Test
+    void applyEffects_skipsAnEntryBelowTheRevision_andChangesNothing() {
+        var replica = genesisStore();
+
+        assertThat(replica.applyEffects(new ReplicaEntry(TAG_A, 1, 5, "batch-5", List.of(new KVCommand.Put<>(new Key("a"), "5")))).isSuccess()).isTrue();
+        assertThat(replica.applyEffects(new ReplicaEntry(TAG_A, 6, 9, "batch-9", List.of(new KVCommand.Put<>(new Key("a"), "9")))).isSuccess()).isTrue();
+        assertThat(replica.applyEffects(new ReplicaEntry(TAG_A, 1, 5, "batch-5", List.of(new KVCommand.Put<>(new Key("a"), "5")))).isSuccess())
+                .as("a replayed entry is not an error: it was applied once already").isTrue();
+
+        assertThat(replica.committedRevision()).as("the revision does not regress").isEqualTo(10L);
+        assertThat(replica.get(new Key("a"))).as("the value does not regress").isEqualTo(Option.some("9"));
+        assertThat(replica.replicaRing().entries()).extracting(ReplicaEntry::slot).as("the ring keeps apply order").containsExactly(5L, 9L);
+    }
+
+    /// The production close executor (the store built without one) runs a subscriber's transport close off the writer's thread, so a close
+    /// listener holds neither the store monitor nor `mutationLock` and cannot create a ring-to-store edge (section 2.1, E-4). Mutation: make the
+    /// default close executor synchronous again, and the close runs on the writer's thread inside the store monitor.
+    @Test
+    void theDefaultCloseExecutor_runsACloseOffTheWritersThread_andOutsideTheStoreMonitor() throws InterruptedException {
+        var store = new KVStore<StructuredKey, Object>(MessageRouter.mutable(), RingFixtures.TEXT, RingFixtures.deserializerReturning(Map.of()), ReplicaKeyFilter.includeAll(), RingFixtures.SOURCE, 1 << 20);
+        var closeThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        var heldStoreMonitor = new AtomicBoolean(true);
+        var closed = new java.util.concurrent.CountDownLatch(1);
+
+        commit(store, 0, putIncarnation(1, "A"));
+        commit(store, 1, put("a", "1"));
+        store.replicaRing().subscribeFrom(TAG_A, 2, store.replicaRing().anchor(), CommitRing.subscription(_ -> {
+            closeThread.set(Thread.currentThread());
+            heldStoreMonitor.set(Thread.holdsLock(store));
+            closed.countDown();
+        }));
+        store.process(store.createBatch(List.of(put("u", "uncommitted"))));
+
+        assertThat(closed.await(5, java.util.concurrent.TimeUnit.SECONDS)).as("the close ran").isTrue();
+        assertThat(closeThread.get()).as("not on the writer's thread").isNotSameAs(Thread.currentThread());
+        assertThat(heldStoreMonitor.get()).as("not under the store monitor").isFalse();
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     // ---- I-W7: snapshot, tag, revision and anchor under one monitor ----
 
     @Test
