@@ -169,8 +169,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
             batchEffects = effects;
             List<R> results = processCommands(batch);
-
-            committedRevision = nextSlot;
+            // Advance-only, like the phase hook: a batch below the published revision never moves it back (never regress, I-W4).
+            committedRevision = Math.max(committedRevision, nextSlot);
             recordBatch(before,
                         batch.id().id(),
                         nextSlot - 1,
