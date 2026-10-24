@@ -95,19 +95,23 @@ class AppHttpServerIngestGateTest {
     }
 
     private void start(Protocol protocol, UploadConfig upload, int maxRequestSize) throws IOException {
+        start(protocol, upload, maxRequestSize, SecurityMode.API_KEY);
+    }
+
+    private void start(Protocol protocol, UploadConfig upload, int maxRequestSize, SecurityMode securityMode) throws IOException {
         port = TlsProbe.freeTcpPort();
         var config = AppHttpConfig.appHttpConfig(true,
                                                  port,
                                                  Map.of(KEY_A, org.pragmatica.aether.config.ApiKeyEntry.apiKeyEntry("alice", Set.of("service")),
                                                         KEY_B, org.pragmatica.aether.config.ApiKeyEntry.apiKeyEntry("bob", Set.of("service"))),
                                                  maxRequestSize,
-                                                 SecurityMode.API_KEY,
+                                                 securityMode,
                                                  Option.none(),
                                                  protocol == Protocol.H1
                                                  ? HttpProtocol.H1
                                                  : HttpProtocol.H3).unwrap().withUpload(upload);
         var router = new CountingRouter();
-        var publisher = new RoutesPublisher(router);
+        var publisher = new IngestGateRoutes(router, SecurityPolicy.apiKeyRequired());
 
         server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
@@ -157,6 +161,30 @@ class AppHttpServerIngestGateTest {
 
         assertThat(authenticated.status()).as("control: the same route with a key is served").isEqualTo(200);
         assertThat(served.get()).isEqualTo(1);
+    }
+
+    /// A protected route on a listener with no validator configured (`security_mode = "none"`) is refused on its headers as
+    /// well: the answer is the handler's own, and the body is not read.
+    @Test
+    void protectedRouteWithNoValidator_isRefusedOnTheHeaders_overHttp1() throws Exception {
+        protectedRouteWithNoValidator_isRefusedOnTheHeaders(Protocol.H1);
+    }
+
+    @Test
+    void protectedRouteWithNoValidator_isRefusedOnTheHeaders_overHttp3() throws Exception {
+        protectedRouteWithNoValidator_isRefusedOnTheHeaders(Protocol.H3);
+    }
+
+    private void protectedRouteWithNoValidator_isRefusedOnTheHeaders(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB, SecurityMode.NONE);
+        var client = client(protocol);
+        var handlersAnswer = client.post("/api/big/", Option.some(KEY_A), 16, Mode.DECLARED).status();
+        var outcome = client.postStreaming("/api/big/", Option.some(KEY_A), 50 * MIB);
+
+        assertThat(handlersAnswer).as("control: a protected route with no validator is refused").isGreaterThanOrEqualTo(400);
+        assertThat(outcome.status()).isEqualTo(handlersAnswer);
+        assertThat(outcome.sent()).as("the body was not read: the client stopped short of 50 MiB").isLessThan(50L * MIB);
+        assertThat(served.get()).isZero();
     }
 
     /// The refusal is not drained: an anonymous client streaming 50 MiB cannot finish sending it.
@@ -415,111 +443,6 @@ class AppHttpServerIngestGateTest {
         @Override
         public SliceRouter withInvocationCells(RouteDecorator decorator) {
             return this;
-        }
-    }
-
-    /// Routes, each with its declared ingest limits, all behind an API key:
-    /// `/api/small/` 1 MiB; `/api/big/` 100 MiB; `/api/undeclared/` none; `/api/upload/` an upload route;
-    /// `/api/timed/` an upload route with `max_duration = 1500 ms`.
-    private record RoutesPublisher(SliceRouter router) implements HttpRoutePublisher {
-        private static final Map<String, UploadSpec> SPECS = Map.of("/api/small/",
-                                                                    UploadSpec.uploadSpec(false, MIB, 0),
-                                                                    "/api/big/",
-                                                                    UploadSpec.uploadSpec(false, 100L * MIB, 0),
-                                                                    "/api/undeclared/",
-                                                                    UploadSpec.NONE,
-                                                                    "/api/upload/",
-                                                                    UploadSpec.uploadSpec(true, 100L * MIB, 0),
-                                                                    "/api/timed/",
-                                                                    UploadSpec.uploadSpec(true, 100L * MIB, 1500));
-
-        private Option<LocalRouteInfo> routeFor(String method, String path) {
-            return "POST".equalsIgnoreCase(method)
-                   ? SPECS.entrySet()
-                          .stream()
-                          .filter(entry -> path.startsWith(entry.getKey()))
-                          .findFirst()
-                          .map(entry -> Option.some(new LocalRouteInfo("POST",
-                                                                       entry.getKey(),
-                                                                       ARTIFACT.asString(),
-                                                                       "upload",
-                                                                       SecurityPolicy.apiKeyRequired(),
-                                                                       entry.getValue())))
-                          .orElse(Option.none())
-                   : Option.none();
-        }
-
-        @Override
-        public Option<LocalResolution> resolveLocal(String method, String path) {
-            return routeFor(method, path).map(route -> new LocalResolution(route, Option.some(router)));
-        }
-
-        @Override
-        public Set<HttpNodeRouteKey> allLocalRoutes() {
-            return Set.of();
-        }
-
-        @Override
-        public Option<SliceRouter> findLocalRouter(String method, String prefix) {
-            return routeFor(method, prefix).map(_ -> router);
-        }
-
-        @Override
-        public Option<LocalRouteInfo> findLocalRoute(String method, String path) {
-            return routeFor(method, path);
-        }
-
-        @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
-        public Promise<Unit> publishRoutes(Artifact artifact,
-                                           ClassLoader classLoader,
-                                           Object sliceInstance,
-                                           SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
-        public boolean hasRoutes(ClassLoader classLoader, Object sliceInstance) {
-            return true;
-        }
-
-        @Override
-        public Promise<Unit> unpublishRoutes(Artifact artifact) {
-            return Promise.success(unit());
-        }
-
-        @Override
-        public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-            return Option.none();
-        }
-
-        @Override
-        public Option<SliceRouter> getSliceRouter(Artifact artifact) {
-            return Option.some(router);
-        }
-
-        @Override
-        public Unit updateSecurityOverrides(SecurityOverrides overrides) {
-            return unit();
-        }
-
-        @Override
-        public Unit setVersioningMetricsSink(VersioningMetricsSink sink) {
-            return unit();
-        }
-
-        @Override
-        public Map<Artifact, SliceVersionRegistry> versionRegistries() {
-            return Map.of();
-        }
-
-        @Override
-        public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
-            return unit();
         }
     }
 
