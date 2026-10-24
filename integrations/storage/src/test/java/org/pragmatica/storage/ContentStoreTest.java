@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -273,6 +274,22 @@ class ContentStoreTest {
             bytes[ContentEnvelope.marker().length + 1] = ContentManifest.FORMAT_VERSION + 1;
 
             assertThat(ContentManifest.fromBytes(bytes).isEmpty()).isTrue();
+        }
+
+        @Test
+        void manifest_namePrefixedFormatOfAnEarlierDevelopmentBuild_isRefused() {
+            var name = "file".getBytes(StandardCharsets.UTF_8);
+            var id = "ab".getBytes(StandardCharsets.UTF_8);
+            var body = ByteBuffer.allocate(Integer.BYTES + name.length + Long.BYTES + Integer.BYTES + Integer.BYTES + id.length)
+                                 .putInt(name.length)
+                                 .put(name)
+                                 .putLong(10)
+                                 .putInt(1)
+                                 .putInt(id.length)
+                                 .put(id)
+                                 .array();
+
+            assertThat(ContentManifest.fromBytes(ContentEnvelope.wrap(ContentEnvelope.MANIFEST, body)).isEmpty()).isTrue();
         }
 
         @Test

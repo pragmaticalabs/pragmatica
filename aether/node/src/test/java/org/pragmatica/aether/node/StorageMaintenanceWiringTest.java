@@ -18,7 +18,9 @@ import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.PromotionManager;
+import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageGarbageCollector;
+import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.TierLevel;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
@@ -106,6 +108,22 @@ class StorageMaintenanceWiringTest {
 
         setup.garbageCollector().activate();
         assertThat(setup.garbageCollector().isActive()).isTrue();
+    }
+
+    /// A0: `streams` keeps no block cap of its own (sealed segments are cut by the sealer), so a block over the
+    /// default maximum is still accepted there, while the same block is refused by `content`.
+    @Test
+    void streamsInstance_hasNoBlockCap_whileContentRefusesTheSameBlock() {
+        var over = new byte[StorageInstance.DEFAULT_MAX_BLOCK_BYTES + 1];
+        var streams = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "test-node").unwrap();
+        var content = createAllWithExplicitContent(Option.none()).get(CONTENT);
+
+        streams.instance().put(over).await().onFailure(cause -> fail("streams must accept it: " + cause.message()));
+        content.instance()
+               .put(over)
+               .await()
+               .onSuccess(_ -> fail("content must refuse a block over the default maximum"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.BlockTooLarge.class));
     }
 
     /// The composite (what `AetherNode` actually hands to `DelegatedStorageAdapter` and
