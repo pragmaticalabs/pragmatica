@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.cluster.state.kvstore.CommitRing.CloseReason;
 import org.pragmatica.cluster.state.kvstore.CommitRing.Granted;
+import org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason;
+import org.pragmatica.cluster.state.kvstore.CommitRing.Refused;
 import org.pragmatica.cluster.state.kvstore.RingFixtures.IncKey;
 import org.pragmatica.cluster.state.kvstore.RingFixtures.Key;
 import org.pragmatica.consensus.NodeId;
@@ -325,9 +327,10 @@ class KVStoreReplicaRingTest {
         assertThat(replica.replicaRing().entries()).extracting(ReplicaEntry::slot).as("the ring keeps apply order").containsExactly(5L, 9L);
     }
 
-    /// I-W1 from a core writer: a committed batch the store hands the ring at a slot behind the ring's frontier is not recorded, and every live
-    /// sink is closed `OUT_OF_ORDER` instead of being left to miss it (it resubscribes and its anchors decide). Mutation: make the ring's guard a
-    /// silent return, and the live sink stays open.
+    /// I-W1 from a core writer: a committed batch the store hands the ring at a slot behind the ring's frontier is not recorded; the ring's floor
+    /// rises to its frontier and every live sink is closed `OUT_OF_ORDER` instead of being left to miss it, and its resubscribe from where it was
+    /// is refused `EVICTED`, so it takes a snapshot. Mutations: make the ring's guard a silent return, and the live sink stays open; drop the
+    /// floor raise, and the resubscribe is granted without the refused batch.
     @Test
     void aCommittedBatchBehindTheRingsFrontier_closesEveryLiveSinkOutOfOrder() {
         var store = genesisStore();
@@ -335,13 +338,17 @@ class KVStoreReplicaRingTest {
 
         commit(store, 1, put("a", "1"));
         commit(store, 2, put("b", "2"));
-        assertThat(store.replicaRing().subscribeFrom(TAG_A, 3, store.replicaRing().anchor(), CommitRing.subscription(closed::add)))
+        var position = store.replicaRing().anchor();
+        assertThat(store.replicaRing().subscribeFrom(TAG_A, 3, position, CommitRing.subscription(closed::add)))
                 .as("control: the sink is live").isInstanceOf(Granted.class);
 
         store.processCommitted(store.createBatch(List.of(put("c", "3"))), 2);
 
         assertThat(closed).as("I-W1 (mutation: a silent return in the ring guard): the live sink is closed").containsExactly(CloseReason.OUT_OF_ORDER);
-        assertThat(store.replicaRing().entries()).extracting(ReplicaEntry::slot).as("the ring keeps apply order").containsExactly(1L, 2L);
+        assertThat(store.replicaRing().floor()).as("the floor rises to the ring's frontier").isEqualTo(3L);
+        assertThat(store.replicaRing().subscribeFrom(TAG_A, 3, position, CommitRing.subscription(_ -> {})))
+                .as("I-W1 (mutation: drop the floor raise): the resubscribe is refused, so the replica snapshots")
+                .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
     }
 
     /// The hook takes the store monitor, so the revision it publishes and the ring advance it makes are ordered with the writer and with

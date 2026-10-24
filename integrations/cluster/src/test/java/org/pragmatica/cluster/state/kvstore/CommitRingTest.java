@@ -453,9 +453,10 @@ class CommitRingTest {
     }
 
     /// The ring never appends behind its frontier: an entry for an older slot would reorder the chain and move `coveredTo` back. It never drops
-    /// one in silence either (I-W1): every live sink is closed `OUT_OF_ORDER`, one WARN names the slot and the frontier, and the entries, the
-    /// floor and the frontier stay. Mutations: drop the guard, and slot 5 lands after slot 9; make the guard a silent return, and the live
-    /// sink stays open.
+    /// one in silence either (I-W1): the floor rises to the frontier (10, which stays), the ring is cleared, every live sink is closed
+    /// `OUT_OF_ORDER`, and one WARN names the slot and the frontier. A resubscribe from the pre-anomaly frontier, fully caught up, is refused
+    /// `EVICTED`. Mutations: drop the guard, and slot 5 lands after slot 9; make the guard a silent return, and the live sink stays open; drop
+    /// the floor raise, and the caught-up position is granted again without the refused batch.
     @Test
     void append_refusesASlotBehindTheFrontier_andClosesEveryLiveSinkOutOfOrder() {
         var ring = ring();
@@ -463,9 +464,10 @@ class CommitRingTest {
 
         ring.append(TAG, 5, "id-5", effect("k", "5"), 6);
         ring.append(TAG, 9, "id-9", effect("k", "9"), 10);
+        var caughtUp = ring.anchor();
         var subscription = CommitRing.subscription(closed::add);
 
-        assertThat(ring.subscribeFrom(TAG, 10, ring.anchor(), subscription)).as("control: the sink is live").isInstanceOf(Granted.class);
+        assertThat(ring.subscribeFrom(TAG, 10, caughtUp, subscription)).as("control: the sink is live").isInstanceOf(Granted.class);
 
         try (var capture = LogCapture.capture(CommitRing.class, Level.WARN, false)) {
             ring.append(TAG, 5, "id-5", effect("k", "5"), 6);
@@ -476,10 +478,14 @@ class CommitRingTest {
 
         assertThat(closed).as("I-W1 (mutation: a silent return): the live sink is closed with its own reason").containsExactly(CloseReason.OUT_OF_ORDER);
         assertThat(subscription.closeReason()).isEqualTo(CloseReason.OUT_OF_ORDER);
-        assertThat(ring.entries()).extracting(ReplicaEntry::slot).as("apply order intact").containsExactly(5L, 9L);
-        assertThat(ring.nextSlot()).isEqualTo(10L);
-        assertThat(ring.floor()).as("nothing the ring cannot prove is raised").isZero();
-        assertThat(ring.anchor()).containsExactly(new AnchorPair(5, "id-5"), new AnchorPair(9, "id-9"));
+        assertThat(ring.entries()).as("the out-of-order batch is not recorded, and the ring is cleared").isEmpty();
+        assertThat(ring.nextSlot()).as("the frontier stays").isEqualTo(10L);
+        assertThat(ring.floor()).as("the floor rises to the frontier").isEqualTo(10L);
+        assertThat(ring.anchor()).isEmpty();
+        assertThat(ring.subscribeFrom(TAG, 10, caughtUp, sink())).as("I-W1 (mutation: drop the floor raise): the pre-anomaly frontier is refused, not granted")
+                                                               .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
+        assertThat(ring.subscribeFrom(TAG, 6, List.of(new AnchorPair(5, "id-5")), sink())).as("an older position too")
+                                                                                         .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
     }
 
     // ---- R-07: the byte measure ----
