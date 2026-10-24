@@ -29,10 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// The target is a worker holding a full KV replica minus an exclusion set: `ReplicaFilter` classifies every
 /// `AetherKey` class INCLUDE or EXCLUDE, and the initial EXCLUDE set is the stream cursor checkpoints and the
-/// cluster configuration. `ReplicaFilter` does not exist yet, so the real assertions are written against the
-/// projection, the only structure that exists: "the worker's view holds the key" stands in for "the replica holds
-/// the key". When W1 lands the filter, the PR that does so enables the real assertion and re-points it at the
-/// filter's replica; the enabled halves are deleted then, because they pin behaviour that is meant to change.
+/// cluster configuration. The filter exists (W1) and TW-O15 pins it; the worker replica does not exist yet, so the
+/// real assertions of TW-O1/O2 are written against the projection, the only per-worker view: "the worker's view holds
+/// the key" stands in for "the replica holds the key". The PR that lands the worker replica (W3/W4) enables them and
+/// re-points them at the replica; the enabled halves are deleted then, because they pin behaviour that is meant to change.
 class ReplicaFilterTripwireTest {
     private static final NodeId WORKER = new NodeId("worker");
     private static final NodeId CORE = new NodeId("core");
@@ -103,7 +103,7 @@ class ReplicaFilterTripwireTest {
                                      .doesNotContainAnyElementsOf(keys.values());
     }
 
-    @Disabled("W1 (ReplicaFilter): enable when the worker holds a full replica minus the exclusion set, and re-point workerView at the filtered replica")
+    @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
     @Test
     void replicaHoldsEveryKeyOutsideTheFilter_andNoneInsideIt() {
         var index = WorkerMetadataIndex.workerMetadataIndex();
@@ -145,7 +145,7 @@ class ReplicaFilterTripwireTest {
                         .anyMatch(key -> key instanceof AetherKey.StreamCursorCheckpointKey);
     }
 
-    @Disabled("W1 (ReplicaFilter): enable when StreamCursorCheckpointKey is in the filter's EXCLUDE set")
+    @Disabled("enable at W3/W4 (worker replica): when the worker's view is the filtered replica, which leaves out StreamCursorCheckpointKey")
     @Test
     void replicaHoldsNoStreamCursorCheckpoint() {
         var index = WorkerMetadataIndex.workerMetadataIndex();
