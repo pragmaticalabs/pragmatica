@@ -481,11 +481,13 @@ Nested under `pool_config` in the database section.
 
 PostgreSQL is the document store for slices: keep a document in a `jsonb` column and map it to a record.
 
-- **`@PgSql` interfaces:** where the schema knows the column is json/jsonb (CRUD tables, `column = :param` pairs,
-  record expansions), a record is mapped as a document without an annotation. Elsewhere (`@Query` results, `@>`
-  operands, expressions, enums) mark it `@Jsonb`. The generated factory encodes and decodes the document with a
-  generated codec. Binding a `String` to a column the schema knows is json/jsonb is a compile error; casts in the SQL
-  stay allowed. See [JSON Documents](persistence-guide.md#json-documents-json--jsonb).
+- **`@PgSql` interfaces:** where the schema knows the column is json/jsonb (CRUD tables, `@Query` params paired with
+  the column on the SQL syntax tree: `INSERT` values, `SET` items, comparisons; record expansions), a record or enum is
+  mapped as a document without an annotation. Elsewhere (`@Query` results, `@>` operands, function arguments,
+  expressions) mark it `@Jsonb`. The generated factory encodes and decodes the document with a generated codec.
+  Binding a `String` to a column the schema knows is json/jsonb is a compile error, and so is an unpaired `String` in
+  an `INSERT`, `UPDATE` or `DELETE` on a table with json/jsonb columns; casts in the SQL stay allowed. See
+  [JSON Documents](persistence-guide.md#json-documents-json--jsonb).
 - **Hand-written queries on the async transport (`async_url`):** bind a document as `JsonText`
   (`org.pragmatica.aether.resource.db.JsonText`) and read it with `row.getObject(column, JsonText.class)`. `JsonText`
   is sent as text with no declared type, so it fits `json` and `jsonb` columns and `jsonb` operators such as `@>`. A

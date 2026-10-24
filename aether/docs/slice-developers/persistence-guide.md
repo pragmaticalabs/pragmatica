@@ -296,28 +296,55 @@ public interface UserDocs {
 }
 ```
 
-**Inferred, no marker needed.** A record, or `Option` of one, without a `ValueMapping`, at a site where the schema
+**How a `@Query` parameter is paired with a column.** The processor reads the statement's syntax tree, from the same
+parser that validates the SQL, so comments, whitespace, letter case and clause order never change a pairing. Unquoted
+identifiers fold to lower case and quoted identifiers keep theirs, so `PROFILE` is `profile` but `"Doc"` is not `doc`.
+A parameter is paired with a column in these places:
+- `INSERT INTO t (c1, .., cn) VALUES (..), (..)`: the n-th value of every row goes with the n-th column, when the row
+  has as many values as the list has columns. `DEFAULT` keeps its position. The table is the statement's own target,
+  so a `FROM` inside an `ON CONFLICT` or `RETURNING` tail never changes it.
+- `SET col = :p` and `SET (a, b) = (:p, :q)`, in `UPDATE` and in `ON CONFLICT .. DO UPDATE`.
+- A comparison with a bare column on the other side: `col = :p` (either side; `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=`),
+  `col IN (:p, ..)`, `col LIKE :p`, `col BETWEEN :p AND :q`, and `col IS [NOT] DISTINCT FROM :p`.
+
+The value must be the parameter alone, possibly in parentheses or under a cast. The column resolves against the
+statement's tables: the target (by name or alias), `FROM`/`USING` tables (by name or alias), `EXCLUDED` inside
+`ON CONFLICT`, and for a subquery, the tables of each enclosing query. An unqualified column is not paired when two of
+those tables have it, or when a subquery, function or CTE in `FROM` might have it.
+
+**Inferred, no marker needed.** A record or enum, or `Option` of one, without a `ValueMapping`, where the schema
 knows the column is `json`/`jsonb`:
 - a component of a CRUD method's row record (read or written), and a CRUD condition parameter;
-- a `@Query` parameter in a `column <op> :param` pair (`WHERE`/`AND`/`OR`/`SET`, op one of `= < > !`, against the
-  statement's first table) with no `::type` cast after it;
-- a component of a record expanded by `@Query` into `VALUES (:record)` or `SET :record`;
-- a `@Query` parameter in a plain explicit-column insert, `INSERT INTO t (c1, .., cn) VALUES (:p1, .., :pn)`: one row,
-  every value a bare `:param` with no cast, as many values as columns. The statement may end with `ON CONFLICT ..`
-  (`DO NOTHING` or `DO UPDATE`) and/or `RETURNING ..`; neither changes which value belongs to which column. The n-th
-  value is the n-th column's, whatever the parameters' names or order.
+- a `@Query` parameter paired with the column without a cast (a cast parameter is bound as written);
+- a component of a record expanded by `@Query` into `VALUES (:record)` or `SET :record`, which the expanded column
+  list pairs.
+
+An enum is written as its JSON string.
 
 **Marker required: the schema cannot tell.**
 - A `@Query` result: its column types are unknown, so a document component of its row record, or a method whose
   single result column is a document, is marked.
 - A record parameter in `VALUES (:record)` (no column list) or `SET :record` is expanded into its components unless
   marked, in which case it is one document. With a column list, `INSERT INTO t (c) VALUES (:p)`, nothing is expanded:
-  `p` is one value for its column, and a record on a `json`/`jsonb` column is a document with no marker.
-- Operands of `@>`, `<@`, `?`, function arguments, `IN (...)`, and any other expression.
-- An insert that is not the plain explicit-column form: an expression or cast among the values, several rows,
-  `INSERT .. SELECT`, a column list and value list of different lengths. Such an insert compiles as before.
-- An enum. It is never inferred, because it may as well be text; mark a JSON enum document.
+  `p` is one value for its column, and a record on a `json`/`jsonb` column is a document with no marker. A comment
+  before `VALUES` is never taken for a column list.
+- A parameter that is not paired: operands of `@>`, `<@`, `?`, function arguments, other expressions,
+  `INSERT .. SELECT`, and `INSERT INTO t VALUES (..)` without a column list.
 - An interface whose migrations are not on the processor's class path.
+
+**Refused at compile time.**
+- A `String`, an `Option<String>` or a value object lowered to `String` that is paired with a `json`/`jsonb` column,
+  or is a CRUD insert/save value or condition on one, unless the parameter is cast: `:doc::jsonb`, `:doc ::jsonb` and
+  `CAST(:doc AS jsonb)` stay allowed.
+- A `String` parameter with an occurrence that is neither paired nor cast, in an `INSERT`, `UPDATE` or `DELETE` whose
+  target table has a `json`/`jsonb` column. Such a value could reach a `json`/`jsonb` column unseen, so the processor
+  refuses it even when it is meant for a text column. Shapes this hits: `INSERT .. SELECT :p`, `VALUES (coalesce(:p,
+  ..))`, `:p || :q`, `lower(:p)`, `INSERT INTO t VALUES (..)` without a column list, a `VALUES` row whose length
+  differs from the column list, an ambiguous unqualified column, and a comparison with an expression such as
+  `profile ->> 'name' = :p`. Cast the parameter (`lower(:p::text)`) or compare it with its column directly. A `SELECT`
+  has no target table and is not checked this way.
+- A parameter inferred as a document (paired with a `json`/`jsonb` column, no cast) that is also paired with another
+  column. One value cannot be a JSON document for one column and plain text for the other.
 
 | Where `@Jsonb` goes | Meaning |
 |---|---|
@@ -332,15 +359,10 @@ knows the column is `json`/`jsonb`:
   a `json` or `jsonb` column. Otherwise the build fails.
 - **Binding.** A document is bound as `JsonText`, text with no declared type, so one value binds to `json` and `jsonb`
   columns and works as a `jsonb` operator operand (`@>`).
-- **No `String` binds to json/jsonb.** A `String` parameter is declared `varchar`. Where the schema knows the column
-  (the sites listed under "Inferred", and the values of a CRUD insert or save, including the plain explicit-column
-  insert with or without its `ON CONFLICT`/`RETURNING` tail), binding a `String`, `Option<String>`
-  or a value object lowered to `String` to a `json`/`jsonb` column is a compile error. Bind a record, bind
-  `JsonText.jsonText(text)`, or cast in SQL: `:doc::jsonb` and `CAST(:doc AS jsonb)` stay allowed.
-- **Where the schema cannot tell, a `String` still compiles.** A `jsonb` column or operator refuses it when the
-  statement is prepared fresh. But the driver caches prepared statements by SQL text, so a bind that reuses a statement
-  prepared earlier on the connection with an untyped parameter is accepted. Neither outcome can be relied on; the
-  driver fix is tracked separately (#2402).
+- **Where a `String` still compiles.** In a `SELECT`, and in a statement whose target table has no `json`/`jsonb`
+  column, a `String` that is not paired compiles. If it reaches a `jsonb` column or operator, the server refuses it
+  when the statement is prepared fresh, but accepts it when the driver reuses a statement prepared earlier for the
+  same SQL with an untyped parameter. Neither outcome can be relied on; the driver fix is tracked separately (#2402).
 - **`String` reads stay allowed.** A `String` component reads a `json`/`jsonb` column as its raw text.
 - **Fixed codec settings.** Stored documents use the codec's fixed defaults (component names as written, empty `Option`
   written as `null`). Deploy-time JSON settings for HTTP routes never apply to them, because a stored document is a
