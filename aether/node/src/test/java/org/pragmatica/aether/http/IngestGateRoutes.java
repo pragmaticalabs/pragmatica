@@ -51,7 +51,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 /// Routes, each with its declared ingest limits, all behind an API key:
 /// `/api/small/` 1 MiB; `/api/big/` 100 MiB; `/api/undeclared/` none; `/api/upload/` an upload route;
-/// `/api/timed/` an upload route with `max_duration = 1500 ms`; `/upload/` 1 MiB, for tests that post to it.
+/// `/api/timed/` an upload route with `max_duration = 1500 ms`; `/upload/` 1 MiB, for tests that post to it; `/api/admin/` requires the role `admin`.
 record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements HttpRoutePublisher {
     private static final int MIB = 1024 * 1024;
     private static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
@@ -66,7 +66,9 @@ record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements 
                                                                 "/api/timed/",
                                                                 UploadSpec.uploadSpec(true, 100L * MIB, 1500),
                                                                 "/upload/",
-                                                                UploadSpec.uploadSpec(false, MIB, 0));
+                                                                UploadSpec.uploadSpec(false, MIB, 0),
+                                                                "/api/admin/",
+                                                                UploadSpec.NONE);
 
     private Option<LocalRouteInfo> routeFor(String method, String path) {
         return "POST".equalsIgnoreCase(method)
@@ -78,7 +80,9 @@ record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements 
                                                                    entry.getKey(),
                                                                    ARTIFACT.asString(),
                                                                    "upload",
-                                                                   security,
+                                                                   "/api/admin/".equals(entry.getKey())
+                                                                   ? SecurityPolicy.roleRequired("admin")
+                                                                   : security,
                                                                    entry.getValue())))
                       .orElse(Option.none())
                : Option.none();

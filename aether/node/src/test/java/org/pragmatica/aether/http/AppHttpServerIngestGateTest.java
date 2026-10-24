@@ -298,6 +298,7 @@ class AppHttpServerIngestGateTest {
         assertThat(run.afterReleaseStatus()).as("admitted once the first body completed").isEqualTo(200);
         if (protocol == Protocol.H1) {
             assertThat(run.firstRefusalText()).as("a 429 says when to retry").containsIgnoringCase("retry-after: 5");
+            assertThat(run.firstRefusalText()).as("and which cap refused it").contains("Too many concurrent uploads for this principal");
         }
     }
 
@@ -411,10 +412,38 @@ class AppHttpServerIngestGateTest {
                                                                               .isEqualTo(6L * 60 * 60 * 1000);
     }
 
-    private Disposition.Aggregate aggregate(String path) {
-        var head = new Head("req-head", HttpMethod.POST, path, Headers.headers(Map.of("x-api-key", List.of(KEY_A))), QueryParams.queryParams(Map.of()));
+    /// The role check is part of the classification: an authenticated principal without the role is refused on the
+    /// headers, and the same principal on a route with no role requirement is admitted.
+    @Test
+    void classification_refusesAPrincipalWithoutTheRole_onTheHeaders() throws IOException {
+        start(Protocol.H1, defaults(), 10 * MIB);
 
-        return switch (((AppHttpServerAdapter) server).classify(head)) {
+        assertThat(classify(HttpMethod.POST, "/api/admin/x", Option.some(KEY_A))).as("alice has no admin role").isInstanceOf(Disposition.Reject.class);
+        assertThat(classify(HttpMethod.POST, "/api/undeclared/x", Option.some(KEY_A))).as("control: the same key is admitted elsewhere")
+                                                                                       .isInstanceOf(Disposition.Aggregate.class);
+    }
+
+    /// The health endpoint is answered by the listener itself: it takes the listener's request size and none of the
+    /// upload limits.
+    @Test
+    void classification_ofTheHealthEndpoint_ignoresTheUploadCeilingAndNeedsNoKey() throws IOException {
+        start(Protocol.H1, defaults().withMaxSizeCeiling(MIB), 10 * MIB);
+
+        var health = classify(HttpMethod.GET, "/health", Option.none());
+
+        assertThat(health).isInstanceOf(Disposition.Aggregate.class);
+        assertThat(((Disposition.Aggregate) health).maxBytes()).isEqualTo(10L * MIB);
+    }
+
+    private Disposition classify(HttpMethod method, String path, Option<String> key) {
+        var headers = key.map(value -> Map.of("x-api-key", List.of(value))).or(Map.<String, List<String>>of());
+        var head = new Head("req-head", method, path, Headers.headers(headers), QueryParams.queryParams(Map.of()));
+
+        return ((AppHttpServerAdapter) server).classify(head);
+    }
+
+    private Disposition.Aggregate aggregate(String path) {
+        return switch (classify(HttpMethod.POST, path, Option.some(KEY_A))) {
             case Disposition.Aggregate aggregate -> aggregate;
             case Disposition.Reject _ -> throw new AssertionError("control: " + path + " with a valid key is admitted");
         };
