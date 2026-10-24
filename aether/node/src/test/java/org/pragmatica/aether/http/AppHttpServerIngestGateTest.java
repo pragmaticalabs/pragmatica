@@ -1012,6 +1012,36 @@ class AppHttpServerIngestGateTest {
         assertThat(statusOf(protocol, "/api/filesize/", multipart(Part.field("a", "x".repeat(500))))).as("file-size route: field sizes are not its business").isEqualTo(200);
     }
 
+    /// A route may declare more files than the decoder's default part cap (128): the cap follows the declaration, so 150
+    /// files on a `max_files = 200` route are within the limit, and 250 are over it.
+    @Test
+    void aRouteMayDeclareMoreFilesThanTheDecodersDefaultCap_overHttp1() throws Exception {
+        aRouteMayDeclareMoreFilesThanTheDecodersDefaultCap(Protocol.H1);
+    }
+
+    @Test
+    void aRouteMayDeclareMoreFilesThanTheDecodersDefaultCap_overHttp3() throws Exception {
+        aRouteMayDeclareMoreFilesThanTheDecodersDefaultCap(Protocol.H3);
+    }
+
+    private void aRouteMayDeclareMoreFilesThanTheDecodersDefaultCap(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+
+        assertThat(statusOf(protocol, "/api/manyfiles/", multipart(filesOf(150)))).as("150 files, limit 200").isEqualTo(200);
+        assertThat(statusOf(protocol, "/api/manyfiles/", multipart(filesOf(250)))).as("250 files, limit 200").isEqualTo(413);
+        assertThat(served.get()).isEqualTo(1);
+    }
+
+    private static Part[] filesOf(int count) {
+        var parts = new Part[count];
+
+        for (int index = 0; index < count; index++) {
+            parts[index] = Part.file("f" + index, 4);
+        }
+
+        return parts;
+    }
+
     /// More parts than the decoder's default cap (128) on a route that declares part limits is a breach of them, not a
     /// malformed body: 413.
     @Test

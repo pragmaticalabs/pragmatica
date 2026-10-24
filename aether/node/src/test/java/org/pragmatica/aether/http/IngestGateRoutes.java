@@ -66,7 +66,8 @@ record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements 
                                                                        Map.entry("/api/files/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 2, 0, 0, 0)),
                                                                        Map.entry("/api/filesize/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 0, 100, 0, 0)),
                                                                        Map.entry("/api/fields/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 0, 0, 2, 0)),
-                                                                       Map.entry("/api/fieldsize/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 0, 0, 0, 10)));
+                                                                       Map.entry("/api/fieldsize/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 0, 0, 0, 10)),
+                                                                       Map.entry("/api/manyfiles/", UploadSpec.uploadSpec(true, 100L * MIB, 0, 200, 0, 0, 0)));
 
     private Option<LocalRouteInfo> routeFor(String method, String path) {
         return "POST".equalsIgnoreCase(method)
