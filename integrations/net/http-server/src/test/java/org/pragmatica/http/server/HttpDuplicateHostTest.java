@@ -81,8 +81,8 @@ class HttpDuplicateHostTest {
         assertRefused("GET / HTTP/1.1\r\nHost: localhost\r\nHost: evil.example\r\nConnection: close\r\n\r\n");
     }
 
-    /// The connection is closed after the 400, even when the client asked to keep it: which host was meant is
-    /// ambiguous, so nothing more is read from it.
+    /// The duplicate-Host request is not dispatched, and the connection is closed after the 400 even when the client
+    /// asked to keep it.
     @Test
     void twoHostLines_closeTheConnection() throws IOException {
         assertRefused("GET / HTTP/1.1\r\nHost: localhost\r\nHost: evil.example\r\n\r\n");
