@@ -175,4 +175,77 @@ class ReplicaFilterTripwireTest {
         assertThat(filter.excludes(new StructuredKey() {})).as("a key family the filter does not know is EXCLUDED").isTrue();
         assertThat(filter.foreignKeyExclusions()).as("and counted").isEqualTo(before + 1);
     }
+
+    /// Every concrete `AetherKey` class, found by walking the sealed hierarchy from `AetherKey.getPermittedSubclasses()`.
+    private static List<Class<?>> everyAetherKeyClass() {
+        var classes = new java.util.ArrayList<Class<?>>();
+
+        collectConcrete(AetherKey.class, classes);
+
+        return classes;
+    }
+
+    private static void collectConcrete(Class<?> type, List<Class<?>> classes) {
+        if (!type.isSealed()) {
+            classes.add(type);
+
+            return;
+        }
+
+        for (var permitted : type.getPermittedSubclasses()) {
+            collectConcrete(permitted, classes);
+        }
+    }
+
+    /// An instance of a key class with no constructor run: the filter's switch reads only the runtime class, so the components do not matter.
+    private static AetherKey instanceOf(Class<?> keyClass) {
+        try {
+            var field = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe");
+
+            field.setAccessible(true);
+            var unsafe = field.get(null);
+
+            return (AetherKey) unsafe.getClass().getMethod("allocateInstance", Class.class).invoke(unsafe, keyClass);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot instantiate " + keyClass.getName(), e);
+        }
+    }
+
+    /// TW-O15, the full classification: every `AetherKey` class in the sealed hierarchy, not a sample, is classified, and the EXCLUDE set is
+    /// exactly the stream cursor checkpoints and the cluster configuration. Mutation: move any other class (say `SliceTargetKey`) to EXCLUDE,
+    /// and the set has a third member.
+    @Test
+    void everyAetherKeyClass_isIncluded_exceptTheStreamCursorCheckpointsAndTheClusterConfiguration() {
+        var classes = everyAetherKeyClass();
+        var excluded = classes.stream()
+                              .filter(keyClass -> ReplicaFilter.replicaFilter().excludes(instanceOf(keyClass)))
+                              .map(Class::getSimpleName)
+                              .collect(Collectors.toSet());
+
+        assertThat(classes).as("control: the walk reaches the whole hierarchy, the 20 classes of TW-O1 among them")
+                           .hasSizeGreaterThan(60)
+                           .extracting(Class::getSimpleName)
+                           .containsAll(unscopedKeys().keySet());
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey");
+    }
+
+    /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;
+    /// `AetherKey` re-declares it abstract, so every `AetherKey` class implements its own and none reaches that default.
+    @Test
+    void everyAetherKeyClass_declaresItsOwnAsString() {
+        var inheriting = everyAetherKeyClass().stream()
+                                              .filter(keyClass -> !declaresAsString(keyClass))
+                                              .map(Class::getSimpleName)
+                                              .toList();
+
+        assertThat(inheriting).as("AetherKey classes without their own asString()").isEmpty();
+    }
+
+    private static boolean declaresAsString(Class<?> keyClass) {
+        try {
+            return !java.lang.reflect.Modifier.isAbstract(keyClass.getDeclaredMethod("asString").getModifiers());
+        } catch (NoSuchMethodException _) {
+            return false;
+        }
+    }
 }

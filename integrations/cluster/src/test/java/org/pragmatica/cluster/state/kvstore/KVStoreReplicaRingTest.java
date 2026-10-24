@@ -68,17 +68,41 @@ class KVStoreReplicaRingTest {
     }
 
     @Test
-    void aRefusedWrite_aGet_andANoop_recordNothing() {
+    void aGet_andANoop_recordNothing() {
         var store = genesisStore();
 
         commit(store, 1, put("a", "1"));
         var entriesBefore = store.replicaRing().entries().size();
 
-        // A Put over a LeaderAuthorized value is a no-op in the store; a Get and a Noop never change storage.
         commit(store, 2, new KVCommand.Get<>(new Key("a")), new KVCommand.Noop<>(new Key("a")));
 
         assertThat(store.replicaRing().entries()).as("a batch with no applied effect makes no entry").hasSize(entriesBefore);
         assertThat(store.replicaRing().nextSlot()).as("but the frontier moved").isEqualTo(3L);
+    }
+
+    private record Authorized(String text) implements LeaderAuthorized {}
+
+    /// Refused commands record nothing (D1): a `Put` of a `LeaderAuthorized` value outside a transaction (the store ignores it), and a leader
+    /// transaction from a node that is not the leader (refused whole), committed beside an applied `Put` in one batch. Only the applied `Put` is
+    /// recorded. Mutation: record a transaction's mutations before its acceptance is known, and the refused one lands in the ring.
+    @Test
+    void refusedWrites_recordNothing_besideAnAppliedWrite() {
+        var store = genesisStore();
+        var leader = new LeaderValue(new NodeId("core"), 1);
+        var impostor = new LeaderValue(new NodeId("impostor"), 1);
+
+        commit(store, 1, new KVCommand.Put<>(LeaderKey.INSTANCE, leader));
+        commit(store,
+               2,
+               new KVCommand.Put<>(new Key("authorized"), new Authorized("refused")),
+               new KVCommand.LeaderTransaction<>(new Key("t"), "tx", impostor, List.of(),
+                                                 List.of(new KVCommand.Mutation<StructuredKey, Object>(new Key("c"), Option.none(), Option.some("refused")))),
+               put("applied", "1"));
+
+        assertThat(store.get(new Key("authorized")).isEmpty()).as("precondition: the authorized Put was refused").isTrue();
+        assertThat(store.get(new Key("c")).isEmpty()).as("precondition: the impostor's transaction was refused").isTrue();
+        assertThat(store.replicaRing().entries().getLast().effects()).as("D1: only the applied write is recorded")
+                                                                    .containsExactly(new KVCommand.Put<>(new Key("applied"), "1"));
     }
 
     // ---- writers 4-5 and the uncommitted process invalidate (I-W1, NT-O40) ----
@@ -229,6 +253,8 @@ class KVStoreReplicaRingTest {
         assertThat(observed.get(new Key("a")).isEmpty()).isTrue();
         assertThat(notifications).hasSize(2);
         assertThat(notifications.getFirst()).isInstanceOfSatisfying(KVStoreNotification.ValuePut.class, put -> assertThat(put.oldValue()).isEqualTo(Option.some("old")));
+        assertThat(notifications.getLast()).as("a Remove carries the value it removed (mutation: publish it with no old value)")
+                                           .isInstanceOfSatisfying(KVStoreNotification.ValueRemove.class, removed -> assertThat(removed.value()).isEqualTo(Option.some("new")));
         assertThat(observed.replicaRing().anchor()).as("the entry lands in this store's own ring with its anchor").contains(new AnchorPair(2, "batch-2"));
         assertThat(replica.committedRevision()).isEqualTo(1L);
     }
@@ -294,6 +320,34 @@ class KVStoreReplicaRingTest {
         assertThat(replica.replicaRing().entries()).extracting(ReplicaEntry::slot).as("the ring keeps apply order").containsExactly(5L, 9L);
     }
 
+    /// The hook takes the store monitor, so the revision it publishes and the ring advance it makes are ordered with the writer and with
+    /// `captureReplicaSnapshot`. A thread holds the store monitor; the hook must wait for it. Mutation: drop `synchronized` from the hook, and
+    /// it returns while the monitor is still held.
+    @Test
+    void onPhaseCompleted_takesTheStoreMonitor() throws InterruptedException {
+        var store = genesisStore();
+        var held = new java.util.concurrent.CountDownLatch(1);
+        var released = new AtomicBoolean();
+        var holder = new Thread(() -> holdMonitor(store, held, released));
+
+        holder.start();
+        held.await();
+        store.onPhaseCompleted(5);
+        var returnedAfterRelease = released.get();
+
+        holder.join();
+        assertThat(returnedAfterRelease).as("the hook returned only after the monitor was released").isTrue();
+        assertThat(store.committedRevision()).isEqualTo(5L);
+    }
+
+    private static void holdMonitor(Object monitor, java.util.concurrent.CountDownLatch held, AtomicBoolean released) {
+        synchronized (monitor) {
+            held.countDown();
+            sleepQuietly(300);
+            released.set(true);
+        }
+    }
+
     /// The production close executor (the store built without one) runs a subscriber's transport close off the writer's thread, so a close
     /// listener holds neither the store monitor nor `mutationLock` and cannot create a ring-to-store edge (section 2.1, E-4). Mutation: make the
     /// default close executor synchronous again, and the close runs on the writer's thread inside the store monitor.
@@ -324,6 +378,24 @@ class KVStoreReplicaRingTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /// The store hands its value-size table to its ring: the six-argument store uses the untuned table (256 B per value), the eight-argument one
+    /// the table it is given. Mutation: build the ring with a fixed sizer, ignoring the table.
+    @Test
+    void theStoresRing_sizesValuesByTheStoresTable() {
+        var tuned = new KVStore<StructuredKey, Object>(MessageRouter.mutable(), RingFixtures.TEXT, RingFixtures.deserializerReturning(Map.of()), ReplicaKeyFilter.includeAll(), RingFixtures.SOURCE, 1 << 20,
+                                                       ValueSizeTable.valueSizeTable(Map.of(String.class, 1_000)), Runnable::run);
+        var untuned = new KVStore<StructuredKey, Object>(MessageRouter.mutable(), RingFixtures.TEXT, RingFixtures.deserializerReturning(Map.of()), ReplicaKeyFilter.includeAll(), RingFixtures.SOURCE, 1 << 20);
+        var keyText = new Key("a").asString().length();
+
+        for (var store : List.of(tuned, untuned)) {
+            commit(store, 0, putIncarnation(1, "A"));
+            commit(store, 1, put("a", "1"));
+        }
+
+        assertThat(tuned.replicaRing().bytes()).as("the table's constant for String").isEqualTo(64 + keyText + 16 + 1_000);
+        assertThat(untuned.replicaRing().bytes()).as("the untuned default").isEqualTo(64 + keyText + 16 + 256);
     }
 
     // ---- I-W7: snapshot, tag, revision and anchor under one monitor ----

@@ -299,6 +299,55 @@ class ReplicaFeedEngineTripwireTest {
         assertThat(machine.phaseFrontiers).as("NT-O48 (mutation: drop the applyRestoredState call): the restored phase is reported before any decision").contains(5L);
     }
 
+    /// A throwing hook at a state restore must not wedge the engine either: the restore still completes and the engine becomes active. Mutation:
+    /// call the hook in `applyRestoredState` without `runIsolated`, and the engine never becomes active.
+    @Test
+    void aThrowingHookAtARestore_doesNotStopTheEngineBecomingActive() {
+        var machine = new CountingStateMachine();
+        var active = engine(CORE_1, machine, false);
+
+        machine.failHook = true;
+        active.clusterState(ClusterStateNotification.active());
+        await(() -> network.getMessages().stream().anyMatch(SyncRequest.class::isInstance));
+        active.processSyncResponse(new SyncResponse<>(CORE_2, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
+        active.processSyncResponse(new SyncResponse<>(CORE_3, SavedState.savedState(new byte[0], Phase.phase(5), List.of()), ResponderState.COLD));
+        await(active::isActive);
+
+        assertThat(machine.phaseFrontiers).as("the hook ran at the restore and threw").contains(5L);
+    }
+
+    /// An observer applies decisions through the same `advancePhase`, and returns from it in the observer branch: the hook sits before that
+    /// branch, so an observer's completed slots are reported too. Mutation: move the hook after the observer branch, and the observer reports
+    /// only its restore.
+    @Test
+    void anObserversCompletedSlot_reachesTheStateMachineAsAFrontier() {
+        var nodeA = nodeId("node-1").unwrap();
+        var nodeB = nodeId("node-2").unwrap();
+        var nodeC = nodeId("node-3").unwrap();
+        var machine = new CountingStateMachine();
+        var observer = new RabiaEngine<>(new TestTopologyManager(nodeA, 5),
+                                         network,
+                                         machine,
+                                         ProtocolConfig.consensusConfig(org.pragmatica.lang.io.TimeSpan.timeSpan(60).seconds(),
+                                                                        org.pragmatica.lang.io.TimeSpan.timeSpan(60).seconds()),
+                                         ConsensusMetrics.noop(),
+                                         false);
+
+        engines.add(observer);
+        assertThat(observer.initializeVoters(new VoterConfiguration(0, new ClusterConfig(List.of(nodeA, nodeB, nodeC)))).isSuccess()).isTrue();
+        observer.authorizeObservation();
+        observer.clusterState(ClusterStateNotification.active());
+        observer.processSyncResponse(new SyncResponse<>(nodeB, SavedState.empty(), ResponderState.COLD));
+        observer.processSyncResponse(new SyncResponse<>(nodeC, SavedState.empty(), ResponderState.COLD));
+        await(observer::isObserving);
+        observer.processDecision(new Decision<>(nodeB, Phase.ZERO, StateValue.V1, Batch.create(machine.serializer(), List.of(new TestCommand("observed")))));
+        await(() -> observer.currentPhaseForTesting().equals(Phase.phase(1)));
+
+        assertThat(machine.getProcessedCommands()).as("control: the observer applied the decision").extracting(TestCommand::value).containsExactly("observed");
+        assertThat(observer.isObserving()).as("control: it took the observer branch").isTrue();
+        assertThat(machine.phaseFrontiers).as("the observer's completed slot 0 is reported as frontier 1").contains(1L);
+    }
+
     private static Method clearingSetter() {
         return methodOrNull(RabiaEngine.class, "setPassiveClientReady", boolean.class);
     }

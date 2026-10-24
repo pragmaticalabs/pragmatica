@@ -110,7 +110,7 @@ class CommitRingLockOrderTest {
         var closeRanUnderRingLock = new AtomicBoolean();
         var ring = store.replicaRing();
         var writer = new Thread(() -> {
-            for (var slot = 1L; !stop.get(); slot++) {
+            for (var slot = 1L; !stop.get(); slot += 2) {
                 commit(store, slot, put("k" + (slot % 50), "v" + slot));
                 store.applyEffects(new ReplicaEntry(IncarnationTag.incarnationTag(1, "A"), slot + 1, slot + 1, "raw-" + slot, List.of()));
             }
@@ -149,6 +149,124 @@ class CommitRingLockOrderTest {
         assertThat(cycle).as("I-W13 (mutation: read the tag via kvStore.getTyped under the ring lock, see the control): no thread is in a deadlock cycle").isEmpty();
         assertThat(threads).as("every thread finished").noneMatch(Thread::isAlive);
         assertThat(closeRanUnderRingLock.get()).as("the transport close, which reads the store, never ran under the ring lock").isFalse();
+    }
+
+    // ---- the ranked-lock wrapper (I-W13, test builds) ----
+
+    /// A real store over a real ring whose lock is a [RankedLock]; the store's entry points declare the monitors they take, in order.
+    private static final class RankedStore extends KVStore<StructuredKey, Object> {
+        RankedStore() {
+            super(org.pragmatica.messaging.MessageRouter.mutable(),
+                  RingFixtures.TEXT,
+                  RingFixtures.deserializerReturning(java.util.Map.of()),
+                  ReplicaKeyFilter.includeAll(),
+                  RingFixtures.SOURCE,
+                  CommitRing.commitRing(CommitRing.DEFAULT_BUDGET_BYTES, ValueSizeTable.valueSizeTable()::estimate, Runnable::run, new RankedLock(RankedLock.RING)));
+        }
+
+        @Override
+        public <R> List<R> processCommitted(org.pragmatica.consensus.StateMachine.Batch<KVCommand<StructuredKey>> batch, long nextSlot) {
+            return RankedLock.underRank(RankedLock.MUTATION, () -> RankedLock.underRank(RankedLock.STORE, () -> super.processCommitted(batch, nextSlot)));
+        }
+
+        @Override
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> applyEffects(ReplicaEntry entry) {
+            return RankedLock.underRank(RankedLock.MUTATION, () -> RankedLock.underRank(RankedLock.STORE, () -> super.applyEffects(entry)));
+        }
+
+        @Override
+        public org.pragmatica.lang.Unit onPhaseCompleted(long nextSlot) {
+            return RankedLock.underRank(RankedLock.STORE, () -> super.onPhaseCompleted(nextSlot));
+        }
+
+        @Override
+        public org.pragmatica.lang.Option<Object> get(StructuredKey key) {
+            return RankedLock.underRank(RankedLock.STORE, () -> super.get(key));
+        }
+
+        @Override
+        public <VV> org.pragmatica.lang.Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+            return RankedLock.underRank(RankedLock.STORE, () -> super.getTyped(key, valueClass));
+        }
+
+        @Override
+        public org.pragmatica.lang.Result<ReplicaSnapshot> captureReplicaSnapshot(ReplicaKeyFilter filter) {
+            return RankedLock.underRank(RankedLock.STORE, () -> super.captureReplicaSnapshot(filter));
+        }
+    }
+
+    /// The wrapper itself can fail: taking the store monitor while holding the ring lock is recorded and thrown.
+    @Test
+    void rankedLock_throwsOnAnOutOfOrderAcquire() {
+        var ringLock = new RankedLock(RankedLock.RING);
+
+        RankedLock.clearViolations();
+        ringLock.lock();
+        try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> RankedLock.underRank(RankedLock.STORE, () -> "store read under the ring lock"))
+                                           .isInstanceOf(IllegalStateException.class)
+                                           .hasMessageContaining("rank 2 while holding rank 3");
+        } finally {
+            ringLock.unlock();
+        }
+
+        assertThat(RankedLock.underRank(RankedLock.STORE, () -> RankedLock.underRank(RankedLock.RING, () -> "in order"))).isEqualTo("in order");
+        assertThat(RankedLock.violations()).hasSize(1);
+        RankedLock.clearViolations();
+    }
+
+    /// The real ring and a real store under the ranked wrapper and the same three-thread workload. Subscriber closes run on the thread that
+    /// decided them (a synchronous close executor), and every close reads the store. Mutation (inverts the order): run the closes before the
+    /// ring lock is released, and the close's store read is an out-of-order acquire that the wrapper reports.
+    @Test
+    void rankedLocks_onTheRealRingAndStore_reportNoOutOfOrderAcquire() throws InterruptedException {
+        var store = new RankedStore();
+        var stop = new AtomicBoolean();
+        var closes = new AtomicInteger();
+        var failures = new java.util.concurrent.CopyOnWriteArrayList<Throwable>();
+        var ring = store.replicaRing();
+
+        RankedLock.clearViolations();
+        var acquiredBefore = RankedLock.acquisitions();
+
+        commit(store, 0, RingFixtures.putIncarnation(1, "A"));
+        var writer = new Thread(() -> {
+            for (var slot = 1L; !stop.get(); slot += 2) {
+                commit(store, slot, put("k" + (slot % 50), "v" + slot));
+                store.applyEffects(new ReplicaEntry(IncarnationTag.incarnationTag(1, "A"), slot + 1, slot + 1, "raw-" + slot, List.of()));
+            }
+        }, "ranked-writer");
+        var flusher = new Thread(() -> {
+            while (!stop.get()) {
+                ring.flush();
+                ring.subscribeFrom(IncarnationTag.incarnationTag(1, "A"), ring.nextSlot(), ring.anchor(), CommitRing.subscription(200, _ -> {
+                    closes.incrementAndGet();
+                    store.get(new Key("k1"));
+                }));
+            }
+        }, "ranked-flusher");
+        var reader = new Thread(() -> {
+            while (!stop.get()) {
+                store.get(new Key("k1"));
+                store.getTyped(RingFixtures.IncKey.INSTANCE, Object.class);
+                store.captureReplicaSnapshot(ReplicaKeyFilter.includeAll());
+            }
+        }, "ranked-reader");
+        var threads = List.of(writer, flusher, reader);
+
+        threads.forEach(thread -> thread.setUncaughtExceptionHandler((_, failure) -> failures.add(failure)));
+        threads.forEach(Thread::start);
+        Thread.sleep(1_500);
+        stop.set(true);
+        for (var thread : threads) {
+            thread.join(TIMEOUT_MILLIS);
+        }
+
+        assertThat(RankedLock.acquisitions()).as("control: the ring really takes the ranked lock (mutation: the ring ignores the lock it is given)").isGreaterThan(acquiredBefore);
+        assertThat(closes.get()).as("control: subscribers overflowed and their closes, which read the store, ran").isPositive();
+        assertThat(RankedLock.violations()).as("I-W13: no lock is taken out of order (mutation: run the closes under the ring lock)").isEmpty();
+        assertThat(failures).isEmpty();
+        assertThat(threads).as("every thread finished").noneMatch(Thread::isAlive);
     }
 
     /// `CommitRing` has no reference to the store, so it cannot take the store monitor or read storage while it holds its own lock.

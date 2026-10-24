@@ -236,6 +236,80 @@ class CommitRingTest {
                                                                   .isInstanceOf(Granted.class);
     }
 
+    /// A position is decoded from the network, so a malformed one (an anchor pair at or above its own `applied`) must still get a verdict, not
+    /// an exception from the ordered-index lookup. Mutation: drop the `newest < applied` guard, and the lookup throws.
+    @Test
+    void subscribeFrom_answersAMalformedPosition_withoutThrowing() {
+        var ring = ring();
+
+        fill(ring, 0, 3);
+
+        assertThat(ring.subscribeFrom(TAG, 1, pairs(0, 3), sink())).as("pairs up to slot 2 with applied 1").isNotNull();
+    }
+
+    /// I-W3: the answer and the registration are one critical section. A subscriber thread subscribes 2,000 times from the ring's own latest
+    /// anchor while a writer appends 20,000 effect batches; for every grant, the granted entries followed by the first entry the subscription
+    /// receives live must form one contiguous chain from `applied`, with no gap and no duplicate. Mutation: register the subscription in a
+    /// second lock acquisition after the answer, and an entry appended between the two is lost (or delivered twice).
+    @Test
+    void subscribeFrom_answersAndRegistersAtomically_underConcurrentAppends() throws InterruptedException {
+        var ring = ring();
+        var violations = new CopyOnWriteArrayList<String>();
+        var stop = new AtomicBoolean();
+        var grants = new java.util.concurrent.atomic.AtomicInteger();
+
+        ring.append(TAG, 0, "id-0", effect("k0", "v0"), 1);
+        var writer = new Thread(() -> fill(ring, 1, 20_000));
+        var subscriber = new Thread(() -> {
+            for (var round = 0; round < 2_000 && !stop.get(); round++) {
+                checkOneGrant(ring, violations, grants);
+            }
+        });
+
+        writer.start();
+        subscriber.start();
+        writer.join();
+        stop.set(true);
+        subscriber.join();
+
+        assertThat(grants.get()).as("control: the race produced grants").isPositive();
+        assertThat(violations).as("I-W3 (mutation: register in a second lock acquisition)").isEmpty();
+    }
+
+    private static void checkOneGrant(CommitRing ring, List<String> violations, java.util.concurrent.atomic.AtomicInteger grants) {
+        var anchor = ring.anchor();
+        var applied = anchor.getLast().slot() + 1;
+        var subscription = CommitRing.subscription(2_000, _ -> {});
+
+        if (!(ring.subscribeFrom(TAG, applied, anchor, subscription) instanceof Granted granted)) {
+            return;
+        }
+
+        grants.incrementAndGet();
+        var chain = new ArrayList<>(granted.entries());
+
+        while (chain.size() == granted.entries().size()) {
+            var next = subscription.poll();
+
+            if (next.isPresent() && next.unwrap() instanceof QueuedEntry queued) {
+                chain.add(queued.entry());
+            } else if (next.isEmpty() && (subscription.isClosed() || ring.nextSlot() > 20_000)) {
+                break;
+            }
+        }
+
+        var expected = applied;
+
+        for (var entry : chain) {
+            if (entry.from() != expected || entry.slot() != expected) {
+                violations.add("applied " + applied + ": expected slot " + expected + " but got from " + entry.from() + " slot " + entry.slot());
+
+                return;
+            }
+            expected = entry.slot() + 1;
+        }
+    }
+
     /// NT-O42, the collision arm: the replica's history differs from the source's, and the newest batch is byte-identical (same id at the same
     /// slot). A single-pair anchor accepts it; the 8-pair anchor refuses it while the divergence is inside the window, and accepts it (the admitted
     /// residual) once 8 identical batches follow the divergence. Mutation: verify only the newest pair, and the in-window arm turns red.
@@ -330,6 +404,39 @@ class CommitRingTest {
         assertThat(stalled.closeReason()).isEqualTo(CloseReason.OVERFLOW);
     }
 
+    /// The bound is on what is queued, not on what was ever sent: a subscriber that keeps up gets its bytes back on every poll and is never
+    /// closed, however much passes through it. Mutation: `poll` keeps the bytes, and the subscriber is closed `OVERFLOW` after a cumulative
+    /// limit.
+    @Test
+    void aSubscriberThatKeepsUp_isNeverClosed_whateverPassesThroughIt() {
+        var ring = ring();
+        var closed = new CopyOnWriteArrayList<CloseReason>();
+        var keepsUp = CommitRing.subscription(1_000, closed::add);
+
+        fill(ring, 0, 1);
+        ring.subscribeFrom(TAG, 1, pairs(0, 1), keepsUp);
+        for (var slot = 1; slot < 200; slot++) {
+            fill(ring, slot, 1);
+            ring.flush();
+            drain(keepsUp);
+        }
+
+        assertThat(keepsUp.isClosed()).as("about 80 KB passed through a 1,000-byte queue that was drained after every batch").isFalse();
+        assertThat(closed).isEmpty();
+    }
+
+    /// Eviction removes the entry from the slot index as well as from the ring, so the index stays bounded by the budget too. Mutation: keep
+    /// the index entry, and the index holds every effect ever appended.
+    @Test
+    void eviction_dropsTheEntryFromTheSlotIndex() {
+        var ring = ring(2_000);
+
+        fill(ring, 0, 40);
+
+        assertThat(ring.floor()).as("precondition: entries were evicted").isPositive();
+        assertThat(ring.indexedEffectCount()).as("the index holds exactly the effect entries the ring still holds").isEqualTo(ring.entryCount());
+    }
+
     /// The ring never appends behind its frontier: an entry for an older slot would reorder the chain and move `coveredTo` back. Mutation: drop
     /// the guard, and slot 5 lands after slot 9.
     @Test
@@ -368,6 +475,33 @@ class CommitRingTest {
         assertThat(CommitRing.estimatedBytes(known, sizes::estimate)).as("64 + |text/abc| + 16 + 1,000").isEqualTo(64 + 8 + 16 + 1_000);
         assertThat(CommitRing.estimatedBytes(unknown, sizes::estimate)).as("a class the table does not name: 256").isEqualTo(64 + 8 + 16 + 256);
         assertThat(CommitRing.estimatedBytes(removal, sizes::estimate)).as("a Remove has no value term").isEqualTo(64 + 8 + 16);
+
+        var plain = new ReplicaEntry(TAG, 0, 0, "id-0", List.of(new KVCommand.Put<>(new RingFixtures.Key("abc"), 7L)));
+
+        assertThat(CommitRing.estimatedBytes(plain, sizes::estimate)).as("a key family with no canonical text is sized by its record text")
+                                                                     .isEqualTo(64 + "Key[id=abc]".length() + 16 + 256);
+    }
+
+    /// The ring's own factories default to the async close executor as well: a close never runs on the thread that decided it. Mutation:
+    /// default the factory to a synchronous executor, and the close runs on the caller's thread.
+    @Test
+    void commitRing_defaultsToTheAsyncCloseExecutor() throws InterruptedException {
+        var ring = CommitRing.commitRing();
+        var closeThread = new AtomicReference<Thread>();
+        var closed = new java.util.concurrent.CountDownLatch(1);
+
+        ring.invalidate(TAG, 0);
+        fill(ring, 0, 1);
+        ring.subscribeFrom(TAG, 1, pairs(0, 1), CommitRing.subscription(_ -> recordClose(closeThread, closed)));
+        ring.invalidate(TAG, 5);
+
+        assertThat(closed.await(5, java.util.concurrent.TimeUnit.SECONDS)).as("the close ran").isTrue();
+        assertThat(closeThread.get()).as("on another thread").isNotSameAs(Thread.currentThread());
+    }
+
+    private static void recordClose(AtomicReference<Thread> closeThread, java.util.concurrent.CountDownLatch closed) {
+        closeThread.set(Thread.currentThread());
+        closed.countDown();
     }
 
     // ---- flush: marker and heartbeat ----
