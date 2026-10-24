@@ -17,4 +17,22 @@ class RouteLimitsTest {
         assertThat(RouteLimits.routeLimits(0, 1).declared()).as("max_duration alone").isTrue();
         assertThat(RouteLimits.routeLimits(1, 1).declared()).isTrue();
     }
+
+    @Test
+    void declared_isTrueForEachPartLimitAlone() {
+        assertThat(RouteLimits.routeLimits(0, 0, 1, 0, 0, 0).declared()).as("max_files alone").isTrue();
+        assertThat(RouteLimits.routeLimits(0, 0, 0, 1, 0, 0).declared()).as("max_file_size alone").isTrue();
+        assertThat(RouteLimits.routeLimits(0, 0, 0, 0, 1, 0).declared()).as("max_fields alone").isTrue();
+        assertThat(RouteLimits.routeLimits(0, 0, 0, 0, 0, 1).declared()).as("max_field_size alone").isTrue();
+    }
+
+    @Test
+    void hasPartLimits_isTrueForEachPartLimitAlone_andFalseForTheBodyLimitsAlone() {
+        assertThat(RouteLimits.NONE.hasPartLimits()).isFalse();
+        assertThat(RouteLimits.routeLimits(5, 5).hasPartLimits()).as("max_size and max_duration are not part limits").isFalse();
+        assertThat(RouteLimits.routeLimits(0, 0, 1, 0, 0, 0).hasPartLimits()).isTrue();
+        assertThat(RouteLimits.routeLimits(0, 0, 0, 1, 0, 0).hasPartLimits()).isTrue();
+        assertThat(RouteLimits.routeLimits(0, 0, 0, 0, 1, 0).hasPartLimits()).isTrue();
+        assertThat(RouteLimits.routeLimits(0, 0, 0, 0, 0, 1).hasPartLimits()).isTrue();
+    }
 }
