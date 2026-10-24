@@ -6567,7 +6567,7 @@ The `max_request_size` field accepts human-readable data size values:
 | `MB` | `"5MB"` | 5,242,880 |
 | `GB` | `"1GB"` | 1,073,741,824 |
 
-Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike. A plain integer is read as a byte count. A request forwarded to the node serving its route must also fit one cluster frame (32 MiB less a 64 KiB reserve); a larger one receives `413` with a detail saying it is too large to forward, and is not sent.
+Default: `10MB` (10,485,760 bytes). This is the default body limit of every route that does not declare its own `max_size` (see [Per-route limits and upload routes](#per-route-limits-and-upload-routes)). Requests exceeding the limit receive `413 Request Entity Too Large`, over HTTP/1.1 and HTTP/3 alike. A plain integer is read as a byte count. A request forwarded to the node serving its route must also fit one cluster frame (32 MiB less a 64 KiB reserve); a larger one receives `413` with a detail saying it is too large to forward, and is not sent.
 
 #### Read timeout and minimum body rate
 
@@ -6586,9 +6586,52 @@ Both bounds apply the same way over HTTP/1.1 and HTTP/3.
 
 Request trailers (an HTTP/1.1 chunked trailer section, or an HTTP/3 HEADERS frame after the body) are accepted but not delivered to the handler, over HTTP/1.1 and HTTP/3 alike: a request exposes only its headers and body. A request-trailers API is tracked as #2310.
 
+#### Per-route limits and upload routes
+
+The app listener decides what to do with a request from its HEADERS alone, before it reads any body byte, over HTTP/1.1 and HTTP/3 alike. It resolves the route, applies the route's security policy (authentication and the role check) and then the route's limits. A request that fails authentication, or is over a limit, is answered at once and its body is never read:
+
+- **Auth before body.** An unauthenticated request to a protected route is answered `401` (`403` for a missing role) on its headers. A client that sent `Expect: 100-continue` is never told to continue. The connection is closed without reading the body.
+- **Per-route body limit.** A route declares `max_size` in `routes.toml` (see below). A declared `Content-Length` over the limit is answered `413` on the headers. A body without one (chunked on HTTP/1.1, an HTTP/3 stream with no `content-length`) is answered `413` at the byte that crosses the limit. Either way the connection is closed within about a second, and the rest of the body is never read into memory. A route that declares no `max_size` takes `[app-http] max_request_size`.
+- **The ceiling.** `[app-http.upload] max_size_ceiling` caps what any route may declare: the limit in force is the smaller of the route's `max_size` and the ceiling.
+- **Ingress that does not host the route.** The limits travel with the replicated route entry, so a node that forwards a request enforces them before it reads the body, with the strictest limits any serving node declared.
+
+An **upload route** is one whose `consumes` is binary or multipart. It additionally takes concurrency caps and its own timing bounds:
+
+```toml
+[app-http.upload]
+max_size_ceiling = "5GB"             # Default: 5GB. The largest max_size any route may declare.
+max_concurrent = 64                  # Default: 64. Uploads in flight on this node.
+max_concurrent_per_principal = 8     # Default: 8. Uploads in flight for one principal (API key name or JWT subject).
+idle_timeout = "30s"                 # Default: 30s. A body that delivers no byte for this long is refused.
+min_body_rate = "1KB"                # Default: 1KB per second, after a first 30 s, averaged over each following 30 s.
+```
+
+| Condition | Answer |
+|---|---|
+| more than `max_concurrent`, or `max_concurrent_per_principal`, uploads in flight | `429 Too Many Requests` with `Retry-After: 5`, on the headers |
+| the body is idle for `idle_timeout`, below `min_body_rate`, or past the route's `max_duration` (default 6 hours) | `408 Request Timeout`, then the connection is closed (over HTTP/3, the stream's input is reset) |
+
+A slot is held from the request headers until the body has been received (or the request ends without it), so the caps bound the bodies being buffered at once. All five keys must be positive; an unknown key in `[app-http.upload]` refuses the configuration. Routes that are not upload routes keep the general `read_timeout` and `min_body_rate` above.
+
+Per-route keys, on an inline-table route in `routes.toml`:
+
+```toml
+[routes]
+importCsv = { route = "POST /import", consumes = "multipart/form-data", max_size = "200MB", max_duration = "30m" }
+```
+
+| Key | Meaning |
+|---|---|
+| `max_size` | The request body limit: a size string (`"5GB"`, `"512KB"`) or an integer number of bytes, greater than zero |
+| `max_duration` | The longest the whole body may take: a duration string (`"6h"`, `"90s"`), greater than zero. Upload routes only take effect; default 6 hours |
+
+An unknown key on an inline-table route is a compile error, because the loader used to ignore it and a mistyped `max_size` left the route at the default limit. The per-part keys `max_file_size`, `max_files`, `max_fields`, `max_field_size`, `resumable` and `unclaimed_ttl` are refused too: they need the streaming upload path, which is not in this release, and a limit that is declared but not enforced is worse than none.
+
+Upload routes still read the whole body into memory before the slice runs: the limits above bound that memory per request and per node, they do not stream it. Size `max_size`, `max_concurrent` and the node's heap together.
+
 ### Multipart File Upload
 
-The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
+The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the route's `max_size` (default `max_request_size`) and the upload bounds above. Slice-generated routes with file upload parameters automatically handle multipart decoding.
 
 A multipart route answers `415 Unsupported Media Type` when the request's Content-Type is not `multipart/form-data` (matched case-insensitively), and `400 Bad Request` when the body is malformed: no `boundary` parameter, no closing boundary delimiter (a truncated body), more than 128 parts, or a part the decoder cannot read. The ProblemDetail `detail` is a fixed description, never decoder internals. A filename-less part with a Content-Type other than `text/plain` is delivered as a file with an empty filename. A repeated field name keeps every value: `MultipartRequest.fieldValues(name)` returns them in body order, and `field(name)` returns the first.
 

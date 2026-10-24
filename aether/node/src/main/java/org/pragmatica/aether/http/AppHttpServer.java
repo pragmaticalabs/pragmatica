@@ -20,6 +20,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.config.UploadConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.fsm.AppHttpContext;
 import org.pragmatica.aether.http.fsm.AppHttpEvents;
@@ -65,6 +66,9 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
+import org.pragmatica.http.routing.UploadSpec;
+import org.pragmatica.http.server.BodyBounds;
+import org.pragmatica.http.server.Disposition;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.BodyRateLimit;
@@ -307,6 +311,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final Option<HttpForwarder> httpForwarder;
     private final AppHttpContext context;
     private final TimeSpan requestBudget;
+    private final UploadAdmission uploadAdmission;
 
     private volatile org.pragmatica.aether.invoke.InvocationAdmission invocationAdmission = org.pragmatica.aether.invoke.InvocationAdmission.open();
 
@@ -367,6 +372,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                 accessibilityFilter);
         this.context = buildContext(selfNodeId, this::computeRouteTable, () -> quorumEstablished);
         this.requestBudget = forwardingTimeouts.requestBudget();
+        this.uploadAdmission = UploadAdmission.uploadAdmission(config.upload());
     }
 
     private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
@@ -575,7 +581,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = serverConfig("app-http-h3", config);
+        var serverConfig = serverConfig("app-http-h3", config).withClassifier(this::classify);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -606,7 +612,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private HttpServerConfig buildServerConfig() {
-        var serverConfig = serverConfig("app-http", config);
+        var serverConfig = serverConfig("app-http", config).withClassifier(this::classify);
         // #967: never demand a client certificate from callers of a USER-facing listener. The node's
         // cluster TlsConfig is Mutual, so building this listener from it made every slice request
         // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
@@ -724,7 +730,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
-        var serverConfig = serverConfig("app-http", config);
+        var serverConfig = serverConfig("app-http", config).withClassifier(this::classify);
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                              ? this::handleRequestWithAltSvc
@@ -760,7 +766,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = serverConfig("app-http-h3", config);
+        var serverConfig = serverConfig("app-http-h3", config).withClassifier(this::classify);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
@@ -869,6 +875,110 @@ class AppHttpServerAdapter implements AppHttpServer {
     public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
         log.debug("NodeRoutesKey removed, rebuilding router");
         publishRouteTable();
+    }
+
+    // ---- The ingest gate: what the listener does with a request on its head, before any body byte is read ----
+    /// Decides from the request HEAD alone, on HTTP/1.1 and HTTP/3 alike, in the order the handler decides it: the health
+    /// check, route resolution, the effective policy, authentication and the role check. A request that fails any of them
+    /// is answered at once, with the response the handler would have written, and its body is never read. A request that
+    /// passes is bounded by its route's `max_size` (capped by `[app-http.upload] max_size_ceiling`) and, on an upload
+    /// route, by a concurrency permit and the upload idle, minimum-rate and duration bounds.
+    ///
+    /// The handler validates again on dispatch (header-only, so repeating it is harmless): the classification's
+    /// `SecurityContext` is not carried into dispatch.
+    private Disposition classify(HttpRequest head) {
+        var method = head.method().name();
+        var path = head.path();
+        var normalizedPath = normalizePath(path);
+
+        if (isHealthEndpoint(normalizedPath)) {
+            return Disposition.aggregate(config.maxRequestSize());
+        }
+
+        var routeTable = context.currentRoutes();
+        var local = httpRoutePublisher.flatMap(pub -> pub.resolveLocal(method, normalizedPath));
+        var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable, local);
+        var requestId = head.requestId();
+
+        if (requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
+            return refuseWith(SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
+        }
+
+        return securityValidator.validate(toHttpRequestContext(head, requestId),
+                                          effectivePolicy)
+                                .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
+                                .fold(cause -> refuseWith(cause, path, requestId, method),
+                                      ctx -> admit(ctx,
+                                                   uploadSpecOf(local, routeTable, method, normalizedPath),
+                                                   path,
+                                                   requestId));
+    }
+
+    private Disposition refuseWith(Cause cause, String path, String requestId, String method) {
+        return Disposition.reject(response -> InvocationContext.runWithRequestId(requestId,
+                                                                                 () -> handleSecurityFailure(response,
+                                                                                                             cause,
+                                                                                                             path,
+                                                                                                             requestId,
+                                                                                                             method)));
+    }
+
+    /// The ingest limits of the route that will serve the request: the local route's, else the strictest any serving node
+    /// published for the remote one. A request no route matches has none (it will be answered 404 by the handler).
+    private UploadSpec uploadSpecOf(Option<LocalResolution> local,
+                                    RouteTable routeTable,
+                                    String method,
+                                    String normalizedPath) {
+        return local.map(resolution -> resolution.route()
+                                                 .uploadSpec())
+                    .or(() -> findMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                      method,
+                                                      normalizedPath).map(HttpRouteRegistry.RouteInfo::uploadSpec)
+                                                     .or(UploadSpec.NONE));
+    }
+
+    private Disposition admit(SecurityContext securityContext, UploadSpec spec, String path, String requestId) {
+        var maxBytes = effectiveMaxBytes(spec);
+
+        if (!spec.upload()) {
+            return Disposition.aggregate(maxBytes);
+        }
+
+        return uploadAdmission.tryAcquire(securityContext.principal().value())
+                              .fold(cause -> tooManyUploads(cause, path, requestId),
+                                    release -> Disposition.aggregate(maxBytes,
+                                                                     uploadBounds(spec),
+                                                                     release));
+    }
+
+    /// `min(declared or the listener's `max_request_size`, ceiling)`: the operator's ceiling caps what a slice declares.
+    private long effectiveMaxBytes(UploadSpec spec) {
+        var declared = spec.maxBodyBytes() > 0
+                       ? spec.maxBodyBytes()
+                       : config.maxRequestSize();
+
+        return Math.min(declared,
+                        config.upload().maxSizeCeiling());
+    }
+
+    private BodyBounds uploadBounds(UploadSpec spec) {
+        var upload = config.upload();
+        var maxDuration = spec.maxDurationMillis() > 0
+                          ? TimeSpan.timeSpan(spec.maxDurationMillis()).millis()
+                          : UploadConfig.DEFAULT_MAX_DURATION;
+
+        return BodyBounds.bodyBounds(upload.idleTimeout(),
+                                     BodyRateLimit.bodyRateLimit(upload.minBodyRate(),
+                                                                 UploadConfig.RATE_WINDOW,
+                                                                 UploadConfig.RATE_WINDOW),
+                                     maxDuration);
+    }
+
+    private Disposition tooManyUploads(Cause cause, String path, String requestId) {
+        return Disposition.reject(response -> {
+            response.header("Retry-After", String.valueOf(UploadConfig.RETRY_AFTER_SECONDS));
+            sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, cause.message(), path, requestId);
+        });
     }
 
     private void handleRequest(HttpRequest request, ResponseWriter response) {
