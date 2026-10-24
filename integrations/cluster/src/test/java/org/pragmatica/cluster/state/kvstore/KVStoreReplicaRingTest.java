@@ -351,6 +351,23 @@ class KVStoreReplicaRingTest {
                 .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
     }
 
+    /// Never regress, for the core writer too: `processCommitted` for a slot below the published revision leaves the revision where it was, as
+    /// the phase hook does, so the replica snapshot taken next claims no older revision than one already published. Mutation: set the revision
+    /// to the batch's `nextSlot` unconditionally, and it goes 3 -> 2.
+    @Test
+    void processCommitted_neverMovesTheRevisionBack() {
+        var store = genesisStore();
+
+        commit(store, 1, put("a", "1"));
+        commit(store, 2, put("b", "2"));
+        assertThat(store.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap().revision()).as("control").isEqualTo(3L);
+
+        store.processCommitted(store.createBatch(List.of(put("c", "3"))), 2);
+
+        assertThat(store.committedRevision()).as("mutation: no max in processCommitted").isEqualTo(3L);
+        assertThat(store.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap().revision()).isEqualTo(3L);
+    }
+
     /// The hook takes the store monitor, so the revision it publishes and the ring advance it makes are ordered with the writer and with
     /// `captureReplicaSnapshot`. A thread holds the store monitor; the hook must wait for it. Mutation: drop `synchronized` from the hook, and
     /// it returns while the monitor is still held.

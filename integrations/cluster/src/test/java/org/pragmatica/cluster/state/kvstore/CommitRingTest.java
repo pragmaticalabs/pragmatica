@@ -488,6 +488,72 @@ class CommitRingTest {
                                                                                          .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
     }
 
+    /// The floor rises at the anomaly whether or not a subscriber is live: a replica that was disconnected at that moment resubscribes from its
+    /// caught-up position and must be refused too. Mutation: raise the floor only when a subscriber is live, and the caught-up position is
+    /// granted without the batch the ring never recorded.
+    @Test
+    void append_behindTheFrontier_withNoLiveSubscriber_stillRaisesTheFloor() {
+        var ring = ring();
+
+        fill(ring, 0, 10);
+        ring.append(TAG, 5, "id-5", effect("k5", "late"), 6);
+
+        assertThat(ring.floor()).as("the floor rises to the frontier").isEqualTo(10L);
+        assertThat(ring.subscribeFrom(TAG, 10, pairs(2, 8), sink())).as("I-W1 (mutation: raise the floor only with a live sink): a disconnected caught-up replica is refused")
+                                                                .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
+    }
+
+    /// The anomaly while the frontier is past the last effect (an open trailing range, `coveredTo < nextSlot`): the frontier stays at 9, the
+    /// floor rises to 9, and the next entry's `from` is 9. The range is opened by `advance` without a grant, since a grant would close it into a
+    /// marker. Mutations: clear to `coveredTo` (the frontier falls back to 5), or keep `coveredTo` (the next entry's `from` lies below the floor).
+    @Test
+    void append_behindTheFrontier_withAnOpenRange_keepsTheFrontier_andStartsTheChainThere() {
+        var ring = ring();
+
+        fill(ring, 0, 5);
+        var live = CommitRing.subscription(_ -> {});
+
+        assertThat(ring.subscribeFrom(TAG, 5, pairs(0, 5), live)).as("control: caught-up is granted").isInstanceOf(Granted.class);
+        ring.advance(TAG, 9);
+        assertThat(ring.entries()).as("precondition: the range 5..8 is still open (no marker)").hasSize(5);
+        ring.append(TAG, 3, "id-3", effect("k3", "late"), 4);
+
+        assertThat(ring.nextSlot()).as("the frontier stays at 9").isEqualTo(9L);
+        assertThat(ring.floor()).as("the floor rises to the frontier 9").isEqualTo(9L);
+        assertThat(live.closeReason()).isEqualTo(CloseReason.OUT_OF_ORDER);
+        assertThat(ring.subscribeFrom(TAG, 9, pairs(0, 5), sink())).isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
+        fill(ring, 9, 1);
+        assertThat(ring.entries().getFirst().from()).as("the next entry's from is the frontier").isEqualTo(9L);
+    }
+
+    /// A same-tag reset to a LOWER floor (a restore to an older checkpoint), then empty slots: a pair from the abandoned history must not verify.
+    /// Mutation: keep the slot index across the clear, and the old pair verifies and the position is granted.
+    @Test
+    void aResetToALowerFloor_forgetsTheAbandonedHistorysPairs() {
+        var ring = ring();
+
+        fill(ring, 0, 10);
+        ring.invalidate(TAG, 3);
+        ring.advance(TAG, 6);
+
+        assertThat(ring.subscribeFrom(TAG, 5, List.of(new AnchorPair(4, "id-4")), sink())).as("mutation: keep the slot index across the clear")
+                                                                                         .isInstanceOf(Refused.class);
+    }
+
+    /// After the anomaly the byte budget starts from zero: on a nearly full ring the first new entry is kept. Mutation: keep the byte count across
+    /// the clear, and that entry is evicted at once, raising the floor past a just-anchored position.
+    @Test
+    void afterTheAnomaly_theByteBudgetStartsFromZero() {
+        var ring = ring(1_200);
+
+        fill(ring, 0, 3);
+        ring.append(TAG, 1, "id-1", effect("k1", "late"), 2);
+        fill(ring, 3, 1);
+
+        assertThat(ring.entryCount()).as("mutation: keep the byte count across the clear").isEqualTo(1);
+        assertThat(ring.subscribeFrom(TAG, 4, pairs(3, 1), sink())).isInstanceOf(Granted.class);
+    }
+
     // ---- R-07: the byte measure ----
 
     private record TextKey(String id) implements StructuredKey {
