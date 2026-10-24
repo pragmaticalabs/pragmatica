@@ -1514,15 +1514,114 @@ class JsonbMappingTest {
         }
 
         @Test
-        void onConflictDoUpdate_staysAsToday() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET profile = EXCLUDED.profile",
-                               "long id, String raw");
+        void returning_tail_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) RETURNING id",
+                                      "long id, String raw");
         }
 
         @Test
-        void returning_staysAsToday() throws Exception {
-            assertStaysAsToday("INSERT INTO documents (id, profile) VALUES (:id, :raw) RETURNING id",
-                               "long id, String raw");
+        void onConflictDoNothing_tail_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO NOTHING",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void onConflictDoUpdate_tail_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET profile = EXCLUDED.profile",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void onConflictDoUpdate_tailWithReturning_isPairedLikeThePlainForm() throws Exception {
+            assertStringOnJsonRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw) ON CONFLICT (id) DO UPDATE SET title = 'x' RETURNING id",
+                                      "long id, String raw");
+        }
+
+        @Test
+        void returning_tail_recordOnJsonColumn_isDocument() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface TailRepo {
+                    @Query("INSERT INTO documents (id, profile) VALUES (:id, :doc) ON CONFLICT (id) DO NOTHING RETURNING id")
+                    Promise<Long> store(long id, Profile doc);
+                }
+                """, "test/TailRepo.java"), "test.TailRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, doc)");
+        }
+
+        /// The `SET col = :p` pair is existing behaviour, not part of the positional pairing: a String there is refused
+        /// today, and this PR adds no refusal and removes none.
+        @Test
+        void onConflictDoUpdate_setPair_stringOnJsonColumn_isStillRefusedByTheExistingPair() throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface SetPairRepo {
+                    @Query("INSERT INTO documents (id, title) VALUES (:id, :title) ON CONFLICT (id) DO UPDATE SET profile = :raw")
+                    Promise<Unit> store(long id, String title, String raw);
+                }
+                """, "test/SetPairRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void columnList_oneJsonColumn_recordIsDocument_notExpanded() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface ListRepo {
+                    @Query("INSERT INTO documents (profile) VALUES (:p)")
+                    Promise<Unit> store(Profile p);
+                }
+                """, "test/ListRepo.java"), "test.ListRepoFactory");
+
+            assertThat(generated).contains("org.pragmatica.aether.resource.db.JsonText.jsonText(PROFILE_JSON, p)")
+                                 .doesNotContain("p.name()");
+        }
+
+        @Test
+        void columnList_recordOnTextColumn_isTheExistingTypeError_notAParseFailure() throws Exception {
+            var result = compile(STRING_REPO_HEADER + PROFILE_RECORD + """
+                @PgSql
+                public interface ListRepo {
+                    @Query("INSERT INTO documents (title) VALUES (:p)")
+                    Promise<Unit> store(Profile p);
+                }
+                """, "test/ListRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("Parameter 'p' has type 'test.Profile' which is neither a supported column type")
+                                            .doesNotContain("SQL parse failed");
+        }
+
+        @Test
+        void noColumnList_recordStillExpands() throws Exception {
+            var generated = factory(compile(STRING_REPO_HEADER + """
+                record TitleOnly(String title) {}
+
+                @PgSql
+                public interface ExpandRepo {
+                    @Query("INSERT INTO documents VALUES (:p)")
+                    Promise<Unit> store(TitleOnly p);
+                }
+                """, "test/ExpandRepo.java"), "test.ExpandRepoFactory");
+
+            assertThat(generated).contains("INSERT INTO documents (title) VALUES ($1)")
+                                 .contains("p.title()");
+        }
+
+        private void assertStringOnJsonRefused(String sql, String params) throws Exception {
+            var result = compile(STRING_REPO_HEADER + """
+                @PgSql
+                public interface TailRepo {
+                    @Query("%s")
+                    Promise<Long> store(%s);
+                }
+                """.formatted(sql, params), "test/TailRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb");
         }
 
         /// The String on a json column is the proof of "no refusal": the same bind in the plain form is refused.

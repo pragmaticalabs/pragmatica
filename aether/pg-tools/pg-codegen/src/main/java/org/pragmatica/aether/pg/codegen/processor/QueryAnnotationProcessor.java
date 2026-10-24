@@ -1465,10 +1465,11 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     /// `INSERT INTO t (c1, .., cn) VALUES (:p1, .., :pn)` and nothing else: one row, every value a bare `:param`, as
-    /// many values as columns. Nothing may follow the values (no `ON CONFLICT`, no `RETURNING`, no second row), and no
-    /// value may be an expression or a cast, so the n-th value is certainly the n-th column's.
+    /// many values as columns. Only an `ON CONFLICT ...` or `RETURNING ...` tail may follow the values (neither changes the
+    /// pairing; no second row), and no value may be an expression or a cast, so the n-th value is certainly the n-th
+    /// column's.
     private static final Pattern PLAIN_INSERT_PATTERN =
-    Pattern.compile("\\s*INSERT\\s+INTO\\s+[a-zA-Z_][a-zA-Z0-9_.]*\\s*\\(([^()]*)\\)\\s*VALUES\\s*\\(([^()]*)\\)\\s*;?\\s*",
+    Pattern.compile("\\s*INSERT\\s+INTO\\s+[a-zA-Z_][a-zA-Z0-9_.]*\\s*\\(([^()]*)\\)\\s*VALUES\\s*\\(([^()]*)\\)(?:\\s+(?:ON\\s+CONFLICT|RETURNING)\\b[^;]*)?\\s*;?\\s*",
                     Pattern.CASE_INSENSITIVE);
     private static final Pattern BARE_PARAM_PATTERN = Pattern.compile(":([a-zA-Z][a-zA-Z0-9]*)");
 

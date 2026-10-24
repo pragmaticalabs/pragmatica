@@ -159,6 +159,10 @@ public final class QueryRewriter {
         return sql.length();
     }
 
+    /// `INSERT INTO t (cols)` right before `VALUES`: the statement already names its columns, and expanding would
+    /// append a second column list, which can only fail to parse. The record then stays one bound value.
+    private static final Pattern EXPLICIT_COLUMN_LIST = Pattern.compile("\\)\\s*$");
+
     public static RewrittenQuery expandInsertRecord(String sql,
                                                     String recordParamName,
                                                     List<RecordField> fields,
@@ -166,7 +170,7 @@ public final class QueryRewriter {
         var pattern = Pattern.compile("(?i)VALUES\\s*\\(\\s*:" + recordParamName + "\\s*\\)");
         var matcher = pattern.matcher(sql);
 
-        if (!matcher.find()) {
+        if (!matcher.find() || EXPLICIT_COLUMN_LIST.matcher(sql.substring(0, matcher.start())).find()) {
             return new RewrittenQuery(sql, List.of());
         }
 
