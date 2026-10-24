@@ -82,10 +82,15 @@ class StorageInstanceMaxBlockSizeTest {
     }
 
     @Test
+    void defaultMaximum_isSixteenMiB() {
+        assertThat(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isEqualTo(16 * 1024 * 1024);
+        assertThat(StorageInstance.storageInstance("plain", List.of(MemoryTier.memoryTier(64L * 1024 * 1024)))
+                                  .maxBlockBytes()).isEqualTo(16_777_216);
+    }
+
+    @Test
     void defaultInstance_acceptsExactlySixteenMiB_andRefusesOneByteMore() {
         var plain = StorageInstance.storageInstance("plain", List.of(MemoryTier.memoryTier(64L * 1024 * 1024)));
-
-        assertThat(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).as("the documented default").isEqualTo(16 * 1024 * 1024);
         var atLimit = new byte[16 * 1024 * 1024];
         var over = new byte[16 * 1024 * 1024 + 1];
 
@@ -95,5 +100,19 @@ class StorageInstanceMaxBlockSizeTest {
              .onSuccess(_ -> fail("a block over 16 MiB must be refused"))
              .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StorageError.BlockTooLarge.class,
                                                                           tooLarge -> assertThat(tooLarge.maxBytes()).isEqualTo(16_777_216L)));
+    }
+
+    @Test
+    void anInstanceThatDoesNotSayOtherwise_reportsTheDefaultMaximum() {
+        var bare = (StorageInstance) java.lang.reflect.Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
+                                                                              new Class<?>[]{StorageInstance.class},
+                                                                              (proxy, method, args) -> java.lang.reflect.InvocationHandler.invokeDefault(proxy, method, args));
+
+        assertThat(bare.maxBlockBytes()).isEqualTo(16 * 1024 * 1024);
+    }
+
+    @Test
+    void configuredMaximum_isWhatTheInstanceReports() {
+        assertThat(storage.maxBlockBytes()).isEqualTo(MAX);
     }
 }

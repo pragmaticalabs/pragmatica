@@ -98,7 +98,7 @@ class ContentStoreManifestFramingTest {
         var victim = content(2 * CHUNK_SIZE + 5, 3);
 
         put("victim", victim);
-        var forged = ContentManifest.contentManifest(victim.length, victimChunkIds("victim")).toBytes();
+        var forged = ContentManifest.contentManifest(CHUNK_SIZE, victim.length, "ab".repeat(32), victimChunkIds("victim")).toBytes();
         var before = refCounts(victimChunkIds("victim"));
 
         put("forged", forged);
@@ -182,7 +182,7 @@ class ContentStoreManifestFramingTest {
         put("victim", victim);
         var chunkIds = victimChunkIds("victim");
         var before = refCounts(chunkIds);
-        var forged = ContentManifest.contentManifest(victim.length, chunkIds).toBytes();
+        var forged = ContentManifest.contentManifest(CHUNK_SIZE, victim.length, "ab".repeat(32), chunkIds).toBytes();
 
         storage.swapRef("planted", forged).await().unwrap();
 
@@ -324,7 +324,6 @@ class ContentStoreManifestFramingTest {
         assertThat(restored.isPresent()).as("control: the legacy file restores").isTrue();
         assertThat(restored.unwrap().refs()).containsOnlyKeys("ok");
     }
-
     /// The window [ContentEnvelope#trustedRef] documents as accepted pre-GA (a `format=2` snapshot of a dev build that has
     /// the snapshot encoding but not the trusted namespace restores a bare `|x`), and a raw [StorageInstance] writer,
     /// can both leave a LEGACY text manifest under a trusted ref. The trusted path must not read it as a manifest:
@@ -376,5 +375,18 @@ class ContentStoreManifestFramingTest {
         assertThat(get("old")).as("a legacy name is read through its legacy manifest").isEqualTo(data);
         store.delete("old").await().onFailure(c -> fail("delete: " + c.message()));
         assertThat(refCounts(ids)).as("its delete releases the chunks").containsOnly(0);
+    }
+
+    @Test
+    void chunkedPut_recordsItsChunkSizeAndTheDigestOfTheWholeContent() throws Exception {
+        var data = content(3 * CHUNK_SIZE + 17, 8);
+
+        put("recorded", data);
+        var manifestId = storage.resolveRef(ContentEnvelope.trustedRef("recorded")).unwrap();
+        var manifest = ContentManifest.fromBytes(storage.get(manifestId).await().unwrap().unwrap()).unwrap();
+
+        assertThat(manifest.chunkSize()).isEqualTo(CHUNK_SIZE);
+        assertThat(manifest.totalSize()).isEqualTo(data.length);
+        assertThat(manifest.sha256()).isEqualTo(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data)));
     }
 }

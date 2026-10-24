@@ -9,7 +9,9 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.ContentStore;
+import org.pragmatica.storage.Compression;
 import org.pragmatica.storage.ContentStoreConfig;
+import org.pragmatica.storage.ContentStoreError;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -52,6 +54,55 @@ class ContentStoreFactoryTest {
             .await()
             .onFailure(cause -> fail("blob round-trip should succeed: " + cause.message()))
             .onSuccess(ContentStoreFactoryTest::assertContentMatches);
+    }
+
+    @Test
+    void provision_refusesAChunkSizeWhoseBlocksTheInstanceWouldRefuse_namingBothValues() {
+        provisionOnDefaultInstance(ContentStoreConfig.contentStoreConfig(16 * 1024 * 1024, Compression.NONE))
+            .await()
+            .onSuccess(_ -> fail("a 16 MiB chunk makes blocks over the default 16 MiB cap"))
+            .onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ContentStoreError.ChunkSizeExceedsBlockLimit.class);
+                assertThat(cause.message()).contains("16777216").contains("16777223");
+            });
+    }
+
+    @Test
+    void provision_acceptsTheLargestChunkSizeTheInstanceTakes_andStoresAFullChunk() {
+        var chunk = 16 * 1024 * 1024 - 7;
+        var content = new byte[chunk];
+
+        provisionOnDefaultInstance(ContentStoreConfig.contentStoreConfig(chunk, Compression.NONE))
+            .flatMap(store -> store.put(CONTENT_NAME, content).map(_ -> store))
+            .flatMap(store -> store.get(CONTENT_NAME))
+            .await()
+            .onFailure(cause -> fail("a chunk of cap minus the envelope must store: " + cause.message()))
+            .onSuccess(stored -> assertThat(stored.isPresent()).isTrue());
+    }
+
+    @Test
+    void provision_judgesAgainstTheInstancesOwnCap_notTheDefault() {
+        var smallCap = StorageInstance.storageInstance("small",
+                                                       List.of(MemoryTier.memoryTier(MEMORY_BYTES)),
+                                                       org.pragmatica.storage.MetadataStore.inMemoryMetadataStore("small"),
+                                                       org.pragmatica.storage.WritePolicy.WRITE_THROUGH,
+                                                       Option.none(),
+                                                       org.pragmatica.storage.AppendLog.TornTailSink.logOnly(),
+                                                       _ -> {},
+                                                       1024 * 1024);
+        var context = ProvisioningContext.provisioningContext().withExtension(StorageInstance.class, smallCap);
+
+        factory.provision(ContentStoreConfig.contentStoreConfig(), context)
+               .await()
+               .onSuccess(_ -> fail("the default 4 MiB chunk is over this instance's 1 MiB cap"))
+               .onFailure(cause -> assertThat(cause.message()).contains("chunkSizeBytes 4194304").contains("maximum block size of 1048576"));
+    }
+
+    private Promise<ContentStore> provisionOnDefaultInstance(ContentStoreConfig config) {
+        var storage = StorageInstance.storageInstance("content", List.of(MemoryTier.memoryTier(MEMORY_BYTES * 8)));
+        var context = ProvisioningContext.provisioningContext().withExtension(StorageInstance.class, storage);
+
+        return factory.provision(config, context);
     }
 
     private static void assertContentMatches(Option<byte[]> content) {

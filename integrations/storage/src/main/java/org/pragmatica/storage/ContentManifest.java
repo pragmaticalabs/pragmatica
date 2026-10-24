@@ -19,7 +19,11 @@ import static org.pragmatica.lang.Option.some;
 /// Manifest linking chunks of large content, in the binary v2 framing.
 ///
 /// Serialized inside the content store's typed envelope ([ContentEnvelope]) as kind `M`: a version byte
-/// ([#FORMAT_VERSION]), the total size, the chunk count, then each chunk id as length-prefixed bytes. The manifest names
+/// ([#FORMAT_VERSION]), the chunk size, the total size, the SHA-256 of the whole content (32 bytes), the chunk count,
+/// then each chunk id as length-prefixed bytes. The header carries the fields the object manifest will keep, so its
+/// layout does not change again when they are first read; nothing reads `chunkSize` or `sha256` yet. Two-level
+/// segments above 4096 chunks and the `SEGMENT` and `CATALOG_PAGE` kinds are not here: they come later, under a
+/// version bump. The manifest names
 /// no object: it is reached only from the ref the store wrote under a TRUSTED name (see [ContentEnvelope#trustedRef]),
 /// so there is no name to escape and no separator. Whether a value is a manifest is decided out of band, by that ref and
 /// the envelope kind the store itself wrote; content is never sniffed, so an upload whose bytes happen to be a valid
@@ -31,25 +35,46 @@ import static org.pragmatica.lang.Option.some;
 /// upload that began with that magic is indistinguishable from a pre-upgrade manifest, so that one hazard remains for
 /// legacy data and ends when the name is rewritten (which moves it to the trusted ref) or deleted. A legacy value is never
 /// read as an envelope. Legacy manifests are parsed from the right, so a legacy name containing `|` is read too.
-public record ContentManifest(long totalSize, int chunkCount, List<String> chunkBlockIds) {
+///
+/// `chunkSize` is 0 and `sha256` is empty on a manifest read from the legacy text format, which recorded neither; such
+/// a manifest is read, never written back.
+public record ContentManifest(int chunkSize,
+                              long totalSize,
+                              String sha256,
+                              int chunkCount,
+                              List<String> chunkBlockIds) {
     static final String MAGIC_HEADER = "AHSE-MANIFEST:";
     static final byte FORMAT_VERSION = 2;
+    private static final int SHA256_BYTES = 32;
 
     public ContentManifest {
         chunkBlockIds = List.copyOf(chunkBlockIds);
     }
 
-    public static ContentManifest contentManifest(long totalSize, List<String> chunkBlockIds) {
-        return new ContentManifest(totalSize, chunkBlockIds.size(), chunkBlockIds);
+    /// A manifest of `chunkSize` chunks of content of `totalSize` bytes whose SHA-256 is `sha256` (64 hex characters).
+    public static ContentManifest contentManifest(int chunkSize,
+                                                  long totalSize,
+                                                  String sha256,
+                                                  List<String> chunkBlockIds) {
+        return new ContentManifest(chunkSize, totalSize, sha256, chunkBlockIds.size(), chunkBlockIds);
+    }
+
+    private static ContentManifest legacyManifest(long totalSize, List<String> chunkBlockIds) {
+        return new ContentManifest(0, totalSize, "", chunkBlockIds.size(), chunkBlockIds);
     }
 
     /// Serialize manifest to bytes for storage: envelope kind `M`, version byte, length-prefixed ids.
     public byte[] toBytes() {
         var idBytes = chunkBlockIds.stream().map(id -> HexFormat.of().parseHex(id)).toList();
-        var size = Byte.BYTES + Long.BYTES + Integer.BYTES + idBytes.stream()
-                                                                    .mapToInt(id -> Integer.BYTES + id.length)
-                                                                    .sum();
-        var body = ByteBuffer.allocate(size).put(FORMAT_VERSION).putLong(totalSize).putInt(chunkCount);
+        var size = Byte.BYTES + Integer.BYTES + Long.BYTES + SHA256_BYTES + Integer.BYTES + idBytes.stream()
+                                                                                                   .mapToInt(id -> Integer.BYTES + id.length)
+                                                                                                   .sum();
+        var body = ByteBuffer.allocate(size)
+                             .put(FORMAT_VERSION)
+                             .putInt(chunkSize)
+                             .putLong(totalSize)
+                             .put(HexFormat.of().parseHex(sha256))
+                             .putInt(chunkCount);
 
         idBytes.forEach(id -> body.putInt(id.length)
                                   .put(id));
@@ -76,7 +101,9 @@ public record ContentManifest(long totalSize, int chunkCount, List<String> chunk
             return none();
         }
 
+        var chunkSize = buffer.getInt();
         var totalSize = buffer.getLong();
+        var sha256 = readSha256(buffer);
         var count = buffer.getInt();
         var ids = new ArrayList<String>(Math.max(0,
                                                  Math.min(count, buffer.remaining() / Integer.BYTES)));
@@ -87,7 +114,15 @@ public record ContentManifest(long totalSize, int chunkCount, List<String> chunk
 
         return buffer.hasRemaining() || count < 1
                ? none()
-               : some(contentManifest(totalSize, ids));
+               : some(contentManifest(chunkSize, totalSize, sha256, ids));
+    }
+
+    private static String readSha256(ByteBuffer buffer) {
+        var bytes = new byte[SHA256_BYTES];
+
+        buffer.get(bytes);
+
+        return HexFormat.of().formatHex(bytes);
     }
 
     private static String readId(ByteBuffer buffer) {
@@ -133,7 +168,7 @@ public record ContentManifest(long totalSize, int chunkCount, List<String> chunk
 
     private static Option<ContentManifest> matchingCount(long totalSize, int declared, int count, List<String> ids) {
         return declared == count
-               ? some(contentManifest(totalSize, ids))
+               ? some(legacyManifest(totalSize, ids))
                : none();
     }
 

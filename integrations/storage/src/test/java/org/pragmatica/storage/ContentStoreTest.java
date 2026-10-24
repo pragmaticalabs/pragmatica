@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -244,18 +245,48 @@ class ContentStoreTest {
 
     @Nested
     class ManifestTests {
+        private static final String SHA256 = HexFormat.of().formatHex(sequence(32));
+        /// marker `00 AHSE 02`, kind `M`, version 2, chunk size 4096, size 12293, sha256 `00..1f`, count 2, ids `aabb` and `010203`.
+        private static final String GOLDEN_V2 = "004148534502" + "4d" + "02" + "00001000" + "0000000000003005"
+                                                + HexFormat.of().formatHex(sequence(32)) + "00000002" + "00000002aabb" + "00000003010203";
+
+        private static byte[] sequence(int length) {
+            var bytes = new byte[length];
+
+            for (var i = 0; i < length; i++) {
+                bytes[i] = (byte) i;
+            }
+
+            return bytes;
+        }
 
         @Test
         void manifest_serializationRoundTrip() {
-            var manifest = ContentManifest.contentManifest(1024, List.of("aabb", "ccdd", "eeff"));
+            var manifest = ContentManifest.contentManifest(512, 1024, SHA256, List.of("aabb", "ccdd", "eeff"));
             var bytes = manifest.toBytes();
             var parsed = ContentManifest.fromBytes(bytes);
 
             assertThat(parsed.isPresent()).isTrue();
             parsed.onPresent(m -> {
+                assertThat(m.chunkSize()).isEqualTo(512);
+                assertThat(m.sha256()).isEqualTo(SHA256);
                 assertThat(m.totalSize()).isEqualTo(1024);
                 assertThat(m.chunkCount()).isEqualTo(3);
                 assertThat(m.chunkBlockIds()).containsExactly("aabb", "ccdd", "eeff");
+            });
+        }
+
+        @Test
+        void legacyTextManifest_readsWithNoChunkSizeAndNoDigest() {
+            var legacy = (ContentManifest.MAGIC_HEADER + "old|150|2|aabb|ccdd").getBytes(StandardCharsets.UTF_8);
+            var parsed = ContentManifest.fromLegacyBytes(legacy);
+
+            assertThat(parsed.isPresent()).isTrue();
+            parsed.onPresent(m -> {
+                assertThat(m.chunkSize()).as("the text format recorded none").isZero();
+                assertThat(m.sha256()).isEmpty();
+                assertThat(m.totalSize()).isEqualTo(150);
+                assertThat(m.chunkBlockIds()).containsExactly("aabb", "ccdd");
             });
         }
 
@@ -269,7 +300,7 @@ class ContentStoreTest {
 
         @Test
         void manifest_unknownFormatVersion_isRefused() {
-            var bytes = ContentManifest.contentManifest(10, List.of("ab")).toBytes();
+            var bytes = ContentManifest.contentManifest(4, 10, SHA256, List.of("ab")).toBytes();
 
             bytes[ContentEnvelope.marker().length + 1] = ContentManifest.FORMAT_VERSION + 1;
 
@@ -294,10 +325,58 @@ class ContentStoreTest {
 
         @Test
         void manifest_carriesNoName_soNothingNeedsEscaping() {
-            var bytes = ContentManifest.contentManifest(10, List.of("ab")).toBytes();
+            var bytes = ContentManifest.contentManifest(4, 10, SHA256, List.of("ab")).toBytes();
 
-            // envelope marker (6) + kind (1) + version (1) + size (8) + count (4) + id length (4) + id (1)
-            assertThat(bytes).hasSize(6 + 1 + 1 + 8 + 4 + 4 + 1);
+            // envelope marker (6) + kind (1) + version (1) + chunk size (4) + size (8) + sha256 (32) + count (4)
+            // + id length (4) + id (1)
+            assertThat(bytes).hasSize(6 + 1 + 1 + 4 + 8 + 32 + 4 + 4 + 1);
+        }
+
+        @Test
+        void manifest_v2Layout_isPinnedByteForByte_whenEncoded() {
+            var manifest = ContentManifest.contentManifest(4096, 12293, SHA256, List.of("aabb", "010203"));
+
+            assertThat(HexFormat.of().formatHex(manifest.toBytes())).isEqualTo(GOLDEN_V2);
+        }
+
+        @Test
+        void manifest_v2Layout_isPinnedByteForByte_whenDecoded() {
+            var parsed = ContentManifest.fromBytes(HexFormat.of().parseHex(GOLDEN_V2));
+
+            assertThat(parsed.isPresent()).isTrue();
+            parsed.onPresent(m -> {
+                assertThat(m.chunkSize()).isEqualTo(4096);
+                assertThat(m.totalSize()).isEqualTo(12293L);
+                assertThat(m.sha256()).isEqualTo(SHA256);
+                assertThat(m.chunkCount()).isEqualTo(2);
+                assertThat(m.chunkBlockIds()).containsExactly("aabb", "010203");
+            });
+        }
+
+        @Test
+        void manifest_withNoChunks_isRefused() {
+            var golden = HexFormat.of().parseHex(GOLDEN_V2);
+            var countOffset = ContentEnvelope.marker().length + 1 + 1 + 4 + 8 + 32;
+            var empty = java.util.Arrays.copyOf(golden, countOffset + 4);
+
+            empty[countOffset + 3] = 0;
+            assertThat(ContentManifest.fromBytes(empty).isEmpty()).as("count 0, no ids").isTrue();
+        }
+
+        @Test
+        void manifest_withTrailingBytes_isRefused() {
+            var golden = HexFormat.of().parseHex(GOLDEN_V2);
+            var padded = java.util.Arrays.copyOf(golden, golden.length + 1);
+
+            assertThat(ContentManifest.fromBytes(padded).isEmpty()).isTrue();
+        }
+
+        @Test
+        void manifest_truncatedBeforeTheDigest_isRefused() {
+            var golden = HexFormat.of().parseHex(GOLDEN_V2);
+            var cut = java.util.Arrays.copyOf(golden, ContentEnvelope.marker().length + 1 + 1 + 4 + 8 + 16);
+
+            assertThat(ContentManifest.fromBytes(cut).isEmpty()).isTrue();
         }
     }
 }

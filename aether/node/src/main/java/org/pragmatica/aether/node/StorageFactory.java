@@ -972,7 +972,8 @@ public final class StorageFactory {
                                            encrypted,
                                            defaults.promotion(),
                                            defaults.prefetch(),
-                                           defaults.prefetchMaxInFlight());
+                                           defaults.prefetchMaxInFlight(),
+                                           defaults.maxBlockBytes());
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
@@ -1020,7 +1021,8 @@ public final class StorageFactory {
                                            encrypted,
                                            defaults.promotion(),
                                            defaults.prefetch(),
-                                           defaults.prefetchMaxInFlight());
+                                           defaults.prefetchMaxInFlight(),
+                                           defaults.maxBlockBytes());
     }
 
     /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream
@@ -1799,7 +1801,8 @@ public final class StorageFactory {
                                                        none(),
                                                        AppendLog.TornTailSink.logOnly(),
                                                        id -> prefetchHolder.get()
-                                                                           .recordAccess(id));
+                                                                           .recordAccess(id),
+                                                       config.maxBlockBytes());
         var prefetchManager = prefetchManagerFor(config, instance);
 
         prefetchHolder.set(prefetchManager);

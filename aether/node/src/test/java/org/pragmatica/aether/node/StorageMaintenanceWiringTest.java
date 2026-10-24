@@ -632,6 +632,76 @@ class StorageMaintenanceWiringTest {
         assertThat(composite.isActive()).as("one running collector is enough").isTrue();
     }
 
+    /// A0 (spec A2.1): the maximum block size is the instance's own `[storage.<name>] max_block_bytes`.
+    @Test
+    void createAll_maxBlockBytesFromConfig_capsThatInstanceOnly() {
+        var defaults = StorageConfig.storageConfig();
+        var capped = StorageConfig.storageConfig(defaults.memoryMaxBytes(),
+                                                 defaults.diskMaxBytes(),
+                                                 contentBlocksDir().toString(),
+                                                 contentDir.resolve("snapshots").toString(),
+                                                 defaults.snapshotMutationThreshold(),
+                                                 defaults.snapshotMaxInterval(),
+                                                 defaults.snapshotRetentionCount(),
+                                                 defaults.walPath(),
+                                                 false,
+                                                 defaults.promotion(),
+                                                 defaults.prefetch(),
+                                                 defaults.prefetchMaxInFlight(),
+                                                 4096);
+        var setups = StorageFactory.createAll(Map.of(ARTIFACTS,
+                                                     storageConfigAt(defaults, artifactsDir, artifactsDir.resolve("snapshots"),
+                                                                     defaults.memoryMaxBytes()),
+                                                     CONTENT,
+                                                     capped),
+                                              "test-node",
+                                              Option.none(),
+                                              Option.none())
+                                   .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                   .unwrap();
+
+        assertThat(setups.get(CONTENT).instance().maxBlockBytes()).isEqualTo(4096);
+        assertThat(setups.get(ARTIFACTS).instance().maxBlockBytes()).as("an instance without the key keeps the default")
+                                                                    .isEqualTo(16 * 1024 * 1024);
+        setups.get(CONTENT).instance().put(new byte[4096]).await().onFailure(cause -> fail("at the cap: " + cause.message()));
+        setups.get(CONTENT)
+              .instance()
+              .put(new byte[4097])
+              .await()
+              .onSuccess(_ -> fail("content must refuse a block over its configured cap"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.BlockTooLarge.class));
+    }
+
+    /// The synthesized `artifacts` and `content` instances derive from the supplied defaults, the limit included.
+    @Test
+    void createAll_synthesizedInstances_takeTheDefaultsMaxBlockBytes() {
+        var defaults = StorageConfig.storageConfig(8L << 20,
+                                                   64L << 20,
+                                                   artifactsDir.resolve("artifacts").resolve("blocks").toString(),
+                                                   artifactsDir.resolve("artifacts").resolve("snapshots").toString(),
+                                                   1000,
+                                                   "60s",
+                                                   5,
+                                                   "",
+                                                   false,
+                                                   true,
+                                                   true,
+                                                   4,
+                                                   2048);
+        var setups = StorageFactory.createAll(Map.of(), "test-node", Option.none(), Option.none(), defaults)
+                                   .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                   .unwrap();
+
+        assertThat(setups.get(ARTIFACTS).instance().maxBlockBytes()).as("synthesized artifacts").isEqualTo(2048);
+        assertThat(setups.get(CONTENT).instance().maxBlockBytes()).as("synthesized content").isEqualTo(2048);
+    }
+
+    /// The config's default and the storage instance's default are two constants in two modules; they must agree.
+    @Test
+    void configDefaultMaxBlockBytes_isTheInstanceDefault() {
+        assertThat(StorageConfig.DEFAULT_MAX_BLOCK_BYTES).isEqualTo(StorageInstance.DEFAULT_MAX_BLOCK_BYTES);
+    }
+
     /// The production maintenance path: the REAL composite managers over the FULL setups map (so the
     /// fan-out actually has to reach `content`) driven by the REAL `StorageMaintenanceDriver`.
     private static void tickRealDriver(Map<String, StorageFactory.StorageSetup> setups) {

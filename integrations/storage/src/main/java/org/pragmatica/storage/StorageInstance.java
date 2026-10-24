@@ -36,13 +36,21 @@ import static org.pragmatica.lang.Unit.unit;
 /// Hierarchical storage instance with write-through and tier-waterfall reads.
 /// Each instance has its own name, tier configuration, and metadata tracking.
 public interface StorageInstance {
-    /// The largest block an instance accepts unless built with another limit. A put, putRef or swapRef of more bytes
-    /// fails with [StorageError.BlockTooLarge] before anything is claimed or written. Callers that split larger content
-    /// (the content store, the artifact store) cut it into blocks well below this.
+    /// The largest block an instance accepts unless built with another limit (`max_block_bytes` in the instance's
+    /// `[storage.<name>]` section). A put, putRef or swapRef of more bytes fails with [StorageError.BlockTooLarge]
+    /// before anything is claimed or written. Callers that split larger content (the content store, the artifact
+    /// store) cut it into blocks that fit: the content store refuses, when it is provisioned, a chunk size whose
+    /// blocks would not ([ContentStoreConfig#validatedAgainst]).
     int DEFAULT_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
     /// Store content -- computes SHA-256, deduplicates, writes through tiers. Content over the instance's maximum
     /// block size fails with [StorageError.BlockTooLarge].
     Promise<BlockId> put(byte[] content);
+
+    /// The largest block this instance accepts, in bytes ([#DEFAULT_MAX_BLOCK_BYTES] unless it was built with another).
+    default int maxBlockBytes() {
+        return DEFAULT_MAX_BLOCK_BYTES;
+    }
+
     /// Read content by block ID -- waterfall through tiers by latency.
     Promise<Option<byte[]>> get(BlockId id);
     /// Check if a block exists in any tier.
@@ -495,6 +503,11 @@ final class DefaultStorageInstance implements StorageInstance {
                                 : none();
         writeBehindQueue.onPresent(WriteBehindQueue::activate);
         log.info("Storage instance '{}' created with {} tier(s), policy={}", name, tiers.size(), writePolicy);
+    }
+
+    @Override
+    public int maxBlockBytes() {
+        return maxBlockBytes;
     }
 
     @Override
