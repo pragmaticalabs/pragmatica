@@ -14,6 +14,7 @@ import java.util.Set;
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
 import org.pragmatica.aether.pg.parser.transform.CstExtractor;
 import org.pragmatica.aether.pg.parser.transform.CstNavigator;
+import org.pragmatica.aether.pg.parser.ast.common.DataTypeName;
 import org.pragmatica.aether.pg.parser.ast.common.Identifier;
 import org.pragmatica.aether.pg.schema.model.Schema;
 import org.pragmatica.aether.pg.schema.model.Table;
@@ -28,22 +29,33 @@ import org.pragmatica.lang.Option;
 /// A parameter occurrence is paired when the tree places it against a column of a table the schema knows:
 /// - the n-th value of every `VALUES` row of an `INSERT` that names its columns (equal counts);
 /// - the value of a `SET col = ..` or `SET (a, b) = (.., ..)` item, in `UPDATE` and in `ON CONFLICT DO UPDATE`;
-/// - an operand of `=`, `<>`, `<`, `IN (..)`, `LIKE`, `BETWEEN` or `IS DISTINCT FROM` whose other side is a column.
+/// - an operand of `=`, `<>`, `<`, `IN (..)`, `LIKE` or `BETWEEN` whose other side is a column (either side for a
+///   binary operator), and either operand of `IS [NOT] DISTINCT FROM` when the other one is a column.
 ///
 /// The column resolves through the statement's own tables: the target (by name and alias), `FROM`/`USING`
-/// relations, `EXCLUDED` inside `ON CONFLICT`, and the relations of each enclosing `SELECT`. An occurrence under
-/// `::type` or `CAST(.. AS type)` is cast; every other occurrence is unplaced.
+/// relations, `EXCLUDED` inside `ON CONFLICT`, and the relations of each enclosing `SELECT`. A `WITH` name shadows the
+/// schema table it is named like: its columns are unknown, so it blocks resolution as a derived relation does. An
+/// occurrence under `::type` or `CAST(.. AS type)` is cast (to json, or to another type, by the outermost cast);
+/// every other occurrence is unplaced.
 @Contract
 public final class SqlParamPairing {
     private SqlParamPairing() {}
 
-    /// A parameter written against `column` of `table`. `cast`: the parameter sits under a cast.
-    public record Pair(Table table, String column, String param, boolean cast) {}
+    /// How a parameter occurrence is cast: not at all, to `json`/`jsonb`, or to another type.
+    public enum Cast {
+        NONE,
+        JSON,
+        OTHER
+    }
 
-    /// What the tree says about one statement: its pairs, the parameters with at least one unplaced occurrence, and
-    /// the table an `INSERT`, `UPDATE` or `DELETE` writes (empty for a `SELECT`, or a table the schema lacks).
-    public record Pairing(List<Pair> pairs, Set<String> unplaced, Option<Table> target) {
-        public static final Pairing NONE = new Pairing(List.of(), Set.of(), Option.empty());
+    /// A parameter written against `column` of `table`, under `cast`.
+    public record Pair(Table table, String column, String param, Cast cast) {}
+
+    /// What the tree says about one statement: its pairs, the parameters with at least one unplaced occurrence, whether
+    /// it is an `INSERT`, `UPDATE` or `DELETE`, and every schema table it references, in the order the walk meets them
+    /// (`WITH` queries, the target, `FROM`/`USING` relations, `SELECT` sources and subqueries).
+    public record Pairing(List<Pair> pairs, Set<String> unplaced, boolean write, List<Table> relations) {
+        public static final Pairing NONE = new Pairing(List.of(), Set.of(), false, List.of());
     }
 
     /// Pairs the parameters of `root`; `bindOrder` names the parameter bound to `$n` at index `n - 1`.
@@ -102,17 +114,29 @@ public final class SqlParamPairing {
     private static final Set<String> ALIAS_KEYWORDS = Set.of("as");
     private static final Set<String> DERIVED_RELATIONS = Set.of("SubqueryRef", "LateralRef", "FuncTableRef");
 
+    private static final Set<String> JSON_TYPES = Set.of("json", "jsonb", "pg_catalog.json", "pg_catalog.jsonb");
+
     /// The relations a name can resolve against, innermost first. A relation the schema lacks (a CTE, an unknown
-    /// table) is present with an empty table: a bare column may belong to it, so it blocks resolution.
-    private record Scope(Map<String, Option<Table>> relations, Option<Scope> parent) {
-        static final Scope TOP = new Scope(Map.of(), Option.empty());
+    /// table) is present with an empty table: a bare column may belong to it, so it blocks resolution. `ctes` are the
+    /// `WITH` names visible here.
+    private record Scope(Map<String, Option<Table>> relations, Set<String> ctes, Option<Scope> parent) {
+        static final Scope TOP = new Scope(Map.of(), Set.of(), Option.empty());
 
         static Scope nested(Scope parent) {
-            return new Scope(new HashMap<>(), Option.present(parent));
+            return new Scope(new HashMap<>(), new HashSet<>(), Option.present(parent));
         }
 
         void register(String name, Option<Table> table) {
             relations.put(name, table);
+        }
+
+        void shadow(String cte) {
+            ctes.add(cte);
+        }
+
+        boolean shadows(String name) {
+            return ctes.contains(name) || parent.map(outer -> outer.shadows(name))
+                                                .or(false);
         }
 
         Option<Table> qualified(String relation) {
@@ -149,7 +173,7 @@ public final class SqlParamPairing {
         }
     }
 
-    private record Hit(String param, int offset, boolean cast) {}
+    private record Hit(String param, int offset, Cast cast) {}
 
     private record Column(Table table, String name) {}
 
@@ -159,7 +183,8 @@ public final class SqlParamPairing {
         private final List<Pair> pairs = new ArrayList<>();
         private final Set<Integer> claimed = new HashSet<>();
         private final List<Hit> occurrences = new ArrayList<>();
-        private Option<Table> target = Option.empty();
+        private final Set<Table> relations = new LinkedHashSet<>();
+        private boolean write;
 
         Walker(List<String> bindOrder, Schema schema) {
             this.bindOrder = bindOrder;
@@ -175,13 +200,13 @@ public final class SqlParamPairing {
                 }
             }
 
-            return new Pairing(List.copyOf(pairs), Set.copyOf(unplaced), target);
+            return new Pairing(List.copyOf(pairs), Set.copyOf(unplaced), write, List.copyOf(relations));
         }
 
         void visit(CstNode node, Scope scope) {
             switch (node) {
                 case CstNode.NonTerminal nt -> visitRule(CstNavigator.of(nt), scope);
-                case CstNode.Token token when"ParamRef".equals(token.ruleName()) -> hitOf(token, false).onPresent(occurrences::add);
+                case CstNode.Token token when"ParamRef".equals(token.ruleName()) -> hitOf(token, Cast.NONE).onPresent(occurrences::add);
                 default -> {}
             }
         }
@@ -207,15 +232,18 @@ public final class SqlParamPairing {
                     visitChildren(node, scope);
                 }
                 case "TypeCastExpr", "CastExpr" -> {
-                    paramOf(node).filter(Hit::cast).onPresent(hit -> claimed.add(hit.offset()));
+                    paramOf(node).filter(hit -> hit.cast() != Cast.NONE).onPresent(hit -> claimed.add(hit.offset()));
                     visitChildren(node, scope);
                 }
+                // Visited by the statement that owns it, with the scope its names are visible in (visitWith).
+                case "WithClause" -> {}
                 default -> visitChildren(node, scope);
             }
         }
 
         // --- statements ---
-        private void visitInsert(CstNavigator insert, Scope outer) {
+        private void visitInsert(CstNavigator insert, Scope enclosing) {
+            var outer = visitWith(insert, enclosing);
             var scope = Scope.nested(outer);
             var table = registerTarget(insert, scope);
 
@@ -233,7 +261,7 @@ public final class SqlParamPairing {
         }
 
         private void visitWrite(CstNavigator statement, Scope outer, String relationsClause) {
-            var scope = Scope.nested(outer);
+            var scope = Scope.nested(visitWith(statement, outer));
             var table = registerTarget(statement, scope);
 
             statement.child(relationsClause).onPresent(clause -> registerOwnedRelations(clause.node(), scope));
@@ -242,13 +270,39 @@ public final class SqlParamPairing {
         }
 
         private void visitSelect(CstNavigator select, Scope outer) {
-            var scope = Scope.nested(outer);
+            var scope = Scope.nested(visitWith(select, outer));
 
             for (var child : select.node().children()) {
                 registerOwnedRelations(child, scope);
             }
 
             visitChildren(select, scope);
+        }
+
+        /// The scope the statement's `WITH` names are visible in. A `WITH` query sees the names before it, and its own
+        /// with `RECURSIVE`; the statement sees them all.
+        private Scope visitWith(CstNavigator statement, Scope outer) {
+            var with = statement.child("WithClause");
+
+            if (with.isEmpty()) {
+                return outer;
+            }
+
+            var scope = Scope.nested(outer);
+            var recursive = with.unwrap().has("RecursiveKW");
+
+            for (var cte : with.unwrap().path("CteList").map(list -> list.allChildren("CteDef")).or(List.of())) {
+                var name = CstExtractor.leadingIdentifier(cte).map(Identifier::normalized);
+
+                if (recursive) {
+                    name.onPresent(scope::shadow);
+                }
+
+                visitChildren(cte, scope);
+                name.onPresent(scope::shadow);
+            }
+
+            return scope;
         }
 
         private void visitOnConflict(CstNavigator clause, Scope targetScope, Option<Table> table) {
@@ -267,9 +321,9 @@ public final class SqlParamPairing {
             }
         }
 
-        /// Registers the statement's target under its written name and its alias. The first `INSERT`/`UPDATE`/`DELETE`
-        /// reached is the outermost one, which is the statement's target.
+        /// Registers the statement's target under its written name and its alias, and marks the statement a write.
         private Option<Table> registerTarget(CstNavigator statement, Scope scope) {
+            write = true;
             var name = statement.child("QualifiedName")
                                 .map(qname -> CstExtractor.extractQualifiedName(qname).normalized());
 
@@ -284,7 +338,6 @@ public final class SqlParamPairing {
             statement.child("Alias")
                      .flatMap(SqlParamPairing::aliasName)
                      .onPresent(alias -> scope.register(alias, table));
-            target = target.orElse(() -> table);
 
             return table;
         }
@@ -321,7 +374,10 @@ public final class SqlParamPairing {
             ref.child("QualifiedName")
                .map(qname -> CstExtractor.extractQualifiedName(qname).normalized())
                .onPresent(written -> {
-                              var table = table(written);
+                              // A WITH query named like a schema table hides it (a WITH name is never qualified).
+                              var table = scope.shadows(written)
+                                          ? Option.<Table> empty()
+                                          : table(written);
                               var alias = ref.child("Alias")
                                              .flatMap(SqlParamPairing::aliasName);
 
@@ -332,6 +388,14 @@ public final class SqlParamPairing {
 
         /// Looked up the way the query validator resolves a table: as written, then in `public` when unqualified.
         private Option<Table> table(String name) {
+            var table = lookup(name);
+
+            table.onPresent(relations::add);
+
+            return table;
+        }
+
+        private Option<Table> lookup(String name) {
             var table = schema.table(name);
 
             if (table.isPresent() || name.contains(".")) {
@@ -422,19 +486,24 @@ public final class SqlParamPairing {
             }
         }
 
-        /// `column IS [NOT] DISTINCT FROM operand`, which the grammar parses as an `IsClause` of the column.
+        /// `left IS [NOT] DISTINCT FROM right`, which the grammar parses as an `IsClause` of the left operand; either
+        /// operand pairs with the other when that one is a column.
         private void pairDistinct(CstNavigator is, Scope scope) {
-            var operand = is.child("IsClause").flatMap(clause -> clause.child("AddExpr"));
+            var left = is.child("AddExpr");
+            var right = is.child("IsClause").flatMap(clause -> clause.child("AddExpr"));
 
-            if (operand.isEmpty()) {
+            if (left.isEmpty() || right.isEmpty()) {
                 return;
             }
 
-            is.child("AddExpr")
-              .flatMap(left -> columnOf(left, scope))
-              .onPresent(known -> paramOf(operand.unwrap()).onPresent(hit -> addPair(known.table(),
-                                                                                     known.name(),
-                                                                                     hit)));
+            pairOperand(left.unwrap(), right.unwrap(), scope);
+            pairOperand(right.unwrap(), left.unwrap(), scope);
+        }
+
+        private void pairOperand(CstNavigator columnSide, CstNavigator paramSide, Scope scope) {
+            columnOf(columnSide, scope).onPresent(known -> paramOf(paramSide).onPresent(hit -> addPair(known.table(),
+                                                                                                       known.name(),
+                                                                                                       hit)));
         }
 
         private static List<CstNavigator> operands(CstNavigator part) {
@@ -499,10 +568,11 @@ public final class SqlParamPairing {
             return table.map(known -> new Column(known, column));
         }
 
-        /// The parameter an expression is, when it is nothing but a parameter, possibly parenthesised or cast.
+        /// The parameter an expression is, when it is nothing but a parameter, possibly parenthesised or cast. The
+        /// outermost cast is the one the column sees.
         private Option<Hit> paramOf(CstNavigator expression) {
             var current = expression;
-            var cast = false;
+            var cast = Cast.NONE;
 
             while (true) {
                 var parts = current.children();
@@ -514,11 +584,13 @@ public final class SqlParamPairing {
                 var next = onlyRule(current);
 
                 if (next.isEmpty() && "TypeCastExpr".equals(current.rule()) && current.has("DataType")) {
+                    cast = outermost(cast,
+                                     current.allChildren("DataType").getLast());
                     next = current.child("PostfixExpr");
-                    cast = true;
                 } else if (next.isEmpty() && "CastExpr".equals(current.rule())) {
+                    cast = outermost(cast,
+                                     current.child("DataType").unwrap());
                     next = current.child("Expr");
-                    cast = true;
                 } else if (next.isEmpty() && parenthesised(current)) {
                     next = current.child("Expr");
                 }
@@ -529,6 +601,20 @@ public final class SqlParamPairing {
 
                 current = next.unwrap();
             }
+        }
+
+        private static Cast outermost(Cast seen, CstNavigator dataType) {
+            if (seen != Cast.NONE) {
+                return seen;
+            }
+
+            return isJsonType(CstExtractor.extractDataType(dataType))
+                   ? Cast.JSON
+                   : Cast.OTHER;
+        }
+
+        private static boolean isJsonType(DataTypeName type) {
+            return ! type.isArray() && JSON_TYPES.contains(type.normalized());
         }
 
         /// `'(' Expr ')'`.
@@ -556,7 +642,7 @@ public final class SqlParamPairing {
         }
 
         /// The bound parameter a `$n` token names, by the generated bind order.
-        private Option<Hit> hitOf(CstNode.Token token, boolean cast) {
+        private Option<Hit> hitOf(CstNode.Token token, Cast cast) {
             return positionName(token.text()).map(name -> new Hit(name,
                                                                   token.span().start().offset(),
                                                                   cast));

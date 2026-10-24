@@ -276,10 +276,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                              cst -> SqlParamPairing.pairing(cst, bindOrder, schema)))
                                .or(SqlParamPairing.Pairing.NONE);
         var boundBody = boundBodyParams(execElement, expansion.bodyParams(), jsonBindTargets(pairing));
+        var inferred = inferredDocuments(execElement);
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
                                                               expansion.sql(),
                                                               expansion.allParamNames(),
                                                               boundBody,
+                                                              inferred,
                                                               schema));
         validateJsonPairs(execElement, pairing, boundBody);
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
@@ -677,6 +679,19 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     private static final Set<ElementKind> INFERRED_KINDS = Set.of(ElementKind.RECORD, ElementKind.ENUM);
 
+    /// The params that are documents only by inference, when their column is json/jsonb: neither `@Jsonb` nor
+    /// value-mapped. A component of an expanded record pairs only with its own column, so it never reaches the regex
+    /// check this feeds.
+    private static Set<String> inferredDocuments(ExecutableElement execElement) {
+        var names = new HashSet<String>();
+        for (var param : execElement.getParameters()) {
+            if (!isMarked(param) && isInferredDocument(param.asType())) {
+                names.add(param.getSimpleName().toString());
+            }
+        }
+        return names;
+    }
+
     // An unsupported document type is reported here; the placeholder keeps the generated source well-formed while the
     // reported error fails the compilation.
     private ColumnRepr documentRepr(Element element, TypeMirror type, ExecutableElement site, boolean inferred) {
@@ -935,7 +950,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private static Set<String> jsonBindTargets(SqlParamPairing.Pairing pairing) {
         var names = new HashSet<String>();
         for (var pair : pairing.pairs()) {
-            if (!pair.cast()) {
+            if (pair.cast() == SqlParamPairing.Cast.NONE) {
                 jsonColumn(pair.table(), pair.column()).onPresent(_ -> names.add(pair.param()));
             }
         }
@@ -959,9 +974,11 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     /// The `@Query` parameters the syntax tree pairs with json/jsonb columns, checked against them (a String is refused
-    /// unless cast). A parameter inferred as a document that is also paired with another column is refused (its
-    /// document cannot fill both), and so is a String the tree cannot place in a statement whose target table has a
-    /// json/jsonb column, unless it is cast: it could be bound to a json/jsonb column unseen.
+    /// unless cast to json/jsonb; a cast to any other type is refused, since json/jsonb take no other type). A parameter
+    /// inferred as a document that is also paired with another column is refused (its document cannot fill both), and
+    /// so is a String the tree cannot place in an `INSERT`, `UPDATE` or `DELETE` that references a table with a
+    /// json/jsonb column (its target, a `FROM`/`USING` relation, a `SELECT` source), unless it is cast: it could be
+    /// bound to a json/jsonb column unseen.
     private void validateJsonPairs(ExecutableElement execElement,
                                    SqlParamPairing.Pairing pairing,
                                    List<FactoryGenerator.MethodParam> boundBody) {
@@ -973,16 +990,24 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                 continue;
             }
             var jsonType = jsonColumn(pair.table(), pair.column());
+            if (jsonType.isPresent() && pair.cast() == SqlParamPairing.Cast.OTHER) {
+                error(ProcessorError.nonJsonCastOnJsonColumn(pair.param(),
+                                                             pair.column(),
+                                                             pair.table().name(),
+                                                             jsonType.unwrap().name()),
+                      execElement);
+                continue;
+            }
             jsonType.onPresent(pgType -> validateTypeCompatibility(execElement,
                                                                     pair.param(),
                                                                     javaType,
                                                                     pair.column(),
                                                                     pair.table().name(),
                                                                     pgType,
-                                                                    pair.cast()));
+                                                                    pair.cast() == SqlParamPairing.Cast.JSON));
             if (jsonType.isEmpty()) {
                 others.putIfAbsent(pair.param(), pair.table().name() + "." + pair.column());
-            } else if (!pair.cast()) {
+            } else if (pair.cast() == SqlParamPairing.Cast.NONE) {
                 documents.putIfAbsent(pair.param(), pair.table().name() + "." + pair.column());
             }
         }
@@ -991,9 +1016,13 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                 error(ProcessorError.jsonAndOtherColumn(param, column, others.get(param)), execElement);
             }
         });
-        pairing.target()
-               .filter(QueryAnnotationProcessor::hasJsonColumn)
-               .onPresent(table -> refuseUnplacedStrings(execElement, pairing, boundBody, table));
+        if (pairing.write()) {
+            pairing.relations()
+                   .stream()
+                   .filter(QueryAnnotationProcessor::hasJsonColumn)
+                   .findFirst()
+                   .ifPresent(table -> refuseUnplacedStrings(execElement, pairing, boundBody, table));
+        }
     }
 
     private void refuseUnplacedStrings(ExecutableElement execElement,
@@ -1251,6 +1280,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     String sql,
     List<String> paramNames,
     List<FactoryGenerator.MethodParam> bodyParams,
+    Set<String> inferred,
     Schema schema) {
         var tableName = extractTableNameFromSql(sql);
         if ( tableName == null) {
@@ -1268,6 +1298,15 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             var javaType = findParamType(bodyParams, pair.paramName());
             if ( javaType == null) {
             continue;}
+            if ( ColumnRepr.JSON_TEXT.equals(javaType) && inferred.contains(pair.paramName())) {
+                error(ProcessorError.inferredDocumentColumnMismatch(pair.paramName(),
+                                                                    pair.columnName(),
+                                                                    table.name(),
+                                                                    colOpt.expect("checked with isEmpty above").type()
+                                                                          .name()),
+                      execElement);
+                continue;
+            }
             validateTypeCompatibility(execElement,
                                       pair.paramName(),
                                       javaType,

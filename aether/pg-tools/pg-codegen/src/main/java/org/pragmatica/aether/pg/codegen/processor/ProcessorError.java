@@ -157,6 +157,27 @@ public final class ProcessorError {
              + " AS jsonb)), or write it directly against its column";
     }
 
+    public static String nonJsonCastOnJsonColumn(String target, String column, String table, String pgType) {
+        return PREFIX
+             + "'" + target
+             + "' is cast to a type other than json/jsonb and bound to column '" + table
+             + "." + column
+             + "' of type " + pgType
+             + ", which takes no other type. Cast it to " + pgType
+             + " (:" + target
+             + "::" + pgType
+             + ") or drop the cast";
+    }
+
+    public static String inferredDocumentColumnMismatch(String target, String column, String table, String pgType) {
+        return PREFIX
+             + "'" + target
+             + "' is sent as a JSON document (inferred from its json/jsonb column) and also maps to column '" + table
+             + "." + column
+             + "' of type " + pgType
+             + "; a JSON document needs a json or jsonb column";
+    }
+
     public static String jsonbColumnMismatch(String target, String column, String table, String pgType) {
         return PREFIX
              + "@Jsonb target '" + target

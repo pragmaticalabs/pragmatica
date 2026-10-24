@@ -1908,6 +1908,209 @@ class JsonbMappingTest {
             assertExpanded("WITH c AS (SELECT 1) INSERT INTO documents VALUES (:p)");
         }
 
+        // --- relations: USING, name folding, the public schema ---
+        @Test
+        void deleteUsing_relationIsRegistered() throws Exception {
+            assertStringOnJsonRefused("DELETE FROM other USING documents d WHERE d.profile = :raw AND other.id = d.id", "String raw");
+            assertRefused("DELETE FROM other USING documents WHERE legacy = :raw",
+                          "String raw",
+                          "'raw' is a String bound to column 'documents.legacy' of type json");
+        }
+
+        @Test
+        void upperCaseRelationName_foldsToTheLowerCaseTable() throws Exception {
+            assertStringOnJsonRefused("SELECT id FROM Documents WHERE profile = :raw", "String raw");
+            assertStringOnJsonRefused("SELECT d.id FROM other o JOIN Documents d ON d.id = o.id WHERE d.profile = :raw", "String raw");
+            assertStringOnJsonRefused("DELETE FROM other USING Documents d WHERE d.profile = :raw AND other.id = d.id", "String raw");
+            assertDocuments("SELECT id FROM Documents WHERE profile = :doc", "Profile doc", "doc");
+        }
+
+        @Test
+        void upperCaseAlias_foldsToTheLowerCaseAlias() throws Exception {
+            assertStringOnJsonRefused("SELECT D.id FROM documents D WHERE D.profile = :raw", "String raw");
+            assertStringOnJsonRefused("SELECT d.id FROM documents AS D WHERE d.profile = :raw", "String raw");
+        }
+
+        @Test
+        void tableDeclaredInPublic_isFoundByItsBareName() throws Exception {
+            assertRefused("INSERT INTO pdocs (id, body) VALUES (:id, :raw)", "long id, String raw", "body' of type jsonb");
+            assertRefused("INSERT INTO public.pdocs (id, body) VALUES (:id, :raw)", "long id, String raw", "body' of type jsonb");
+            assertDocuments("INSERT INTO pdocs (id, body) VALUES (:id, :doc)", "long id, Profile doc", "doc");
+        }
+
+        @Test
+        void schemaQualifiedTableTheSchemaLacks_isRefusedByTheValidator() throws Exception {
+            assertRefused("INSERT INTO public.documents (id, profile) VALUES (:id, :raw)",
+                          "long id, String raw",
+                          "Table 'public.documents' not found in schema");
+        }
+
+        @Test
+        void upperCaseSetColumn_foldsToTheLowerCaseColumn() throws Exception {
+            assertStringOnJsonRefused("UPDATE documents SET PROFILE = :raw WHERE id = :id", "long id, String raw");
+            assertDocuments("UPDATE documents SET PROFILE = :doc WHERE id = :id", "long id, Profile doc", "doc");
+        }
+
+        @Test
+        void derivedRelationInASubquery_blocksTheParentScope() throws Exception {
+            assertNotPlaced("UPDATE documents SET title = (SELECT s.x FROM (SELECT 'a' AS x) s WHERE legacy = :p) WHERE id = :id",
+                            "long id, String p",
+                            "p");
+        }
+
+        @Test
+        void sameStringOnTwoJsonColumns_isRefusedOnBoth() throws Exception {
+            assertRefused("INSERT INTO documents (id, profile, legacy, title) VALUES (:id, :raw, :raw, :t)",
+                          "long id, String raw, String t",
+                          "'raw' is a String bound to column 'documents.profile' of type jsonb");
+            assertRefused("INSERT INTO documents (id, profile, legacy, title) VALUES (:id, :raw, :raw, :t)",
+                          "long id, String raw, String t",
+                          "'raw' is a String bound to column 'documents.legacy' of type json");
+        }
+
+        @Test
+        void textBlockQuery_isPaired() throws Exception {
+            var result = compile(STRING_REPO_HEADER + "@PgSql\npublic interface BlockRepo {\n    @Query(\"\"\"\n"
+                                 + "        INSERT INTO documents (id, profile)\n        VALUES (:id, :raw)\n        \"\"\")\n"
+                                 + "    Promise<Unit> store(long id, String raw);\n}\n",
+                                 "test/BlockRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("'raw' is a String bound to column 'documents.profile' of type jsonb");
+        }
+
+        // --- IS [NOT] DISTINCT FROM: either operand ---
+        @Test
+        void isDistinctFrom_pairsEitherOperandWithTheColumn() throws Exception {
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE profile IS DISTINCT FROM :raw", "String raw");
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE :raw IS DISTINCT FROM profile", "String raw");
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE :raw IS NOT DISTINCT FROM profile", "String raw");
+            assertDocuments("SELECT id FROM documents WHERE :doc IS DISTINCT FROM profile", "Profile doc", "doc");
+        }
+
+        // --- WITH names shadow schema tables ---
+        @Test
+        void cteNamedLikeATable_shadowsTheTable() throws Exception {
+            assertCompilesWithoutDocuments("WITH documents AS (SELECT 1 AS id, 'x'::text AS profile) SELECT id FROM documents WHERE profile = :raw",
+                                           "String raw");
+        }
+
+        @Test
+        void cteNamedLikeATable_shadowsTheTable_inAWrite() throws Exception {
+            assertCompilesWithoutDocuments("WITH documents AS (SELECT 1 AS id, 'x'::text AS profile) UPDATE other SET name = :n FROM documents WHERE documents.profile = :raw AND other.id = documents.id",
+                                           "String n, String raw");
+        }
+
+        @Test
+        void cteQuery_seesTheTableItIsNamedLike_unlessRecursive() throws Exception {
+            assertStringOnJsonRefused("WITH documents AS (SELECT id, profile FROM documents WHERE profile = :raw) SELECT id FROM documents",
+                                      "String raw");
+            assertCompilesWithoutDocuments("WITH RECURSIVE documents AS (SELECT 1 AS id, 'x'::text AS profile UNION ALL SELECT id, profile FROM documents WHERE profile = :raw) SELECT id FROM documents",
+                                           "String raw");
+        }
+
+        @Test
+        void laterCte_seesTheEarlierOne() throws Exception {
+            assertCompilesWithoutDocuments("WITH documents AS (SELECT 1 AS id, 'x'::text AS profile), b AS (SELECT id FROM documents WHERE profile = :raw) SELECT id FROM b",
+                                           "String raw");
+        }
+
+        @Test
+        void cteQuery_doesNotSeeTheWriteTarget() throws Exception {
+            assertNotPlaced("WITH x AS (SELECT 1 AS id WHERE title = :t) INSERT INTO documents (id, profile) SELECT x.id, :raw::jsonb FROM x",
+                            "String t, String raw",
+                            "t");
+        }
+
+        // --- an unplaced String in a write that references a json/jsonb table anywhere ---
+        @Test
+        void unplacedString_inAWriteReadingAJsonTable_isRefused() throws Exception {
+            assertNotPlaced("INSERT INTO other (id, name) SELECT id, title FROM documents WHERE profile @> :raw", "String raw", "raw");
+            assertNotPlaced("UPDATE other SET name = :n FROM documents d WHERE d.profile @> :raw AND other.id = d.id",
+                            "String n, String raw",
+                            "raw");
+            assertNotPlaced("DELETE FROM other USING documents d WHERE d.profile @> :raw AND other.id = d.id", "String raw", "raw");
+            assertNotPlaced("DELETE FROM other WHERE id IN (SELECT id FROM documents WHERE profile @> :raw)", "String raw", "raw");
+            // Two json/jsonb tables: the refusal names the first one the statement references.
+            assertNotPlaced("UPDATE documents SET title = lower(:t) FROM kw WHERE kw.id = documents.id", "String t", "t");
+        }
+
+        @Test
+        void unplacedString_inAWriteReadingNoJsonTable_compiles() throws Exception {
+            assertCompilesWithoutDocuments("INSERT INTO other (id, name) SELECT id, name FROM other WHERE name = lower(:t)", "String t");
+        }
+
+        // --- casts on a json/jsonb pair: only json/jsonb ---
+        @Test
+        void castToAnotherType_onAJsonPair_isRefused() throws Exception {
+            var refusal = "'raw' is cast to a type other than json/jsonb and bound to column 'documents.profile' of type jsonb";
+
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw::text)", "long id, String raw", refusal);
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, CAST(:raw AS text))", "long id, String raw", refusal);
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw::jsonb::text)", "long id, String raw", refusal);
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, (:raw::jsonb)::text)", "long id, String raw", refusal);
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw::jsonb[])", "long id, String raw", refusal);
+            assertRefused("SELECT id FROM documents WHERE profile = :raw::text", "String raw", refusal);
+            assertRefused("UPDATE documents SET profile = :doc::text WHERE id = :id",
+                          "long id, Profile doc",
+                          "'doc' is cast to a type other than json/jsonb and bound to column 'documents.profile' of type jsonb");
+        }
+
+        @Test
+        void outermostJsonCast_onAJsonPair_isAllowed() throws Exception {
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, :raw::json)", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, :raw::text::jsonb)", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, (:raw::text)::jsonb)", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, CAST(:raw AS jsonb))", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, CAST(:raw::text AS JSONB))", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile) VALUES (:id, :raw::pg_catalog.jsonb)", "long id, String raw");
+        }
+
+        @Test
+        void jsonCastPair_isNotADocument_soTheSameStringMayFillATextColumn() throws Exception {
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile, title) VALUES (:id, :raw::jsonb, :raw)", "long id, String raw");
+        }
+
+        // --- an inferred document also written against a text column ---
+        @Test
+        void inferredDocumentOnATextColumn_isNotReportedAsAJsonbTarget() throws Exception {
+            var forms = Map.of("UPDATE documents SET profile = :doc WHERE title = :doc",
+                               "Profile doc",
+                               "UPDATE documents SET profile = :doc FROM other WHERE other.name = :doc AND other.id = documents.id",
+                               "Profile doc",
+                               "INSERT INTO documents (id, profile) VALUES (:id, :doc) ON CONFLICT (id) DO UPDATE SET title = :doc",
+                               "long id, Profile doc");
+
+            for (var form : forms.entrySet()) {
+                var sql = form.getKey();
+                var result = compileSql(sql, form.getValue());
+
+                assertThat(result.success()).as(sql).isFalse();
+                assertThat(result.diagnostics()).as(sql)
+                                                .contains("'doc' is bound to json/jsonb column 'documents.profile', so it is sent as a JSON document")
+                                                .doesNotContain("@Jsonb target");
+            }
+            assertRefused("UPDATE documents SET profile = :doc WHERE title = :doc",
+                          "Profile doc",
+                          "'doc' is sent as a JSON document (inferred from its json/jsonb column) and also maps to column 'documents.title' of type text");
+        }
+
+        @Test
+        void markedDocumentOnATextColumn_isReportedAsAJsonbTarget() throws Exception {
+            var result = compile(STRING_REPO_HEADER.replace("import org.pragmatica.aether.pg.codegen.annotation.Query;",
+                                                            "import org.pragmatica.aether.pg.codegen.annotation.Jsonb;\nimport org.pragmatica.aether.pg.codegen.annotation.Query;")
+                                 + PROFILE_RECORD + """
+                @PgSql
+                public interface MarkedRepo {
+                    @Query("UPDATE documents SET profile = :doc WHERE title = :doc")
+                    Promise<Unit> store(@Jsonb Profile doc);
+                }
+                """, "test/MarkedRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("@Jsonb target 'doc' maps to column 'documents.title' of type text");
+        }
+
         private void assertExpanded(String sql) throws Exception {
             var generated = factory(compile(STRING_REPO_HEADER + """
                 record TitleOnly(String title) {}
