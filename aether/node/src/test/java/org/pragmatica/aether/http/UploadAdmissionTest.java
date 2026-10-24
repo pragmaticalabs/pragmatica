@@ -12,6 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.UploadConfig;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -22,13 +24,18 @@ class UploadAdmissionTest {
         return UploadAdmission.uploadAdmission(UploadConfig.DEFAULT.withMaxConcurrent(node).withMaxConcurrentPerPrincipal(principal));
     }
 
+    /// The cap that refused the permit, or null when it was granted.
+    private static Cause refusalOf(Result<Runnable> permit) {
+        return permit.fold(cause -> cause, _ -> null);
+    }
+
     @Test
     void perPrincipalCap_refusesTheSecondPermit_butNotAnotherPrincipals() {
         var admission = admission(10, 1);
         var first = admission.tryAcquire("alice");
 
         assertThat(first.isSuccess()).isTrue();
-        assertThat(admission.tryAcquire("alice").fold(cause -> cause, _ -> null)).isSameAs(UploadAdmission.PRINCIPAL_LIMIT);
+        assertThat(refusalOf(admission.tryAcquire("alice"))).isSameAs(UploadAdmission.PRINCIPAL_LIMIT);
         assertThat(admission.tryAcquire("bob").isSuccess()).isTrue();
         assertThat(admission.inFlight()).as("the refused permit was not counted against the node").isEqualTo(2);
     }
@@ -38,7 +45,7 @@ class UploadAdmissionTest {
         var admission = admission(1, 8);
 
         assertThat(admission.tryAcquire("alice").isSuccess()).isTrue();
-        assertThat(admission.tryAcquire("bob").fold(cause -> cause, _ -> null)).isSameAs(UploadAdmission.NODE_LIMIT);
+        assertThat(refusalOf(admission.tryAcquire("bob"))).isSameAs(UploadAdmission.NODE_LIMIT);
     }
 
     @Test

@@ -114,37 +114,48 @@ class RequestGateWireTest {
 
     /// The same refusal for a client that does not wait: it streams 50 MiB, the server never reads it, so the client's
     /// sending stalls in the kernel's buffers and fails when the server closes. A server that drained the body would let
-    /// all 50 MiB through.
+    /// all 50 MiB through; one that neither read nor closed would leave the client's write blocked, which the watchdog
+    /// below turns into a failed assertion instead of a hung test.
     @Test
-    void deniedRequest_isNotDrained_theClientCannotFinishSendingItsBody() throws IOException {
+    void deniedRequest_isNotDrained_theClientCannotFinishSendingItsBody() throws IOException, InterruptedException {
         start();
         var fiftyMiB = 50L * MIB;
-        var sent = 0L;
-        var failed = false;
+        var sent = new AtomicLong();
+        var failed = new java.util.concurrent.atomic.AtomicBoolean();
         var answer = new StringBuilder();
 
         try (var socket = open()) {
             socket.setSoTimeout(5_000);
             send(socket, "POST /denied HTTP/1.1\r\nHost: x\r\nContent-Length: " + fiftyMiB + "\r\n\r\n");
             var reader = new Thread(() -> answer.append(readQuietly(socket)));
+            var writer = new Thread(() -> {
+                var chunk = new byte[64 * 1024];
+
+                try {
+                    while (sent.get() < fiftyMiB) {
+                        socket.getOutputStream().write(chunk);
+                        sent.addAndGet(chunk.length);
+                    }
+                } catch (IOException e) {
+                    failed.set(true);
+                }
+            });
 
             reader.start();
-            var chunk = new byte[64 * 1024];
+            writer.start();
+            writer.join(8_000);
+            var blocked = writer.isAlive();
 
-            try {
-                while (sent < fiftyMiB) {
-                    socket.getOutputStream().write(chunk);
-                    sent += chunk.length;
-                }
-            } catch (IOException e) {
-                failed = true;
-            }
-
+            // unblock a writer still stuck in the kernel buffer, so a server that never closed fails below, not by hanging
+            socket.close();
+            join(writer);
             join(reader);
+
+            assertThat(blocked).as("the client's write was stuck for 8 s: the server neither read nor closed").isFalse();
         }
 
-        assertThat(failed).as("the client's body write failed once the server closed, after only " + sent + " bytes").isTrue();
-        assertThat(sent).as("far less than the declared 50 MiB reached the kernel's buffers").isLessThan(fiftyMiB);
+        assertThat(failed.get()).as("the client's body write failed once the server closed, after only " + sent.get() + " bytes").isTrue();
+        assertThat(sent.get()).as("far less than the declared 50 MiB reached the kernel's buffers").isLessThan(fiftyMiB);
         assertThat(answer.toString()).startsWith("HTTP/1.1 401");
         assertThat(invocations.get()).isZero();
     }
@@ -180,6 +191,15 @@ class RequestGateWireTest {
 
         assertThat(exchange("/small", MIB, true).status()).isEqualTo("200");
         assertThat(exchange("/small", MIB + 1, true).status()).isEqualTo("413");
+    }
+
+    /// The same boundary by declared length: a `Content-Length` equal to the limit passes, one over is refused on the head.
+    @Test
+    void declaredLength_atTheLimitPasses_oneByteOverIsRefused() throws IOException {
+        start();
+
+        assertThat(exchange("/small", MIB, false).status()).isEqualTo("200");
+        assertThat(exchange("/small", MIB + 1, false).status()).isEqualTo("413");
     }
 
     /// Over the limit by declared length: 413, and the connection is closed within a second, while the client is still

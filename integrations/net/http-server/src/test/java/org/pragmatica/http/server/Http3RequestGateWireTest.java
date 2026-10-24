@@ -144,6 +144,10 @@ class Http3RequestGateWireTest {
 
         assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB, -1)).status()).isEqualTo("200");
         assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB + 1, -1)).status()).isEqualTo("413");
+        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB, MIB)).status()).as("declared length at the limit")
+                                                                                                         .isEqualTo("200");
+        assertThat(Http3TestClient.exchange(port, stream -> body(stream, "/small", MIB + 1, MIB + 1)).status()).as("declared length over the limit")
+                                                                                                                 .isEqualTo("413");
     }
 
     @Test

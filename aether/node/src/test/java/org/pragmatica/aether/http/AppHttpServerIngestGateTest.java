@@ -262,6 +262,9 @@ class AppHttpServerIngestGateTest {
 
         assertThat(run.duringStatuses()).as("same principal refused, another principal admitted").containsExactly(429, 200);
         assertThat(run.afterReleaseStatus()).as("admitted once the first body completed").isEqualTo(200);
+        if (protocol == Protocol.H1) {
+            assertThat(run.firstRefusalText()).as("a 429 says when to retry").containsIgnoringCase("retry-after: 5");
+        }
     }
 
     @Test
@@ -370,7 +373,7 @@ class AppHttpServerIngestGateTest {
 
     private record Streamed(int status, long sent) {}
 
-    private record Held(List<Integer> duringStatuses, int afterReleaseStatus) {}
+    private record Held(List<Integer> duringStatuses, int afterReleaseStatus, String firstRefusalText) {}
 
     private interface Client {
         Reply post(String path, Option<String> key, int size, Mode mode) throws Exception;
@@ -577,18 +580,24 @@ class AppHttpServerIngestGateTest {
         @Override
         public Held holdOne(String path, String holderKey, List<String> others) throws Exception {
             var during = new ArrayList<Integer>();
+            var refusal = new StringBuilder();
 
             try (var holder = new Socket("127.0.0.1", port)) {
                 send(holder, head(path, Option.some(holderKey), "Content-Length: 10", "") + "01234");
                 Thread.sleep(300);
                 for (var other : others) {
-                    during.add(post(path, Option.some(other), 16, Mode.DECLARED).status());
+                    var reply = post(path, Option.some(other), 16, Mode.DECLARED);
+
+                    during.add(reply.status());
+                    if (reply.status() == 429 && refusal.isEmpty()) {
+                        refusal.append(reply.text());
+                    }
                 }
 
                 send(holder, "56789");
             }
 
-            return new Held(during, admittedAfterRelease(this, path, holderKey));
+            return new Held(during, admittedAfterRelease(this, path, holderKey), refusal.toString());
         }
 
         @Override
@@ -739,7 +748,7 @@ class AppHttpServerIngestGateTest {
                       .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
             });
 
-            return new Held(during, admittedAfterRelease(this, path, holderKey));
+            return new Held(during, admittedAfterRelease(this, path, holderKey), "");
         }
 
         @Override
