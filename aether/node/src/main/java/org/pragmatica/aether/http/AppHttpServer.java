@@ -977,7 +977,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Disposition tooManyUploads(Cause cause, String path, String requestId) {
         return Disposition.reject(response -> {
             response.header("Retry-After", String.valueOf(UploadConfig.RETRY_AFTER_SECONDS));
-            sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, cause.message(), path, requestId);
+            sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, HttpError.clientMessage(cause), path, requestId);
         });
     }
 
