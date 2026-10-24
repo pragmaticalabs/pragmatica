@@ -54,6 +54,12 @@
             <artifactId>test-logging</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- #2386: the client against the real server, for the Host it puts on the wire -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>http-server</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
