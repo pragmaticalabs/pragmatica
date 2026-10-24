@@ -886,7 +886,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     ///
     /// The handler validates again on dispatch (header-only, so repeating it is harmless): the classification's
     /// `SecurityContext` is not carried into dispatch.
-    private Disposition classify(HttpRequest head) {
+    Disposition classify(HttpRequest head) {
         var method = head.method().name();
         var path = head.path();
         var normalizedPath = normalizePath(path);
