@@ -2041,6 +2041,10 @@ public sealed interface AetherValue {
         /// ingress node that does not host the route re-applies ITS OWN committed overrides to `declaredSecurity`,
         /// so an override takes effect -- and a relaxed one relaxes -- at every ingress without waiting for the
         /// hosting nodes to republish.
+        ///
+        /// `upload`, `maxBodyBytes` and `maxDurationMillis` are the route's declared ingest limits (`max_size`,
+        /// `max_duration` in `routes.toml`; zero is "not declared"), so an ingress that does not host the route enforces
+        /// them before reading the body.
         public record RouteEntry(String httpMethod,
                                  String pathPrefix,
                                  String sliceMethod,
@@ -2051,10 +2055,41 @@ public sealed interface AetherValue {
                                  String declaredSecurity,
                                  int pathArity,
                                  List<String> spacers,
-                                 List<Integer> spacerSlots) {
+                                 List<Integer> spacerSlots,
+                                 boolean upload,
+                                 long maxBodyBytes,
+                                 long maxDurationMillis) {
             public RouteEntry {
                 spacers = List.copyOf(spacers);
                 spacerSlots = List.copyOf(spacerSlots);
+            }
+
+            /// An entry that declares no ingest limits (every shape before the upload ingest gate).
+            public RouteEntry(String httpMethod,
+                              String pathPrefix,
+                              String sliceMethod,
+                              String state,
+                              int weight,
+                              long registeredAt,
+                              String security,
+                              String declaredSecurity,
+                              int pathArity,
+                              List<String> spacers,
+                              List<Integer> spacerSlots) {
+                this(httpMethod,
+                     pathPrefix,
+                     sliceMethod,
+                     state,
+                     weight,
+                     registeredAt,
+                     security,
+                     declaredSecurity,
+                     pathArity,
+                     spacers,
+                     spacerSlots,
+                     false,
+                     0L,
+                     0L);
             }
 
             /// An entry that does not carry where its literals sit (every shape before #1206 knew only that they exist).
@@ -2126,6 +2161,30 @@ public sealed interface AetherValue {
                                                  int pathArity,
                                                  List<String> spacers,
                                                  List<Integer> spacerSlots) {
+                return activeRoute(httpMethod,
+                                   pathPrefix,
+                                   sliceMethod,
+                                   security,
+                                   declaredSecurity,
+                                   pathArity,
+                                   spacers,
+                                   spacerSlots,
+                                   false,
+                                   0L,
+                                   0L);
+            }
+
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security,
+                                                 String declaredSecurity,
+                                                 int pathArity,
+                                                 List<String> spacers,
+                                                 List<Integer> spacerSlots,
+                                                 boolean upload,
+                                                 long maxBodyBytes,
+                                                 long maxDurationMillis) {
                 return new RouteEntry(httpMethod,
                                       pathPrefix,
                                       sliceMethod,
@@ -2136,7 +2195,10 @@ public sealed interface AetherValue {
                                       declaredSecurity,
                                       pathArity,
                                       spacers,
-                                      spacerSlots);
+                                      spacerSlots,
+                                      upload,
+                                      maxBodyBytes,
+                                      maxDurationMillis);
             }
 
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {

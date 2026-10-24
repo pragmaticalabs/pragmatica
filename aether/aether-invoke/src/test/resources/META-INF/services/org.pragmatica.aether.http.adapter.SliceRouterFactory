@@ -12,3 +12,4 @@ org.pragmatica.aether.http.SpacerPositionSliceRoutes$EditThenId
 org.pragmatica.aether.http.SpacerPositionSliceRoutes$Both
 org.pragmatica.aether.http.SpacerPositionPolicySliceRoutes$Mixed
 org.pragmatica.aether.http.WireMapperSliceRoutes
+org.pragmatica.aether.http.UploadIngestSliceRoutes

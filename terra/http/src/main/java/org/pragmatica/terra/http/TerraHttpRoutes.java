@@ -180,7 +180,8 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                            route.security(),
                            route.version(),
                            route.pathParamCount(),
-                           route.spacerSlots());
+                           route.spacerSlots(),
+                           route.uploadSpec());
     }
 
     private static Promise<SecurityContext> authenticate(Route<?> route,
