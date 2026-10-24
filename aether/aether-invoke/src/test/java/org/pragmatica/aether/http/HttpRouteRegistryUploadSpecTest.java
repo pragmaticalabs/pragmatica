@@ -89,6 +89,22 @@ class HttpRouteRegistryUploadSpecTest {
     }
 
     @Test
+    void aNodeListingTheSameRouteTwice_isHeldToTheStricterLimits_inEitherOrder() {
+        var big = RouteEntry.activeRoute("POST", "/files/", "upload", "AUTHENTICATED", "AUTHENTICATED", 0, List.of(), List.of(), true, 9_000, 0);
+        var small = RouteEntry.activeRoute("POST", "/files/", "upload", "AUTHENTICATED", "AUTHENTICATED", 0, List.of(), List.of(), true, 1_000, 10_000);
+
+        for (var routes : List.of(List.of(big, small), List.of(small, big))) {
+            var registry = HttpRouteRegistry.httpRouteRegistry();
+
+            registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(NODE_A, FILES),
+                                                                        NodeRoutesValue.nodeRoutesValue(routes, Epoch.ZERO)),
+                                                    Option.none()));
+
+            assertThat(spec(registry)).isEqualTo(UploadSpec.uploadSpec(true, 1_000, 10_000));
+        }
+    }
+
+    @Test
     void anEntryPublishedWithoutLimits_declaresNone() {
         var registry = HttpRouteRegistry.httpRouteRegistry();
         var legacy = RouteEntry.activeRoute("POST", "/files/", "upload", "PUBLIC");

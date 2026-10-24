@@ -41,6 +41,19 @@ class UploadAdmissionTest {
     }
 
     @Test
+    void perPrincipalCount_returnsOnePermitPerRelease() {
+        var admission = admission(10, 2);
+        var first = admission.tryAcquire("alice").unwrap();
+        var second = admission.tryAcquire("alice").unwrap();
+
+        assertThat(refusalOf(admission.tryAcquire("alice"))).isSameAs(UploadAdmission.PRINCIPAL_LIMIT);
+        first.run();
+        assertThat(admission.tryAcquire("alice").isSuccess()).as("one released, one free").isTrue();
+        assertThat(refusalOf(admission.tryAcquire("alice"))).as("and no more than one").isSameAs(UploadAdmission.PRINCIPAL_LIMIT);
+        second.run();
+    }
+
+    @Test
     void nodeCap_refusesAnyPrincipalPastIt() {
         var admission = admission(1, 8);
 
