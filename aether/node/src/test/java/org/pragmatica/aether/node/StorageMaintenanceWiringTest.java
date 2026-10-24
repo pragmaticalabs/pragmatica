@@ -583,11 +583,26 @@ class StorageMaintenanceWiringTest {
         var setups = createAllWithExplicitContent(Option.none());
         var composite = StorageFactory.compositeGarbageCollector(setups);
 
+        assertThat(composite.isActive()).as("nothing collects before the node reports ready").isFalse();
+
         StorageFactory.activateNodeMaintenance(setups);
         composite.deactivate();
 
         assertThat(setups.get(CONTENT).garbageCollector().isActive()).isTrue();
         assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).isTrue();
+        assertThat(composite.isActive()).as("the composite reports the collectors that run").isTrue();
+    }
+
+    /// A0: the node-level stop is what ends content and artifacts GC (shutdown), not leader demotion.
+    @Test
+    void deactivateNodeMaintenance_stopsContentAndArtifactsGarbageCollection() {
+        var setups = createAllWithExplicitContent(Option.none());
+
+        StorageFactory.activateNodeMaintenance(setups);
+        StorageFactory.deactivateNodeMaintenance(setups);
+
+        assertThat(setups.get(CONTENT).garbageCollector().isActive()).isFalse();
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).isFalse();
     }
 
     /// The production maintenance path: the REAL composite managers over the FULL setups map (so the

@@ -44,7 +44,11 @@ class StorageInstanceMaxBlockSizeTest {
 
     private static void assertTooLarge(org.pragmatica.lang.Result<?> result, int size) {
         result.onSuccess(_ -> fail("a block of " + size + " bytes must be refused"))
-              .onFailure(cause -> assertThat(cause).isEqualTo(StorageError.BlockTooLarge.blockTooLarge(size, MAX)));
+              .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StorageError.BlockTooLarge.class,
+                                                                           tooLarge -> {
+                                                                               assertThat(tooLarge.size()).as("offered size").isEqualTo(size);
+                                                                               assertThat(tooLarge.maxBytes()).as("limit").isEqualTo(MAX);
+                                                                           }));
     }
 
     @Test
