@@ -524,6 +524,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `community-placement-cleared` (INFO — the other recovery: an operator cleared the operation; names the operator, the reason, the phase and both nodes, which the clear left as they were; also closes the warning cluster-wide)
 - `json-config-rejected` (CRITICAL — a committed `[json]` change was refused for a slice and its HTTP routes keep the JSON codec selection they had; `subject` is `<slice artifact>/json`, the message names each refused key, its value and why, and the selection kept; raised once per node on the transition into refusal; the same configuration fails the slice's next provisioning, issue #2378)
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
+- `upload-node-cap-saturated` (WARNING — an upload was refused `429` because the node holds `[app-http.upload] max_concurrent` uploads; `subject` is the node; raised once per episode on the first refusal, not once per refused request; a per-principal refusal raises nothing; issue #2410)
+- `upload-node-cap-restored` (INFO — the recovery: an upload finished and the node accepts uploads again; published only after a published `upload-node-cap-saturated` for the same `subject`)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
@@ -6624,8 +6626,16 @@ importCsv = { route = "POST /import", consumes = "multipart/form-data", max_size
 |---|---|
 | `max_size` | The request body limit: a size string (`"5GB"`, `"512KB"`) or an integer number of bytes, greater than zero |
 | `max_duration` | The longest the whole body may take: a duration string (`"6h"`, `"90s"`), greater than zero. Upload routes only take effect; default 6 hours |
+| `max_files` | The most file parts a multipart body may carry: a whole number greater than zero |
+| `max_file_size` | The most bytes in one file part: a size string or an integer number of bytes, greater than zero |
+| `max_fields` | The most text fields a multipart body may carry (every value of a repeated name counts): a whole number greater than zero |
+| `max_field_size` | The most bytes (UTF-8) in one text field value: a size string or an integer number of bytes, greater than zero |
 
-An unknown key on an inline-table route is a compile error, because the loader used to ignore it and a mistyped `max_size` left the route at the default limit. The per-part keys `max_file_size`, `max_files`, `max_fields`, `max_field_size`, `resumable` and `unclaimed_ttl` are refused too: they need the streaming upload path, which is not in this release, and a limit that is declared but not enforced is worse than none.
+The four part keys are checked on the decoded body, which `max_size` has already bounded: a multipart request that breaks one is answered `413 Request Entity Too Large` before it reaches the slice, whether the slice runs on the accepting node or another. A body with more parts than the decoder's cap (128, or `max_files + max_fields` when larger) on a route that declares part limits is answered `413` as well. A request that is not `multipart/form-data`, or whose body does not decode, is left to the handler as before. The body is decoded once for the check and again when the slice reads it.
+
+An unknown key on an inline-table route is a compile error, because the loader used to ignore it and a mistyped `max_size` left the route at the default limit. `resumable` and `unclaimed_ttl` are refused too: they need the streaming upload path, which is not in this release, and a limit that is declared but not enforced is worse than none.
+
+When the node's own upload cap (`max_concurrent`) is reached, the first refused upload raises one operator event, `upload-node-cap-saturated` (WARNING, subject: the node), instead of one per refused request; the first upload to finish after it raises its recovery, `upload-node-cap-restored`. A refusal for one principal's cap (`max_concurrent_per_principal`), an over-size `413` and a `408` are client errors and raise no event. The header-read timeout is not an upload key: it stays under `[app-http] read_timeout`.
 
 Upload routes still read the whole body into memory before the slice runs: the limits above bound that memory per request and per node, they do not stream it. Size `max_size`, `max_concurrent` and the node's heap together.
 
@@ -6633,7 +6643,7 @@ Upload routes still read the whole body into memory before the slice runs: the l
 
 The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the route's `max_size` (default `max_request_size`) and the upload bounds above. Slice-generated routes with file upload parameters automatically handle multipart decoding.
 
-A multipart route answers `415 Unsupported Media Type` when the request's Content-Type is not `multipart/form-data` (matched case-insensitively), and `400 Bad Request` when the body is malformed: no `boundary` parameter, no closing boundary delimiter (a truncated body), more than 128 parts, or a part the decoder cannot read. The ProblemDetail `detail` is a fixed description, never decoder internals. A filename-less part with a Content-Type other than `text/plain` is delivered as a file with an empty filename. A repeated field name keeps every value: `MultipartRequest.fieldValues(name)` returns them in body order, and `field(name)` returns the first.
+A multipart route answers `415 Unsupported Media Type` when the request's Content-Type is not `multipart/form-data` (matched case-insensitively), and `400 Bad Request` when the body is malformed: no `boundary` parameter, no closing boundary delimiter (a truncated body), more than 128 parts (on a route that declares no part limits), or a part the decoder cannot read. The ProblemDetail `detail` is a fixed description, never decoder internals. A filename-less part with a Content-Type other than `text/plain` is delivered as a file with an empty filename. A repeated field name keeps every value: `MultipartRequest.fieldValues(name)` returns them in body order, and `field(name)` returns the first.
 
 ### Voter reconfiguration diagnostics
 
