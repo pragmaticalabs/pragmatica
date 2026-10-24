@@ -63,6 +63,14 @@ public interface StateMachine<C extends Command> {
         return restoreSnapshot(snapshot);
     }
 
+    /// Told by the engine that every slot below `nextSlot` is complete, after EVERY completed slot, including a V0 or empty one that never
+    /// reaches [#processCommitted], and after a state restore. It lets a state machine publish the engine's phase frontier as its own
+    /// revision, so every core's revision is its engine phase. Must not throw and must be idempotent: it follows `processCommitted` for
+    /// the same slot. Default no-op.
+    default Unit onPhaseCompleted(long nextSlot) {
+        return Unit.unit();
+    }
+
     /// Create a snapshot of the current state machine state.
     /// The snapshot should be serializable and capture the complete state.
     ///
