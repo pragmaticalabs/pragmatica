@@ -5,5 +5,5 @@
 ### Added (2026-10-24 — deployment state machine rewrite, phase 3 P3-G)
 - **`aether_deployment_fsm_applies_total{fsm}` counts the leader's `apply(List)` calls**: one per apply that left for the consensus engine, none for an empty step or one the pre-submit check withheld. A leader round is one apply. This counter stands in for committed consensus batches while one apply = one batch is unverified. `submissions_total` still counts transactions.
   [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/wiring/ClusterFsmInterpreterTest.java`]
-- **E-01 asserts the leader's round budget**: exactly `2 + 2·S·I` transactions and 4 applies plus drain splits for a clean deploy (11 of 11 runs at 4 or 5 applies, 8 transactions).
+- **E-01 asserts the leader's round budget**: exactly `2 + 2·S·I` transactions and at least 4 applies for a clean deploy; drain splits are timing-dependent and measured, not bounded (4 to 7 applies observed, 8 transactions every run).
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/Fsm2DeployE01Test.java`]

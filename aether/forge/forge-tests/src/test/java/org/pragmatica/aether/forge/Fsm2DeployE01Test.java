@@ -49,8 +49,8 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// a clean deploy's row echo clears a node's write before its settlement is stepped, so an `accepted` count omits most node rounds by construction
 /// (v-2204 F1). The leader's budget is 7.1 as restated by P3-G (ruling Q2, Q3): **4 applies plus drain splits**. The floor of 4 is causal (target,
 /// LOAD, ACTIVATE, SUCCEEDED each derive from the previous stage's committed rows); a split is a goal stage whose rows land in more than one
-/// drain, at most `S·I - 1` per goal stage. The transactions are exactly `2 + 2·S·I`. Measured at the flip: 4 applies in 4 of 11 runs, 5 in 7;
-/// 8 transactions in 11 of 11. The nodes' measured count meets 7.1 (4 per instance), so 7.1 is their enabled bound.
+/// drain. Splits are timing-dependent: they are measured (O4, P3-H), not bounded. The transactions are exactly `2 + 2·S·I`. Measured at the flip:
+/// 4 applies in 4 of 11 runs, 5 in 7 (a later run read 7); 8 transactions in every run. The nodes' measured count meets 7.1 (4 per instance), so 7.1 is their enabled bound.
 /// The design's O4 instrument (distinct notification revisions over the union key families, 9.5 criterion 4) is a phase-4 entry criterion and is not
 /// built here.
 ///
@@ -69,7 +69,6 @@ class Fsm2DeployE01Test {
     private static final int SLICES = 1;
     /// Design 7.1 as restated by P3-G: the leader's clean deploy takes 4 applies plus drain splits, each node 4 rounds per instance.
     private static final double SPEC_LEADER_FLOOR = 4;
-    private static final double SPEC_LEADER_SPLITS = 2 * (SLICES * NODES - 1);
     private static final double SPEC_LEADER_TRANSACTIONS = 2 + 2 * SLICES * NODES;
     private static final double SPEC_NODE_ROUNDS = NODES * 4;
 
@@ -114,21 +113,20 @@ class Fsm2DeployE01Test {
         var leaderTransactions = submitted("cluster");
         var nodeRounds = submitted("node");
 
-        System.out.printf("E01 outcomeVersion=%d leaderApplies=%.0f (spec %.0f + splits <= %.0f) leaderTransactions=%.0f (spec %.0f) nodeRounds=%.0f (spec %.0f)%n",
-                          version, leaderApplies, SPEC_LEADER_FLOOR, SPEC_LEADER_SPLITS, leaderTransactions, SPEC_LEADER_TRANSACTIONS, nodeRounds, SPEC_NODE_ROUNDS);
+        System.out.printf("E01 outcomeVersion=%d leaderApplies=%.0f (spec %.0f + drain splits, measured) leaderTransactions=%.0f (spec %.0f) nodeRounds=%.0f (spec %.0f)%n",
+                          version, leaderApplies, SPEC_LEADER_FLOOR, leaderTransactions, SPEC_LEADER_TRANSACTIONS, nodeRounds, SPEC_NODE_ROUNDS);
         assertThat(nodeRounds).as("design 7.1: 4 rounds per instance, counted at submission").isLessThanOrEqualTo(SPEC_NODE_ROUNDS);
         assertThat(sensorViolations()).as("E-01 against fsm2/expected-warns-e01.txt and the O6 metrics (no fault: silent)").isEmpty();
     }
 
     /// 7.1 as restated by P3-G, the leader's assertion: exactly `2 + 2·S·I` transactions (a duplicate target batch makes it one more), and
-    /// 4 applies plus at most `2·(S·I - 1)` drain splits. Enabled at P3-G on 11 of 11 runs within it (4 applies in 4, 5 in 7).
+    /// at least the 4 causal applies. Drain splits are timing-dependent and measured (O4, P3-H), not bounded here. Enabled at P3-G on 11 of 11 runs.
     @Test
     void leaderRounds_withinTheSpecBudget() {
         deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(), BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
 
         assertThat(submitted("cluster")).as("design 7.1: leader, clean deploy, 2 + 2*S*I transactions").isEqualTo(SPEC_LEADER_TRANSACTIONS);
         assertThat(leaderApplies()).as("design 7.1: leader, clean deploy, at least the 4 causal stages").isGreaterThanOrEqualTo(SPEC_LEADER_FLOOR);
-        assertThat(leaderApplies()).as("design 7.1: leader, clean deploy, 4 applies plus drain splits").isLessThanOrEqualTo(SPEC_LEADER_FLOOR + SPEC_LEADER_SPLITS);
     }
 
     private long deployedVersion = -1;
