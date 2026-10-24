@@ -47,9 +47,15 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.http.routing.VersioningMetricsSink;
+import org.pragmatica.http.server.BodyBounds;
+import org.pragmatica.http.server.Disposition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -384,6 +390,48 @@ class AppHttpServerIngestGateTest {
 
         assertThat(answer.status()).isEqualTo(408);
         assertThat(served.get()).isZero();
+    }
+
+    /// The bounds the classification hands the listener: `[app-http.upload]` idle timeout and minimum rate, the rate's
+    /// grace and window, the route's own `max_duration`, and six hours for an upload route that declares none.
+    @Test
+    void classification_handsOverTheConfiguredBounds_theRoutesMaxDuration_andTheDefaultDuration() throws IOException {
+        start(Protocol.H1, defaults().withIdleTimeout(timeSpan(7).seconds()).withMinBodyRate(4096), 10 * MIB);
+
+        var timed = aggregate("/api/timed/x");
+        var bounds = boundsOf(timed);
+
+        assertThat(timed.maxBytes()).isEqualTo(100L * MIB);
+        assertThat(bounds.idle().millis()).isEqualTo(7_000);
+        assertThat(bounds.rate().bytesPerSecond()).isEqualTo(4096);
+        assertThat(bounds.rate().grace().millis()).as("the rate is first checked after 30 s").isEqualTo(30_000);
+        assertThat(bounds.rate().window().millis()).as("and over each following 30 s").isEqualTo(30_000);
+        assertThat(bounds.maxDuration().millis()).isEqualTo(1_500);
+        assertThat(boundsOf(aggregate("/api/upload/x")).maxDuration().millis()).as("no max_duration declared: six hours")
+                                                                              .isEqualTo(6L * 60 * 60 * 1000);
+    }
+
+    private Disposition.Aggregate aggregate(String path) {
+        var head = new Head("req-head", HttpMethod.POST, path, Headers.headers(Map.of("x-api-key", List.of(KEY_A))), QueryParams.queryParams(Map.of()));
+
+        return switch (((AppHttpServerAdapter) server).classify(head)) {
+            case Disposition.Aggregate aggregate -> aggregate;
+            case Disposition.Reject _ -> throw new AssertionError("control: " + path + " with a valid key is admitted");
+        };
+    }
+
+    private static BodyBounds boundsOf(Disposition.Aggregate aggregate) {
+        return aggregate.bounds().fold(() -> {
+                                           throw new AssertionError("an upload route has its own bounds");
+                                       },
+                                       bounds -> bounds);
+    }
+
+    private record Head(String requestId, HttpMethod method, String path, Headers headers, QueryParams queryParams) implements HttpRequest {
+        @Override
+        public byte[] body() {
+            return new byte[0];
+        }
     }
 
     // ---- the slice and its routes

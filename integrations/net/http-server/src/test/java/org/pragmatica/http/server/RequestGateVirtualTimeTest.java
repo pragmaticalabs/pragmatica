@@ -250,6 +250,19 @@ class RequestGateVirtualTimeTest {
         channel.finishAndReleaseAll();
     }
 
+    /// The inactive event alone ends the request: the permit does not wait for the handler to be removed.
+    @Test
+    void channelInactive_releasesThePermit_withoutWaitingForHandlerRemoval() {
+        var channel = channel(1_000_000, uploadBounds());
+
+        channel.writeInbound(head(HttpHeaderNames.CONTENT_LENGTH.toString(), "1000"));
+        channel.writeInbound(chunk(10));
+        channel.pipeline().fireChannelInactive();
+
+        assertThat(releases.get()).isEqualTo(1);
+        channel.finishAndReleaseAll();
+    }
+
     /// With no classifier configured every request is aggregated up to `maxContentLength`, as before.
     @Test
     void noClassifier_boundsEveryRequestByTheListenerLimit() {

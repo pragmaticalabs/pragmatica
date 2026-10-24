@@ -59,6 +59,7 @@ class RequestGateBodyRateTest {
         }
 
         assertThat(channel.isActive()).as("a 1 B/s body is far below 1 KiB/s").isFalse();
+        assertThat(channel.<Object>readOutbound()).as("the listener's general bound closes silently, it does not answer 408").isNull();
         channel.finishAndReleaseAll();
     }
 

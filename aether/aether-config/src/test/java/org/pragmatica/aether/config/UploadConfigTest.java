@@ -36,6 +36,12 @@ class UploadConfigTest {
     }
 
     @Test
+    void theWindowAndTheDefaultDuration_areThirtySecondsAndSixHours() {
+        assertThat(UploadConfig.RATE_WINDOW.millis()).isEqualTo(30_000);
+        assertThat(UploadConfig.DEFAULT_MAX_DURATION.millis()).isEqualTo(6L * 60 * 60 * 1000);
+    }
+
+    @Test
     void everyKey_isParsed() {
         var upload = load("""
                           [app-http.upload]

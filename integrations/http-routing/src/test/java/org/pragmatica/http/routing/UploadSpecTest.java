@@ -4,6 +4,7 @@
 package org.pragmatica.http.routing;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +48,28 @@ class UploadSpecTest {
     void aRouteThatDeclaresNothing_hasNone() {
         assertThat(Route.<String>get("/plain").withoutParameters().to(_ -> Promise.success("ok")).asJson().uploadSpec())
             .isEqualTo(UploadSpec.NONE);
+    }
+
+    @Test
+    void isNone_isTrueOnlyWhenNothingIsDeclared() {
+        assertThat(UploadSpec.NONE.isNone()).isTrue();
+        assertThat(UploadSpec.uploadSpec(true, 0, 0).isNone()).as("an upload route is not none").isFalse();
+        assertThat(UploadSpec.uploadSpec(false, 1, 0).isNone()).as("a declared size is not none").isFalse();
+        assertThat(UploadSpec.uploadSpec(false, 0, 1).isNone()).as("a declared duration is not none").isFalse();
+    }
+
+    @Test
+    void withUpload_survivesEveryOtherBuilderStepAfterIt() {
+        var route = Route.<String>post("/up")
+                         .withoutParameters()
+                         .to(_ -> Promise.success("ok"))
+                         .withUpload(DECLARED)
+                         .named("up")
+                         .withSecurity(RouteSecurityPolicy.permitAll())
+                         .versioned(2)
+                         .asJson();
+
+        assertThat(route.uploadSpec()).isEqualTo(DECLARED);
     }
 
     @Test
