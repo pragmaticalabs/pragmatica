@@ -60,6 +60,13 @@
         </dependency>
 
         <!-- Testing -->
+        <!-- #2378: the real deploy pre-flight and topology parser, run over a generated routed slice's manifest -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-deployment</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

@@ -18,6 +18,7 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.serialization.json.JsonOptions;
 import org.pragmatica.serialization.json.JsonTypeCodec;
 import org.pragmatica.serialization.json.spi.JsonWriter;
 
@@ -49,14 +50,17 @@ public final class GeneratedJsonCodec implements JsonCodec {
     private final Map<Class<?>, JsonTypeCodec<?>> codecs;
     private final Map<Type, JsonTypeCodec<?>> containers;
     private final JsonCodec fallback;
+    private final JsonOptions options;
     private final Map<Type, Option<JsonTypeCodec<?>>> decoders = new ConcurrentHashMap<>();
 
     private GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs,
                                Map<Type, JsonTypeCodec<?>> containers,
-                               JsonCodec fallback) {
+                               JsonCodec fallback,
+                               JsonOptions options) {
         this.codecs = codecs;
         this.containers = containers;
         this.fallback = fallback;
+        this.options = options;
     }
 
     /// @param codecs   generated codecs by exact class, as a slice's `<Slice>RoutesJsonCodecs.CODECS`
@@ -72,7 +76,26 @@ public final class GeneratedJsonCodec implements JsonCodec {
     public static GeneratedJsonCodec generatedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs,
                                                         Map<Type, JsonTypeCodec<?>> containers,
                                                         JsonCodec fallback) {
-        return new GeneratedJsonCodec(Map.copyOf(codecs), Map.copyOf(containers), fallback);
+        return generatedJsonCodec(codecs, containers, fallback, JsonOptions.DEFAULTS);
+    }
+
+    /// As [#generatedJsonCodec(Map, Map, JsonCodec)], every generated codec reading and writing under `options`
+    /// ([JsonTypeCodec#withOptions]), the combinator codecs built for collection bodies and the response arrays
+    /// included. `fallback` should apply the same options (a Jackson mapper built with them), so covered and uncovered
+    /// types behave alike.
+    public static GeneratedJsonCodec generatedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs,
+                                                        Map<Type, JsonTypeCodec<?>> containers,
+                                                        JsonCodec fallback,
+                                                        JsonOptions options) {
+        return new GeneratedJsonCodec(withOptions(codecs, options), withOptions(containers, options), fallback, options);
+    }
+
+    private static <K> Map<K, JsonTypeCodec<?>> withOptions(Map<K, JsonTypeCodec<?>> codecs, JsonOptions options) {
+        return codecs.entrySet()
+                     .stream()
+                     .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                           entry -> entry.getValue()
+                                                                         .withOptions(options)));
     }
 
     @Override
@@ -114,7 +137,8 @@ public final class GeneratedJsonCodec implements JsonCodec {
     private Option<JsonTypeCodec<?>> containerCodec(ParameterizedType type) {
         return Option.all(option(CONTAINERS.get(type.getRawType())),
                           option(codecs.get(type.getActualTypeArguments() [0])))
-                     .map(Fn1::apply);
+                     .map(Fn1::apply)
+                     .map(codec -> codec.withOptions(options));
     }
 
     private Result<byte[]> serializeCollection(Object value) {
@@ -125,7 +149,7 @@ public final class GeneratedJsonCodec implements JsonCodec {
     }
 
     private byte[] encodeArray(Collection<?> collection) {
-        var out = JsonWriter.jsonWriter(256);
+        var out = JsonWriter.jsonWriter(256).reset(options);
 
         out.writeByte('[');
         var first = true;

@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.json.NamingStrategy;
 
 
 /// Complete route configuration for a slice.
@@ -45,6 +46,8 @@ import org.pragmatica.lang.Option;
 /// @param requireVersionHeader header-mode flag from the [api] section
 /// @param versions per-version metadata keyed by version number
 /// @param routeVersions per-handler API version (`0` for unversioned routes)
+/// @param declaredJsonNaming the `[json] naming` the file declares, if it does: the build-time JSON naming of the
+///                           generated route codecs and their Jackson fallback ([#jsonNaming])
 public record RouteConfig(String prefix,
                           Map<String, RouteDsl> routes,
                           ErrorPatternConfig errors,
@@ -54,7 +57,8 @@ public record RouteConfig(String prefix,
                           String apiPrefix,
                           boolean requireVersionHeader,
                           Map<Integer, VersionConfig> versions,
-                          Map<String, Integer> routeVersions) {
+                          Map<String, Integer> routeVersions,
+                          Option<NamingStrategy> declaredJsonNaming) {
     public RouteConfig {
         routes = Collections.unmodifiableMap(new LinkedHashMap<>(routes));
         routeSecurity = Collections.unmodifiableMap(new LinkedHashMap<>(routeSecurity));
@@ -76,7 +80,8 @@ public record RouteConfig(String prefix,
                                "",
                                false,
                                Map.of(),
-                               Map.of());
+                               Map.of(),
+                               Option.none());
     }
 
     /// Full factory method including the `[api]` and versioning fields.
@@ -99,7 +104,8 @@ public record RouteConfig(String prefix,
                                apiPrefix,
                                requireVersionHeader,
                                versions,
-                               routeVersions);
+                               routeVersions,
+                               Option.none());
     }
 
     /// Factory method with security parameters but no versioning (unversioned slices).
@@ -118,7 +124,8 @@ public record RouteConfig(String prefix,
                                "",
                                false,
                                Map.of(),
-                               Map.of());
+                               Map.of(),
+                               Option.none());
     }
 
     /// Backward-compatible factory method without security parameters.
@@ -132,7 +139,29 @@ public record RouteConfig(String prefix,
                                "",
                                false,
                                Map.of(),
-                               Map.of());
+                               Map.of(),
+                               Option.none());
+    }
+
+    /// The JSON naming the route codecs are compiled with: the declared `[json] naming`, otherwise
+    /// [NamingStrategy#AS_DECLARED] (component names as written).
+    public NamingStrategy jsonNaming() {
+        return declaredJsonNaming.or(NamingStrategy.AS_DECLARED);
+    }
+
+    /// This configuration with `naming` as its declared `[json] naming`.
+    public RouteConfig withJsonNaming(Option<NamingStrategy> naming) {
+        return new RouteConfig(prefix,
+                               routes,
+                               errors,
+                               securityDefault,
+                               overridePolicy,
+                               routeSecurity,
+                               apiPrefix,
+                               requireVersionHeader,
+                               versions,
+                               routeVersions,
+                               naming);
     }
 
     /// Whether this slice declares API versions (`[vN.routes]` blocks).
@@ -161,6 +190,7 @@ public record RouteConfig(String prefix,
     ///   - securityDefault: other's value takes precedence
     ///   - overridePolicy: other's value takes precedence
     ///   - routeSecurity: combined, with other's overrides taking precedence
+    ///   - declaredJsonNaming: other's when it declares one, otherwise this one's
     ///
     ///
     /// @param other the configuration to merge with (takes precedence)
@@ -185,6 +215,7 @@ public record RouteConfig(String prefix,
         var mergedRequireHeader = other.requireVersionHeader || this.requireVersionHeader;
         var mergedVersions = mergeVersions(this.versions, other.versions);
         var mergedRouteVersions = mergeMaps(this.routeVersions, other.routeVersions);
+        var mergedJsonNaming = other.declaredJsonNaming.orElse(() -> this.declaredJsonNaming);
 
         return routeConfig(mergedPrefix,
                            mergedRoutes,
@@ -195,7 +226,7 @@ public record RouteConfig(String prefix,
                            mergedApiPrefix,
                            mergedRequireHeader,
                            mergedVersions,
-                           mergedRouteVersions);
+                           mergedRouteVersions).withJsonNaming(mergedJsonNaming);
     }
 
     private static <V> Map<String, V> mergeMaps(Map<String, V> base, Map<String, V> overlay) {

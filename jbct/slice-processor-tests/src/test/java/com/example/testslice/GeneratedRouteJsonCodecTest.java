@@ -43,11 +43,12 @@ class GeneratedRouteJsonCodecTest {
 
     @Test
     void factory_passesGeneratedCodecWithJacksonFallback() {
-        assertThat(generatedRoutes).contains("jsonMapper, mountMode, jsonCodec(jsonMapper))");
-        assertThat(generatedRoutes).contains("jsonMapper, RouteMountMode.pathMode(), jsonCodec(jsonMapper))");
+        assertThat(generatedRoutes).contains("jsonMapper, mountMode, jsonCodecs(slice, jsonMapper))");
+        assertThat(generatedRoutes).contains("jsonMapper, RouteMountMode.pathMode(), jsonCodecs(slice, jsonMapper))");
         assertThat(generatedRoutes).contains("GeneratedJsonCodec.generatedJsonCodec(TestSliceRoutesJsonCodecs.CODECS,");
         assertThat(generatedRoutes).contains("TestSliceRoutesJsonCodecs.CONTAINERS,");
-        assertThat(generatedRoutes).contains("JsonCodecAdapter.forMapper(jsonMapper)");
+        // #2378: the given mapper is the fallback as it is under default options; otherwise one built with them.
+        assertThat(generatedRoutes).contains("JsonCodecAdapter.forMapper(selection.options().equals(org.pragmatica.serialization.json.JsonOptions.DEFAULTS) ? jsonMapper : ");
     }
 
     // TestSlice's only List roots are responses (search, getOrders): an encode sees the runtime value, never the

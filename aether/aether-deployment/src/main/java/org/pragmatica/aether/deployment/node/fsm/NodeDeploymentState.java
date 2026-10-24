@@ -1844,20 +1844,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     return;
                 }
 
-                var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
-
-                for (int i = 0; i < count; i++) {
-                    var prefix = "reactive." + i + ".";
-                    var category = props.getProperty(prefix + "category", "");
-
-                    if ("config-update".equals(category)) {
-                        var configSection = props.getProperty(prefix + "config");
-
-                        if (configSection != null) {
-                            result.add(new ConfigUpdateManifestEntry(configSection, factoryClassName));
-                        }
-                    }
-                }
+                ConfigUpdateSections.configUpdateSections(props).forEach(section -> result.add(new ConfigUpdateManifestEntry(section,
+                                                                                                                             factoryClassName)));
             } catch (Exception e) {
                 log.warn("Could not read config update manifest {} of {}: {}", manifestPath, artifact, e.toString());
             }

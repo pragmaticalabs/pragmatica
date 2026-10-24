@@ -451,7 +451,16 @@ public enum OperatorWarningCode {
     COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",
                                 "community-assignment",
                                 WarningLevel.INFO,
-                                COMMUNITY_ASSIGNMENT_UNPLACED);
+                                COMMUNITY_ASSIGNMENT_UNPLACED),
+    /// A committed `[json]` configuration change was refused for a slice (#2378): the slice's HTTP routes keep the
+    /// JSON codec selection they had. Subject is `<slice artifact>/json`; the message names every refused key, its
+    /// value and why, and the selection kept. Raised once, on the transition into refusal, per node. The same
+    /// configuration fails the slice's next provisioning (restart or redeploy), so fix or remove the keys. Closed by
+    /// [#JSON_CONFIG_APPLIED].
+    JSON_CONFIG_REJECTED("json-config-rejected", "json", WarningLevel.CRITICAL),
+    /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
+    /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
+    JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

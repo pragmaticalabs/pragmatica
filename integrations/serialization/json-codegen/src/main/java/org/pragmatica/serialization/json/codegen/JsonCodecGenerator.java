@@ -35,6 +35,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.NamingStrategy;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -46,6 +47,10 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// type per entry point, [#writeEntryPoint]) and the slice processor (HTTP route request and response types in
 /// one holder, [#write]), so both emit identical codecs. A root the generator cannot handle is reported, not
 /// generated; its users fall back.
+///
+/// JSON names are fixed here, at build time: a component's `@JsonName`, otherwise its name under the
+/// [NamingStrategy] the generator was constructed with ([NamingStrategy#AS_DECLARED] by default). The codec processor
+/// takes the strategy from `-Ajson.naming`; another processor passes its own to the constructors below.
 public final class JsonCodecGenerator {
     /// The marker annotation every generated JSON class carries, naming what it was generated for.
     public static final String MARKER = "org.pragmatica.serialization.json.spi.GeneratedFor";
@@ -59,16 +64,27 @@ public final class JsonCodecGenerator {
     private final List<JsonType.ListOf> containerRoots = new ArrayList<>();
     private final String packageName;
 
-    /// `packageName` is where the holder will be written; it decides which types and factories are reachable.
+    /// `packageName` is where the holder will be written; it decides which types and factories are reachable. Names
+    /// are [NamingStrategy#AS_DECLARED].
     public JsonCodecGenerator(ProcessingEnvironment env, String packageName) {
-        this(env.getFiler(), env.getElementUtils(), env.getTypeUtils(), packageName);
+        this(env, packageName, NamingStrategy.AS_DECLARED);
+    }
+
+    /// As [#JsonCodecGenerator(ProcessingEnvironment, String)], naming components with `naming`.
+    public JsonCodecGenerator(ProcessingEnvironment env, String packageName, NamingStrategy naming) {
+        this(env.getFiler(), env.getElementUtils(), env.getTypeUtils(), packageName, naming);
     }
 
     public JsonCodecGenerator(Filer filer, Elements elements, Types types, String packageName) {
+        this(filer, elements, types, packageName, NamingStrategy.AS_DECLARED);
+    }
+
+    /// As [#JsonCodecGenerator(Filer, Elements, Types, String)], naming components with `naming`.
+    public JsonCodecGenerator(Filer filer, Elements elements, Types types, String packageName, NamingStrategy naming) {
         this.filer = filer;
         this.elements = elements;
         this.packageName = packageName;
-        this.analyzer = new JsonTypeAnalyzer(elements, types, packageName);
+        this.analyzer = new JsonTypeAnalyzer(elements, types, packageName, naming);
     }
 
     /// Adds a root type; empty when supported, otherwise why it is not.

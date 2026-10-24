@@ -20,6 +20,11 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
+        <!-- JsonOptions, NamingStrategy and JsonName: the configuration the mapper shares with the generated codecs. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
+        </dependency>
         <dependency>
             <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
