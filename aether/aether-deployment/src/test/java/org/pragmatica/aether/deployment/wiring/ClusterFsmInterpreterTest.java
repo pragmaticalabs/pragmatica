@@ -31,6 +31,8 @@ import static org.pragmatica.aether.deployment.wiring.WiringFixtures.*;
 /// design 5): W-11 (Rebuild first, synchronously), W-07 (one `apply` per step, cluster arm), W-13 (the pre-submit self-check through the
 /// interpreter), W-08 (cluster timers carry their incarnation), W-12 (no inline step), and the `Close` of the leader's interpreter.
 class ClusterFsmInterpreterTest {
+    private static final String APPLIES = "aether_deployment_fsm_applies_total";
+
     private static boolean writesGoals(List<org.pragmatica.cluster.state.kvstore.KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> batch) {
         return batch.stream()
                     .anyMatch(command -> command instanceof org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction<?, ?> tx
@@ -122,6 +124,57 @@ class ClusterFsmInterpreterTest {
 
                 assertThat(goalBatches).as("MT-07: one apply per Submit would make two batches").hasSize(1);
                 assertThat(goalBatches.getFirst()).as("both goal transactions in the one batch").hasSize(2);
+            }
+        }
+
+        /// P3-G, G2 (positive control): every apply the engine received from the interpreter is counted once in `applies_total`, and a step
+        /// with two transactions is one apply.
+        @Test
+        void eachSentStep_countsOneApply_asTheEngineReceivedIt() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+                rig.target(ORDERS, 2);
+                rig.awaitThat(() -> rig.routed(RoutedEvent.DeploymentStarted.class) == 2);
+                rig.settle();
+
+                assertThat(rig.cluster.applied.stream().filter(ClusterFsmInterpreterTest::writesGoals).toList()).as("control: the goal step was one apply of two")
+                                                                                                                .singleElement()
+                                                                                                                .satisfies(batch -> assertThat(batch).hasSize(2));
+                rig.awaitThat(() -> rig.counter(APPLIES) == rig.cluster.applied.size());
+                assertThat(rig.counter(APPLIES)).as("one count per apply the engine received").isEqualTo(rig.cluster.applied.size());
+            }
+        }
+
+        /// P3-G, G2: a step with no write calls no `apply` and counts none.
+        @Test
+        void anEmptyStep_countsNoApply() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+                var applies = rig.cluster.applied.size();
+                var counted = rig.counter(APPLIES);
+
+                rig.settle();
+
+                assertThat(rig.cluster.applied).as("control: the barrier step wrote nothing").hasSize(applies);
+                assertThat(rig.counter(APPLIES)).isEqualTo(counted);
+            }
+        }
+
+        /// P3-G, G2: a step the self-check withholds reaches no engine and counts no apply.
+        @Test
+        void aWithheldStep_countsNoApply() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+                var applies = rig.cluster.applied.size();
+                var counted = rig.counter(APPLIES);
+
+                rig.muteLeaderNotifications = true;
+                rig.applier.commitLeader(new LeaderValue(OTHER, 9L));
+                rig.target(ORDERS, 1);
+                rig.awaitThat(() -> rig.countOf("WitnessStale") == 1);
+
+                assertThat(rig.cluster.applied).as("control: the step was withheld").hasSize(applies);
+                assertThat(rig.counter(APPLIES)).isEqualTo(counted);
             }
         }
 

@@ -235,6 +235,18 @@ final class ClusterRig implements AutoCloseable {
         }
     }
 
+    /// The total of the sunk counter `name`, over all its tags.
+    long counter(String name) {
+        synchronized (sunk) {
+            return sunk.stream()
+                       .filter(ClusterEffect.Metric.class::isInstance)
+                       .map(ClusterEffect.Metric.class::cast)
+                       .filter(m -> m.name().equals(name))
+                       .mapToLong(ClusterEffect.Metric::delta)
+                       .sum();
+        }
+    }
+
     long routed(Class<?> event) {
         synchronized (sunk) {
             return sunk.stream().filter(ClusterEffect.Route.class::isInstance).map(ClusterEffect.Route.class::cast).filter(r -> event.isInstance(r.event())).count();

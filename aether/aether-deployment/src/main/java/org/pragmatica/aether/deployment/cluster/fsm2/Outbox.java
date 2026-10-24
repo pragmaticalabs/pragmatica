@@ -227,6 +227,7 @@ public sealed interface Outbox {
         var dropped = m.goalIntents.size() + m.artifactIntents.size() + m.outbox.size();
 
         m.goalIntents.keys().forEach(pair -> Indexer.clearPending(m, pair));
+        m.outbox.forEach(draft -> Blueprints.releaseUnsent(m, draft));
         m.artifactIntents.values()
                          .forEach(intent -> intent.goals()
                                                   .forEach(write -> Indexer.clearPending(m,
@@ -492,6 +493,7 @@ public sealed interface Outbox {
     private static ClusterModel release(ClusterModel m, Ctx ctx, String correlation, Submitted submission) {
         m.submitted = m.submitted.remove(correlation);
         submission.drafts().forEach(draft -> dropPending(m, draft));
+        submission.drafts().forEach(draft -> Blueprints.releaseUnsent(m, draft));
         submission.drafts().forEach(draft -> awaitEvents(m, draft));
         metric(ctx, submission, "lost");
 
@@ -937,6 +939,7 @@ public sealed interface Outbox {
         metric(ctx, submission, "failed");
         for (var draft : submission.drafts()) {
             dropPending(m, draft);
+            Blueprints.releaseUnsent(m, draft);
             DepartureFlow.failed(m, ctx, draft);
             awaitEvents(m, draft);
         }

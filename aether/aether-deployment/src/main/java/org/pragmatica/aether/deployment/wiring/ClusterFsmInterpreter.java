@@ -27,7 +27,7 @@ import org.pragmatica.lang.Unit;
 ///
 /// | Effect | Executor | Fed back |
 /// |---|---|---|
-/// | `Submit` | `Submitter`: the self-check, then **all Submits of one step in one `apply`** | one `WriteSettled` per Submit; `WitnessStale` when the self-check finds another committed leader |
+/// | `Submit` | `Submitter`: the self-check, then **all Submits of one step in one `apply`**, counted in `aether_deployment_fsm_applies_total{fsm}` | one `WriteSettled` per Submit; `WitnessStale` when the self-check finds another committed leader |
 /// | `RequestRebuild` | **synchronously, inside the dispatch of the step that emitted it** (D6): snapshot at a revision, then `step(Rebuild)` | the `Rebuild` step's own effects |
 /// | `Enqueue` | the mailbox tail | the input |
 /// | `Schedule` / `Cancel` | `FsmTimers`; the incarnation rides with the entry | `Timer(timer, incarnation)` |
@@ -165,8 +165,16 @@ public final class ClusterFsmInterpreter extends FsmRuntime<ClusterInput, TimerI
         switch (parts.submitter().submitTransactions(submits)) {
             case Submitter.Dispatch.Nothing _ -> {}
             case Submitter.Dispatch.Withheld withheld -> withheld(withheld);
-            case Submitter.Dispatch.Sent sent -> sent.pending().onSuccess(settled -> settled.forEach(this::settle));
+            case Submitter.Dispatch.Sent sent -> sent(sent);
         }
+    }
+
+    /// `aether_deployment_fsm_applies_total{fsm}`: one per `apply(List)` that left for the engine (a `Sent` dispatch), none for an empty or a
+    /// withheld step. These are applies (O4 proxy): spec 7 counts a leader round as one `apply(List)`, while the design's O4 counts committed
+    /// batches, and one apply stands for one committed batch only while NT-90 stays unverified. `submissions_total` stays per transaction.
+    private void sent(Submitter.Dispatch.Sent sent) {
+        parts.sink().accept(new ClusterEffect.Metric("aether_deployment_fsm_applies_total", Map.of("fsm", FSM), 1L));
+        sent.pending().onSuccess(settled -> settled.forEach(this::settle));
     }
 
     private void withheld(Submitter.Dispatch.Withheld withheld) {
