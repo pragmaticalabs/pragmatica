@@ -55,7 +55,8 @@ public final class CommitRing {
         EVICTED,
         INCARNATION_MISMATCH,
         OVERFLOW,
-        /// A writer appended a slot behind the frontier; the ring did not record it. The subscriber resubscribes and its anchors decide.
+        /// A writer appended a slot behind the frontier; the ring did not record it and raised its floor to the frontier, so every position it
+        /// could have granted before is refused `EVICTED` and the subscriber takes a snapshot.
         OUT_OF_ORDER
     }
 
@@ -360,13 +361,15 @@ public final class CommitRing {
         evict();
     }
 
-    /// I-W1 for a batch the ring cannot record in order: every live sink is closed `OUT_OF_ORDER` and resubscribes, where its anchors decide.
-    /// The entries, the floor and the frontier stay as they are, since the ring cannot prove any other value for them.
+    /// I-W1 for a batch the ring cannot record in order: the floor rises to the frontier (which stays) and every live sink is closed
+    /// `OUT_OF_ORDER`. The ring is cleared, so every anchor pair a position can carry lies below the new floor: a resubscribe from any position the
+    /// ring could have granted before, a fully caught-up one (`applied` = the frontier) included, has no verifiable pair and is refused `EVICTED`.
     private void refuseBehindFrontierLocked(Closes closes, long slot) {
-        log.warn("Commit ring refused an append at slot {} behind its frontier {}; closing {} live subscription(s)",
+        log.warn("Commit ring refused an append at slot {} behind its frontier {}; floor raised to the frontier, closing {} live subscription(s)",
                  slot,
                  nextSlot,
                  subscriptions.size());
+        clearTo(nextSlot);
         closeAll(closes, CloseReason.OUT_OF_ORDER);
     }
 
@@ -385,15 +388,20 @@ public final class CommitRing {
                      ? CloseReason.EVICTED
                      : CloseReason.INCARNATION_MISMATCH;
 
+        tag = current;
+        clearTo(newFloor);
+        closeAll(closes, reason);
+    }
+
+    /// Empties the ring and moves the floor, the frontier and the covered range to `newFloor`.
+    private void clearTo(long newFloor) {
         entries.clear();
         effectEntriesBySlot.clear();
         anchor.clear();
         bytes = 0;
-        tag = current;
         floor = newFloor;
         nextSlot = newFloor;
         coveredTo = newFloor;
-        closeAll(closes, reason);
     }
 
     private void flushLocked(Closes closes) {
