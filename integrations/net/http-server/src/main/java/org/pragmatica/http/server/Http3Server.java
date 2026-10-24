@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.http.CommonContentType;
@@ -72,7 +73,6 @@ import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.ScheduledFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -305,34 +305,41 @@ final class Http3Server {
     /// Package-private so the server-level tests can drive it in an `EmbeddedChannel`.
     static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
         private static final Logger log = LoggerFactory.getLogger(Http3RequestHandler.class);
+        private static final TimeSpan NO_BOUND = TimeSpan.timeSpan(0).millis();
 
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
-        private final int maxContentLength;
+        private final RequestClassifier classifier;
         private final TimeSpan readTimeout;
         private final BodyRateLimit bodyRateLimit;
         private Http3HeadersFrame headersFrame;
         private Option<Http3HeadersFrame> trailersFrame = Option.none();
         private ByteBuf bodyData;
         private boolean rejected;
-        private Option<ScheduledFuture<?>> idleTimer = none();
-        private Option<BodyRateGuard> rateGuard = none();
+        private Option<BodyGuard> guard = none();
 
         Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                             int maxContentLength,
                             TimeSpan readTimeout,
                             BodyRateLimit bodyRateLimit) {
+            this(handler, RequestClassifier.aggregateAll(maxContentLength), readTimeout, bodyRateLimit);
+        }
+
+        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
+                            RequestClassifier classifier,
+                            TimeSpan readTimeout,
+                            BodyRateLimit bodyRateLimit) {
             this.handler = handler;
-            this.maxContentLength = maxContentLength;
+            this.classifier = classifier;
             this.readTimeout = readTimeout;
             this.bodyRateLimit = bodyRateLimit;
         }
 
-        /// The handler every request stream gets: the server's configured body limit, read timeout and minimum body
+        /// The handler every request stream gets: the server's configured classifier, read timeout and minimum body
         /// rate. Package-private so a test can pin that the configured values, not defaults, reach the stream.
         static Http3RequestHandler http3RequestHandler(HttpServerConfig config,
                                                        BiConsumer<HttpRequest, ResponseWriter> handler) {
             return new Http3RequestHandler(handler,
-                                           config.maxContentLength(),
+                                           config.effectiveClassifier(),
                                            config.readTimeout(),
                                            config.bodyRateLimit());
         }
@@ -340,38 +347,54 @@ final class Http3Server {
         /// #2310: the first HEADERS frame is the header section; one after it is the trailer section (RFC 9114
         /// §4.1). Netty's request-stream validation refuses any HEADERS frame after the trailers, and its trailer
         /// decoding refuses pseudo-header fields and a section over SETTINGS_MAX_FIELD_SECTION_SIZE.
+        ///
+        /// The first one is classified here, before any body frame is read: a rejected request is answered at once and
+        /// its input reset, and an admitted one is bounded by what the classifier said (size, idle, minimum rate,
+        /// duration).
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
             if (headersFrame == null) {
                 headersFrame = frame;
-                armIdleTimer(ctx);
-                rateGuard = some(BodyRateGuard.start(ctx.executor(), bodyRateLimit, () -> rejectTooSlow(ctx)));
+                switch (classifier.classify(headRequest())) {
+                    case Disposition.Reject reject -> rejectWith(ctx, reject.respond());
+                    case Disposition.Aggregate aggregate -> admit(ctx, aggregate);
+                }
             } else {
                 trailersFrame = some(frame);
             }
         }
 
-        /// Re-armed on every body frame, so it fires only after `readTimeout` without one.
-        private void armIdleTimer(ChannelHandlerContext ctx) {
-            idleTimer.onPresent(timer -> timer.cancel(false));
-            idleTimer = readTimeout.nanos() > 0
-                        ? some(ctx.executor().schedule(() -> rejectIdle(ctx), readTimeout.nanos(), TimeUnit.NANOSECONDS))
-                        : none();
+        private void admit(ChannelHandlerContext ctx, Disposition.Aggregate aggregate) {
+            var bounds = aggregate.bounds();
+            var started = BodyGuard.start(ctx.executor(),
+                                          aggregate.maxBytes(),
+                                          bounds.map(BodyBounds::idle).or(readTimeout),
+                                          bounds.map(BodyBounds::rate).or(bodyRateLimit),
+                                          bounds.map(BodyBounds::maxDuration).or(NO_BOUND),
+                                          aggregate.release(),
+                                          reason -> onRefused(ctx, reason, aggregate.maxBytes()));
+
+            guard = some(started);
+            started.refuseIfDeclaredTooLarge(declaredLength());
+        }
+
+        private long declaredLength() {
+            return Option.option(headersFrame.headers().get("content-length"))
+                         .flatMap(value -> Result.lift(Causes::fromThrowable,
+                                                       () -> Long.parseLong(value.toString().strip()))
+                                                 .option())
+                         .or(-1L);
         }
 
         private void stopTimers() {
-            idleTimer.onPresent(timer -> timer.cancel(false));
-            idleTimer = none();
-            rateGuard.onPresent(BodyRateGuard::stop);
-            rateGuard = none();
+            guard.onPresent(BodyGuard::stop);
+            guard = none();
         }
 
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3DataFrame dataFrame) {
-            if (!rejected) {
-                rateGuard.onPresent(guard -> guard.onBytes(dataFrame.content().readableBytes()));
-                armIdleTimer(ctx);
-                appendData(ctx, dataFrame.content());
+            if (!rejected && guard.map(active -> active.onBytes(dataFrame.content().readableBytes())).or(true)) {
+                appendData(dataFrame.content());
             }
 
             ReferenceCountUtil.release(dataFrame);
@@ -425,17 +448,9 @@ final class Http3Server {
             }
         }
 
-        private void appendData(ChannelHandlerContext ctx, ByteBuf content) {
-            var buffered = bodyData == null
-                           ? 0
-                           : bodyData.readableBytes();
-
-            if ((long) buffered + content.readableBytes() > maxContentLength) {
-                rejectTooLarge(ctx);
-
-                return;
-            }
-
+        /// The size limit is enforced by the [BodyGuard] before a frame is appended, so the buffer never holds more than
+        /// the classifier allowed.
+        private void appendData(ByteBuf content) {
             if (bodyData == null) {
                 bodyData = Unpooled.buffer(content.readableBytes());
             }
@@ -443,34 +458,38 @@ final class Http3Server {
             bodyData.writeBytes(content);
         }
 
-        private void rejectTooLarge(ChannelHandlerContext ctx) {
-            log.debug("HTTP/3 request body exceeds {} bytes, answering 413", maxContentLength);
-            reject(ctx,
-                   HttpStatus.REQUEST_ENTITY_TOO_LARGE,
-                   "Request body exceeds the " + maxContentLength + "-byte limit");
-        }
-
-        private void rejectIdle(ChannelHandlerContext ctx) {
+        private void onRefused(ChannelHandlerContext ctx, BodyGuard.Refusal reason, long maxBytes) {
+            guard = none();
             if (!rejected) {
-                log.debug("HTTP/3 request body idle for {}, answering 408", readTimeout);
-                reject(ctx, HttpStatus.REQUEST_TIMEOUT, "Request body idle longer than the read timeout");
-            }
-        }
-
-        private void rejectTooSlow(ChannelHandlerContext ctx) {
-            if (!rejected) {
-                log.debug("HTTP/3 request body below {} B/s, answering 408", bodyRateLimit.bytesPerSecond());
-                reject(ctx, HttpStatus.REQUEST_TIMEOUT, "Request body arrived below the minimum rate");
+                log.debug("HTTP/3 request body refused: {}", reason);
+                switch (reason) {
+                    case TOO_LARGE -> reject(ctx,
+                                             HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                                             "Request body exceeds the " + maxBytes + "-byte limit");
+                    case IDLE -> reject(ctx,
+                                        HttpStatus.REQUEST_TIMEOUT,
+                                        "Request body idle longer than the read timeout");
+                    case DURATION -> reject(ctx,
+                                            HttpStatus.REQUEST_TIMEOUT,
+                                            "Request body took longer than the route's max_duration");
+                    case TOO_SLOW -> reject(ctx,
+                                            HttpStatus.REQUEST_TIMEOUT,
+                                            "Request body arrived below the minimum rate");
+                }
             }
         }
 
         /// Answers without dispatching, then asks the client to stop sending (RFC 9114 §4.1.1: a server that does
         /// not need the rest of the request may abort reading it, with H3_NO_ERROR, after a complete response).
         private void reject(ChannelHandlerContext ctx, HttpStatus status, String message) {
+            rejectWith(ctx, writer -> writer.error(status, message));
+        }
+
+        private void rejectWith(ChannelHandlerContext ctx, Consumer<ResponseWriter> respond) {
             rejected = true;
             stopTimers();
             releaseBody();
-            new Http3ResponseWriter(ctx, IdGenerator.generate("req")).error(status, message);
+            respond.accept(new Http3ResponseWriter(ctx, IdGenerator.generate("req")));
             if (ctx.channel() instanceof QuicStreamChannel stream) {
                 stream.shutdownInput(Http3ErrorCode.H3_NO_ERROR.code());
             }
@@ -489,6 +508,19 @@ final class Http3Server {
         }
 
         private HttpRequest buildRequestContext(String requestId) {
+            var trailers = Headers.trailers(trailersFrame.map(frame -> extractHeaders(frame.headers())).or(Map.of()));
+
+            return requestOf(requestId, extractBody(), trailers);
+        }
+
+        /// The request's head: everything but a body and trailers, which have not arrived.
+        private HttpRequest headRequest() {
+            return requestOf(IdGenerator.generate("req"),
+                             new byte[0],
+                             Headers.trailers(Map.of()));
+        }
+
+        private HttpRequest requestOf(String requestId, byte[] body, Headers trailers) {
             var h3Headers = headersFrame.headers();
             var methodStr = Option.option(h3Headers.method()).map(CharSequence::toString).or("GET");
             var pathStr = Option.option(h3Headers.path()).map(CharSequence::toString).or("/");
@@ -499,8 +531,6 @@ final class Http3Server {
                                                ? pathAndQuery[1]
                                                : "");
             var headerMap = extractHeaders(h3Headers);
-            var trailers = Headers.trailers(trailersFrame.map(frame -> extractHeaders(frame.headers())).or(Map.of()));
-            var body = extractBody();
 
             return new Http3RequestContext(requestId,
                                            method,

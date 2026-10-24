@@ -291,9 +291,11 @@ final class NettyHttpServer implements HttpServer {
                                                   0,
                                                   TimeUnit.MILLISECONDS));
             pipeline.addLast(new HttpServerCodec());
-            // F6: the minimum body rate, checked on the chunks before the aggregator assembles them
-            pipeline.addLast(new BodyRateGuardHandler(config.bodyRateLimit()));
-            pipeline.addLast(new HttpObjectAggregator(config.maxContentLength()));
+            // The ingest gate: classifies each request on its head, before any body byte is read, and bounds the body (its
+            // size, the idle bound, F6's minimum rate, the duration) on the chunks before the aggregator assembles them.
+            // The aggregator's own limit is therefore only the largest int: the gate has already enforced the request's.
+            pipeline.addLast(new RequestGate(config));
+            pipeline.addLast(new HttpObjectAggregator(Integer.MAX_VALUE));
             if (config.chunkedWriteEnabled()) {
                 pipeline.addLast(new ChunkedWriteHandler());
             }
@@ -629,11 +631,14 @@ final class NettyHttpServer implements HttpServer {
                                        byte[] body,
                                        Headers trailers) implements HttpRequest {}
 
-    private static class NettyResponseWriter implements ResponseWriter {
+    static class NettyResponseWriter implements ResponseWriter {
         private final ChannelHandlerContext ctx;
         private final String requestId;
         private final boolean keepAlive;
         private final Runnable onWritten;
+        /// The response ends the connection after a short linger (see [RequestGate#lingerClose]): a refusal sent while the
+        /// client may still be sending its body. Such a response says `Connection: close`.
+        private final boolean lingerClose;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
         private final Promise<Unit> flushed = Promise.promise();
 
@@ -641,10 +646,19 @@ final class NettyHttpServer implements HttpServer {
 
         /// `onWritten` runs once, when the response write completes (succeeded or failed).
         NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive, Runnable onWritten) {
+            this(ctx, requestId, keepAlive, onWritten, false);
+        }
+
+        NettyResponseWriter(ChannelHandlerContext ctx,
+                            String requestId,
+                            boolean keepAlive,
+                            Runnable onWritten,
+                            boolean lingerClose) {
             this.ctx = ctx;
             this.requestId = requestId;
             this.keepAlive = keepAlive;
             this.onWritten = onWritten;
+            this.lingerClose = lingerClose;
             this.responseHeaders = new DefaultHttpHeaders();
         }
 
@@ -688,6 +702,8 @@ final class NettyHttpServer implements HttpServer {
             response.headers().set(X_REQUEST_ID, requestId);
             if (keepAlive) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            } else if (lingerClose) {
+                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
             }
 
             response.headers().add(extraHeaders);
@@ -711,7 +727,9 @@ final class NettyHttpServer implements HttpServer {
             var future = ctx.writeAndFlush(response);
 
             future.addListener(_ -> onWritten.run());
-            if (!keepAlive) {
+            if (lingerClose) {
+                future.addListener(_ -> RequestGate.lingerClose(ctx.channel()));
+            } else if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);
             }
 
