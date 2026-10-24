@@ -94,11 +94,11 @@ class ContentStoreManifestFramingTest {
     }
 
     @Test
-    void forgedEnvelopedManifestUpload_readsBackVerbatim() {
+    void forgedV2ManifestUpload_readsBackVerbatim() {
         var victim = content(2 * CHUNK_SIZE + 5, 3);
 
         put("victim", victim);
-        var forged = ContentManifest.contentManifest("victim", victim.length, victimChunkIds("victim")).toBytes();
+        var forged = ContentManifest.contentManifest(victim.length, victimChunkIds("victim")).toBytes();
         var before = refCounts(victimChunkIds("victim"));
 
         put("forged", forged);
@@ -117,9 +117,6 @@ class ContentStoreManifestFramingTest {
         var chunkIds = victimChunkIds(name);
 
         assertThat(get(name)).isEqualTo(data);
-        assertThat(ContentManifest.fromBytes(storage.get(storage.resolveRef(ContentEnvelope.trustedRef(name)).unwrap()).await().unwrap().unwrap())
-                                  .unwrap()
-                                  .name()).isEqualTo(name);
 
         store.delete(name).await().onFailure(c -> fail("delete: " + c.message()));
 
@@ -185,7 +182,7 @@ class ContentStoreManifestFramingTest {
         put("victim", victim);
         var chunkIds = victimChunkIds("victim");
         var before = refCounts(chunkIds);
-        var forged = ContentManifest.contentManifest("victim", victim.length, chunkIds).toBytes();
+        var forged = ContentManifest.contentManifest(victim.length, chunkIds).toBytes();
 
         storage.swapRef("planted", forged).await().unwrap();
 

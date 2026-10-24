@@ -723,11 +723,6 @@ class ContentStoreDeleteRefcountTest {
         }
 
         @Override
-        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
-            return delegate.put(content, metadata);
-        }
-
-        @Override
         public Promise<Option<byte[]>> get(BlockId id) {
             return delegate.get(id);
         }

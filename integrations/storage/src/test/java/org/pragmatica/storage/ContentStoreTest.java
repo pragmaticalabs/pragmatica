@@ -246,13 +246,12 @@ class ContentStoreTest {
 
         @Test
         void manifest_serializationRoundTrip() {
-            var manifest = ContentManifest.contentManifest("test-file", 1024, List.of("aabb", "ccdd", "eeff"));
+            var manifest = ContentManifest.contentManifest(1024, List.of("aabb", "ccdd", "eeff"));
             var bytes = manifest.toBytes();
             var parsed = ContentManifest.fromBytes(bytes);
 
             assertThat(parsed.isPresent()).isTrue();
             parsed.onPresent(m -> {
-                assertThat(m.name()).isEqualTo("test-file");
                 assertThat(m.totalSize()).isEqualTo(1024);
                 assertThat(m.chunkCount()).isEqualTo(3);
                 assertThat(m.chunkBlockIds()).containsExactly("aabb", "ccdd", "eeff");
@@ -268,11 +267,20 @@ class ContentStoreTest {
         }
 
         @Test
-        void manifest_isManifest_detectsMagicHeader() {
-            var manifest = ContentManifest.contentManifest("x", 10, List.of("ab"));
+        void manifest_unknownFormatVersion_isRefused() {
+            var bytes = ContentManifest.contentManifest(10, List.of("ab")).toBytes();
 
-            assertThat(ContentManifest.isManifest(manifest.toBytes())).isTrue();
-            assertThat(ContentManifest.isManifest("not a manifest".getBytes(StandardCharsets.UTF_8))).isFalse();
+            bytes[ContentEnvelope.marker().length + 1] = ContentManifest.FORMAT_VERSION + 1;
+
+            assertThat(ContentManifest.fromBytes(bytes).isEmpty()).isTrue();
+        }
+
+        @Test
+        void manifest_carriesNoName_soNothingNeedsEscaping() {
+            var bytes = ContentManifest.contentManifest(10, List.of("ab")).toBytes();
+
+            // envelope marker (6) + kind (1) + version (1) + size (8) + count (4) + id length (4) + id (1)
+            assertThat(bytes).hasSize(6 + 1 + 1 + 8 + 4 + 4 + 1);
         }
     }
 }

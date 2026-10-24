@@ -470,7 +470,7 @@ public final class StorageFactory {
                                                    Math.max(a.lastRunMs(), b.lastRunMs()));
     }
 
-    /// Per-node maintenance: demotion and promotion of every instance whose tiers are private to this node
+    /// Per-node maintenance: demotion, promotion and garbage collection of every instance whose tiers are private to this node
     /// (`artifacts`, `content`), started when the node reports ready. Not leader-pinned (see
     /// [#compositeDemotionManager]). `streams` is excluded: its demotion stays leader-pinned and it never promotes.
     ///
@@ -480,7 +480,8 @@ public final class StorageFactory {
     public static Result<Unit> activateNodeMaintenance(Map<String, StorageSetup> setups) {
         return Result.allOf(nodeMaintenanceSetups(setups).stream()
                                                  .flatMap(setup -> Stream.of(setup.demotionManager().activate(),
-                                                                             setup.promotionManager().activate()))
+                                                                             setup.promotionManager().activate(),
+                                                                             setup.garbageCollector().activate()))
                                                  .toList()).map(_ -> unit());
     }
 
@@ -488,7 +489,8 @@ public final class StorageFactory {
     public static Result<Unit> deactivateNodeMaintenance(Map<String, StorageSetup> setups) {
         return Result.allOf(nodeMaintenanceSetups(setups).stream()
                                                  .flatMap(setup -> Stream.of(setup.demotionManager().deactivate(),
-                                                                             setup.promotionManager().deactivate()))
+                                                                             setup.promotionManager().deactivate(),
+                                                                             setup.garbageCollector().deactivate()))
                                                  .toList()).map(_ -> unit());
     }
 
@@ -508,17 +510,14 @@ public final class StorageFactory {
     }
 
     /// #250: same fan-out as [#compositeDemotionManager], for garbage collection.
-    /// Every setup's collector is TICKED here, but only the shared-view ones are leader-pinned: `streams` is an
-    /// instance per node over that node's own disk, activated at build ([#assembleStreamSetup]) and left alone
-    /// by leader activation, or every non-leader would stop reclaiming its disk (#1604).
+    /// Nothing is leader-pinned. Local refcount GC deletes only from node-private tiers
+    /// ([StorageInstance#deleteFromPrivateTiers]) and a node's refcounts describe its own holdings, so every node
+    /// reclaims its own disk and running it everywhere is correct (#1604 for `streams`, the same here for `artifacts`
+    /// and `content`). A collector is activated per node: `streams` at build ([#assembleStreamSetup]), the others by
+    /// [#activateNodeMaintenance] when the node reports ready. Leader activation through this composite is therefore
+    /// a no-op, and `isActive()` is true once any child collects.
     public static StorageGarbageCollector compositeGarbageCollector(Map<String, StorageSetup> setups) {
         var collectors = setups.values().stream().map(StorageSetup::garbageCollector).toList();
-        var leaderPinned = setups.entrySet()
-                                 .stream()
-                                 .filter(entry -> !STREAMS_NAME.equals(entry.getKey()))
-                                 .map(entry -> entry.getValue()
-                                                    .garbageCollector())
-                                 .toList();
 
         return new StorageGarbageCollector() {
             @Override
@@ -538,18 +537,18 @@ public final class StorageFactory {
 
             @Override
             public Result<Unit> activate() {
-                return Result.allOf(leaderPinned.stream().map(StorageGarbageCollector::activate).toList()).map(_ -> unit());
+                return Result.success(unit());
             }
 
             @Override
             public Result<Unit> deactivate() {
-                return Result.allOf(leaderPinned.stream().map(StorageGarbageCollector::deactivate).toList()).map(_ -> unit());
+                return Result.success(unit());
             }
 
             @Override
             public boolean isActive() {
-                return leaderPinned.stream()
-                                   .allMatch(StorageGarbageCollector::isActive);
+                return collectors.stream()
+                                 .anyMatch(StorageGarbageCollector::isActive);
             }
         };
     }
@@ -1309,11 +1308,16 @@ public final class StorageFactory {
                                                             Option<DhtMarkerCheck> dhtMarkerCheck,
                                                             Option<Path> logRoot) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
+        // Sealed segments are cut by the stream sealer, not by a configured chunk size, so this instance keeps no
+        // block cap of its own (a guess: bounding sealed segments is a streams decision, not an AHSE hygiene one).
         var instance = StorageInstance.storageInstance(STREAMS_NAME,
                                                        tiers,
                                                        metadataStore,
                                                        WritePolicy.WRITE_THROUGH,
-                                                       logRoot);
+                                                       logRoot,
+                                                       AppendLog.TornTailSink.logOnly(),
+                                                       _ -> {},
+                                                       Integer.MAX_VALUE);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
                                                            STREAM_SNAPSHOT_MUTATION_THRESHOLD,
                                                            STREAM_SNAPSHOT_INTERVAL_MILLIS,

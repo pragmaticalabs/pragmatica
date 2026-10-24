@@ -136,7 +136,7 @@ final class DefaultContentStore implements ContentStore {
     /// they carry no name, and `put`'s own credit is the only thing holding them against GC; it is
     /// given back with [StorageInstance#release] when the manifest is superseded or deleted (#981).
     private Promise<RefSwap> storeManifestUnderName(String name, long totalSize, List<String> chunkIds) {
-        var manifest = ContentManifest.contentManifest(name, totalSize, chunkIds);
+        var manifest = ContentManifest.contentManifest(totalSize, chunkIds);
 
         return storage.swapRef(ContentEnvelope.trustedRef(name), manifest.toBytes());
     }

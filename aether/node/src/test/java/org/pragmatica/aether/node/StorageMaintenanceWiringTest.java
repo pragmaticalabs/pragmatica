@@ -530,6 +530,48 @@ class StorageMaintenanceWiringTest {
         return block;
     }
 
+    /// A0: GC is not leader-pinned. This node never became leader (nothing here calls the composite's `activate`); it
+    /// reports ready, which is what `AetherNode` does through `activateNodeMaintenance`, and its own collector must
+    /// reclaim its own orphaned block from its own disk.
+    @Test
+    void nonLeaderNode_reportingReady_reclaimsItsOrphanedPrivateBlocksAfterGrace() {
+        var setups = createAllWithExplicitContent(Option.none());
+        var contentSetup = setups.get(CONTENT);
+        var blockId = contentSetup.instance()
+                                  .put("non-leader-gc-probe".getBytes(StandardCharsets.UTF_8))
+                                  .await()
+                                  .onFailure(cause -> fail("writing the probe block failed: " + cause.message()))
+                                  .unwrap();
+        var diskBlockPath = rawBlockPath(contentBlocksDir(), blockId);
+
+        assertThat(Files.exists(diskBlockPath)).as("baseline: the block is on disk").isTrue();
+
+        forceOrphanedPastGracePeriod(contentSetup, blockId);
+        StorageFactory.activateNodeMaintenance(setups);
+
+        var composite = StorageFactory.compositeGarbageCollector(setups);
+
+        driverOf(StorageFactory.compositeDemotionManager(setups), composite).tick();
+
+        assertThat(contentSetup.garbageCollector().stats().blocksCollected())
+            .as("content's own collector reclaimed it without any leader activation")
+            .isGreaterThan(0);
+        assertThat(Files.exists(diskBlockPath)).as("the orphaned block's file is gone").isFalse();
+    }
+
+    /// A0: losing leadership does not stop a node's content and artifacts GC, because it never depended on it.
+    @Test
+    void leaderDeactivation_doesNotStopContentOrArtifactsGarbageCollection() {
+        var setups = createAllWithExplicitContent(Option.none());
+        var composite = StorageFactory.compositeGarbageCollector(setups);
+
+        StorageFactory.activateNodeMaintenance(setups);
+        composite.deactivate();
+
+        assertThat(setups.get(CONTENT).garbageCollector().isActive()).isTrue();
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).isTrue();
+    }
+
     /// The production maintenance path: the REAL composite managers over the FULL setups map (so the
     /// fan-out actually has to reach `content`) driven by the REAL `StorageMaintenanceDriver`.
     private static void tickRealDriver(Map<String, StorageFactory.StorageSetup> setups) {
