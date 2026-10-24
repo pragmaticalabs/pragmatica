@@ -605,6 +605,33 @@ class StorageMaintenanceWiringTest {
         assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).isFalse();
     }
 
+    /// A0: leader activation through the composite is a no-op for the per-node instances. Their collectors start only
+    /// when the node reports ready ([StorageFactory#activateNodeMaintenance]), so leader election must not start
+    /// content and artifacts GC before the node is ready.
+    @Test
+    void compositeGarbageCollector_activate_leavesContentAndArtifactsInactive() {
+        var setups = createAllWithExplicitContent(Option.none());
+
+        StorageFactory.compositeGarbageCollector(setups).activate();
+
+        assertThat(setups.get(CONTENT).garbageCollector().isActive()).as("content waits for node readiness").isFalse();
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).as("artifacts waits for node readiness").isFalse();
+    }
+
+    /// A0: the composite reports active when any collector runs (streams runs from build, before the node is ready).
+    @Test
+    void compositeGarbageCollector_isActive_whenOnlyOneCollectorRuns() {
+        var setups = createAllWithExplicitContent(Option.none());
+        var composite = StorageFactory.compositeGarbageCollector(setups);
+
+        assertThat(composite.isActive()).as("no collector runs yet").isFalse();
+
+        setups.get(CONTENT).garbageCollector().activate();
+
+        assertThat(setups.get(ARTIFACTS).garbageCollector().isActive()).as("control: artifacts still idle").isFalse();
+        assertThat(composite.isActive()).as("one running collector is enough").isTrue();
+    }
+
     /// The production maintenance path: the REAL composite managers over the FULL setups map (so the
     /// fan-out actually has to reach `content`) driven by the REAL `StorageMaintenanceDriver`.
     private static void tickRealDriver(Map<String, StorageFactory.StorageSetup> setups) {

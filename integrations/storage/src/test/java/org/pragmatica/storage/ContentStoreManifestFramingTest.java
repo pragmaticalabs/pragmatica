@@ -324,4 +324,57 @@ class ContentStoreManifestFramingTest {
         assertThat(restored.isPresent()).as("control: the legacy file restores").isTrue();
         assertThat(restored.unwrap().refs()).containsOnlyKeys("ok");
     }
+
+    /// The window [ContentEnvelope#trustedRef] documents as accepted pre-GA (a `format=2` snapshot of a dev build that has
+    /// the snapshot encoding but not the trusted namespace restores a bare `|x`), and a raw [StorageInstance] writer,
+    /// can both leave a LEGACY text manifest under a trusted ref. The trusted path must not read it as a manifest:
+    /// legacy magic is believed only for a bare name.
+    private List<String> storeRawChunks(byte[] data) {
+        var ids = new java.util.ArrayList<String>();
+
+        for (var offset = 0; offset < data.length; offset += CHUNK_SIZE) {
+            var chunk = java.util.Arrays.copyOfRange(data, offset, Math.min(offset + CHUNK_SIZE, data.length));
+
+            ids.add(storage.put(chunk).await().unwrap().hexString());
+        }
+
+        return ids;
+    }
+
+    private static byte[] legacyText(String name, long size, List<String> ids) {
+        return (ContentManifest.MAGIC_HEADER + name + "|" + size + "|" + ids.size() + "|" + String.join("|", ids)).getBytes(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void legacyTextManifestUnderATrustedRef_isNotReadAsAManifest() {
+        var data = content(3 * CHUNK_SIZE, 4);
+        var ids = storeRawChunks(data);
+
+        storage.swapRef("|win", legacyText("|win", data.length, ids)).await().unwrap();
+
+        assertThat(store.get("win").await().isFailure()).as("a legacy value under a trusted ref is not a manifest").isTrue();
+    }
+
+    @Test
+    void legacyTextManifestUnderATrustedRef_releasesNothingOnDelete() {
+        var data = content(3 * CHUNK_SIZE, 5);
+        var ids = storeRawChunks(data);
+
+        storage.swapRef("|win", legacyText("|win", data.length, ids)).await().unwrap();
+        store.delete("win").await().onFailure(c -> fail("delete: " + c.message()));
+
+        assertThat(refCounts(ids)).as("the chunks keep put's credit: the trusted delete read no manifest").containsOnly(1);
+    }
+
+    @Test
+    void legacyTextManifestUnderABareName_stillReadsAndReleases_asTheControl() {
+        var data = content(3 * CHUNK_SIZE, 6);
+        var ids = storeRawChunks(data);
+
+        storage.swapRef("old", legacyText("old", data.length, ids)).await().unwrap();
+
+        assertThat(get("old")).as("a legacy name is read through its legacy manifest").isEqualTo(data);
+        store.delete("old").await().onFailure(c -> fail("delete: " + c.message()));
+        assertThat(refCounts(ids)).as("its delete releases the chunks").containsOnly(0);
+    }
 }

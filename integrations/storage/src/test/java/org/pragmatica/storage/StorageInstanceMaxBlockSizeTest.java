@@ -82,13 +82,18 @@ class StorageInstanceMaxBlockSizeTest {
     }
 
     @Test
-    void defaultInstance_refusesOverTheDefaultMaximum_andAcceptsAtIt() {
+    void defaultInstance_acceptsExactlySixteenMiB_andRefusesOneByteMore() {
         var plain = StorageInstance.storageInstance("plain", List.of(MemoryTier.memoryTier(64L * 1024 * 1024)));
-        var over = new byte[StorageInstance.DEFAULT_MAX_BLOCK_BYTES + 1];
 
+        assertThat(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).as("the documented default").isEqualTo(16 * 1024 * 1024);
+        var atLimit = new byte[16 * 1024 * 1024];
+        var over = new byte[16 * 1024 * 1024 + 1];
+
+        plain.put(atLimit).await().onFailure(cause -> fail("a block of exactly 16 MiB must be accepted: " + cause.message()));
         plain.put(over)
              .await()
-             .onSuccess(_ -> fail("a block over the default maximum must be refused"))
-             .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.BlockTooLarge.class));
+             .onSuccess(_ -> fail("a block over 16 MiB must be refused"))
+             .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StorageError.BlockTooLarge.class,
+                                                                          tooLarge -> assertThat(tooLarge.maxBytes()).isEqualTo(16_777_216L)));
     }
 }
