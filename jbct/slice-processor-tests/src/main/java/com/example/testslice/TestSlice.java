@@ -42,6 +42,9 @@ public interface TestSlice {
 
     Promise<UploadResponse> uploadBlob(byte[] body);
 
+    // consumes multipart/form-data with part limits
+    Promise<UploadResponse> uploadParts(MultipartRequest request);
+
     static TestSlice testSlice() {
         return new TestSlice() {
             @Override
@@ -103,6 +106,12 @@ public interface TestSlice {
             public Promise<UploadResponse> uploadForm(MultipartRequest request) {
                 return Promise.success(new UploadResponse("form-1",
                                                           request.fields().size()));
+            }
+
+            @Override
+            public Promise<UploadResponse> uploadParts(MultipartRequest request) {
+                return Promise.success(new UploadResponse("parts-1",
+                                                          request.files().size()));
             }
 
             @Override

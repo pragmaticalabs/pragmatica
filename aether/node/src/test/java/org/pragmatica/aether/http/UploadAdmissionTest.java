@@ -119,4 +119,92 @@ class UploadAdmissionTest {
         assertThat(peak.get()).isLessThanOrEqualTo(node);
         assertThat(admission.inFlight()).as("every permit was returned").isZero();
     }
+
+    // ---- the node cap's own state: one report per episode
+
+    private static final class Episodes {
+        final AtomicInteger saturated = new AtomicInteger();
+        final AtomicInteger restored = new AtomicInteger();
+
+        UploadAdmission admission(int node, int principal) {
+            return UploadAdmission.uploadAdmission(UploadConfig.DEFAULT.withMaxConcurrent(node).withMaxConcurrentPerPrincipal(principal),
+                                                   saturated::incrementAndGet,
+                                                   restored::incrementAndGet);
+        }
+    }
+
+    @Test
+    void nodeCap_reportsSaturationOncePerEpisode_notOncePerRefusal() {
+        var episodes = new Episodes();
+        var admission = episodes.admission(1, 8);
+
+        admission.tryAcquire("alice");
+        for (int refusal = 0; refusal < 5; refusal++) {
+            assertThat(refusalOf(admission.tryAcquire("bob"))).isSameAs(UploadAdmission.NODE_LIMIT);
+        }
+
+        assertThat(episodes.saturated.get()).as("five refusals, one saturation").isEqualTo(1);
+        assertThat(episodes.restored.get()).isZero();
+    }
+
+    @Test
+    void nodeCap_reportsRestorationOnTheReleaseThatFreesASlot_andSaturationAgainOnTheNextEpisode() {
+        var episodes = new Episodes();
+        var admission = episodes.admission(1, 8);
+        var holder = admission.tryAcquire("alice").unwrap();
+
+        admission.tryAcquire("bob");
+        holder.run();
+        holder.run();
+
+        assertThat(episodes.restored.get()).as("the release freed a slot: restored once, a double release adds nothing").isEqualTo(1);
+
+        var second = admission.tryAcquire("carol").unwrap();
+
+        admission.tryAcquire("bob");
+        second.run();
+
+        assertThat(episodes.saturated.get()).as("a second episode is a second report").isEqualTo(2);
+        assertThat(episodes.restored.get()).isEqualTo(2);
+    }
+
+    @Test
+    void nodeCap_reportsNothingWhileItWasNeverSaturated() {
+        var episodes = new Episodes();
+        var admission = episodes.admission(2, 8);
+
+        admission.tryAcquire("alice").unwrap().run();
+        admission.tryAcquire("alice").unwrap().run();
+
+        assertThat(episodes.saturated.get()).isZero();
+        assertThat(episodes.restored.get()).as("a release below the cap is not a recovery").isZero();
+    }
+
+    @Test
+    void nodeCap_staysSaturatedUntilTheCountIsBelowTheCap() {
+        var episodes = new Episodes();
+        var admission = episodes.admission(2, 8);
+        var first = admission.tryAcquire("alice").unwrap();
+
+        admission.tryAcquire("bob").unwrap();
+        admission.tryAcquire("carol");
+        assertThat(episodes.saturated.get()).isEqualTo(1);
+        first.run();
+
+        assertThat(episodes.restored.get()).as("one of two released: below the cap").isEqualTo(1);
+    }
+
+    @Test
+    void principalCap_reportsNothing_itIsAClientError() {
+        var episodes = new Episodes();
+        var admission = episodes.admission(10, 1);
+
+        admission.tryAcquire("alice");
+        for (int refusal = 0; refusal < 3; refusal++) {
+            assertThat(refusalOf(admission.tryAcquire("alice"))).isSameAs(UploadAdmission.PRINCIPAL_LIMIT);
+        }
+
+        assertThat(episodes.saturated.get()).isZero();
+        assertThat(episodes.restored.get()).isZero();
+    }
 }

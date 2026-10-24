@@ -998,7 +998,16 @@ public class RouteSourceGenerator {
 
         return upload || limits.declared()
                ? ".withUpload(org.pragmatica.http.routing.UploadSpec.uploadSpec(" + upload + ", " + limits.maxSizeBytes()
-                 + "L, " + limits.maxDurationMillis() + "L))"
+                 + "L, " + limits.maxDurationMillis() + "L" + partLimitArguments(limits) + "))"
+               : "";
+    }
+
+    /// The part limits as trailing arguments, only when the route declares one, so a route without them generates the
+    /// same source it always did.
+    private String partLimitArguments(RouteLimits limits) {
+        return limits.hasPartLimits()
+               ? ", " + limits.maxFiles() + "L, " + limits.maxFileBytes() + "L, " + limits.maxFields() + "L, "
+                 + limits.maxFieldBytes() + "L"
                : "";
     }
 

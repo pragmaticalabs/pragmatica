@@ -12,8 +12,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
@@ -22,6 +24,24 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
+import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.SystemStreamFactories;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
@@ -490,6 +510,9 @@ class AppHttpServerIngestGateTest {
         Reply postStalled(String path, String key) throws Exception;
 
         Reply postSteady(String path, String key) throws Exception;
+
+        /// Posts `body` with the given Content-Type, declared length.
+        Reply postBody(String path, String key, String contentType, byte[] body) throws Exception;
     }
 
     private Client client(Protocol protocol) {
@@ -635,6 +658,21 @@ class AppHttpServerIngestGateTest {
             }
         }
 
+        @Override
+        public Reply postBody(String path, String key, String contentType, byte[] body) throws Exception {
+            try (var socket = new Socket("127.0.0.1", port)) {
+                socket.setSoTimeout(15_000);
+                var head = head(path, Option.some(key), "Content-Length: " + body.length, "Content-Type: " + contentType + "\r\n");
+
+                send(socket, head);
+                socket.getOutputStream().write(body);
+                socket.getOutputStream().flush();
+                var text = readAll(socket);
+
+                return new Reply(status(text), text);
+            }
+        }
+
         private String head(String path, Option<String> key, String lengthHeader, String extra) {
             return "POST " + path + "x HTTP/1.1\r\nHost: x\r\n" + key.map(value -> "X-API-Key: " + value + "\r\n").or("")
                    + lengthHeader + "\r\n" + extra + "\r\n";
@@ -774,6 +812,20 @@ class AppHttpServerIngestGateTest {
             return new Reply(Integer.parseInt(answer.status()), answer.body());
         }
 
+        @Override
+        public Reply postBody(String path, String key, String contentType, byte[] body) throws Exception {
+            var answer = H3Probe.exchange(port, stream -> {
+                var frame = headers(path, Option.some(key), body.length);
+
+                frame.headers().add("content-type", contentType);
+                stream.write(frame);
+                stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body))).sync();
+                stream.shutdownOutput();
+            });
+
+            return new Reply(Integer.parseInt(answer.status()), answer.body());
+        }
+
         private io.netty.handler.codec.http3.DefaultHttp3HeadersFrame headers(String path, Option<String> key, long length) {
             var frame = H3Probe.requestHeaders(port, "POST");
 
@@ -823,5 +875,417 @@ class AppHttpServerIngestGateTest {
         }
 
         return status;
+    }
+
+    // ---- multipart part limits: checked on the decoded body, 413 on a breach
+
+    private static final String BOUNDARY = "gate-boundary";
+    private static final String MULTIPART = "multipart/form-data; boundary=" + BOUNDARY;
+
+    private record Part(String name, String filename, byte[] content) {
+        static Part file(String name, int bytes) {
+            return new Part(name, name + ".bin", new byte[bytes]);
+        }
+
+        static Part field(String name, String value) {
+            return new Part(name, null, value.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static byte[] multipart(Part... parts) {
+        var out = new ByteArrayOutputStream();
+
+        for (var part : parts) {
+            var disposition = "Content-Disposition: form-data; name=\"" + part.name() + "\""
+                              + (part.filename() == null
+                                 ? ""
+                                 : "; filename=\"" + part.filename() + "\"");
+            var contentType = part.filename() == null
+                              ? ""
+                              : "Content-Type: application/octet-stream\r\n";
+
+            out.writeBytes(("--" + BOUNDARY + "\r\n" + disposition + "\r\n" + contentType + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+            out.writeBytes(part.content());
+            out.writeBytes("\r\n".getBytes(StandardCharsets.ISO_8859_1));
+        }
+
+        out.writeBytes(("--" + BOUNDARY + "--\r\n").getBytes(StandardCharsets.ISO_8859_1));
+
+        return out.toByteArray();
+    }
+
+    private int statusOf(Protocol protocol, String path, byte[] body) throws Exception {
+        return client(protocol).postBody(path, KEY_A, MULTIPART, body).status();
+    }
+
+    @Test
+    void maxFiles_allowsTheLimitAndRefuses413OneMore_overHttp1() throws Exception {
+        maxFiles_allowsTheLimitAndRefuses413OneMore(Protocol.H1);
+    }
+
+    @Test
+    void maxFiles_allowsTheLimitAndRefuses413OneMore_overHttp3() throws Exception {
+        maxFiles_allowsTheLimitAndRefuses413OneMore(Protocol.H3);
+    }
+
+    private void maxFiles_allowsTheLimitAndRefuses413OneMore(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+
+        assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 10), Part.file("b", 10)))).as("two files: at the limit").isEqualTo(200);
+        assertThat(served.get()).isEqualTo(1);
+        assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 10), Part.file("b", 10), Part.file("c", 10)))).as("three files").isEqualTo(413);
+        assertThat(served.get()).as("the refused request never reached the slice").isEqualTo(1);
+    }
+
+    @Test
+    void maxFileSize_allowsTheLimitAndRefuses413OneByteMore_overHttp1() throws Exception {
+        maxFileSize_allowsTheLimitAndRefuses413OneByteMore(Protocol.H1);
+    }
+
+    @Test
+    void maxFileSize_allowsTheLimitAndRefuses413OneByteMore_overHttp3() throws Exception {
+        maxFileSize_allowsTheLimitAndRefuses413OneByteMore(Protocol.H3);
+    }
+
+    private void maxFileSize_allowsTheLimitAndRefuses413OneByteMore(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+
+        assertThat(statusOf(protocol, "/api/filesize/", multipart(Part.file("a", 100)))).as("100 bytes: at the limit").isEqualTo(200);
+        assertThat(statusOf(protocol, "/api/filesize/", multipart(Part.file("a", 5), Part.file("b", 101)))).as("one file of 101 bytes").isEqualTo(413);
+        assertThat(served.get()).isEqualTo(1);
+    }
+
+    @Test
+    void maxFields_allowsTheLimitAndRefuses413OneMore_overHttp1() throws Exception {
+        maxFields_allowsTheLimitAndRefuses413OneMore(Protocol.H1);
+    }
+
+    @Test
+    void maxFields_allowsTheLimitAndRefuses413OneMore_overHttp3() throws Exception {
+        maxFields_allowsTheLimitAndRefuses413OneMore(Protocol.H3);
+    }
+
+    private void maxFields_allowsTheLimitAndRefuses413OneMore(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+
+        assertThat(statusOf(protocol, "/api/fields/", multipart(Part.field("a", "1"), Part.field("b", "2")))).as("two fields: at the limit").isEqualTo(200);
+        assertThat(statusOf(protocol, "/api/fields/", multipart(Part.field("a", "1"), Part.field("b", "2"), Part.field("c", "3")))).isEqualTo(413);
+        assertThat(statusOf(protocol, "/api/fields/", multipart(Part.field("a", "1"), Part.field("a", "2"), Part.field("a", "3"))))
+            .as("one name three times is three fields").isEqualTo(413);
+        assertThat(served.get()).isEqualTo(1);
+    }
+
+    @Test
+    void maxFieldSize_allowsTheLimitAndRefuses413OneByteMore_overHttp1() throws Exception {
+        maxFieldSize_allowsTheLimitAndRefuses413OneByteMore(Protocol.H1);
+    }
+
+    @Test
+    void maxFieldSize_allowsTheLimitAndRefuses413OneByteMore_overHttp3() throws Exception {
+        maxFieldSize_allowsTheLimitAndRefuses413OneByteMore(Protocol.H3);
+    }
+
+    private void maxFieldSize_allowsTheLimitAndRefuses413OneByteMore(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+
+        assertThat(statusOf(protocol, "/api/fieldsize/", multipart(Part.field("a", "0123456789")))).as("10 bytes: at the limit").isEqualTo(200);
+        assertThat(statusOf(protocol, "/api/fieldsize/", multipart(Part.field("a", "0123456789x")))).as("11 bytes").isEqualTo(413);
+        assertThat(served.get()).isEqualTo(1);
+    }
+
+    /// The limit a route declares is the only one enforced on it: a body that would break another route's limit passes.
+    @Test
+    void eachRoutesPartLimitIsItsOwn_overHttp1() throws Exception {
+        eachRoutesPartLimitIsItsOwn(Protocol.H1);
+    }
+
+    @Test
+    void eachRoutesPartLimitIsItsOwn_overHttp3() throws Exception {
+        eachRoutesPartLimitIsItsOwn(Protocol.H3);
+    }
+
+    private void eachRoutesPartLimitIsItsOwn(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        assertThat(statusOf(protocol, "/api/fields/", multipart(Part.file("a", 500), Part.file("b", 500), Part.file("c", 500)))).as("fields route: files are not its business").isEqualTo(200);
+        assertThat(statusOf(protocol, "/api/files/", multipart(Part.field("a", "1"), Part.field("b", "2"), Part.field("c", "3")))).as("files route: fields are not its business").isEqualTo(200);
+        assertThat(statusOf(protocol, "/api/fieldsize/", multipart(Part.file("a", 500), Part.file("b", 500)))).as("field-size route: file sizes are not its business").isEqualTo(200);
+        assertThat(statusOf(protocol, "/api/filesize/", multipart(Part.field("a", "x".repeat(500))))).as("file-size route: field sizes are not its business").isEqualTo(200);
+    }
+
+    /// More parts than the decoder's default cap (128) on a route that declares part limits is a breach of them, not a
+    /// malformed body: 413.
+    @Test
+    void aBodyWithMoreThanTheDecodersPartCap_onAPartLimitedRoute_isRefused413_overHttp1() throws Exception {
+        aBodyWithMoreThanTheDecodersPartCap_onAPartLimitedRoute_isRefused413(Protocol.H1);
+    }
+
+    @Test
+    void aBodyWithMoreThanTheDecodersPartCap_onAPartLimitedRoute_isRefused413_overHttp3() throws Exception {
+        aBodyWithMoreThanTheDecodersPartCap_onAPartLimitedRoute_isRefused413(Protocol.H3);
+    }
+
+    private void aBodyWithMoreThanTheDecodersPartCap_onAPartLimitedRoute_isRefused413(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var parts = new Part[200];
+
+        for (int index = 0; index < parts.length; index++) {
+            parts[index] = Part.field("f" + index, "v");
+        }
+
+        assertThat(statusOf(protocol, "/api/files/", multipart(parts))).isEqualTo(413);
+        assertThat(served.get()).isZero();
+    }
+
+    /// Only a multipart body is decoded for its parts: another Content-Type on a part-limited route, and a multipart body
+    /// that does not decode, are left to the handler as before.
+    @Test
+    void aBodyThatIsNotDecodableMultipart_isLeftToTheHandler_overHttp1() throws Exception {
+        aBodyThatIsNotDecodableMultipart_isLeftToTheHandler(Protocol.H1);
+    }
+
+    @Test
+    void aBodyThatIsNotDecodableMultipart_isLeftToTheHandler_overHttp3() throws Exception {
+        aBodyThatIsNotDecodableMultipart_isLeftToTheHandler(Protocol.H3);
+    }
+
+    private void aBodyThatIsNotDecodableMultipart_isLeftToTheHandler(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var client = client(protocol);
+
+        assertThat(client.postBody("/api/files/", KEY_A, "application/octet-stream", new byte[4096]).status()).as("not multipart: not decoded").isEqualTo(200);
+        assertThat(client.postBody("/api/files/", KEY_A, MULTIPART, "not a multipart body".getBytes(StandardCharsets.UTF_8)).status())
+            .as("multipart that does not decode: the handler's to answer").isEqualTo(200);
+        assertThat(served.get()).isEqualTo(2);
+    }
+
+    /// The ingress that does not host the route enforces the part limits the serving node declared.
+    @Test
+    void remoteRoutesPartLimits_areEnforcedAtTheIngress_overHttp1() throws Exception {
+        remoteRoutesPartLimits_areEnforcedAtTheIngress(Protocol.H1);
+    }
+
+    @Test
+    void remoteRoutesPartLimits_areEnforcedAtTheIngress_overHttp3() throws Exception {
+        remoteRoutesPartLimits_areEnforcedAtTheIngress(Protocol.H3);
+    }
+
+    private void remoteRoutesPartLimits_areEnforcedAtTheIngress(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var node = NodeId.nodeId("serving-node").unwrap();
+        var entry = RouteEntry.activeRoute("POST", "/remote/", "create", "UNSPECIFIED", "UNSPECIFIED", 0, List.of(), List.of(), true, 10L * MIB, 0, 1, 0, 0, 0);
+
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(entry))),
+                                                Option.none()));
+        server.rebuildRouter();
+
+        assertThat(statusOf(protocol, "/remote/", multipart(Part.file("a", 10)))).as("one file: past the gate, to the absent forwarder").isEqualTo(503);
+        assertThat(statusOf(protocol, "/remote/", multipart(Part.file("a", 10), Part.file("b", 10)))).as("two files, the serving node allows one").isEqualTo(413);
+    }
+
+    // ---- routes without upload limits behave exactly as before
+
+    /// A route that declares nothing is held to the listener's own size, takes no upload permit, has no upload bounds, and
+    /// has its multipart bodies left alone, even while the node's upload cap is exhausted and another route's part limits are
+    /// in force.
+    @Test
+    void routeWithoutUploadLimits_behavesAsBefore_classification() throws IOException {
+        start(Protocol.H1, defaults().withMaxConcurrent(1), 64 * 1024);
+
+        var permit = aggregate("/api/upload/held");
+        var plain = aggregate("/api/undeclared/x");
+
+        assertThat(classify(HttpMethod.POST, "/api/upload/second", Option.some(KEY_B))).as("control: the node cap is exhausted for upload routes")
+                                                                                       .isInstanceOf(Disposition.Reject.class);
+        assertThat(plain.maxBytes()).as("the listener's own max_request_size").isEqualTo(64 * 1024);
+        assertThat(plain.bounds()).as("the listener's general bounds, not the upload ones").isEqualTo(Option.empty());
+        assertThat(classify(HttpMethod.POST, "/api/undeclared/y", Option.some(KEY_B))).as("no permit taken, so none to refuse").isInstanceOf(Disposition.Aggregate.class);
+        assertThat(permit.release()).isNotNull();
+    }
+
+    @Test
+    void routeWithoutUploadLimits_behavesAsBefore_overHttp1() throws Exception {
+        routeWithoutUploadLimits_behavesAsBefore(Protocol.H1);
+    }
+
+    @Test
+    void routeWithoutUploadLimits_behavesAsBefore_overHttp3() throws Exception {
+        routeWithoutUploadLimits_behavesAsBefore(Protocol.H3);
+    }
+
+    private void routeWithoutUploadLimits_behavesAsBefore(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 256 * 1024);
+        var many = new Part[] {Part.file("a", 4000), Part.file("b", 4000), Part.file("c", 4000), Part.file("d", 4000), Part.field("x", "x".repeat(5000)),
+                               Part.field("y", "1"), Part.field("z", "2")};
+        var reply = client(protocol).postBody("/api/undeclared/", KEY_A, MULTIPART, multipart(many));
+
+        assertThat(reply.status()).as("any number and size of parts").isEqualTo(200);
+        assertThat(reply.text()).contains("served");
+        var overTheDecodersCap = new Part[200];
+
+        for (int index = 0; index < overTheDecodersCap.length; index++) {
+            overTheDecodersCap[index] = Part.field("f" + index, "v");
+        }
+
+        assertThat(client(protocol).postBody("/api/undeclared/", KEY_A, MULTIPART, multipart(overTheDecodersCap)).status())
+            .as("200 parts, more than the decoder's cap: not this gate's to refuse, the handler answers it").isEqualTo(200);
+        assertThat(client(protocol).postBody("/api/upload/", KEY_A, MULTIPART, multipart(overTheDecodersCap)).status())
+            .as("an upload route that declares no part limits is the same").isEqualTo(200);
+        assertThat(client(protocol).post("/api/undeclared/", Option.some(KEY_A), 512 * 1024, Mode.DECLARED).status()).as("over max_request_size: 413 as before").isEqualTo(413);
+        assertThat(client(protocol).post("/api/undeclared/", Option.none(), 16, Mode.DECLARED).status()).as("authentication as before").isEqualTo(401);
+        assertThat(served.get()).as("the three admitted requests were served, the refused two were not").isEqualTo(3);
+    }
+
+    // ---- operator events: node-cap saturation only, once per episode
+
+    private static final String SATURATED = OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED.code();
+    private static final String RESTORED = OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED.code();
+
+    private static List<String> codesOf(List<OperatorWarning> warnings) {
+        return warnings.stream().map(warning -> warning.code().code()).toList();
+    }
+
+    private static void awaitCodes(List<OperatorWarning> warnings, int count) throws InterruptedException {
+        for (int attempt = 0; attempt < 100 && warnings.size() < count; attempt++) {
+            Thread.sleep(50);
+        }
+    }
+
+    @Test
+    void nodeCapSaturation_raisesOneWarningForManyRefusals_andOneRecovery_overHttp1() throws Exception {
+        nodeCapSaturation_raisesOneWarningForManyRefusals_andOneRecovery(Protocol.H1);
+    }
+
+    @Test
+    void nodeCapSaturation_raisesOneWarningForManyRefusals_andOneRecovery_overHttp3() throws Exception {
+        nodeCapSaturation_raisesOneWarningForManyRefusals_andOneRecovery(Protocol.H3);
+    }
+
+    private void nodeCapSaturation_raisesOneWarningForManyRefusals_andOneRecovery(Protocol protocol) throws Exception {
+        start(protocol, defaults().withMaxConcurrent(1), 10 * MIB);
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+
+        server.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+        var run = client(protocol).holdOne("/api/upload/", KEY_A, List.of(KEY_B, KEY_B, KEY_B, KEY_B));
+
+        assertThat(run.duringStatuses()).as("four refusals").containsExactly(429, 429, 429, 429);
+        awaitCodes(warnings, 2);
+        assertThat(codesOf(warnings)).as("one saturation for the four refusals, then one recovery").containsExactly(SATURATED, RESTORED);
+        assertThat(warnings.getFirst().subject()).as("the subject is this node").isEqualTo("ingest-gate-node");
+        assertThat(warnings.getFirst().message()).as("names the cap in force: max_concurrent is 1 here, the per-principal cap 8").contains("holds 1 concurrent uploads").contains("max_concurrent");
+    }
+
+    /// End to end: the node's own sink is the cluster event aggregator, and the log gets one saturation event for the
+    /// episode and then its recovery.
+    @Test
+    void nodeCapSaturation_reachesTheClusterEventLog_asOneEvent_andItsRecovery_overHttp1() throws Exception {
+        nodeCapSaturation_reachesTheClusterEventLog_asOneEvent_andItsRecovery(Protocol.H1);
+    }
+
+    @Test
+    void nodeCapSaturation_reachesTheClusterEventLog_asOneEvent_andItsRecovery_overHttp3() throws Exception {
+        nodeCapSaturation_reachesTheClusterEventLog_asOneEvent_andItsRecovery(Protocol.H3);
+    }
+
+    private void nodeCapSaturation_reachesTheClusterEventLog_asOneEvent_andItsRecovery(Protocol protocol) throws Exception {
+        start(protocol, defaults().withMaxConcurrent(1), 10 * MIB);
+        var log = EventLog.create();
+
+        server.setOperatorWarningSink(OperatorWarningSink.handingOffTo(log.aggregator()::onOperatorWarning));
+        client(protocol).holdOne("/api/upload/", KEY_A, List.of(KEY_B, KEY_B, KEY_B));
+
+        var events = log.awaitEvents(2);
+
+        assertThat(events.stream().map(event -> event.details().get("code")).toList()).containsExactly(SATURATED, RESTORED);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().details()).containsEntry("subject", "ingest-gate-node");
+        assertThat(events.getLast().severity()).isEqualTo(ClusterEvent.Severity.INFO);
+    }
+
+    @Test
+    void perPrincipalRefusal_raisesNoEvent_overHttp1() throws Exception {
+        perPrincipalRefusal_raisesNoEvent(Protocol.H1);
+    }
+
+    @Test
+    void perPrincipalRefusal_raisesNoEvent_overHttp3() throws Exception {
+        perPrincipalRefusal_raisesNoEvent(Protocol.H3);
+    }
+
+    private void perPrincipalRefusal_raisesNoEvent(Protocol protocol) throws Exception {
+        start(protocol, defaults().withMaxConcurrentPerPrincipal(1), 10 * MIB);
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+
+        server.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+        var run = client(protocol).holdOne("/api/upload/", KEY_A, List.of(KEY_A, KEY_A));
+
+        assertThat(run.duringStatuses()).as("control: refused by the principal's cap").containsExactly(429, 429);
+        Thread.sleep(300);
+        assertThat(warnings).as("a client error: no operator event").isEmpty();
+    }
+
+    @Test
+    void sizeAndTimeRefusals_raiseNoEvent_overHttp1() throws Exception {
+        sizeAndTimeRefusals_raiseNoEvent(Protocol.H1);
+    }
+
+    @Test
+    void sizeAndTimeRefusals_raiseNoEvent_overHttp3() throws Exception {
+        sizeAndTimeRefusals_raiseNoEvent(Protocol.H3);
+    }
+
+    private void sizeAndTimeRefusals_raiseNoEvent(Protocol protocol) throws Exception {
+        start(protocol, defaults().withIdleTimeout(timeSpan(1).seconds()), 10 * MIB);
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+
+        server.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+        var client = client(protocol);
+
+        assertThat(client.post("/api/small/", Option.some(KEY_A), 2 * MIB, Mode.DECLARED).status()).as("control: 413").isEqualTo(413);
+        assertThat(client.postStalled("/api/upload/", KEY_A).status()).as("control: 408").isEqualTo(408);
+        assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 1), Part.file("b", 1), Part.file("c", 1)))).as("control: part limit 413").isEqualTo(413);
+        Thread.sleep(300);
+        assertThat(warnings).as("client errors: no operator event").isEmpty();
+    }
+
+    /// The real aggregator over a real (in-memory) cluster-events stream, as `ClusterEventAggregatorTest` builds it.
+    private record EventLog(ClusterEventAggregator aggregator) {
+        private static final NodeId SELF = NodeId.nodeId("ingest-gate-node").unwrap();
+        private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+
+        static EventLog create() {
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+            var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
+                                                   1,
+                                                   RetentionPolicy.retentionPolicy(10_000, 64L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY),
+                                                   "earliest",
+                                                   64L * 1024,
+                                                   ConsistencyMode.EVENTUAL,
+                                                   1);
+            var publisher = SystemStreamFactories.<ClusterEvent>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS, manager, CODEC, config).unwrap();
+            var consumer = SystemStreamFactories.<ClusterEvent>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS, manager, CODEC, CODEC, config).unwrap();
+            var publisherRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(publisher);
+            var consumerRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>(consumer);
+
+            return new EventLog(ClusterEventAggregator.clusterEventAggregator(publisherRef::get,
+                                                                              consumerRef::get,
+                                                                              () -> true,
+                                                                              SELF,
+                                                                              HlcClock.hlcClock(SELF),
+                                                                              () -> 1,
+                                                                              () -> false,
+                                                                              () -> true));
+        }
+
+        List<ClusterEvent> awaitEvents(int count) throws InterruptedException {
+            var events = aggregator.events().await().or(List.of());
+
+            for (int attempt = 0; attempt < 100 && events.size() < count; attempt++) {
+                Thread.sleep(50);
+                events = aggregator.events().await().or(List.of());
+            }
+
+            return events;
+        }
     }
 }

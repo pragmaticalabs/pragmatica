@@ -66,6 +66,8 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
+import org.pragmatica.http.routing.MultipartError;
+import org.pragmatica.http.routing.MultipartParser;
 import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.http.server.BodyBounds;
 import org.pragmatica.http.server.Disposition;
@@ -86,7 +88,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -109,7 +113,7 @@ public interface AppHttpServer {
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
 
-    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    /// Binds the operator-event sink for certificate-rotation refusals and the upload node-cap saturation (and their recoveries).
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
 
@@ -313,6 +317,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final TimeSpan requestBudget;
     private final UploadAdmission uploadAdmission;
 
+    private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
+
     private volatile org.pragmatica.aether.invoke.InvocationAdmission invocationAdmission = org.pragmatica.aether.invoke.InvocationAdmission.open();
 
     private volatile boolean quorumEstablished;
@@ -372,7 +378,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                 accessibilityFilter);
         this.context = buildContext(selfNodeId, this::computeRouteTable, () -> quorumEstablished);
         this.requestBudget = forwardingTimeouts.requestBudget();
-        this.uploadAdmission = UploadAdmission.uploadAdmission(config.upload());
+        this.uploadAdmission = UploadAdmission.uploadAdmission(config.upload(),
+                                                               this::uploadNodeCapSaturated,
+                                                               this::uploadNodeCapRestored);
     }
 
     private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
@@ -668,7 +676,27 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     @Override
     public void setOperatorWarningSink(OperatorWarningSink sink) {
+        warningSink.set(sink);
         tlsRotation.useSink(sink);
+    }
+
+    /// The node's upload cap was reached: one operator event for the episode, not one per refused request (the
+    /// per-principal cap and the size and time refusals are client errors and raise nothing).
+    private void uploadNodeCapSaturated() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
+                               selfNodeId.id(),
+                               "Upload cap reached: this node holds {} concurrent uploads, the most [app-http.upload] max_concurrent allows; refusing new uploads with 429 until one finishes",
+                               config.upload().maxConcurrent());
+    }
+
+    private void uploadNodeCapRestored() {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
+                               selfNodeId.id(),
+                               "Upload cap no longer reached: this node accepts new uploads again");
     }
 
     private Promise<Unit> rotateValidated(CertificateBundle newBundle) {
@@ -1135,13 +1163,63 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                0,
                                                                true,
                                                                () -> Deadline.runWith(Deadline.startingNow(requestBudget),
-                                                                                      () -> dispatchToRoute(request,
-                                                                                                            response,
-                                                                                                            routeTable,
-                                                                                                            method,
-                                                                                                            normalizedPath,
-                                                                                                            requestId,
-                                                                                                            local))));
+                                                                                      () -> dispatchWithinPartLimits(request,
+                                                                                                                     response,
+                                                                                                                     routeTable,
+                                                                                                                     method,
+                                                                                                                     normalizedPath,
+                                                                                                                     path,
+                                                                                                                     requestId,
+                                                                                                                     local))));
+    }
+
+    /// A multipart body is already bounded by the route's `max_size`; the route's part limits (`max_files`,
+    /// `max_file_size`, `max_fields`, `max_field_size`) are checked on its decoded form, here, before the request is
+    /// dispatched, so a request that breaks one is answered 413 whether the slice runs on this node or another. The
+    /// slice decodes the body again when it reads it.
+    private void dispatchWithinPartLimits(HttpRequest request,
+                                          ResponseWriter response,
+                                          RouteTable routeTable,
+                                          String method,
+                                          String normalizedPath,
+                                          String path,
+                                          String requestId,
+                                          Option<LocalResolution> local) {
+        var spec = uploadSpecOf(local, routeTable, method, normalizedPath);
+
+        partLimitBreach(request, spec).onEmpty(() -> dispatchToRoute(request,
+                                                                     response,
+                                                                     routeTable,
+                                                                     method,
+                                                                     normalizedPath,
+                                                                     requestId,
+                                                                     local))
+                       .onPresent(cause -> sendProblem(response,
+                                                       HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                                                       HttpError.clientMessage(cause),
+                                                       path,
+                                                       requestId));
+    }
+
+    /// The part limit a multipart `request` exceeds, if the route declares any. A body that is not multipart, or does not
+    /// decode, is not a breach: the handler answers it as it always has.
+    private static Option<MultipartError.LimitExceeded> partLimitBreach(HttpRequest request, UploadSpec spec) {
+        if (!spec.hasPartLimits()) {
+            return Option.none();
+        }
+
+        var partCap = (int) Math.min(Integer.MAX_VALUE,
+                                     Math.max(MultipartParser.DEFAULT_MAX_PARTS,
+                                              spec.maxFiles() + spec.maxFields()));
+
+        return MultipartParser.parse(request.body(),
+                                     request.headers().get("content-type").or(""),
+                                     request.path(),
+                                     partCap)
+                              .fold(cause -> cause instanceof MultipartError.TooManyParts
+                                             ? Option.some(MultipartError.LimitExceeded.PARTS.apply((long) partCap))
+                                             : Option.none(),
+                                    parsed -> spec.partBreach(parsed));
     }
 
     private void dispatchToRoute(HttpRequest request,
@@ -2106,6 +2184,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                            org.pragmatica.http.HttpStatus.METHOD_NOT_ALLOWED),
                                                                                                  Map.entry(409,
                                                                                                            org.pragmatica.http.HttpStatus.CONFLICT),
+                                                                                                 Map.entry(413,
+                                                                                                           org.pragmatica.http.HttpStatus.REQUEST_ENTITY_TOO_LARGE),
                                                                                                  Map.entry(422,
                                                                                                            org.pragmatica.http.HttpStatus.UNPROCESSABLE_ENTITY),
                                                                                                  Map.entry(429,

@@ -67,6 +67,17 @@ class GeneratedRouteIngestLimitsTest {
                               .map(line -> line.substring(line.indexOf(".named(\"") + 8, line.indexOf("\")", line.indexOf(".named(\""))))
                               .collect(Collectors.toSet());
 
-        assertThat(withUpload).containsExactlyInAnyOrder("uploadForm", "uploadBlob", "uploadText");
+        assertThat(withUpload).containsExactlyInAnyOrder("uploadForm", "uploadBlob", "uploadText", "uploadParts");
+    }
+
+    @Test
+    void multipartRouteWithPartKeys_carriesAllFourPartLimits() {
+        assertThat(chainOf("uploadParts")).contains(".withUpload(org.pragmatica.http.routing.UploadSpec.uploadSpec(true, 8388608L, 0L, 3L, 2097152L, 10L, 4096L))");
+    }
+
+    @Test
+    void routeWithoutPartKeys_generatesTheShortForm() {
+        assertThat(chainOf("uploadForm")).as("no part limits declared: the three-argument form, as before")
+                                         .doesNotContain("0L, 0L, 0L, 0L))");
     }
 }

@@ -389,23 +389,22 @@ public final class RouteConfigLoader {
                                                                                                     routeStr)));
     }
 
-    /// The keys an inline-table route accepts. `max_size` and `max_duration` are the per-route ingest limits.
+    /// The keys an inline-table route accepts. `max_size` and `max_duration` are the per-route ingest limits;
+    /// `max_files`, `max_file_size`, `max_fields` and `max_field_size` are the multipart part limits.
     private static final Set<String> INLINE_ROUTE_KEYS = Set.of("route",
                                                                 "consumes",
                                                                 "produces",
                                                                 "security",
                                                                 "method",
                                                                 "max_size",
-                                                                "max_duration");
-    /// Upload keys that are specified but need the streaming ingest path (per-part limits, resumable uploads, unclaimed
-    /// retention). They are refused, not accepted and ignored: a limit that is declared but never enforced is worse than
-    /// none.
-    private static final Set<String> NOT_YET_INLINE_ROUTE_KEYS = Set.of("max_file_size",
-                                                                        "max_files",
-                                                                        "max_fields",
-                                                                        "max_field_size",
-                                                                        "resumable",
-                                                                        "unclaimed_ttl");
+                                                                "max_duration",
+                                                                "max_files",
+                                                                "max_file_size",
+                                                                "max_fields",
+                                                                "max_field_size");
+    /// Upload keys that are specified but need the streaming ingest path (resumable uploads, unclaimed retention). They
+    /// are refused, not accepted and ignored: a limit that is declared but never enforced is worse than none.
+    private static final Set<String> NOT_YET_INLINE_ROUTE_KEYS = Set.of("resumable", "unclaimed_ttl");
 
     /// An unknown key is a typo the loader would otherwise ignore: `max_sise = "5GB"` would leave the route at the
     /// default limit with nothing to say so.
@@ -467,6 +466,35 @@ public final class RouteConfigLoader {
                        .flatMap(value -> positive(key, "max_duration", value));
     }
 
+    /// `max_file_size` / `max_field_size`: a size string or an integer number of bytes, greater than zero.
+    private static Result<Long> parseSize(String key, Map<String, Object> table, String field) {
+        return Option.option(table.get(field))
+                     .map(raw -> sizeOf(key, field, raw))
+                     .or(Result.success(0L));
+    }
+
+    private static Result<Long> sizeOf(String key, String field, Object raw) {
+        var bytes = raw instanceof Number number
+                    ? Result.success(number.longValue())
+                    : DataSize.dataSize(raw.toString()).map(DataSize::bytes);
+
+        return bytes.mapError(cause -> Causes.cause("Route '" + key + "' " + field + ": " + cause.message()))
+                    .flatMap(value -> positive(key, field, value));
+    }
+
+    /// `max_files` / `max_fields`: an integer count, greater than zero.
+    private static Result<Long> parseCount(String key, Map<String, Object> table, String field) {
+        return Option.option(table.get(field))
+                     .map(raw -> countOf(key, field, raw))
+                     .or(Result.success(0L));
+    }
+
+    private static Result<Long> countOf(String key, String field, Object raw) {
+        return raw instanceof Number number && number.doubleValue() == number.longValue()
+               ? positive(key, field, number.longValue())
+               : Causes.cause("Route '" + key + "' " + field + " must be a whole number greater than zero").result();
+    }
+
     private static Result<Long> positive(String key, String field, long value) {
         return value > 0
                ? Result.success(value)
@@ -479,14 +507,21 @@ public final class RouteConfigLoader {
         return Result.all(resolveMedia(table, "consumes"),
                           resolveMedia(table, "produces"),
                           resolveInlineSecurity(table),
-                          parseMaxSize(key, table),
-                          parseMaxDuration(key, table)).flatMap((consumes, produces, security, maxSize, maxDuration) -> RouteDsl.parse(routeStr,
-                                                                                                                                       consumes,
-                                                                                                                                       produces).map(dsl -> new ParsedRoute(key,
-                                                                                                                                                                            dsl.withLimits(RouteLimits.routeLimits(maxSize,
-                                                                                                                                                                                                                    maxDuration)),
-                                                                                                                                                                            security,
-                                                                                                                                                                            methodOverride)));
+                          parseLimits(key, table)).flatMap((consumes, produces, security, limits) -> RouteDsl.parse(routeStr,
+                                                                                                                  consumes,
+                                                                                                                  produces).map(dsl -> new ParsedRoute(key,
+                                                                                                                                                       dsl.withLimits(limits),
+                                                                                                                                                       security,
+                                                                                                                                                       methodOverride)));
+    }
+
+    private static Result<RouteLimits> parseLimits(String key, Map<String, Object> table) {
+        return Result.all(parseMaxSize(key, table),
+                          parseMaxDuration(key, table),
+                          parseCount(key, table, "max_files"),
+                          parseSize(key, table, "max_file_size"),
+                          parseCount(key, table, "max_fields"),
+                          parseSize(key, table, "max_field_size")).map(RouteLimits::routeLimits);
     }
 
     private static Result<MediaType> resolveMedia(Map<String, Object> table, String field) {

@@ -530,7 +530,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                       effective.spacerSlots(),
                                       effective.uploadSpec().upload(),
                                       effective.uploadSpec().maxBodyBytes(),
-                                      effective.uploadSpec().maxDurationMillis());
+                                      effective.uploadSpec().maxDurationMillis(),
+                                      effective.uploadSpec().maxFiles(),
+                                      effective.uploadSpec().maxFileBytes(),
+                                      effective.uploadSpec().maxFields(),
+                                      effective.uploadSpec().maxFieldBytes());
     }
 
     @Override

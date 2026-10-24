@@ -359,7 +359,11 @@ public interface HttpRouteRegistry {
                                                                      route.declaredSecurity(),
                                                                      UploadSpec.uploadSpec(route.upload(),
                                                                                            route.maxBodyBytes(),
-                                                                                           route.maxDurationMillis())),
+                                                                                           route.maxDurationMillis(),
+                                                                                           route.maxFiles(),
+                                                                                           route.maxFileBytes(),
+                                                                                           route.maxFields(),
+                                                                                           route.maxFieldBytes())),
                                  NodeRouteSecurity::strongerOf);
                 }
 

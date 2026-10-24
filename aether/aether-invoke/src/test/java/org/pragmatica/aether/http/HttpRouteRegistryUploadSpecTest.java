@@ -115,4 +115,37 @@ class HttpRouteRegistryUploadSpecTest {
 
         assertThat(spec(registry)).isEqualTo(UploadSpec.NONE);
     }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> putParts(NodeId node, long maxFiles, long maxFileBytes, long maxFields, long maxFieldBytes) {
+        var route = RouteEntry.activeRoute("POST", "/files/", "upload", "AUTHENTICATED", "AUTHENTICATED", 0, List.of(), List.of(), true, 0, 0,
+                                           maxFiles, maxFileBytes, maxFields, maxFieldBytes);
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.ZERO);
+
+        return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, FILES), value), Option.none());
+    }
+
+    @Test
+    void aRoutesPartLimits_reachTheIngress_eachInItsOwnComponent() {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+
+        registry.onNodeRoutesPut(putParts(NODE_A, 3, 2_000_000, 10, 4096));
+
+        assertThat(spec(registry)).isEqualTo(UploadSpec.uploadSpec(true, 0, 0, 3, 2_000_000, 10, 4096));
+    }
+
+    @Test
+    void nodesDisagreeOnPartLimits_theStricterGovern_inEitherRegistrationOrder_andZeroNeverRelaxes() {
+        var aFirst = HttpRouteRegistry.httpRouteRegistry();
+        var bFirst = HttpRouteRegistry.httpRouteRegistry();
+
+        aFirst.onNodeRoutesPut(putParts(NODE_A, 2, 0, 50, 100));
+        aFirst.onNodeRoutesPut(putParts(NODE_B, 9, 7_000, 5, 0));
+        bFirst.onNodeRoutesPut(putParts(NODE_B, 9, 7_000, 5, 0));
+        bFirst.onNodeRoutesPut(putParts(NODE_A, 2, 0, 50, 100));
+
+        var merged = UploadSpec.uploadSpec(true, 0, 0, 2, 7_000, 5, 100);
+
+        assertThat(spec(aFirst)).isEqualTo(merged);
+        assertThat(spec(bFirst)).isEqualTo(merged);
+    }
 }

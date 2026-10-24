@@ -74,9 +74,14 @@ class HttpRoutePublisherUploadSpecTest {
         assertThat(upload.upload()).isTrue();
         assertThat(upload.maxBodyBytes()).isEqualTo(5L * 1024 * 1024);
         assertThat(upload.maxDurationMillis()).isEqualTo(90_000L);
+        assertThat(upload.maxFiles()).isEqualTo(3L);
+        assertThat(upload.maxFileBytes()).isEqualTo(2L * 1024 * 1024);
+        assertThat(upload.maxFields()).isEqualTo(10L);
+        assertThat(upload.maxFieldBytes()).isEqualTo(4096L);
         assertThat(plain.upload()).isFalse();
         assertThat(plain.maxBodyBytes()).isZero();
         assertThat(plain.maxDurationMillis()).isZero();
+        assertThat(List.of(plain.maxFiles(), plain.maxFileBytes(), plain.maxFields(), plain.maxFieldBytes())).containsOnly(0L);
     }
 
     @Test
@@ -91,6 +96,10 @@ class HttpRoutePublisherUploadSpecTest {
         assertThat(republished.maxBodyBytes()).isEqualTo(5L * 1024 * 1024);
         assertThat(republished.maxDurationMillis()).isEqualTo(90_000L);
         assertThat(republished.upload()).isTrue();
+        assertThat(republished.maxFiles()).isEqualTo(3L);
+        assertThat(republished.maxFileBytes()).isEqualTo(2L * 1024 * 1024);
+        assertThat(republished.maxFields()).isEqualTo(10L);
+        assertThat(republished.maxFieldBytes()).isEqualTo(4096L);
         assertThat(publisher.findLocalRoute("POST", "/uploads/x").unwrap().uploadSpec()).isEqualTo(UploadIngestSliceRoutes.DECLARED);
     }
 

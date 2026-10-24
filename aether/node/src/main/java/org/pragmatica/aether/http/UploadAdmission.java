@@ -21,27 +21,47 @@ import org.pragmatica.lang.utils.Causes;
 /// or the request ends without it, so the caps bound the bodies being buffered at once. Classification and release run on
 /// different event loops: the node count is an atomic and the per-principal counts change only inside the map's atomic
 /// `compute`, so neither a grant nor a release is ever lost.
+///
+/// The node cap reports its own state, once per episode: `onSaturated` runs on the first refusal after the node was below
+/// its cap, `onRestored` on the first release after that (a release always leaves the node below its cap, because the
+/// episode began with it at the cap). A refusal for one principal's cap reports nothing.
 final class UploadAdmission {
     static final Cause NODE_LIMIT = Causes.cause("Too many concurrent uploads on this node");
     static final Cause PRINCIPAL_LIMIT = Causes.cause("Too many concurrent uploads for this principal");
 
     private final int maxConcurrent;
     private final int maxConcurrentPerPrincipal;
+    private final Runnable onSaturated;
+    private final Runnable onRestored;
+    private final AtomicBoolean saturated = new AtomicBoolean();
     private final AtomicInteger inFlight = new AtomicInteger();
     private final ConcurrentHashMap<String, Integer> byPrincipal = new ConcurrentHashMap<>();
 
-    private UploadAdmission(int maxConcurrent, int maxConcurrentPerPrincipal) {
+    private UploadAdmission(int maxConcurrent,
+                            int maxConcurrentPerPrincipal,
+                            Runnable onSaturated,
+                            Runnable onRestored) {
         this.maxConcurrent = maxConcurrent;
         this.maxConcurrentPerPrincipal = maxConcurrentPerPrincipal;
+        this.onSaturated = onSaturated;
+        this.onRestored = onRestored;
     }
 
     static UploadAdmission uploadAdmission(UploadConfig config) {
-        return new UploadAdmission(config.maxConcurrent(), config.maxConcurrentPerPrincipal());
+        return uploadAdmission(config,
+                               () -> {},
+                               () -> {});
+    }
+
+    static UploadAdmission uploadAdmission(UploadConfig config, Runnable onSaturated, Runnable onRestored) {
+        return new UploadAdmission(config.maxConcurrent(), config.maxConcurrentPerPrincipal(), onSaturated, onRestored);
     }
 
     /// A permit for `principal`'s upload, or the cap that refused it. The permit's `run()` returns it, once.
     Result<Runnable> tryAcquire(String principal) {
         if (!acquireNode()) {
+            reportSaturation();
+
             return NODE_LIMIT.result();
         }
 
@@ -54,6 +74,18 @@ final class UploadAdmission {
         var released = new AtomicBoolean();
 
         return Result.success(() -> release(principal, released));
+    }
+
+    private void reportSaturation() {
+        if (saturated.compareAndSet(false, true)) {
+            onSaturated.run();
+        }
+    }
+
+    private void reportRestoration() {
+        if (saturated.compareAndSet(true, false)) {
+            onRestored.run();
+        }
     }
 
     int inFlight() {
@@ -100,6 +132,7 @@ final class UploadAdmission {
                                          (_, count) -> count <= 1
                                                        ? null
                                                        : count - 1);
+            reportRestoration();
         }
     }
 }

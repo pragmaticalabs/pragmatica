@@ -452,6 +452,14 @@ public enum OperatorWarningCode {
                                 "community-assignment",
                                 WarningLevel.INFO,
                                 COMMUNITY_ASSIGNMENT_UNPLACED),
+    /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding
+    /// as many upload bodies as it allows. Subject is the node. Raised once, on the transition into saturation, per node, not
+    /// per refused request; a refusal for one principal's own cap is a client error and raises nothing. Closed by
+    /// [#UPLOAD_NODE_CAP_RESTORED].
+    UPLOAD_NODE_CAP_SATURATED("upload-node-cap-saturated", "http-ingest", WarningLevel.WARNING),
+    /// The recovery of [#UPLOAD_NODE_CAP_SATURATED], same subject (#2410): an upload finished and a slot is free again. INFO,
+    /// published only after a published saturation event for the node (#752 mechanism).
+    UPLOAD_NODE_CAP_RESTORED("upload-node-cap-restored", "http-ingest", WarningLevel.INFO, UPLOAD_NODE_CAP_SATURATED),
     /// A committed `[json]` configuration change was refused for a slice (#2378): the slice's HTTP routes keep the
     /// JSON codec selection they had. Subject is `<slice artifact>/json`; the message names every refused key, its
     /// value and why, and the selection kept. Raised once, on the transition into refusal, per node. The same

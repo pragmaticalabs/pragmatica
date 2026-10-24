@@ -88,4 +88,24 @@ public sealed interface MultipartError extends HttpStatusAware {
             return HttpStatus.BAD_REQUEST;
         }
     }
+
+    /// The decoded body exceeds a part limit the route declares (`max_files`, `max_file_size`, `max_fields`,
+    /// `max_field_size`): 413, the same status as a body over `max_size`.
+    record LimitExceeded(long limit, String message) implements MultipartError {
+        public static final Fn1<LimitExceeded, Long> FILES = Causes.forOneValue("Multipart body has more than %d files",
+                                                                                LimitExceeded::new);
+        public static final Fn1<LimitExceeded, Long> FILE_SIZE = Causes.forOneValue("A file in the multipart body is larger than %d bytes",
+                                                                                    LimitExceeded::new);
+        public static final Fn1<LimitExceeded, Long> FIELDS = Causes.forOneValue("Multipart body has more than %d fields",
+                                                                                 LimitExceeded::new);
+        public static final Fn1<LimitExceeded, Long> PARTS = Causes.forOneValue("Multipart body has more than %d parts",
+                                                                                LimitExceeded::new);
+        public static final Fn1<LimitExceeded, Long> FIELD_SIZE = Causes.forOneValue("A field in the multipart body is larger than %d bytes",
+                                                                                     LimitExceeded::new);
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.REQUEST_ENTITY_TOO_LARGE;
+        }
+    }
 }

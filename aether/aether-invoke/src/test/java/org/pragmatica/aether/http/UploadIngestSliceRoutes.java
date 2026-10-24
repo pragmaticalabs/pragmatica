@@ -19,7 +19,7 @@ import org.pragmatica.lang.Promise;
 /// Fixture for the upload ingest gate: one slice with an upload route that declares `max_size = 5 MiB` and
 /// `max_duration = 90 s`, and a plain route that declares nothing, as the route generator emits them.
 public final class UploadIngestSliceRoutes implements RouteSource, SliceRouterFactory<UploadIngestSlice> {
-    public static final UploadSpec DECLARED = UploadSpec.uploadSpec(true, 5L * 1024 * 1024, 90_000);
+    public static final UploadSpec DECLARED = UploadSpec.uploadSpec(true, 5L * 1024 * 1024, 90_000, 3, 2L * 1024 * 1024, 10, 4096);
 
     @Override
     public Class<UploadIngestSlice> sliceType() {
