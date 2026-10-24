@@ -305,17 +305,19 @@ A parameter is paired with a column in these places:
   so a `FROM` inside an `ON CONFLICT` or `RETURNING` tail never changes it.
 - `SET col = :p` and `SET (a, b) = (:p, :q)`, in `UPDATE` and in `ON CONFLICT .. DO UPDATE`.
 - A comparison with a bare column on the other side: `col = :p` (either side; `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=`),
-  `col IN (:p, ..)`, `col LIKE :p`, `col BETWEEN :p AND :q`, and `col IS [NOT] DISTINCT FROM :p`.
+  `col IN (:p, ..)`, `col LIKE :p`, `col BETWEEN :p AND :q`, and `col IS [NOT] DISTINCT FROM :p` (either side).
 
 The value must be the parameter alone, possibly in parentheses or under a cast. The column resolves against the
 statement's tables: the target (by name or alias), `FROM`/`USING` tables (by name or alias), `EXCLUDED` inside
 `ON CONFLICT`, and for a subquery, the tables of each enclosing query. An unqualified column is not paired when two of
-those tables have it, or when a subquery, function or CTE in `FROM` might have it.
+those tables have it, or when a subquery, function or CTE in `FROM` might have it. A `WITH` query named like a table
+hides that table for the rest of the statement (and inside itself with `RECURSIVE`): its columns are unknown, so they
+are not paired.
 
 **Inferred, no marker needed.** A record or enum, or `Option` of one, without a `ValueMapping`, where the schema
 knows the column is `json`/`jsonb`:
 - a component of a CRUD method's row record (read or written), and a CRUD condition parameter;
-- a `@Query` parameter paired with the column without a cast (a cast parameter is bound as written);
+- a `@Query` parameter paired with the column without a cast (a parameter cast to `json`/`jsonb` is bound as written);
 - a component of a record expanded by `@Query` into `VALUES (:record)` or `SET :record`, which the expanded column
   list pairs.
 
@@ -334,15 +336,20 @@ An enum is written as its JSON string.
 
 **Refused at compile time.**
 - A `String`, an `Option<String>` or a value object lowered to `String` that is paired with a `json`/`jsonb` column,
-  or is a CRUD insert/save value or condition on one, unless the parameter is cast: `:doc::jsonb`, `:doc ::jsonb` and
-  `CAST(:doc AS jsonb)` stay allowed.
-- A `String` parameter with an occurrence that is neither paired nor cast, in an `INSERT`, `UPDATE` or `DELETE` whose
-  target table has a `json`/`jsonb` column. Such a value could reach a `json`/`jsonb` column unseen, so the processor
+  or is a CRUD insert/save value or condition on one, unless the parameter is cast to `json`/`jsonb`: `:doc::jsonb`,
+  `:doc ::jsonb` and `CAST(:doc AS jsonb)` stay allowed.
+- Any parameter paired with a `json`/`jsonb` column under a cast to another type (`:doc::text`, `CAST(:doc AS text)`,
+  `:doc::jsonb[]`): `json`/`jsonb` take no other type, so PostgreSQL would refuse the statement. The outermost cast
+  decides: `:doc::text::jsonb` is allowed, `:doc::jsonb::text` is refused.
+- A `String` parameter with an occurrence that is neither paired nor cast, in an `INSERT`, `UPDATE` or `DELETE` that
+  references a table with a `json`/`jsonb` column: its target, a `FROM`/`USING` table, a `SELECT` source or a
+  subquery. Such a value could reach a `json`/`jsonb` column unseen, so the processor
   refuses it even when it is meant for a text column. Shapes this hits: `INSERT .. SELECT :p`, `VALUES (coalesce(:p,
   ..))`, `:p || :q`, `lower(:p)`, `INSERT INTO t VALUES (..)` without a column list, a `VALUES` row whose length
   differs from the column list, an ambiguous unqualified column, and a comparison with an expression such as
-  `profile ->> 'name' = :p`. Cast the parameter (`lower(:p::text)`) or compare it with its column directly. A `SELECT`
-  has no target table and is not checked this way.
+  `profile ->> 'name' = :p`, or an `@>` operand against a table read through `FROM`, `USING` or `INSERT .. SELECT`. Cast
+  the parameter (`lower(:p::text)`) or compare it with its column directly. A `SELECT` stores nothing and is not
+  checked this way.
 - A parameter inferred as a document (paired with a `json`/`jsonb` column, no cast) that is also paired with another
   column. One value cannot be a JSON document for one column and plain text for the other.
 
@@ -359,7 +366,7 @@ An enum is written as its JSON string.
   a `json` or `jsonb` column. Otherwise the build fails.
 - **Binding.** A document is bound as `JsonText`, text with no declared type, so one value binds to `json` and `jsonb`
   columns and works as a `jsonb` operator operand (`@>`).
-- **Where a `String` still compiles.** In a `SELECT`, and in a statement whose target table has no `json`/`jsonb`
+- **Where a `String` still compiles.** In a `SELECT`, and in a write that references no table with a `json`/`jsonb`
   column, a `String` that is not paired compiles. If it reaches a `jsonb` column or operator, the server refuses it
   when the statement is prepared fresh, but accepts it when the driver reuses a statement prepared earlier for the
   same SQL with an untyped parameter. Neither outcome can be relied on; the driver fix is tracked separately (#2402).

@@ -16,8 +16,9 @@ import java.lang.annotation.Target;
 /// The marker is needed only where the schema cannot tell: where it knows the column is json/jsonb (a CRUD row
 /// record or condition param, a `@Query` param the SQL syntax tree pairs with the column: an `INSERT` value, a `SET`
 /// item or a comparison with the column; a record expanded into `VALUES (:record)` / `SET :record`), a record or enum,
-/// or `Option` of one, is a document without it. It stays required for `@Query` results, a record param bound whole
-/// instead of expanded, and params the tree does not pair: operands of `@>`, function arguments, other expressions.
+/// or `Option` of one, is a document without it. It stays required for `@Query` results and for params, a record bound
+/// whole instead of expanded included, that the tree does not pair with a known json/jsonb column: operands of `@>`,
+/// function arguments, other expressions.
 ///
 /// - On a method: the method's single result column is the document (`Promise<T>`, `Promise<Option<T>>` or
 ///   `Promise<List<T>>`). `Option` means zero or one row: a missing row is empty, but a row whose column is SQL NULL

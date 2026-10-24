@@ -486,7 +486,8 @@ PostgreSQL is the document store for slices: keep a document in a `jsonb` column
   mapped as a document without an annotation. Elsewhere (`@Query` results, `@>` operands, function arguments,
   expressions) mark it `@Jsonb`. The generated factory encodes and decodes the document with a generated codec.
   Binding a `String` to a column the schema knows is json/jsonb is a compile error, and so is an unpaired `String` in
-  an `INSERT`, `UPDATE` or `DELETE` on a table with json/jsonb columns; casts in the SQL stay allowed. See
+  an `INSERT`, `UPDATE` or `DELETE` that references a table with json/jsonb columns; casts to json/jsonb in the SQL stay
+  allowed, and a cast to any other type on a json/jsonb column is a compile error. See
   [JSON Documents](persistence-guide.md#json-documents-json--jsonb).
 - **Hand-written queries on the async transport (`async_url`):** bind a document as `JsonText`
   (`org.pragmatica.aether.resource.db.JsonText`) and read it with `row.getObject(column, JsonText.class)`. `JsonText`
