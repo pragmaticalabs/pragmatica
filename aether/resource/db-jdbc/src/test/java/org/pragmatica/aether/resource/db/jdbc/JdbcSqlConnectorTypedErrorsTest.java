@@ -171,6 +171,22 @@ class JdbcSqlConnectorTypedErrorsTest {
     }
 
     @Test
+    void queryOptional_noRow_isEmpty() {
+        var value = connector.queryOptional("SELECT name FROM typed_errors WHERE id = ?", row -> row.getString("name"), 99).await().unwrap();
+
+        assertThat(value.isPresent()).isFalse();
+    }
+
+    @Test
+    void transactional_success_commitsAndReturnsTheCallbacksValue() {
+        var updated = connector.transactional(tx -> tx.update("UPDATE typed_errors SET name = 'committed' WHERE id = 1")).await().unwrap();
+        var stored = connector.queryOne("SELECT name FROM typed_errors WHERE id = ?", row -> row.getString("name"), 1).await().unwrap();
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(stored).as("committed by the transaction").isEqualTo("committed");
+    }
+
+    @Test
     void queryOne_severalRows_reachesCallerAsTheTypedMultipleResults() {
         connector.update(INSERT, 2, "two").await().unwrap();
 

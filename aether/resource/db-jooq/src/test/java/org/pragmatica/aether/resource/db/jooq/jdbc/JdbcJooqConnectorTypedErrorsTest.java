@@ -171,6 +171,15 @@ class JdbcJooqConnectorTypedErrorsTest {
     }
 
     @Test
+    void transactional_success_commitsAndReturnsTheCallbacksValue() {
+        var updated = connector.transactional(tx -> tx.execute(tx.dsl().query("UPDATE typed_errors SET name = 'committed' WHERE id = 1"))).await().unwrap();
+        var stored = connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM typed_errors WHERE id = 1")).await().unwrap();
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(stored.get("name", String.class)).as("committed by the transaction").isEqualTo("committed");
+    }
+
+    @Test
     void transactional_failedCommit_keepsTheServersSqlState() {
         run("DROP TABLE IF EXISTS deferred_unique");
         run("CREATE TABLE deferred_unique(id INT, CONSTRAINT deferred_unique_pk UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)");
