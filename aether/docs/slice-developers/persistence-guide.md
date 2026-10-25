@@ -348,8 +348,10 @@ An enum is written as its JSON string.
   ..))`, `:p || :q`, `lower(:p)`, `INSERT INTO t VALUES (..)` without a column list, a `VALUES` row whose length
   differs from the column list, an ambiguous unqualified column, and a comparison with an expression such as
   `profile ->> 'name' = :p`, or an `@>` operand against a table read through `FROM`, `USING` or `INSERT .. SELECT`. Cast
-  the parameter (`lower(:p::text)`) or compare it with its column directly. A `SELECT` stores nothing and is not
-  checked this way.
+  the parameter (`lower(:p::text)`) or compare it with its column directly. A `::` written right after the operand of
+  `@>`, `->`, `->>`, `#>` or `#>>` counts as a cast of that operand (`profile @> :raw::jsonb`,
+  `profile ->> :k::text`), as does `CAST(.. AS ..)`; the same parameter without a cast is refused there. A `SELECT`
+  stores nothing and is not checked this way.
 - A parameter inferred as a document (paired with a `json`/`jsonb` column, no cast) that is also paired with another
   column. One value cannot be a JSON document for one column and plain text for the other.
 
