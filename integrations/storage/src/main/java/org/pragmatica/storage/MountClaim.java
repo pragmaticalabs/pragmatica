@@ -103,8 +103,12 @@ public final class MountClaim {
     /// held it): `CREATE_NEW` is atomic, so exactly one of two racing claimers creates it.
     private static Result<Boolean> createExclusively(Path file, String content) {
         return Result.lift(MountClaim::createFailure,
-                           () -> Files.writeString(file, content, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))
-                     .fold(MountClaim::alreadyThereOrFailed, _ -> Result.success(true));
+                           () -> Files.writeString(file,
+                                                   content,
+                                                   StandardOpenOption.CREATE_NEW,
+                                                   StandardOpenOption.WRITE))
+                     .fold(MountClaim::alreadyThereOrFailed,
+                           _ -> Result.success(true));
     }
 
     private static Cause createFailure(Throwable thrown) {
