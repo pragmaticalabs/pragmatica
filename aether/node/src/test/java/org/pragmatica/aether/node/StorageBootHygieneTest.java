@@ -98,6 +98,19 @@ class StorageBootHygieneTest {
         assertThat(raisedOf(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE, "content")).isEqualTo(1);
     }
 
+    /// The node binds every instance's reporter with one call once its sink exists; the conditions raised while storage was
+    /// being built reach that sink then, once per instance.
+    @Test
+    void bindOperatorWarnings_offersEveryInstancesBootConditionsToTheNodesSink() throws Exception {
+        var setups = boot(Map.of(), NODE).unwrap();
+
+        StorageFactory.bindOperatorWarnings(setups, OperatorWarningSink.handingOffTo(raised::add));
+        awaitRaised(2);
+
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE, "artifacts")).isEqualTo(1);
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE, "content")).isEqualTo(1);
+    }
+
     /// The hermetic fixture: a programmatically built configuration whose path cannot open still degrades, so the node tests
     /// that root storage under a regular file keep booting without any test-only configuration key.
     @Test
