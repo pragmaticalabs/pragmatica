@@ -147,6 +147,10 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         return events.stream().filter(event -> event.code() == code && event.subject().equals(LOST.id())).count();
     }
 
+    private List<String> eventMessages(OperatorWarningCode code) {
+        return events.stream().filter(event -> event.code() == code).map(OperatorWarning::message).toList();
+    }
+
     private boolean eventSeen(OperatorWarningCode code) {
         return eventsOf(code) > 0;
     }
@@ -209,7 +213,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
 
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_RELEASED));
-        assertThat(warned("instance-reap-released", LOST.id())).isTrue();
+        assertThat(eventMessages(OperatorWarningCode.INSTANCE_REAP_RELEASED)).anyMatch(message -> message.contains("enabled again") && message.contains(LOST.id()));
     }
 
     @Test
@@ -222,7 +226,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
 
         await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_RELEASED));
         assertThat(terminates.get()).isZero();
-        assertThat(warned("joined the cluster again", "nothing was deleted")).isTrue();
+        assertThat(eventMessages(OperatorWarningCode.INSTANCE_REAP_RELEASED)).anyMatch(message -> message.contains("joined the cluster again") && message.contains("nothing was deleted"));
     }
 
     /// The retry path: the first attempt fails while auto-heal is enabled, the operator disables it before the retry, and the retry is held.
