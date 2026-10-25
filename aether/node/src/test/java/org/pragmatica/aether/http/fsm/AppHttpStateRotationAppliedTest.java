@@ -6,6 +6,8 @@ package org.pragmatica.aether.http.fsm;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.RouteTable;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.lang.Option;
@@ -16,6 +18,8 @@ import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -121,12 +125,16 @@ class AppHttpStateRotationAppliedTest {
         harness.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
         assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
+        // The report carries the table captured BEFORE the rotation (empty here); the state's own, fresher table wins.
+        var current = nonEmptyRouteTable();
 
+        harness.dispatch(new AppHttpEvents.RouteTablePublished(current));
         harness.dispatch(applied(newH1, newH3));
 
         var routeReady = (AppHttpState.RouteReady) harness.state();
         assertThat(routeReady.server().unwrap()).isSameAs(newH1);
         assertThat(routeReady.h3().unwrap()).isSameAs(newH3);
+        assertThat(routeReady.routes()).isSameAs(current);
 
         harness.dispatch(new AppHttpEvents.StopRequested());
 
@@ -151,6 +159,12 @@ class AppHttpStateRotationAppliedTest {
         assertThat(newH1.isStopped()).as("orphaned new H1 listener closed").isTrue();
         assertThat(newH3.isStopped()).as("orphaned new H3 listener closed").isTrue();
         assertThat(harness.handled()).hasSize(1);
+    }
+
+    private static RouteTable nonEmptyRouteTable() {
+        var route = HttpNodeRouteKey.httpNodeRouteKey("GET", "/rotation/", NodeId.nodeId("rotation-node").unwrap());
+
+        return RouteTable.routeTable(Set.of(route), List.of());
     }
 
     private static CertificateBundle dummyBundle() {
