@@ -26,7 +26,7 @@ class ConsensusShardTest(unittest.TestCase):
     def test_source_tree_is_read(self):
         # guards the guard: a wrong test dir would make every other assertion vacuously true
         self.assertGreaterEqual(len(self.classes), 100)
-        self.assertIn("LeaderManagerTest", self.classes)
+        self.assertIn("QuicSimultaneousDialLaneTest", self.classes)
 
     def test_fixtures_and_excluded_groups_are_not_planned(self):
         self.assertNotIn("TestSerializers", self.classes)
