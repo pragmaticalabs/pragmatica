@@ -22,6 +22,8 @@ import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
@@ -63,16 +65,16 @@ public final class ManagementStatus {
     /// is switched off), malformed or missing request fields 400, a state the request cannot be applied to 409, and a
     /// subsystem that is not available on this node 503. Statuses are judgments made when the table was written (#569
     /// precedent: a caller's mistake is 4xx), pinned by `ManagementStatusCoverageTest`.
-    private static final Map<String, HttpStatus> CENTRAL = Stream.of(listing(ROUTES + "AlertRoutes$AlertError",
+    private static final Map<String, HttpStatus> CENTRAL = Stream.of(Listing.listing(ROUTES + "AlertRoutes$AlertError",
                                                                              BAD_REQUEST,
                                                                              "MISSING_FIELDS",
                                                                              "METRIC_REQUIRED"),
-                                                                     listing(API + "AlertManager$InjectionError",
+                                                                     Listing.listing(API + "AlertManager$InjectionError",
                                                                              BAD_REQUEST,
                                                                              "NAME_REQUIRED",
                                                                              "MESSAGE_REQUIRED",
                                                                              "INVALID_SEVERITY"),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "ObservabilityRoutes$ObservabilityError",
                                                                              BAD_REQUEST,
                                                                              "MISSING_FIELDS",
@@ -81,79 +83,79 @@ public final class ManagementStatus {
                                                                              "KEY_REQUIRED",
                                                                              "CONFIG_MISSING_FIELDS",
                                                                              "CONFIG_KEY_REQUIRED"),
-                                                                     listing(ROUTES + "MetricsRoutes$BackfillError",
+                                                                     Listing.listing(ROUTES + "MetricsRoutes$BackfillError",
                                                                              BAD_REQUEST,
                                                                              "MISSING_BODY",
                                                                              "MISSING_METRIC",
                                                                              "INVALID_WINDOW",
                                                                              "INVALID_INTERVAL"),
-                                                                     listing(ROUTES + "MetricsRoutes$BackfillError",
+                                                                     Listing.listing(ROUTES + "MetricsRoutes$BackfillError",
                                                                              FORBIDDEN,
                                                                              "DEV_MODE_DISABLED"),
-                                                                     listing(ROUTES + "DhtRoutes$DhtError",
+                                                                     Listing.listing(ROUTES + "DhtRoutes$DhtError",
                                                                              BAD_REQUEST,
                                                                              "MISSING_BODY",
                                                                              "MISSING_KEY",
                                                                              "MISSING_VALUE",
                                                                              "MISSING_HLC"),
-                                                                     listing(ROUTES + "DhtRoutes$DhtError",
+                                                                     Listing.listing(ROUTES + "DhtRoutes$DhtError",
                                                                              FORBIDDEN,
                                                                              "DEV_MODE_DISABLED"),
-                                                                     listing(ROUTES + "DhtRoutes$DhtError",
+                                                                     Listing.listing(ROUTES + "DhtRoutes$DhtError",
                                                                              UNAVAILABLE,
                                                                              "DHT_UNAVAILABLE"),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "CertificateRoutes$CertConfigureError",
                                                                              BAD_REQUEST,
                                                                              "MISSING_BODY",
                                                                              "VALIDITY_TOO_LOW",
                                                                              "VALIDITY_TOO_HIGH"),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "CertificateRoutes$CertConfigureError",
                                                                              FORBIDDEN,
                                                                              "DEV_MODE_DISABLED"),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "CertificateRoutes$CertConfigureError",
                                                                              UNAVAILABLE,
                                                                              "SCHEDULER_NOT_CONFIGURED"),
-                                                                     listing(ROUTES + "NodeLifecycleRoutes$PromoteError",
+                                                                     Listing.listing(ROUTES + "NodeLifecycleRoutes$PromoteError",
                                                                              BAD_REQUEST,
                                                                              "MISSING_TARGET_ROLE",
                                                                              "UNSUPPORTED_TARGET_ROLE"),
-                                                                     listing(ROUTES + "NodeLifecycleRoutes$PromoteError",
+                                                                     Listing.listing(ROUTES + "NodeLifecycleRoutes$PromoteError",
                                                                              CONFLICT,
                                                                              "UNKNOWN_NODE_ROLE",
                                                                              "IMMUTABLE_ROLE"),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "ScheduledTaskRoutes$InjectError$General",
                                                                              BAD_REQUEST,
                                                                              "MISSING_BODY",
                                                                              "MISSING_SECTION",
                                                                              "MISSING_ARTIFACT",
                                                                              "MISSING_METHOD"),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "ScheduledTaskRoutes$InjectError$General",
                                                                              FORBIDDEN,
                                                                              "DEV_MODE_DISABLED"),
-                                                                     listing(API + "ClusterEventAggregator$PublishError",
+                                                                     Listing.listing(API + "ClusterEventAggregator$PublishError",
                                                                              UNAVAILABLE,
                                                                              "PUBLISHER_NOT_BOUND"),
-                                                                     listing("org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError",
+                                                                     Listing.listing("org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError",
                                                                              CONFLICT,
                                                                              "NOT_LEADER"),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "ScheduledTaskRoutes$InjectError$SliceNotLocal",
                                                                              CONFLICT),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "ClusterTopologyRoutes$OwnershipError$UnknownDomain",
                                                                              BAD_REQUEST),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "GossipKeyRoutes$GossipKeyRotationError$Superseded",
                                                                              CONFLICT),
-                                                                     listing(ROUTES
+                                                                     Listing.listing(ROUTES
                                                                             + "ClusterConfigRoutes$UpgradeError$AlreadyAtVersion",
                                                                              CONFLICT),
-                                                                     listing(API
+                                                                     Listing.listing(API
                                                                             + "AlertForwarder$AlertForwarderError$WebhookError",
                                                                              HttpStatus.BAD_GATEWAY))
                                                                  .flatMap(Listing::entries)
@@ -174,7 +176,7 @@ public final class ManagementStatus {
             case ParameterError _ -> some(HttpStatus.BAD_REQUEST);
             case StreamError error -> some(StreamErrorStatus.statusOf(error));
             case Causes.CompositeCause composite -> compositeStatus(composite);
-            default -> Option.option(CENTRAL.get(centralKey(cause)));
+            default -> option(CENTRAL.get(centralKey(cause)));
         };
     }
 
@@ -193,7 +195,7 @@ public final class ManagementStatus {
 
         return members.stream()
                       .anyMatch(Option::isEmpty)
-               ? Option.none()
+               ? none()
                : some(agreedStatus(members));
     }
 
@@ -225,12 +227,12 @@ public final class ManagementStatus {
         return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
-    private static Listing listing(String type, HttpStatus status, String... constants) {
-        return new Listing(type, status, List.of(constants));
-    }
-
     /// One table row: a class (no constants), or the listed constants of an enum, all under one status.
     private record Listing(String type, HttpStatus status, List<String> constants) {
+        static Listing listing(String type, HttpStatus status, String... constants) {
+            return new Listing(type, status, List.of(constants));
+        }
+
         Stream<Map.Entry<String, HttpStatus>> entries() {
             return constants.isEmpty()
                    ? Stream.of(Map.entry(type, status))
