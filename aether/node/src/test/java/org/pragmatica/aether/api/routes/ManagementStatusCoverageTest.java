@@ -7,6 +7,7 @@ package org.pragmatica.aether.api.routes;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.ParameterError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -138,6 +139,24 @@ class ManagementStatusCoverageTest {
         var observed = observed();
 
         assertThat(observed).as("management cause types and the status each answers").isEqualTo(PINNED);
+    }
+
+    /// The table lists exactly the types that do not state their own status (and the coordinator refusal, which lives
+    /// outside the management package): no type missing, and no stale row left behind for a type that has since become
+    /// `HttpStatusAware`.
+    @Test
+    void centralTable_listsExactlyTheTypesThatDoNotStateTheirOwnStatus() throws Exception {
+        var expected = new java.util.TreeSet<>(List.of("org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError#NOT_LEADER"));
+
+        for (var type : causeTypes()) {
+            if (!HttpStatusAware.class.isAssignableFrom(type)) {
+                expected.addAll(type.isEnum()
+                                ? Stream.of(type.getEnumConstants()).map(c -> type.getName() + "#" + ((Enum<?>) c).name()).toList()
+                                : List.of(type.getName()));
+            }
+        }
+
+        assertThat(new java.util.TreeSet<>(ManagementStatus.listedKeys())).isEqualTo(expected);
     }
 
     @Test

@@ -118,11 +118,6 @@ public final class ManagementStatus {
         };
     }
 
-    /// Whether the central table lists this class (any constant of it, for an enum).
-    public static boolean isListed(Class<?> type) {
-        return CENTRAL.keySet().stream().anyMatch(key -> key.equals(type.getName()) || key.startsWith(type.getName() + "#"));
-    }
-
     /// Every key of the central table (`Class` or `Class#CONSTANT`).
     static Set<String> listedKeys() {
         return CENTRAL.keySet();
