@@ -2466,6 +2466,8 @@ public interface AetherNode extends ManageableNode {
         var clusterEventsOwnerCheck = eventAggregatorOut.clusterEventsOwnerCheck();
         var eventAggregator = eventAggregatorOut.eventAggregator();
         var operatorWarningSink = eventAggregatorOut.operatorWarningSink();
+        // A0b: the storage instances were built before this sink existed; hand it to them now.
+        StorageFactory.bindOperatorWarnings(storageSetups, operatorWarningSink);
         // #1564 / #1617 (R10): deploy warnings are raised through this node's operator-warning sink.
         var blueprintService = BlueprintService.blueprintService(clusterNode,
                                                                  kvStore,
@@ -3535,6 +3537,9 @@ public interface AetherNode extends ManageableNode {
                                              Map<String, StorageFactory.StorageSetup> storageSetups,
                                              BooleanSupplier draining) {
         activateStorageUnlessDraining(storageSetups, draining);
+        // A0b (SD-01/SB-11): the node reports ready only once its DHT-backed instances were admitted, which is when
+        // each instance's write side may open.
+        StorageFactory.signalConsensusSynced(storageSetups);
         signalReady.run();
     }
 

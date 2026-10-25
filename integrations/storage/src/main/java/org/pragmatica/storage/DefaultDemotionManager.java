@@ -12,6 +12,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
@@ -34,10 +35,20 @@ final class DefaultDemotionManager implements DemotionManager {
     private volatile boolean active = false;
     private final AtomicBoolean refusing = new AtomicBoolean(false);
 
+    private final DegradeReporter degrade;
+
     DefaultDemotionManager(List<StorageTier> tiers, MetadataStore metadataStore, DemotionConfig config) {
+        this(tiers, metadataStore, config, DegradeReporter.degradeReporter("demotion"));
+    }
+
+    DefaultDemotionManager(List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           DemotionConfig config,
+                           DegradeReporter degrade) {
         this.tiers = List.copyOf(tiers);
         this.metadataStore = metadataStore;
         this.config = config;
+        this.degrade = degrade;
     }
 
     @Override
@@ -126,21 +137,25 @@ final class DefaultDemotionManager implements DemotionManager {
     }
 
     /// Once per pressure episode (reset when the tier drops back under its high watermark), so a tick every
-    /// few minutes does not flood the log. TODO(#1574): also emit as an OperatorWarning cluster event.
+    /// few minutes does not flood the log. The episode is also raised as an operator warning through [DegradeReporter].
     private DemotionResult refuseDurableDemotion(StorageTier sourceTier) {
         if (!isAboveHighWatermark(sourceTier)) {
             refusing.set(false);
+            degrade.recovered(OperatorWarningCode.STORAGE_DEMOTION_REFUSED,
+                              "Tier {} is back under its high watermark; demotion is no longer refused",
+                              sourceTier.level());
 
             return DemotionResult.NONE;
         }
 
         if (refusing.compareAndSet(false, true)) {
-            log.warn("Tier {} is above its high watermark ({} of {} bytes) but holds the only durable copy of its "
-                    + "blocks: nothing is demoted to a non-durable tier. Writes that need it fail with TierFull once "
-                    + "it is full; add capacity or a durable tier below it",
-                     sourceTier.level(),
-                     sourceTier.usedBytes(),
-                     sourceTier.maxBytes());
+            degrade.degraded(OperatorWarningCode.STORAGE_DEMOTION_REFUSED,
+                             "Tier {} is above its high watermark ({} of {} bytes) and holds the only durable copy of its blocks: "
+                             + "nothing is demoted. Writes that need it fail with TierFull once it is full; add capacity or a durable tier below it",
+                             sourceTier.level(),
+                             sourceTier.usedBytes(),
+                             sourceTier.maxBytes());
+
         }
 
         return DemotionResult.NONE;

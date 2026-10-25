@@ -458,6 +458,34 @@ public enum OperatorWarningCode {
     /// configuration fails the slice's next provisioning (restart or redeploy), so fix or remove the keys. Closed by
     /// [#JSON_CONFIG_APPLIED].
     JSON_CONFIG_REJECTED("json-config-rejected", "json", WarningLevel.CRITICAL),
+    /// A storage instance's disk tier could not be opened and the instance runs without it (A0b): its writes are
+    /// acknowledged on memory and the shared tier alone, which a node loss or a whole-cluster restart does not survive.
+    /// Raised for the instances the node placed itself (the synthesized `artifacts` and `content`, a derived path) and for
+    /// `streams` on a directly built node; an operator-written `disk_path` that cannot open refuses the boot instead. The
+    /// subject is the instance. The tier is fixed at boot, so there is no recovery code: fix the path and restart.
+    STORAGE_DISK_TIER_UNAVAILABLE("storage-disk-tier-unavailable", "storage", WarningLevel.CRITICAL),
+    /// A configured memory tier was larger than the share of the heap storage may take, and was cut down to it (A0b). The
+    /// subject is the instance; the message names the configured and the effective bytes and the heap.
+    STORAGE_MEMORY_TIER_CLAMPED("storage-memory-tier-clamped", "storage", WarningLevel.WARNING),
+    /// A durable tier is above its high watermark and holds the only durable copy of its blocks, so demotion is refused rather than
+    /// paid for with durability; writes that need the tier fail with `TierFull` once it is full. The subject is the instance.
+    /// Closed by [#STORAGE_DEMOTION_RESUMED].
+    STORAGE_DEMOTION_REFUSED("storage-demotion-refused", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_DEMOTION_REFUSED], same subject: the tier dropped back under its high watermark. INFO, published only
+    /// after a published refusal for the instance (#752 mechanism).
+    STORAGE_DEMOTION_RESUMED("storage-demotion-resumed", "storage", WarningLevel.INFO, STORAGE_DEMOTION_REFUSED),
+    /// The metadata snapshot of a storage instance cannot be written, so the references it holds are unprotected across a restart. The
+    /// subject is the instance. Closed by [#STORAGE_SNAPSHOT_WRITE_RECOVERED].
+    STORAGE_SNAPSHOT_WRITE_FAILED("storage-snapshot-write-failed", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_SNAPSHOT_WRITE_FAILED], same subject: a snapshot was written. INFO, published only after a published
+    /// failure for the instance (#752 mechanism).
+    STORAGE_SNAPSHOT_WRITE_RECOVERED("storage-snapshot-write-recovered",
+                                     "storage",
+                                     WarningLevel.INFO,
+                                     STORAGE_SNAPSHOT_WRITE_FAILED),
+    /// A storage instance restored an older retained snapshot because the newest was unreadable: metadata recorded only in the
+    /// unreadable file is lost unless a WAL replays it. The subject is the instance. A restore happens once, at boot, so no recovery.
+    STORAGE_SNAPSHOT_FELL_BACK("storage-snapshot-fell-back", "storage", WarningLevel.WARNING),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);
