@@ -531,6 +531,13 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `storage-snapshot-write-failed` (WARNING — the instance's metadata snapshot cannot be written, so the references it holds are unprotected across a restart; `subject` is the instance; raised once, not on every 10 s tick)
 - `storage-snapshot-write-recovered` (INFO — the recovery: a snapshot was written; published only after a published `storage-snapshot-write-failed` for the same `subject`)
 - `storage-snapshot-fell-back` (WARNING — the newest snapshot was unreadable and an older retained one was restored, so metadata recorded only in the unreadable file is lost unless a WAL replays it; `subject` is the instance; a restore happens once at boot, so there is no recovery event)
+- `storage-tier-full` (WARNING — a write was refused because a durable local-disk tier is full; `subject` is the instance; raised once per episode, on the first refused write)
+- `storage-tier-writable` (INFO — the recovery: a write fit on the tier again; published only after a published `storage-tier-full` for the same `subject`)
+- `storage-dht-marker-unverified` (WARNING — the post-formation check of the instance's DHT encryption marker cannot complete, so its DHT tier stays gated and the node stays not-ready; `subject` is the instance; raised once, the check keeps retrying; a refusal aborts the boot instead)
+- `storage-dht-marker-verified` (INFO — the recovery: the check completed and the DHT tier was admitted; published only after a published `storage-dht-marker-unverified` for the same `subject`)
+- `storage-maintenance-not-started` (WARNING — demotion, promotion or garbage collection could not be started when the node reported ready; `subject` is the instance, or `leader-maintenance` for the leader-pinned group)
+- `storage-maintenance-started` (INFO — the recovery: the managers were activated; published only after a published `storage-maintenance-not-started` for the same `subject`)
+- `storage-wal-tail-cut` (WARNING — a stream append log cut a torn tail while opening, bytes that were never acknowledged; `subject` is the instance; a cut happens once at open, so there is no recovery event)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
