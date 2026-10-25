@@ -28,7 +28,7 @@ class StorageConditionsTest {
     @Test
     void demotion_durableTierAboveWatermarkWithNoDurableBelow_isReportedUntilItDrains() {
         var durable = new DurableTier(MemoryTier.memoryTier(100, TierLevel.LOCAL_DISK));
-        var cache = MemoryTier.memoryTier(1_000, TierLevel.DHT);
+        var cache = MemoryTier.memoryTier(1_000, TierLevel.REMOTE);
         var store = inMemoryMetadataStore("cond");
         var manager = DemotionManager.demotionManager(List.of(durable, cache), store, demotionConfig(DemotionStrategy.LRU, 0.5, 0.2, 10));
         var block = "x".repeat(80).getBytes(StandardCharsets.UTF_8);
