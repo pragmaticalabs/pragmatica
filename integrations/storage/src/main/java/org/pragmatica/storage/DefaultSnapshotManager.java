@@ -96,6 +96,14 @@ final class DefaultSnapshotManager implements SnapshotManager {
         this(metadataStore, config, DefaultSnapshotManager::fsync);
     }
 
+    /// Test seam: the sync step and the reporter. A fixture that fails the sync drives the write-failure transition.
+    DefaultSnapshotManager(MetadataStore metadataStore,
+                           SnapshotConfig config,
+                           Function<Path, Result<Unit>> fsync,
+                           DegradeReporter degrade) {
+        this(metadataStore, config, fsync, DefaultSnapshotManager::serializeBody, degrade);
+    }
+
     /// The manager of a storage instance whose snapshot failures and fallbacks are reported through `degrade`.
     DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config, DegradeReporter degrade) {
         this(metadataStore, config, DefaultSnapshotManager::fsync, DefaultSnapshotManager::serializeBody, degrade);

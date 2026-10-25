@@ -620,7 +620,18 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StorageConfig defaults) {
-        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults, List.of(), 0, Runtime.getRuntime().maxMemory()));
+        return createAll(configs, nodeId, dhtClient, keyring, defaults, Runtime.getRuntime().maxMemory());
+    }
+
+    /// A0b: [#createAll] against a stated maximum heap instead of this JVM's, so a test can boot under a 256 MiB budget
+    /// without forking. Production callers never use it.
+    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                       String nodeId,
+                                                       Option<DHTClient> dhtClient,
+                                                       Option<EncryptionKeyring> keyring,
+                                                       StorageConfig defaults,
+                                                       long heapBytes) {
+        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults, List.of(), 0, heapBytes));
     }
 
     /// #852 round 2: the boot decision `AetherNode` actually makes -- the config-map instances AND
