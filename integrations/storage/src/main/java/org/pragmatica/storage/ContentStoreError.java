@@ -36,7 +36,8 @@ public sealed interface ContentStoreError extends Cause {
         @Override
         public String message() {
             return "chunkSizeBytes " + chunkSizeBytes
-                 + " must be at least 1 (the instance's maximum block size is " + maxBlockBytes + " bytes)";
+                 + " must be at least 1 (the instance's maximum block size is " + maxBlockBytes
+                 + " bytes)";
         }
     }
 

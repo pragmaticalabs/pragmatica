@@ -107,7 +107,7 @@ public record ContentManifest(int chunkSize,
         var count = buffer.getInt();
 
         return readIds(buffer, count).filter(_ -> !buffer.hasRemaining() && count >= 1)
-                                     .map(ids -> contentManifest(chunkSize, totalSize, sha256, ids));
+                      .map(ids -> contentManifest(chunkSize, totalSize, sha256, ids));
     }
 
     private static Option<List<String>> readIds(ByteBuffer buffer, int count) {
