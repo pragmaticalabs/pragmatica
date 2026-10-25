@@ -362,7 +362,8 @@ public final class StorageFactory {
     record DhtMarkerCheck(String instanceName,
                           String dhtKeyPrefix,
                           Option<EncryptionKeyring> effectiveKeyring,
-                          Promise<Unit> readGate) {}
+                          Promise<Unit> readGate,
+                          DegradeReporter degrade) {}
 
     /// #858: the tier list plus the (possibly absent) DHT marker check that goes with it -- threaded
     /// from [#maybeEncryptDht] up through [#buildTierList]/[#handleDiskTierUnavailable]/[#buildTiers]
@@ -512,11 +513,27 @@ public final class StorageFactory {
     /// check (#874), and the node reports ready only after every DHT-backed instance is admitted (#1052).
     /// Idempotent, so a node that reports ready again re-activates nothing new.
     public static Result<Unit> activateNodeMaintenance(Map<String, StorageSetup> setups) {
-        return Result.allOf(nodeMaintenanceSetups(setups).stream()
-                                                 .flatMap(setup -> Stream.of(setup.demotionManager().activate(),
-                                                                             setup.promotionManager().activate(),
-                                                                             setup.garbageCollector().activate()))
-                                                 .toList()).map(_ -> unit());
+        return Result.allOf(nodeMaintenanceSetups(setups).stream().map(StorageFactory::activateMaintenanceOf).toList()).map(_ -> unit());
+    }
+
+    /// A0b: one instance's three managers are all attempted (a failed demotion does not leave GC off), and the outcome is
+    /// reported for the instance: ONE operator warning when any failed, its recovery when a later signal activates them.
+    private static Result<Unit> activateMaintenanceOf(StorageSetup setup) {
+        var outcome = Result.allOf(List.of(setup.demotionManager().activate(),
+                                           setup.promotionManager().activate(),
+                                           setup.garbageCollector().activate())).map(_ -> unit());
+
+        outcome.onFailure(cause -> setup.degrade()
+                                        .degraded(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                                                  "Maintenance of storage instance '{}' could not be started: {}; its tiers are not kept within their watermarks and its garbage is not reclaimed until it is",
+                                                  setup.name(),
+                                                  cause.message()))
+               .onSuccess(_ -> setup.degrade()
+                                    .recovered(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                                               "Maintenance of storage instance '{}' started",
+                                               setup.name()));
+
+        return outcome;
     }
 
     /// Mirror of [#activateNodeMaintenance], run when the node stops.
@@ -973,9 +990,18 @@ public final class StorageFactory {
     private static Result<Map<String, StorageSetup>> admit(List<Result<PendingSetup>> results) {
         return Result.firstFailureOf(results)
                      .flatMap(StorageFactory::commitMarkers)
+                     .onFailure(_ -> releaseBuilt(results))
                      .map(setups -> setups.stream()
                                           .collect(Collectors.toMap(StorageSetup::name,
                                                                     Function.identity())));
+    }
+
+    /// A0b: a boot refused for one instance gives back the mount claims the instances built before it already took, so a
+    /// refused boot leaves no claim held by a process that is still alive (an in-process restart, a test).
+    private static void releaseBuilt(List<Result<PendingSetup>> results) {
+        results.forEach(built -> built.onSuccess(pending -> pending.setup()
+                                                                   .instance()
+                                                                   .shutdown()));
     }
 
     /// The side-effect phase of [#createAll]. A marker write that itself fails still fails the boot;
@@ -1298,7 +1324,11 @@ public final class StorageFactory {
                                                              EncryptionKeyring keyring,
                                                              long diskMaxBytes) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
-        var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
+        var dhtBuild = maybeEncryptDht(STREAMS_NAME,
+                                       dhtClient,
+                                       STREAM_SEGMENTS_DHT_PREFIX,
+                                       Option.some(keyring),
+                                       DegradeReporter.degradeReporter(STREAMS_NAME));
 
         return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
                             .flatMap(LocalDiskTier::open)
@@ -1318,7 +1348,11 @@ public final class StorageFactory {
     /// directory, and opening is the step that creates it and sweeps stale partial blocks.
     private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir, long diskMaxBytes) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
-        var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
+        var dhtBuild = maybeEncryptDht(STREAMS_NAME,
+                                       dhtClient,
+                                       STREAM_SEGMENTS_DHT_PREFIX,
+                                       Option.empty(),
+                                       DegradeReporter.degradeReporter(STREAMS_NAME));
 
         return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
                             .flatMap(LocalDiskTier::open)
@@ -1368,6 +1402,11 @@ public final class StorageFactory {
                                                             Option<DhtMarkerCheck> dhtMarkerCheck,
                                                             Option<Path> logRoot) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
+        // One reporter per instance: the one the DHT marker check already carries, when there is one.
+        var degrade = dhtMarkerCheck.map(DhtMarkerCheck::degrade)
+                                    .or(() -> DegradeReporter.degradeReporter(STREAMS_NAME));
+
+        tiers.forEach(tier -> tier.reportTo(degrade));
         // Sealed segments are cut by the stream sealer, not by a configured chunk size, so this instance keeps no
         // block cap of its own (a guess: bounding sealed segments is a streams decision, not an AHSE hygiene one).
         var instance = StorageInstance.storageInstance(STREAMS_NAME,
@@ -1375,7 +1414,7 @@ public final class StorageFactory {
                                                        metadataStore,
                                                        WritePolicy.WRITE_THROUGH,
                                                        logRoot,
-                                                       AppendLog.TornTailSink.logOnly(),
+                                                       tornTailSinkOf(degrade),
                                                        _ -> {},
                                                        Integer.MAX_VALUE);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
@@ -1383,7 +1422,6 @@ public final class StorageFactory {
                                                            STREAM_SNAPSHOT_INTERVAL_MILLIS,
                                                            STREAM_SNAPSHOT_RETENTION_COUNT,
                                                            nodeId).withVolumeSentinel(volumeSentinel(tiers, snapshotDir));
-        var degrade = DegradeReporter.degradeReporter(STREAMS_NAME);
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig, degrade);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
         var demotionManager = DemotionManager.demotionManager(tiers,
@@ -1487,12 +1525,12 @@ public final class StorageFactory {
                                                 Option<DHTClient> dhtClient,
                                                 Option<EncryptionKeyring> keyring,
                                                 DegradeReporter degrade) {
-        return sharedTier(name, config.shared(), nodeId, dhtClient, keyring).flatMap(shared -> buildLocalTiers(name,
-                                                                                                               config,
-                                                                                                               shared,
-                                                                                                               keyring,
-                                                                                                               nodeId,
-                                                                                                               degrade));
+        return sharedTier(name, config.shared(), nodeId, dhtClient, keyring, degrade).flatMap(shared -> buildLocalTiers(name,
+                                                                                                                        config,
+                                                                                                                        shared,
+                                                                                                                        keyring,
+                                                                                                                        nodeId,
+                                                                                                                        degrade));
     }
 
     /// #249 (`withDht` became `withSharedTier`): the last tier of the instance's stack, per
@@ -1503,9 +1541,14 @@ public final class StorageFactory {
                                                             SharedTierConfig shared,
                                                             String nodeId,
                                                             Option<DHTClient> dhtClient,
-                                                            Option<EncryptionKeyring> keyring) {
+                                                            Option<EncryptionKeyring> keyring,
+                                                            DegradeReporter degrade) {
         return switch (shared) {
-            case SharedTierConfig.Dht _ -> Result.success(maybeEncryptDht(name, dhtClient, name + "-blocks", keyring));
+            case SharedTierConfig.Dht _ -> Result.success(maybeEncryptDht(name,
+                                                                          dhtClient,
+                                                                          name + "-blocks",
+                                                                          keyring,
+                                                                          degrade));
             case SharedTierConfig.S3 s3 -> S3SharedTier.s3SharedTier(name, s3, nodeId, keyring).map(admitted -> new TierBuild.SharedBuild(Option.some(admitted.tier()),
                                                                                                                                           Option.empty(),
                                                                                                                                           admitted.pendingMarker()));
@@ -1541,7 +1584,8 @@ public final class StorageFactory {
     private static TierBuild.SharedBuild maybeEncryptDht(String name,
                                                          Option<DHTClient> dhtClient,
                                                          String dhtKeyPrefix,
-                                                         Option<EncryptionKeyring> keyring) {
+                                                         Option<EncryptionKeyring> keyring,
+                                                         DegradeReporter degrade) {
         return dhtClient.fold(() -> new TierBuild.SharedBuild(Option.empty(), Option.empty()),
                               client -> {
                                   var readGate = Promise.<Unit> promise();
@@ -1552,7 +1596,7 @@ public final class StorageFactory {
                                                                           addressingFor(keyring));
                                   var tier = keyring.<StorageTier> fold(() -> dht,
                                                                         ring -> EncryptingStorageTier.wrap(dht, ring));
-                                  var check = new DhtMarkerCheck(name, dhtKeyPrefix, keyring, readGate);
+                                  var check = new DhtMarkerCheck(name, dhtKeyPrefix, keyring, readGate, degrade);
 
                                   return new TierBuild.SharedBuild(Option.some(tier), Option.some(check));
                               });
@@ -1649,11 +1693,34 @@ public final class StorageFactory {
                                                   DhtMarkerCheck check,
                                                   org.pragmatica.lang.io.TimeSpan attemptTimeout,
                                                   int attempt) {
-        return attemptDhtMarker(client, check, attemptTimeout).onFailure(cause -> log.warn("DHT encryption-marker check attempt {} for instance '{}' did not complete: {} "
-                                                                                          + "(operations on its DHT tier stay gated and the node stays not-ready until the check completes)",
-                                                                                           attempt,
-                                                                                           check.instanceName(),
-                                                                                           cause.message()));
+        return attemptDhtMarker(client, check, attemptTimeout).onSuccess(_ -> reportMarkerVerified(check))
+                               .onFailure(cause -> reportMarkerAttemptFailed(check, attempt, cause));
+    }
+
+    /// A0b: the first failed attempt of an instance raises ONE operator warning (a later attempt that fails the same way is the
+    /// WARN above and nothing more), and the attempt that completes closes it. A terminal cause is not reported: it is a refusal
+    /// or a stop, and ends the boot, which is its own signal.
+    private static void reportMarkerAttemptFailed(DhtMarkerCheck check, int attempt, Cause cause) {
+        log.warn("DHT encryption-marker check attempt {} for instance '{}' did not complete: {} "
+                + "(operations on its DHT tier stay gated and the node stays not-ready until the check completes)",
+                 attempt,
+                 check.instanceName(),
+                 cause.message());
+        if (!cause.isTerminal()) {
+            check.degrade()
+                 .degraded(OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED,
+                           "DHT encryption-marker check for instance '{}' did not complete (attempt {}): {}; its DHT tier stays gated and the node stays not-ready until it does",
+                           check.instanceName(),
+                           attempt,
+                           cause.message());
+        }
+    }
+
+    private static void reportMarkerVerified(DhtMarkerCheck check) {
+        check.degrade()
+             .recovered(OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED,
+                        "DHT encryption-marker check for instance '{}' completed; its DHT tier is admitted",
+                        check.instanceName());
     }
 
     /// #858 C2 test seam, renamed from the three-argument `verifyDhtMarker` by #1052: ONE marker get/put
@@ -2000,6 +2067,8 @@ public final class StorageFactory {
         // The prefetch manager needs the instance, and the instance must tell the manager of every read hit: the
         // listener reaches the manager through a holder bound once both exist.
         var prefetchHolder = new AtomicReference<>(PrefetchManager.NOOP);
+
+        tiers.forEach(tier -> tier.reportTo(degrade));
         var instance = StorageInstance.storageInstance(name,
                                                        tiers,
                                                        metadataStore,
@@ -2049,6 +2118,12 @@ public final class StorageFactory {
                                                            prefetchManager,
                                                            degrade);
                                });
+    }
+
+    /// A torn tail an append log cuts at open is raised as an operator warning for the instance (once: the cut is a fact of
+    /// the boot). The log writes its own WARN with every cut, so the sink only emits.
+    private static AppendLog.TornTailSink tornTailSinkOf(DegradeReporter degrade) {
+        return tail -> degrade.degraded(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "{}", tail.message());
     }
 
     /// `[storage.<name>] promotion` (default on) picks the real manager or the inert one. Built dormant either way:

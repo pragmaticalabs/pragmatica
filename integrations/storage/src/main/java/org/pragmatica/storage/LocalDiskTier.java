@@ -15,6 +15,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,6 +72,8 @@ public final class LocalDiskTier implements StorageTier {
     private final Fn2<Result<Unit>, Path, byte[]> writer;
     private final Fn1<Result<Unit>, Path> directoryForcer;
     private final AtomicReference<Option<MountClaim>> claim = new AtomicReference<>(none());
+
+    private final AtomicReference<DegradeReporter> degrade = new AtomicReference<>(DegradeReporter.degradeReporter("disk-tier"));
 
     private LocalDiskTier(Path basePath,
                           long maxBytes,
@@ -160,6 +163,13 @@ public final class LocalDiskTier implements StorageTier {
     }
 
     @Override
+    public Unit reportTo(DegradeReporter reporter) {
+        degrade.set(reporter);
+
+        return unit();
+    }
+
+    @Override
     public Promise<Option<byte[]>> get(BlockId id) {
         // Per-read deadline placed immediately after the lift (per Promise.timeout's contract)
         // so a wedged blocking read is cancelled rather than a downstream transformation.
@@ -172,11 +182,10 @@ public final class LocalDiskTier implements StorageTier {
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
         if (!reserveCapacity(content.length)) {
-            return StorageError.TierFull.tierFull(TierLevel.LOCAL_DISK,
-                                                  usedBytes.get(),
-                                                  maxBytes)
-                                        .promise();
+            return refuseFull();
         }
+
+        reportWritable();
         // A write that failed after reserveCapacity keeps no reservation: the tier would otherwise
         // over-count by the whole block until restart (review of #1095, SF-2 — reproduced under a
         // real ENOSPC). Released here, exactly once, whatever stage failed; the on-disk state is
@@ -190,6 +199,27 @@ public final class LocalDiskTier implements StorageTier {
                             () -> writeBlock(id, content))
                       .flatMap(Promise::resolved)
                       .withFailure(_ -> usedBytes.addAndGet(-content.length));
+    }
+
+    /// The put needs this tier and it is full: one operator warning per episode (the first refusal), then the typed error to
+    /// the caller. The episode ends with the next write that fits ([#reportWritable]).
+    private Promise<Unit> refuseFull() {
+        degrade.get()
+               .degraded(OperatorWarningCode.STORAGE_TIER_FULL,
+                         "Disk tier {} is full ({} of {} bytes): writes that need it fail with TierFull until space is freed; "
+                        + "raise [storage] disk_max_bytes, free disk space, or let demotion and garbage collection catch up",
+                         basePath,
+                         usedBytes.get(),
+                         maxBytes);
+
+        return StorageError.TierFull.tierFull(TierLevel.LOCAL_DISK,
+                                              usedBytes.get(),
+                                              maxBytes)
+                                    .promise();
+    }
+
+    private void reportWritable() {
+        degrade.get().recovered(OperatorWarningCode.STORAGE_TIER_FULL, "Disk tier {} accepts writes again", basePath);
     }
 
     /// Atomic CAS capacity reservation — prevents TOCTOU race.

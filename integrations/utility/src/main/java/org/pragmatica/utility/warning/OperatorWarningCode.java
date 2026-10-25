@@ -486,6 +486,39 @@ public enum OperatorWarningCode {
     /// A storage instance restored an older retained snapshot because the newest was unreadable: metadata recorded only in the
     /// unreadable file is lost unless a WAL replays it. The subject is the instance. A restore happens once, at boot, so no recovery.
     STORAGE_SNAPSHOT_FELL_BACK("storage-snapshot-fell-back", "storage", WarningLevel.WARNING),
+    /// A write was refused because a durable local-disk tier is full: the tier is a required tier of its instance, so the put
+    /// fails with `TierFull` instead of landing on memory alone. Raised once per episode, on the first refused write. The
+    /// subject is the instance. Closed by [#STORAGE_TIER_WRITABLE].
+    STORAGE_TIER_FULL("storage-tier-full", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_TIER_FULL], same subject: a write fit on the tier again. INFO, published only after a published
+    /// refusal for the instance (#752 mechanism).
+    STORAGE_TIER_WRITABLE("storage-tier-writable", "storage", WarningLevel.INFO, STORAGE_TIER_FULL),
+    /// The post-formation check of an instance's DHT encryption marker could not complete, so its DHT tier stays gated and the node
+    /// stays not-ready until it does. Raised once, on the first failed attempt; the check keeps retrying. The subject is the
+    /// instance. Closed by [#STORAGE_DHT_MARKER_VERIFIED]. A refusal (the marker disagrees with the configuration) aborts the boot
+    /// and is not reported here.
+    STORAGE_DHT_MARKER_UNVERIFIED("storage-dht-marker-unverified", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_DHT_MARKER_UNVERIFIED], same subject: a later attempt completed and the DHT tier was admitted. INFO,
+    /// published only after a published failure for the instance (#752 mechanism).
+    STORAGE_DHT_MARKER_VERIFIED("storage-dht-marker-verified",
+                                "storage",
+                                WarningLevel.INFO,
+                                STORAGE_DHT_MARKER_UNVERIFIED),
+    /// Demotion, promotion or garbage collection could not be started when the node reported ready, so the instance's tiers are not
+    /// kept within their watermarks and its garbage is not reclaimed. The subject is the instance (`leader-maintenance` for the
+    /// leader-pinned group). Closed by [#STORAGE_MAINTENANCE_STARTED].
+    STORAGE_MAINTENANCE_NOT_STARTED("storage-maintenance-not-started", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_NOT_STARTED], same subject: the managers were activated. INFO, published only after a
+    /// published failure for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_STARTED("storage-maintenance-started",
+                                "storage",
+                                WarningLevel.INFO,
+                                STORAGE_MAINTENANCE_NOT_STARTED),
+    /// A stream append log cut a torn tail while opening: bytes past the last valid record were discarded (they were never
+    /// acknowledged). The subject is the storage instance; the message names the log, the byte range and the last valid offset. The
+    /// cut happens once, at open, so there is no recovery code. Raised once per instance: a second log cut in the same boot is in
+    /// the node log only.
+    STORAGE_WAL_TAIL_CUT("storage-wal-tail-cut", "storage", WarningLevel.WARNING),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);

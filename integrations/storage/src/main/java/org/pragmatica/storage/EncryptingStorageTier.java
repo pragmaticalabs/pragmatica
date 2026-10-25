@@ -364,4 +364,9 @@ public final class EncryptingStorageTier implements StorageTier {
     public Unit release() {
         return delegate.release();
     }
+
+    @Override
+    public Unit reportTo(DegradeReporter reporter) {
+        return delegate.reportTo(reporter);
+    }
 }

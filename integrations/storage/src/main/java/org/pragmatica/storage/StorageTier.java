@@ -41,4 +41,10 @@ public interface StorageTier {
     default Unit release() {
         return Unit.unit();
     }
+
+    /// Hands the tier the degrade reporter of the instance it belongs to, so a condition only the tier can see (a durable disk
+    /// tier that is full) reaches the operator. Called once, when the instance is assembled. Defaults to nothing.
+    default Unit reportTo(DegradeReporter reporter) {
+        return Unit.unit();
+    }
 }
