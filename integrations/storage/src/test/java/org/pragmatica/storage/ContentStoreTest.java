@@ -417,6 +417,7 @@ class ContentStoreTest {
         @Test
         void manifest_idLengthPastTheRemainingBytes_isRefused_byOneByte() {
             assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(4, 3)).isEmpty()).isTrue();
+            assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(1, 0)).isEmpty()).as("nothing left for the id").isTrue();
         }
 
         @Test
