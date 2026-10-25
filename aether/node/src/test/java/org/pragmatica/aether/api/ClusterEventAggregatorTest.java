@@ -2479,6 +2479,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
                 OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
                 OperatorWarningCode.STORAGE_PROMOTION_STALLED,
+                OperatorWarningCode.STORAGE_DEGRADED,
                 OperatorWarningCode.WORKER_ASSIGNMENT_OVERDUE,
                 OperatorWarningCode.TOPIC_TIER_MISMATCH,
                 OperatorWarningCode.JSON_CONFIG_REJECTED,
