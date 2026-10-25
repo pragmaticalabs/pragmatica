@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -159,6 +160,59 @@ class AppHttpStateRotationAppliedTest {
         assertThat(newH1.isStopped()).as("orphaned new H1 listener closed").isTrue();
         assertThat(newH3.isStopped()).as("orphaned new H3 listener closed").isTrue();
         assertThat(harness.handled()).hasSize(1);
+    }
+
+    /// A rotation report that reaches a state before its route table (the previous pair already stopped by the adapter)
+    /// is adopted into the pair shape it reports; the republish after the adoption then lands it in `RouteReady`.
+    private static FsmTestHarness<AppHttpState, ClusterFsmEvent> harnessIn(Function<AppHttpContext, AppHttpState> state) {
+        return FsmTestHarness.<AppHttpState, ClusterFsmEvent>harness("app-http-rotation-adopt-test",
+                                                                      fsm -> state.apply(new AppHttpContext(fsm)));
+    }
+
+    @Test
+    void h1Only_onCertRotationApplied_withOnlyH1_adoptsTheH1() {
+        var newH1 = new FakeServer(3);
+        var harness = harnessIn(ctx -> new AppHttpState.H1Only(ctx, new FakeServer(1)));
+
+        harness.dispatch(new AppHttpEvents.CertRotationApplied(Option.some(newH1), Option.none(), RouteTable.empty()));
+
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().unwrap()).isSameAs(newH1);
+        assertThat(routeReady.h3().isEmpty()).isTrue();
+    }
+
+    @Test
+    void h1Only_onCertRotationApplied_withOnlyH3_adoptsTheH3() {
+        var newH3 = new FakeServer(4);
+        var harness = harnessIn(ctx -> new AppHttpState.H1Only(ctx, new FakeServer(1)));
+
+        harness.dispatch(new AppHttpEvents.CertRotationApplied(Option.none(), Option.some(newH3), RouteTable.empty()));
+
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().isEmpty()).isTrue();
+        assertThat(routeReady.h3().unwrap()).isSameAs(newH3);
+    }
+
+    @Test
+    void dual_onCertRotationApplied_withBoth_adoptsBoth() {
+        var newH1 = new FakeServer(3);
+        var newH3 = new FakeServer(4);
+        var harness = harnessIn(ctx -> new AppHttpState.Dual(ctx, new FakeServer(1), new FakeServer(2)));
+
+        harness.dispatch(applied(newH1, newH3));
+
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().unwrap()).isSameAs(newH1);
+        assertThat(routeReady.h3().unwrap()).isSameAs(newH3);
+    }
+
+    @Test
+    void dual_onCertRotationApplied_withNothingBound_fallsBackToStarting() {
+        var harness = harnessIn(ctx -> new AppHttpState.Dual(ctx, new FakeServer(1), new FakeServer(2)));
+
+        harness.dispatch(new AppHttpEvents.CertRotationApplied(Option.none(), Option.none(), RouteTable.empty()));
+
+        assertThat(harness.state()).isInstanceOf(AppHttpState.Starting.class);
     }
 
     private static RouteTable nonEmptyRouteTable() {
