@@ -3034,7 +3034,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (!seen && absent) {
             return;
         }
-
         // #1038: the re-check terminates the instance again, which is an automatic deletion; the mark's own warning stays open meanwhile.
         if (!reapMayProceed(nodeId, "re-check of an unconfirmed termination")) {
             return;
@@ -3280,7 +3279,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
-
         // #1038: the chain began while auto-heal was enabled; a retry of an automatic reap is still an automatic deletion. A drain-grace chain
         // was requested by a drain (operator command, join grace, surplus trim), not by the heal, and is not held here.
         if (!drainGraceChains.contains(nodeId) && !reapMayProceed(nodeId, "retry of a failed reap")) {
@@ -3351,7 +3349,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
-
         // #1038: the refusal was parked while auto-heal was enabled; a retry is still an AUTOMATIC deletion, held by the gate.
         if (!reapMayProceed(nodeId, "retry of a refused reap")) {
             return;
