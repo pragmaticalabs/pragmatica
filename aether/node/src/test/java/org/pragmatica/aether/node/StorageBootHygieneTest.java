@@ -10,8 +10,10 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.storage.MountClaim;
@@ -69,6 +71,17 @@ class StorageBootHygieneTest {
             Thread.sleep(10);
         }
         assertThat(raised).as("operator warnings handed to the sink within 5 s").hasSizeGreaterThanOrEqualTo(count);
+    }
+
+    /// Waits for `count` warnings of `code` for `subject`: a sink that was bound late is first offered the conditions already
+    /// open, so the size of everything raised says nothing about whether THIS warning has arrived.
+    private void awaitRaisedOf(OperatorWarningCode code, String subject, int count) throws InterruptedException {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (raisedOf(code, subject) < count && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(raisedOf(code, subject)).as("%s warnings for %s handed to the sink within 5 s", code, subject).isGreaterThanOrEqualTo(count);
     }
 
     // --- items 1 and 2: operator-set disk_path refuses, node-placed tiers degrade ---
@@ -151,6 +164,22 @@ class StorageBootHygieneTest {
         assertThat(artifacts.degrade().isDegraded(OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_FAILED)).isTrue();
     }
 
+    /// The streams instance is assembled by its own builder: its snapshot manager reports through the streams reporter too (the
+    /// streams snapshot directory sits under a regular file here, so no snapshot can be written).
+    @Test
+    void streamsInstance_snapshotWriteFailure_opensItsConditionOnTheStreamsReporter() {
+        var request = new StorageFactory.StreamSetupRequest(Option.none(),
+                                                            HermeticStorage.uncreatableRootIn(tempDir).resolve("streams"),
+                                                            NODE,
+                                                            Option.none());
+        var streams = StorageFactory.createAll(HermeticStorage.nodeStorageIn(tempDir, false), NODE, Option.none(), Option.none(), request).unwrap()
+                                    .get("streams");
+
+        streams.snapshotManager().forceSnapshot();
+
+        assertThat(streams.degrade().isDegraded(OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_FAILED)).isTrue();
+    }
+
     /// Both builders hand the instance's reporter to the demotion manager; the manager's own transition is tested in the
     /// storage module with a tier that is full, which a built instance cannot be put in without 10 GiB of writes.
     @Test
@@ -160,6 +189,173 @@ class StorageBootHygieneTest {
 
         assertThat(source.split(java.util.regex.Pattern.quote("DemotionManager.demotionManager(tiers,metadataStore,DemotionConfig.demotionConfig(),degrade)"), -1))
             .as("one per instance builder (configured instances, streams)").hasSize(3);
+    }
+
+    // --- item 7 remainder: tier full, maintenance activation, torn WAL tail ---
+    /// A full disk tier of a built instance reaches the operator through the instance's own reporter: the wiring from the
+    /// factory to the tier, which the storage module's test cannot see.
+    @Test
+    void builtInstance_fullDiskTier_opensTierFullOnTheInstancesReporter() {
+        var config = StorageConfig.storageConfig(8 * MIB, 16, tempDir.resolve("disk").toString(), tempDir.resolve("snap").toString(), 1000, "60s", 5, "", false);
+        var setup = boot(Map.of("vault", config), NODE).unwrap().get("vault");
+
+        var refused = setup.instance().put(new byte[64]).await();
+
+        assertThat(refused.isFailure()).as("64 bytes do not fit a 16 byte disk tier").isTrue();
+        assertThat(setup.degrade().isDegraded(OperatorWarningCode.STORAGE_TIER_FULL)).isTrue();
+    }
+
+    @Test
+    void streamsInstance_fullDiskTier_opensTierFullOnTheStreamsReporter() {
+        var request = new StorageFactory.StreamSetupRequest(Option.none(), tempDir.resolve("streams"), NODE, Option.none(), 16, Option.none());
+        var streams = StorageFactory.createAll(HermeticStorage.nodeStorageIn(tempDir, false), NODE, Option.none(), Option.none(), request).unwrap()
+                                    .get("streams");
+
+        var refused = streams.instance().put(new byte[64]).await();
+
+        assertThat(refused.isFailure()).isTrue();
+        assertThat(streams.degrade().isDegraded(OperatorWarningCode.STORAGE_TIER_FULL)).isTrue();
+    }
+
+    /// The streams instance has ONE reporter: the one its DHT marker check carries is the one its other conditions use, or a
+    /// marker that cannot be verified would be raised under a subject nothing else of the instance shares.
+    @Test
+    void streamsInstance_hasOneReporter_theOneItsDhtMarkerCheckCarries() {
+        var request = new StorageFactory.StreamSetupRequest(Option.some(new SilentDhtClient()), tempDir.resolve("streams"), NODE, Option.none());
+        var streams = StorageFactory.createAll(HermeticStorage.nodeStorageIn(tempDir, false), NODE, Option.none(), Option.none(), request).unwrap()
+                                    .get("streams");
+
+        assertThat(streams.dhtMarkerCheck().isPresent()).as("a streams instance with a DHT client carries a marker check").isTrue();
+        streams.dhtMarkerCheck().onPresent(check -> assertThat(check.degrade()).isSameAs(streams.degrade()));
+    }
+
+    private static final class SilentDhtClient implements org.pragmatica.dht.DHTClient {
+        @Override
+        public org.pragmatica.lang.Promise<Option<byte[]>> get(byte[] key) {
+            return org.pragmatica.lang.Promise.success(Option.none());
+        }
+
+        @Override
+        public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> put(byte[] key, byte[] value) {
+            return org.pragmatica.lang.Promise.success(org.pragmatica.lang.Unit.unit());
+        }
+
+        @Override
+        public org.pragmatica.lang.Promise<Boolean> remove(byte[] key) {
+            return org.pragmatica.lang.Promise.success(false);
+        }
+
+        @Override
+        public org.pragmatica.lang.Promise<Boolean> exists(byte[] key) {
+            return org.pragmatica.lang.Promise.success(false);
+        }
+
+        @Override
+        public org.pragmatica.dht.Partition partitionFor(byte[] key) {
+            return null;
+        }
+    }
+
+    /// A manager that cannot start is one operator warning for its instance, however often the ready signal repeats, and the
+    /// recovery when a later activation starts it. The other two managers are still attempted.
+    @Test
+    void activateNodeMaintenance_failingManager_raisesOnceThenRecoversOnALaterSuccess() throws Exception {
+        var built = boot(Map.of(), NODE).unwrap().get("artifacts");
+        var broken = new AtomicBoolean(true);
+        var setup = new StorageFactory.StorageSetup(built.name(),
+                                                    built.instance(),
+                                                    built.snapshotManager(),
+                                                    built.readinessGate(),
+                                                    built.metadataStore(),
+                                                    new FlakyDemotion(built.demotionManager(), broken),
+                                                    built.garbageCollector(),
+                                                    built.dhtMarkerCheck(),
+                                                    built.committedDiskMarker(),
+                                                    built.promotionManager(),
+                                                    built.prefetchManager(),
+                                                    built.degrade());
+        built.degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+
+        var first = StorageFactory.activateNodeMaintenance(Map.of("artifacts", setup));
+        var gcActiveAfterTheFailure = built.garbageCollector().isActive();
+        StorageFactory.activateNodeMaintenance(Map.of("artifacts", setup));
+        awaitRaisedOf(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED, "artifacts", 1);
+        broken.set(false);
+        var recovered = StorageFactory.activateNodeMaintenance(Map.of("artifacts", setup));
+        awaitRaisedOf(OperatorWarningCode.STORAGE_MAINTENANCE_STARTED, "artifacts", 1);
+
+        assertThat(first.isFailure()).isTrue();
+        assertThat(recovered.isSuccess()).isTrue();
+        assertThat(gcActiveAfterTheFailure).as("a failed demotion activation must not leave GC unattempted").isTrue();
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED, "artifacts")).isEqualTo(1);
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_MAINTENANCE_STARTED, "artifacts")).isEqualTo(1);
+    }
+
+    @Test
+    void activateNodeMaintenance_everyManagerStarting_raisesNothing() throws Exception {
+        var setups = boot(Map.of(), NODE).unwrap();
+        setups.get("artifacts").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        setups.get("content").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        awaitRaised(2);
+        raised.clear();
+
+        StorageFactory.activateNodeMaintenance(setups).onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+        Thread.sleep(100);
+
+        assertThat(raised).isEmpty();
+    }
+
+    /// A torn tail cut when the streams instance opens a partition log reaches the operator through the instance's reporter, once.
+    @Test
+    void streamsInstance_openingATornLog_raisesTheWalTailCutWarningOnce() throws Exception {
+        var logRoot = tempDir.resolve("logs");
+        var file = logRoot.resolve("orders").resolve("0.wal");
+        Files.createDirectories(file.getParent());
+        var wal = org.pragmatica.storage.AppendLog.open(file).unwrap();
+        wal.append(0, "e0".getBytes(), 1L).await().unwrap();
+        wal.close();
+        Files.write(file, new byte[] {0, 0, 0, 40, 1, 2, 3}, java.nio.file.StandardOpenOption.APPEND);
+        var request = new StorageFactory.StreamSetupRequest(Option.none(), tempDir.resolve("streams"), NODE, Option.none(),
+                                                            StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES, Option.some(logRoot));
+        var streams = StorageFactory.createAll(HermeticStorage.nodeStorageIn(tempDir, false), NODE, Option.none(), Option.none(), request).unwrap()
+                                    .get("streams");
+        streams.degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+
+        streams.instance().openLog("orders/0").unwrap().close();
+        streams.instance().openLog("orders/0").unwrap().close();
+        awaitRaisedOf(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "streams", 1);
+        Thread.sleep(100);
+
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "streams")).isEqualTo(1);
+        assertThat(raised.getFirst().message()).contains("torn tail").contains("0.wal");
+    }
+
+    /// A demotion manager whose activation fails while `broken` is set; everything else is the real one's.
+    private record FlakyDemotion(org.pragmatica.storage.DemotionManager real, AtomicBoolean broken) implements org.pragmatica.storage.DemotionManager {
+        @Override
+        public int demote() {
+            return real.demote();
+        }
+
+        @Override
+        public DemotionStats stats() {
+            return real.stats();
+        }
+
+        @Override
+        public Result<org.pragmatica.lang.Unit> activate() {
+            return broken.get() ? org.pragmatica.lang.utils.Causes.cause("demotion cannot start").result() : real.activate();
+        }
+
+        @Override
+        public Result<org.pragmatica.lang.Unit> deactivate() {
+            return real.deactivate();
+        }
+
+        @Override
+        public boolean isActive() {
+            return real.isActive();
+        }
     }
 
     // --- item 5: mount claim at boot ---
@@ -174,6 +370,22 @@ class StorageBootHygieneTest {
         second.onFailure(cause -> assertThat(cause.message()).contains("node-1").contains("already claimed"));
         first.values().forEach(setup -> setup.instance().shutdown());
         assertThat(boot(shared, "node-2").isSuccess()).as("a graceful shutdown releases the claim").isTrue();
+    }
+
+    /// A boot refused for one instance must not leave the claims of the instances built before it held by this still-living process.
+    @Test
+    void bootRefusedForALaterInstance_releasesTheClaimsOfTheEarlierOnes() {
+        var other = boot(Map.of("held", configAt(tempDir.resolve("held"))), "node-other").unwrap();
+        var configs = new java.util.LinkedHashMap<String, StorageConfig>();
+        configs.put("first", configAt(tempDir.resolve("first")));
+        configs.put("second", configAt(tempDir.resolve("held")));
+
+        var refused = boot(configs, "node-2");
+
+        assertThat(refused.isFailure()).as("the second instance meets the other node's claim").isTrue();
+        assertThat(boot(Map.of("again", configAt(tempDir.resolve("first"))), "node-3").isSuccess())
+            .as("the first instance's mount was given back when the boot was refused").isTrue();
+        other.values().forEach(setup -> setup.instance().shutdown());
     }
 
     @Test

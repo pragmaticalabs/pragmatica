@@ -134,6 +134,60 @@ class StorageDegradeWarningsTest {
         assertThat(raisedOf(OperatorWarningCode.STORAGE_SNAPSHOT_FELL_BACK)).isEqualTo(1);
     }
 
+    @Test
+    void diskTier_full_raisesOnceForTheEpisodeThenRecoversWhenAWriteFitsAgain() throws Exception {
+        bind();
+        var tier = LocalDiskTier.localDiskTier(tempDir.resolve("blocks"), 10).unwrap().open().unwrap();
+        var first = BlockId.blockId("12345678".getBytes()).unwrap();
+        var second = BlockId.blockId("abcdefgh".getBytes()).unwrap();
+        tier.reportTo(degrade);
+
+        tier.put(first, "12345678".getBytes()).await().unwrap();
+        var refusedOnce = tier.put(second, "abcdefgh".getBytes()).await();
+        var refusedTwice = tier.put(second, "abcdefgh".getBytes()).await();
+        awaitRaised(1);
+        tier.delete(first).await().unwrap();
+        tier.put(second, "abcdefgh".getBytes()).await().unwrap();
+        awaitRaised(2);
+
+        refusedOnce.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("the second block does not fit"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierFull.class));
+        assertThat(refusedTwice.isFailure()).isTrue();
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_FULL)).as("one warning for the episode, not one per refused put").isEqualTo(1);
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_WRITABLE)).as("one recovery when a write fits again").isEqualTo(1);
+        assertThat(raised.getFirst().subject()).isEqualTo("vault");
+    }
+
+    /// An encrypted instance's disk tier is the wrapper: the full tier reports through it, or an encrypted node would stay silent.
+    @Test
+    void encryptedDiskTier_full_reportsThroughTheWrapper() throws Exception {
+        bind();
+        var key = new byte[32];
+        new java.security.SecureRandom().nextBytes(key);
+        var keyring = EncryptionKeyring.encryptionKeyring(java.util.Map.of("k", BlockEncryptor.aesGcm(key, "k").unwrap()), "k").unwrap();
+        var disk = LocalDiskTier.localDiskTier(tempDir.resolve("blocks"), 8).unwrap().open().unwrap();
+        var wrapper = EncryptingStorageTier.armLocalDisk(disk, tempDir.resolve("blocks"), keyring).unwrap().tier();
+        wrapper.reportTo(degrade);
+
+        var refused = wrapper.put(BlockId.blockId("0123456789".getBytes()).unwrap(), "0123456789".getBytes()).await();
+        awaitRaised(1);
+
+        assertThat(refused.isFailure()).isTrue();
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_FULL)).isEqualTo(1);
+    }
+
+    @Test
+    void diskTier_withRoom_raisesNothing() throws Exception {
+        bind();
+        var tier = LocalDiskTier.localDiskTier(tempDir.resolve("blocks"), 1 << 20).unwrap().open().unwrap();
+        tier.reportTo(degrade);
+
+        tier.put(BlockId.blockId("fits".getBytes()).unwrap(), "fits".getBytes()).await().unwrap();
+        Thread.sleep(100);
+
+        assertThat(raised).as("a write that fits is not an operator event, and neither is the absence of a refusal").isEmpty();
+    }
+
     private void awaitRaised(int count) throws InterruptedException {
         var deadline = System.nanoTime() + 5_000_000_000L;
 

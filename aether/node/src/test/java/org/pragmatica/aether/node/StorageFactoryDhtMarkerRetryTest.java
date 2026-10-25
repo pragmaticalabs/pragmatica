@@ -6,7 +6,9 @@ package org.pragmatica.aether.node;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,6 +34,9 @@ import org.pragmatica.storage.EncryptingStorageTier;
 import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.storage.StorageError;
 import org.pragmatica.testlogging.LogCapture;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -331,6 +336,65 @@ class StorageFactoryDhtMarkerRetryTest {
 
         assertThat(client.markerGets()).as("PRECONDITION: the check must be retrying before the owner stops")
                                        .isGreaterThanOrEqualTo(atLeast);
+    }
+
+    /// A0b: a check that cannot complete is an operator-attention condition (the node stays not-ready), so its first failed
+    /// attempt raises ONE operator warning for the instance however many attempts follow, and the attempt that completes raises
+    /// the recovery.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void verifyDhtMarker_failedAttempts_raiseOneOperatorWarning_andTheCompletedCheckItsRecovery() throws InterruptedException {
+        var client = new ScriptedDHTClient();
+        var setup = setupWith(client);
+        var check = checkOf(setup);
+        var raised = new CopyOnWriteArrayList<OperatorWarning>();
+
+        setup.degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        client.failNextMarkerGetsWithoutQuorum(3);
+
+        StorageFactory.verifyDhtMarker(client, check, SHORT_ATTEMPT_TIMEOUT, FAST_BACKOFF, NEVER_STOPPED)
+                      .await(SETTLE_BOUND)
+                      .onFailure(cause -> fail("transient failures must not fail the check - " + cause.message()));
+        awaitRaisedOf(raised, OperatorWarningCode.STORAGE_DHT_MARKER_VERIFIED);
+
+        assertThat(client.markerGets()).as("three failed attempts and the one that completed").isEqualTo(4);
+        assertThat(raisedOf(raised, OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED)).as("one warning, not one per attempt").isEqualTo(1);
+        assertThat(raisedOf(raised, OperatorWarningCode.STORAGE_DHT_MARKER_VERIFIED)).as("one recovery when the check completes").isEqualTo(1);
+        assertThat(raised).allSatisfy(warning -> assertThat(warning.subject()).isEqualTo(INSTANCE));
+    }
+
+    /// A refusal is terminal: it aborts the boot, which is its own signal, so no "unverified" condition is opened for it.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void verifyDhtMarker_refusal_raisesNoOperatorWarning() throws InterruptedException {
+        var client = new ScriptedDHTClient();
+        var setup = setupWith(client);
+        var check = checkOf(setup);
+        var raised = new CopyOnWriteArrayList<OperatorWarning>();
+
+        setup.degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        client.seedMarker(check.dhtKeyPrefix(), "key-1");
+
+        StorageFactory.verifyDhtMarker(client, check, SHORT_ATTEMPT_TIMEOUT, FAST_BACKOFF, NEVER_STOPPED)
+                      .await(SETTLE_BOUND)
+                      .onSuccess(_ -> fail("a marker present with no keyring must stay fatal"));
+        Thread.sleep(300);
+
+        assertThat(raised).as("a refusal ends the boot; it opens no degrade condition").isEmpty();
+        assertThat(setup.degrade().isDegraded(OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED)).isFalse();
+    }
+
+    private static long raisedOf(List<OperatorWarning> raised, OperatorWarningCode code) {
+        return raised.stream().filter(warning -> warning.code() == code).count();
+    }
+
+    private static void awaitRaisedOf(List<OperatorWarning> raised, OperatorWarningCode code) throws InterruptedException {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (raisedOf(raised, code) < 1 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(raisedOf(raised, code)).as("%s handed to the sink within 5 s", code).isGreaterThanOrEqualTo(1);
     }
 
     /// In-memory `DHTClient` whose marker-key gets can be scripted to hang, to fail fast without quorum, or

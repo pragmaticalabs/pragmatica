@@ -162,6 +162,7 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE,
         OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED,
         OperatorWarningCode.STORAGE_SNAPSHOT_FELL_BACK,
+        OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
         OperatorWarningCode.SWIM_KILL_GATE_HELD,
         OperatorWarningCode.CORE_ABSENCE_FENCE,
         OperatorWarningCode.REPLICA_FSYNC_FAILED,
