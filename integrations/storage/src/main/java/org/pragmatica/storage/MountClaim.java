@@ -1,12 +1,12 @@
 package org.pragmatica.storage;
 
-import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -39,6 +39,8 @@ public final class MountClaim {
     public static final String FILE_NAME = ".mount-claim";
     private static final Logger log = LoggerFactory.getLogger(MountClaim.class);
     private static final long START_TOLERANCE_MILLIS = 2_000L;
+    /// The one outcome of `CREATE_NEW` that is an answer, not a failure: the file exists.
+    private static final Cause ALREADY_THERE = Causes.cause("mount claim file already exists");
 
     private final Path file;
     private final Holder self;
@@ -97,19 +99,24 @@ public final class MountClaim {
                       .map(_ -> new MountClaim(file, self));
     }
 
+    /// True when this call created the claim file, false when the file was already there (someone holds the directory, or
+    /// held it): `CREATE_NEW` is atomic, so exactly one of two racing claimers creates it.
     private static Result<Boolean> createExclusively(Path file, String content) {
-        return Result.lift(Causes::fromThrowable, () -> writeNew(file, content));
+        return Result.lift(MountClaim::createFailure,
+                           () -> Files.writeString(file, content, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))
+                     .fold(MountClaim::alreadyThereOrFailed, _ -> Result.success(true));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static boolean writeNew(Path file, String content) throws IOException {
-        try {
-            Files.writeString(file, content, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+    private static Cause createFailure(Throwable thrown) {
+        return thrown instanceof FileAlreadyExistsException
+               ? ALREADY_THERE
+               : Causes.fromThrowable(thrown);
+    }
 
-            return true;
-        } catch (FileAlreadyExistsException e) {
-            return false;
-        }
+    private static Result<Boolean> alreadyThereOrFailed(Cause cause) {
+        return cause == ALREADY_THERE
+               ? Result.success(false)
+               : cause.result();
     }
 
     /// Who holds the directory: a node id, on a host, as a process started at `startMillis`.
@@ -174,6 +181,11 @@ public final class MountClaim {
                          .or(0L);
         }
 
+        /// FER (degrade forward): a host name that cannot be resolved is recorded as `unknown-host` rather than refusing
+        /// the boot. Guarantee earned: the claim is still taken and still keyed by node id and process; what is lost is the
+        /// cross-host distinction, so two hosts that both cannot resolve compare as the same host and judge each other's
+        /// claim by a local pid lookup (a live claim of the other host can then look gone). Mechanism: none beyond this
+        /// single attempt; resolving the name is the operator's fix.
         private static String localHost() {
             return Result.lift(Causes::fromThrowable,
                                () -> InetAddress.getLocalHost().getHostName())

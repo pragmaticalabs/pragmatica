@@ -162,8 +162,10 @@ public final class LocalDiskTier implements StorageTier {
         claim.set(some(taken));
     }
 
-    /// Gives the mount claim up, when this tier holds one. A claim that cannot be removed is logged and left: the next
-    /// claimer finds this process gone and takes it over.
+    /// Gives the mount claim up, when this tier holds one. FER (degrade forward): a claim that cannot be removed is
+    /// logged and left, because the node is already shutting down and has nothing to roll back to. Guarantee earned: the
+    /// shutdown completes; the next claimer finds this process gone and takes the claim over (same host), or is refused
+    /// until the file is removed (other host). Mechanism: the liveness check in [MountClaim], no retry.
     @Contract
     @Override
     public void release() {
