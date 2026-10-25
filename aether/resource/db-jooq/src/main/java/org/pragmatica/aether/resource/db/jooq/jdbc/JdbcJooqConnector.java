@@ -15,6 +15,7 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.jooq.JooqConnector;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -28,11 +29,13 @@ import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
 @SuppressWarnings("JBCT-EX-01")
 public final class JdbcJooqConnector implements JooqConnector {
+    private static final String TRANSACTION = "TRANSACTION";
     private static final System.Logger LOG = System.getLogger(JdbcJooqConnector.class.getName());
 
     private final DatabaseConnectorConfig config;
@@ -66,7 +69,7 @@ public final class JdbcJooqConnector implements JooqConnector {
 
     @Override
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-        return Promise.lift(e -> mapException(e, query.getSQL()), () -> doFetchOne(query));
+        return Promise.lift(e -> mapException(e, query.getSQL()), () -> doFetchOne(query)).flatMap(Result::async);
     }
 
     @Override
@@ -86,7 +89,7 @@ public final class JdbcJooqConnector implements JooqConnector {
 
     @Override
     public <T> Promise<T> transactional(TransactionCallback<T> callback) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> runTransaction(callback));
+        return Promise.lift(e -> mapException(e, TRANSACTION), () -> runTransaction(callback)).flatMap(Result::async);
     }
 
     @Override
@@ -109,7 +112,7 @@ public final class JdbcJooqConnector implements JooqConnector {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> closeDataSource(dataSource));
     }
 
-    private <R extends Record> R doFetchOne(ResultQuery<R> query) throws Exception {
+    private <R extends Record> Result<R> doFetchOne(ResultQuery<R> query) throws Exception {
         try (var conn = dataSource.getConnection()) {
             return JooqConnector.extractSingleResult(DSL.using(conn, dialect).fetch(query));
         }
@@ -133,7 +136,7 @@ public final class JdbcJooqConnector implements JooqConnector {
         }
     }
 
-    private <T> T runTransaction(TransactionCallback<T> callback) throws Exception {
+    private <T> Result<T> runTransaction(TransactionCallback<T> callback) throws Exception {
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
             try {
@@ -149,17 +152,14 @@ public final class JdbcJooqConnector implements JooqConnector {
         }
     }
 
-    private <T> T rollbackAndFail(Connection conn, org.pragmatica.lang.Cause cause) {
+    private <T> Result<T> rollbackAndFail(Connection conn, Cause cause) {
         rollbackSilently(conn);
 
-        return cause.<T> result()
-                    .unwrap();
+        return cause.result();
     }
 
-    private <T> T commitAndReturn(Connection conn, T value) {
-        commitConnection(conn);
-
-        return value;
+    private <T> Result<T> commitAndReturn(Connection conn, T value) {
+        return Result.lift(e -> mapException(e, "COMMIT"), conn::commit).map(_ -> value);
     }
 
     private Unit rollbackSilently(Connection conn) {
@@ -168,12 +168,6 @@ public final class JdbcJooqConnector implements JooqConnector {
         } catch (SQLException e) {
             LOG.log(System.Logger.Level.DEBUG, "Rollback failed", e);
         }
-
-        return unit();
-    }
-
-    private Unit commitConnection(Connection conn) {
-        Result.lift(DatabaseConnectorError::databaseFailure, conn::commit).unwrap();
 
         return unit();
     }
@@ -193,14 +187,25 @@ public final class JdbcJooqConnector implements JooqConnector {
     }
 
     static DatabaseConnectorError mapException(Throwable throwable, String sql) {
-        return switch (throwable) {
+        return sqlException(throwable).map(e -> mapSqlException(e, sql))
+                                      .or(() -> DatabaseConnectorError.databaseFailure(throwable));
+    }
+
+    /// jOOQ reports a JDBC failure as a `DataAccessException` whose cause is the `SQLException` carrying the SQLSTATE.
+    private static Option<SQLException> sqlException(Throwable throwable) {
+        return throwable instanceof SQLException e
+               ? some(e)
+               : option(throwable.getCause()).flatMap(JdbcJooqConnector::sqlException);
+    }
+
+    private static DatabaseConnectorError mapSqlException(SQLException e, String sql) {
+        return switch (e) {
             case SQLTimeoutException _ -> DatabaseConnectorError.timeout(sql);
-            case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation(e.getMessage());
-            case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage());
-            case SQLException e -> option(e.getSQLState()).filter(s -> s.startsWith("08")).map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
-                                                                                                                                                                     e)).or(() -> DatabaseConnectorError.queryFailed(sql,
-                                                                                                                                                                                                                     e));
-            default -> DatabaseConnectorError.databaseFailure(throwable);
+            case SQLIntegrityConstraintViolationException c -> DatabaseConnectorError.constraintViolation("unknown",
+                                                                                                          c.getMessage(),
+                                                                                                          option(c.getSQLState()));
+            case SQLTransactionRollbackException r -> DatabaseConnectorError.transactionRollback(r.getMessage(), option(r.getSQLState()));
+            default -> DatabaseConnectorError.fromSqlState(option(e.getSQLState()), sql, e.getMessage(), some(e));
         };
     }
 
@@ -212,7 +217,7 @@ public final class JdbcJooqConnector implements JooqConnector {
 
         @Override
         public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()), () -> txFetchOne(query));
+            return Promise.lift(e -> mapException(e, query.getSQL()), () -> txFetchOne(query)).flatMap(Result::async);
         }
 
         @Override
@@ -244,7 +249,7 @@ public final class JdbcJooqConnector implements JooqConnector {
                           .recover(_ -> false);
         }
 
-        private <R extends Record> R txFetchOne(ResultQuery<R> query) {
+        private <R extends Record> Result<R> txFetchOne(ResultQuery<R> query) {
             return JooqConnector.extractSingleResult(DSL.using(conn, dialect).fetch(query));
         }
 

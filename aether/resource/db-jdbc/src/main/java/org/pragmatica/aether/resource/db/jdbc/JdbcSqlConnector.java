@@ -19,6 +19,7 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -26,11 +27,13 @@ import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
 @SuppressWarnings("JBCT-EX-01")
 public final class JdbcSqlConnector implements SqlConnector {
+    private static final String TRANSACTION = "TRANSACTION";
     private static final System.Logger LOG = System.getLogger(JdbcSqlConnector.class.getName());
 
     private final DatabaseConnectorConfig config;
@@ -47,17 +50,17 @@ public final class JdbcSqlConnector implements SqlConnector {
 
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(e -> mapException(e, sql), () -> runQueryOne(sql, params, mapper));
+        return Promise.lift(e -> mapException(e, sql), () -> runQueryOne(sql, params, mapper)).flatMap(Result::async);
     }
 
     @Override
     public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(e -> mapException(e, sql), () -> runQueryOptional(sql, params, mapper));
+        return Promise.lift(e -> mapException(e, sql), () -> runQueryOptional(sql, params, mapper)).flatMap(Result::async);
     }
 
     @Override
     public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(e -> mapException(e, sql), () -> runQueryList(sql, params, mapper));
+        return Promise.lift(e -> mapException(e, sql), () -> runQueryList(sql, params, mapper)).flatMap(Result::async);
     }
 
     @Override
@@ -72,7 +75,7 @@ public final class JdbcSqlConnector implements SqlConnector {
 
     @Override
     public <T> Promise<T> transactional(SqlConnector.TransactionCallback<T> callback) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> runTransaction(callback));
+        return Promise.lift(e -> mapException(e, TRANSACTION), () -> runTransaction(callback)).flatMap(Result::async);
     }
 
     @Override
@@ -95,7 +98,7 @@ public final class JdbcSqlConnector implements SqlConnector {
         return Promise.lift(DatabaseConnectorError::databaseFailure, this::closeDataSource);
     }
 
-    private <T> T runQueryOne(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
+    private <T> Result<T> runQueryOne(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
         try (var conn = dataSource.getConnection();
              var stmt = buildStatement(conn, sql, params);
              var rs = stmt.executeQuery()) {
@@ -103,34 +106,19 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
     }
 
-    private <T> Option<T> runQueryOptional(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
+    private <T> Result<Option<T>> runQueryOptional(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
         try (var conn = dataSource.getConnection();
              var stmt = buildStatement(conn, sql, params);
              var rs = stmt.executeQuery()) {
-            if (!rs.next()) {
-                return none();
-            }
-
-            var accessor = new JdbcRowAccessor(rs);
-
-            return mapper.map(accessor)
-                         .map(Option::some)
-                         .or(Option::none);
+            return mapOptionalRow(rs, mapper);
         }
     }
 
-    private <T> List<T> runQueryList(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
+    private <T> Result<List<T>> runQueryList(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
         try (var conn = dataSource.getConnection();
              var stmt = buildStatement(conn, sql, params);
              var rs = stmt.executeQuery()) {
-            var results = new ArrayList<T>();
-            var accessor = new JdbcRowAccessor(rs);
-
-            while (rs.next()) {
-                results.add(mapper.map(accessor).unwrap());
-            }
-
-            return results;
+            return mapAllRows(rs, mapper);
         }
     }
 
@@ -151,7 +139,7 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
     }
 
-    private <T> T runTransaction(SqlConnector.TransactionCallback<T> callback) throws Exception {
+    private <T> Result<T> runTransaction(SqlConnector.TransactionCallback<T> callback) throws Exception {
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
             try {
@@ -167,22 +155,18 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
     }
 
-    private <T> T resolveTransaction(Connection conn, Result<T> result) {
+    private <T> Result<T> resolveTransaction(Connection conn, Result<T> result) {
         return result.fold(cause -> rollbackAndFail(conn, cause), value -> commitAndReturn(conn, value));
     }
 
-    private <T> T rollbackAndFail(Connection conn, org.pragmatica.lang.Cause cause) {
+    private <T> Result<T> rollbackAndFail(Connection conn, Cause cause) {
         rollbackSilently(conn);
 
-        return DatabaseConnectorError.connectionFailed(cause.message())
-                                     .<T> result()
-                                     .unwrap();
+        return cause.result();
     }
 
-    private <T> T commitAndReturn(Connection conn, T value) {
-        commitConnection(conn);
-
-        return value;
+    private <T> Result<T> commitAndReturn(Connection conn, T value) {
+        return Result.lift(e -> mapException(e, "COMMIT"), conn::commit).map(_ -> value);
     }
 
     private PreparedStatement buildStatement(Connection conn, String sql, Object[] params) throws SQLException {
@@ -200,21 +184,37 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
     }
 
-    private static <T> T mapSingleRow(ResultSet rs, RowMapper<T> mapper) throws Exception {
+    private static <T> Result<T> mapSingleRow(ResultSet rs, RowMapper<T> mapper) throws SQLException {
         if (!rs.next()) {
-            return DatabaseConnectorError.ResultNotFound.INSTANCE.<T> result().unwrap();
+            return DatabaseConnectorError.ResultNotFound.INSTANCE.result();
         }
 
-        var accessor = new JdbcRowAccessor(rs);
-        var result = mapper.map(accessor);
+        var result = mapper.map(new JdbcRowAccessor(rs));
 
         if (rs.next()) {
-            return DatabaseConnectorError.multipleResults(countRemaining(rs) + 2)
-                                         .<T> result()
-                                         .unwrap();
+            return DatabaseConnectorError.multipleResults(countRemaining(rs) + 2).result();
         }
 
-        return result.unwrap();
+        return result;
+    }
+
+    private static <T> Result<Option<T>> mapOptionalRow(ResultSet rs, RowMapper<T> mapper) throws SQLException {
+        if (!rs.next()) {
+            return Result.success(none());
+        }
+
+        return mapper.map(new JdbcRowAccessor(rs)).map(Option::some);
+    }
+
+    private static <T> Result<List<T>> mapAllRows(ResultSet rs, RowMapper<T> mapper) throws SQLException {
+        var results = new ArrayList<Result<T>>();
+        var accessor = new JdbcRowAccessor(rs);
+
+        while (rs.next()) {
+            results.add(mapper.map(accessor));
+        }
+
+        return Result.firstFailureOf(results);
     }
 
     private static int countRemaining(ResultSet rs) throws SQLException {
@@ -251,20 +251,14 @@ public final class JdbcSqlConnector implements SqlConnector {
         return unit();
     }
 
-    private Unit commitConnection(Connection conn) {
-        Result.lift(DatabaseConnectorError::databaseFailure, conn::commit).unwrap();
-
-        return unit();
-    }
-
     private static DatabaseConnectorError mapException(Throwable throwable, String sql) {
         return switch (throwable) {
             case SQLTimeoutException _ -> DatabaseConnectorError.timeout(sql);
-            case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation(e.getMessage());
-            case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage());
-            case SQLException e -> option(e.getSQLState()).filter(s -> s.startsWith("08")).map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
-                                                                                                                                                                     e)).or(() -> DatabaseConnectorError.queryFailed(sql,
-                                                                                                                                                                                                                     e));
+            case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation("unknown",
+                                                                                                          e.getMessage(),
+                                                                                                          option(e.getSQLState()));
+            case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage(), option(e.getSQLState()));
+            case SQLException e -> DatabaseConnectorError.fromSqlState(option(e.getSQLState()), sql, e.getMessage(), some(e));
             default -> DatabaseConnectorError.databaseFailure(throwable);
         };
     }
@@ -272,17 +266,17 @@ public final class JdbcSqlConnector implements SqlConnector {
     private record TransactionalJdbcConnector(DatabaseConnectorConfig config, Connection conn) implements SqlConnector {
         @Override
         public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-            return Promise.lift(e -> mapException(e, sql), () -> txQueryOne(sql, params, mapper));
+            return Promise.lift(e -> mapException(e, sql), () -> txQueryOne(sql, params, mapper)).flatMap(Result::async);
         }
 
         @Override
         public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-            return Promise.lift(e -> mapException(e, sql), () -> txQueryOptional(sql, params, mapper));
+            return Promise.lift(e -> mapException(e, sql), () -> txQueryOptional(sql, params, mapper)).flatMap(Result::async);
         }
 
         @Override
         public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
-            return Promise.lift(e -> mapException(e, sql), () -> txQueryList(sql, params, mapper));
+            return Promise.lift(e -> mapException(e, sql), () -> txQueryList(sql, params, mapper)).flatMap(Result::async);
         }
 
         @Override
@@ -307,36 +301,21 @@ public final class JdbcSqlConnector implements SqlConnector {
                           .recover(_ -> false);
         }
 
-        private <T> T txQueryOne(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
+        private <T> Result<T> txQueryOne(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
             try (var stmt = txBuildStatement(sql, params); var rs = stmt.executeQuery()) {
                 return mapSingleRow(rs, mapper);
             }
         }
 
-        private <T> Option<T> txQueryOptional(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
+        private <T> Result<Option<T>> txQueryOptional(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
             try (var stmt = txBuildStatement(sql, params); var rs = stmt.executeQuery()) {
-                if (!rs.next()) {
-                    return none();
-                }
-
-                var accessor = new JdbcRowAccessor(rs);
-
-                return mapper.map(accessor)
-                             .map(Option::some)
-                             .or(Option::none);
+                return mapOptionalRow(rs, mapper);
             }
         }
 
-        private <T> List<T> txQueryList(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
+        private <T> Result<List<T>> txQueryList(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
             try (var stmt = txBuildStatement(sql, params); var rs = stmt.executeQuery()) {
-                var results = new ArrayList<T>();
-                var accessor = new JdbcRowAccessor(rs);
-
-                while (rs.next()) {
-                    results.add(mapper.map(accessor).unwrap());
-                }
-
-                return results;
+                return mapAllRows(rs, mapper);
             }
         }
 

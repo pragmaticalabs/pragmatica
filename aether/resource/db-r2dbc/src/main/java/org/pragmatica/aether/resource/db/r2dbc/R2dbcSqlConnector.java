@@ -25,6 +25,8 @@ import io.r2dbc.spi.Row;
 import io.r2dbc.spi.RowMetadata;
 import io.r2dbc.spi.Statement;
 
+import static org.pragmatica.lang.Option.none;
+
 
 public final class R2dbcSqlConnector implements SqlConnector {
     private final DatabaseConnectorConfig config;
@@ -136,7 +138,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
     }
 
     private static <T> Promise<List<T>> collectSuccessfulResults(List<Result<T>> results) {
-        return Result.allOf(results)
+        return Result.firstFailureOf(results)
                      .mapError(R2dbcSqlConnector::toConnectorError)
                      .async();
     }
@@ -219,22 +221,22 @@ public final class R2dbcSqlConnector implements SqlConnector {
         return counts;
     }
 
-    static DatabaseConnectorError toConnectorError(Cause cause) {
+    static Cause toConnectorError(Cause cause) {
         if (cause instanceof R2dbcError r2dbcError) {
             return mapR2dbcError(r2dbcError);
         }
 
-        return DatabaseConnectorError.databaseFailure(new RuntimeException(cause.message()));
+        return cause;
     }
 
     private static DatabaseConnectorError mapR2dbcError(R2dbcError r2dbcError) {
         return switch (r2dbcError) {
             case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
             case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
-            case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());
-            case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());
+            case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message(), none(), c.sqlState());
+            case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation("unknown", v.constraint(), v.sqlState());
             case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
-            case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message());
+            case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message(), none(), q.sqlState());
             case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
         };
     }

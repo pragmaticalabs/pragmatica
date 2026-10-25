@@ -27,6 +27,8 @@ import org.jooq.ResultQuery;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
+import static org.pragmatica.lang.Option.none;
+
 
 public final class R2dbcJooqConnector implements JooqConnector {
     private final DatabaseConnectorConfig config;
@@ -145,20 +147,20 @@ public final class R2dbcJooqConnector implements JooqConnector {
         return ReactiveOperations.fromVoidPublisher(conn.close()).fold(_ -> Promise.resolved(result));
     }
 
-    static DatabaseConnectorError toConnectorError(Cause cause) {
+    static Cause toConnectorError(Cause cause) {
         if (cause instanceof R2dbcError r2dbcError) {
             return switch (r2dbcError) {
                 case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
                 case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
-                case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());
-                case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());
+                case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message(), none(), c.sqlState());
+                case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation("unknown", v.constraint(), v.sqlState());
                 case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
-                case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message());
+                case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message(), none(), q.sqlState());
                 case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
             };
         }
 
-        return DatabaseConnectorError.databaseFailure(new RuntimeException(cause.message()));
+        return cause;
     }
 
     private record TransactionalR2dbcJooqConnector(DatabaseConnectorConfig config,
@@ -174,6 +176,7 @@ public final class R2dbcJooqConnector implements JooqConnector {
             return Promise.lift(e -> mapException(e,
                                                   query.getSQL()),
                                 () -> JooqConnector.extractSingleResult(DSL.using(connection, dialect).fetch(query)))
+                          .flatMap(Result::async)
                           .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
