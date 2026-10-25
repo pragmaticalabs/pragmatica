@@ -35,4 +35,10 @@ public interface StorageTier {
     default boolean isDurable() {
         return false;
     }
+
+    /// Gives up whatever the tier holds exclusively: the mount claim of a [LocalDiskTier]. Called once, when the
+    /// storage instance shuts down. Defaults to nothing.
+    default Unit release() {
+        return Unit.unit();
+    }
 }

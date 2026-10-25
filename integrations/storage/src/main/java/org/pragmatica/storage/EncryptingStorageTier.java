@@ -191,9 +191,12 @@ public final class EncryptingStorageTier implements StorageTier {
     }
 
     private static boolean isBlockFile(Path path) {
-        return FileOps.isRegularFile(path) && !path.getFileName()
-                                                   .toString()
-                                                   .equals(MARKER_FILE_NAME);
+        return FileOps.isRegularFile(path) && !isBookkeeping(path.getFileName()
+                                                                  .toString());
+    }
+
+    private static boolean isBookkeeping(String fileName) {
+        return fileName.equals(MARKER_FILE_NAME) || fileName.equals(MountClaim.CLAIM_FILE);
     }
 
     /// #1190: the marker is a CREATE whose presence a later boot's fail-closed guard keys on, so it
@@ -356,5 +359,10 @@ public final class EncryptingStorageTier implements StorageTier {
     @Override
     public boolean isDurable() {
         return delegate.isDurable();
+    }
+
+    @Override
+    public Unit release() {
+        return delegate.release();
     }
 }

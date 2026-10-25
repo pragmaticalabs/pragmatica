@@ -796,6 +796,7 @@ final class DefaultStorageInstance implements StorageInstance {
     @Contract
     public void shutdown() {
         writeBehindQueue.onPresent(WriteBehindQueue::deactivate);
+        tiers.forEach(StorageTier::release);
         log.info("Storage instance '{}' shut down", name);
     }
 

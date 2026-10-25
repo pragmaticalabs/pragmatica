@@ -4,6 +4,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
@@ -69,6 +70,7 @@ public final class LocalDiskTier implements StorageTier {
     private final Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride;
     private final Fn2<Result<Unit>, Path, byte[]> writer;
     private final Fn1<Result<Unit>, Path> directoryForcer;
+    private final AtomicReference<Option<MountClaim>> claim = new AtomicReference<>(none());
 
     private LocalDiskTier(Path basePath,
                           long maxBytes,
@@ -139,6 +141,23 @@ public final class LocalDiskTier implements StorageTier {
                       .flatMap(_ -> FileOps.walk(basePath, FileOps::isRegularFile))
                       .onSuccess(LocalDiskTier::removeLeftoverPartials)
                       .map(_ -> countUsedBytes());
+    }
+
+    /// [#open] after `nodeId` has claimed the mount exclusively ([MountClaim]): the claim is taken before the open
+    /// removes anything, so a node refused here has touched nothing on the mount. A claim held by another live node
+    /// fails with [MountClaim.Held]. The claim is given up by [#release].
+    public Result<LocalDiskTier> openClaiming(String nodeId) {
+        return MountClaim.claim(basePath, nodeId)
+                         .onSuccess(held -> claim.set(some(held)))
+                         .flatMap(_ -> open());
+    }
+
+    @Override
+    public Unit release() {
+        claim.getAndSet(none())
+             .onPresent(MountClaim::release);
+
+        return unit();
     }
 
     @Override
@@ -344,9 +363,15 @@ public final class LocalDiskTier implements StorageTier {
 
     private static long blockBytes(List<Path> paths) {
         return paths.stream()
-                    .filter(path -> !isPartial(path))
+                    .filter(path -> !isPartial(path) && !isClaim(path))
                     .mapToLong(LocalDiskTier::fileSizeOrZero)
                     .sum();
+    }
+
+    private static boolean isClaim(Path path) {
+        return path.getFileName()
+                   .toString()
+                   .equals(MountClaim.CLAIM_FILE);
     }
 
     private static boolean isPartial(Path path) {
