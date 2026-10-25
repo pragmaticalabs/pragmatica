@@ -1,6 +1,5 @@
 package org.pragmatica.storage;
 
-
 /// A condition of a storage instance that needs an operator (A0b): the instance is running with less than it was
 /// configured for, or a protection it relies on is not working. A component reports the conditions it holds NOW
 /// ([DemotionManager#conditions], [SnapshotManager#conditions]); the node turns the appearance and the disappearance

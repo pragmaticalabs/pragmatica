@@ -66,9 +66,12 @@ public sealed interface StorageError extends Cause {
 
         @Override
         public String message() {
-            return "Storage directory " + mount + " is already claimed by node '" + holderNodeId + "' (process "
-                   + holderPid + " on " + holderHost + "): two nodes cannot share one mount. Give each node its own "
-                   + "disk_path; if that node is gone and ran on another host, remove " + mount.resolve(MountClaim.FILE_NAME);
+            return "Storage directory " + mount
+                 + " is already claimed by node '" + holderNodeId
+                 + "' (process " + holderPid
+                 + " on " + holderHost
+                 + "): two nodes cannot share one mount. Give each node its own "
+                 + "disk_path; if that node is gone and ran on another host, remove " + mount.resolve(MountClaim.FILE_NAME);
         }
     }
 

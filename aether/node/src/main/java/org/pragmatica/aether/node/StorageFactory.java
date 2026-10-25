@@ -322,7 +322,9 @@ public final class StorageFactory {
         /// A0b: the conditions this instance holds now that need an operator: what boot left standing, then what its
         /// demotion and snapshot managers report. See [StorageAttentionWatch].
         public List<StorageCondition> conditions() {
-            return Stream.of(bootConditions, demotionManager.conditions(), snapshotManager.conditions())
+            return Stream.of(bootConditions,
+                             demotionManager.conditions(),
+                             snapshotManager.conditions())
                          .flatMap(List::stream)
                          .toList();
         }
@@ -541,8 +543,8 @@ public final class StorageFactory {
     /// (A0b). The ready signal fires on every entry to Active; the gate takes the second call as a no-op.
     @Contract
     public static void signalConsensusSynced(Map<String, StorageSetup> setups) {
-        setups.values()
-              .forEach(setup -> setup.readinessGate().consensusSynced());
+        setups.values().forEach(setup -> setup.readinessGate()
+                                              .consensusSynced());
     }
 
     /// Mirror of [#activateNodeMaintenance], run when the node stops.
@@ -645,7 +647,12 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StorageConfig defaults) {
-        return createAll(configs, nodeId, dhtClient, keyring, defaults, Runtime.getRuntime().maxMemory());
+        return createAll(configs,
+                         nodeId,
+                         dhtClient,
+                         keyring,
+                         defaults,
+                         Runtime.getRuntime().maxMemory());
     }
 
     /// [#createAll(Map, String, Option, Option, StorageConfig)] with the JVM's maximum heap supplied by the caller, so a
@@ -676,7 +683,12 @@ public final class StorageFactory {
                                                               Option<DHTClient> dhtClient,
                                                               Option<EncryptionKeyring> keyring,
                                                               StreamSetupRequest streams) {
-        return createAll(configs, nodeId, dhtClient, keyring, streams, Runtime.getRuntime().maxMemory());
+        return createAll(configs,
+                         nodeId,
+                         dhtClient,
+                         keyring,
+                         streams,
+                         Runtime.getRuntime().maxMemory());
     }
 
     /// [#createAll(Map, String, Option, Option, StreamSetupRequest)] with the JVM's maximum heap supplied by the
@@ -806,10 +818,12 @@ public final class StorageFactory {
             return List.of();
         }
 
-        var detail = "Storage '" + name + "' memory tier is " + fitted + " bytes, not the configured "
-                     + config.memoryMaxBytes() + ": all memory tiers together are limited to "
-                     + (int) (MemoryTierBudget.HEAP_FRACTION * 100) + "% of the maximum heap. Raise -Xmx or lower "
-                     + "memory_max_bytes of the storage instances";
+        var detail = "Storage '" + name
+                   + "' memory tier is " + fitted
+                   + " bytes, not the configured " + config.memoryMaxBytes()
+                   + ": all memory tiers together are limited to " + (int)(MemoryTierBudget.HEAP_FRACTION * 100)
+                   + "% of the maximum heap. Raise -Xmx or lower "
+                   + "memory_max_bytes of the storage instances";
 
         log.warn(detail);
 
@@ -1508,9 +1522,10 @@ public final class StorageFactory {
                                                          config,
                                                          nodeId,
                                                          build.dhtMarkerCheck(),
-                                                         concat(inherited, build.conditions())).map(setup -> new PendingSetup(setup,
-                                                                                                               build.armedDisk(),
-                                                                                                               build.sharedMarker())));
+                                                         concat(inherited,
+                                                                build.conditions())).map(setup -> new PendingSetup(setup,
+                                                                                                                   build.armedDisk(),
+                                                                                                                   build.sharedMarker())));
     }
 
     /// #249: the shared tier is built first -- for S3 that includes its boot probe -- so a tier that refuses
@@ -1574,10 +1589,12 @@ public final class StorageFactory {
         }
 
         return config.diskPathOperatorSet()
-               ? Causes.cause("Disk tier for '" + name + "' cannot be opened at the configured disk_path "
-                              + config.diskPath() + ": " + cause.message()
-                              + ". Make the path available (mount, permissions, space), or remove disk_path to use the default",
-                              Option.some(cause)).result()
+               ? Causes.cause("Disk tier for '" + name
+                             + "' cannot be opened at the configured disk_path " + config.diskPath()
+                             + ": " + cause.message()
+                             + ". Make the path available (mount, permissions, space), or remove disk_path to use the default",
+                              Option.some(cause))
+                       .result()
                : handleDiskTierUnavailable(name, cause, memoryTier, shared);
     }
 
@@ -1897,13 +1914,16 @@ public final class StorageFactory {
     /// and what to do (the same words go to the cluster event).
     private static StorageCondition diskUnavailableCondition(String name, Cause cause) {
         return StorageCondition.storageCondition(StorageCondition.Kind.DISK_TIER_UNAVAILABLE,
-                                                 "Storage '" + name + "' has no local disk tier (" + cause.message()
-                                                 + "): it runs on memory and the shared tier only, so a write is acknowledged without a local durable copy. "
-                                                 + "Mount the data directory and restart the node");
+                                                 "Storage '" + name
+                                                + "' has no local disk tier (" + cause.message()
+                                                + "): it runs on memory and the shared tier only, so a write is acknowledged without a local durable copy. "
+                                                + "Mount the data directory and restart the node");
     }
 
     private static List<StorageCondition> concat(List<StorageCondition> first, List<StorageCondition> second) {
-        return Stream.concat(first.stream(), second.stream()).toList();
+        return Stream.concat(first.stream(),
+                             second.stream())
+                     .toList();
     }
 
     /// #858 BLOCKING #3 (unchanged from #253): the no-keyring branch checks

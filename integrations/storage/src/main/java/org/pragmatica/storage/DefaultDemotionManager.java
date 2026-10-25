@@ -145,9 +145,11 @@ final class DefaultDemotionManager implements DemotionManager {
     }
 
     private static String describeRefusal(StorageTier sourceTier) {
-        return "Tier " + sourceTier.level() + " is above its high watermark (" + sourceTier.usedBytes() + " of "
-               + sourceTier.maxBytes() + " bytes) but holds the only durable copy of its blocks: nothing is demoted to a "
-               + "non-durable tier. Writes that need it fail with TierFull once it is full; add capacity or a durable tier below it";
+        return "Tier " + sourceTier.level()
+             + " is above its high watermark (" + sourceTier.usedBytes()
+             + " of " + sourceTier.maxBytes()
+             + " bytes) but holds the only durable copy of its blocks: nothing is demoted to a "
+             + "non-durable tier. Writes that need it fail with TierFull once it is full; add capacity or a durable tier below it";
     }
 
     @Override

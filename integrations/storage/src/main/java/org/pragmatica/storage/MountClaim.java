@@ -37,7 +37,6 @@ import static org.pragmatica.lang.Unit.unit;
 public final class MountClaim {
     /// Name of the claim file inside the directory. Not a block: block walks skip it.
     public static final String FILE_NAME = ".mount-claim";
-
     private static final Logger log = LoggerFactory.getLogger(MountClaim.class);
     private static final long START_TOLERANCE_MILLIS = 2_000L;
 
@@ -56,13 +55,14 @@ public final class MountClaim {
         var self = Holder.self(nodeId);
 
         return createExclusively(file, self.encode()).flatMap(created -> created
-                                                                       ? Result.success(new MountClaim(file, self))
-                                                                       : takeOverUnlessAlive(file, self, directory));
+                                                                         ? Result.success(new MountClaim(file, self))
+                                                                         : takeOverUnlessAlive(file, self, directory));
     }
 
     /// Gives the claim up, unless the file already names another holder: a successor's claim is never deleted.
     public Result<Unit> release() {
-        return FileOps.readString(file).map(Holder::parse)
+        return FileOps.readString(file)
+                      .map(Holder::parse)
                       .flatMap(holder -> holder.filter(self::equals)
                                                .isPresent()
                                          ? FileOps.deleteIfExists(file).mapToUnit()
@@ -70,7 +70,8 @@ public final class MountClaim {
     }
 
     private static Result<MountClaim> takeOverUnlessAlive(Path file, Holder self, Path directory) {
-        return FileOps.readString(file).map(Holder::parse)
+        return FileOps.readString(file)
+                      .map(Holder::parse)
                       .flatMap(holder -> takeOver(file, self, directory, holder));
     }
 
@@ -81,7 +82,7 @@ public final class MountClaim {
                                                                               existing.nodeId(),
                                                                               existing.host(),
                                                                               existing.pid())
-                                                    .result());
+                                                                .result());
     }
 
     private static Result<MountClaim> overwrite(Path file, Holder self, Option<Holder> stale) {
@@ -91,7 +92,9 @@ public final class MountClaim {
                                            holder.pid(),
                                            holder.host()));
 
-        return FileOps.writeString(file, self.encode()).map(_ -> new MountClaim(file, self));
+        return FileOps.writeString(file,
+                                   self.encode())
+                      .map(_ -> new MountClaim(file, self));
     }
 
     private static Result<Boolean> createExclusively(Path file, String content) {
@@ -131,22 +134,27 @@ public final class MountClaim {
 
         private static Option<Holder> parseNumbers(String[] lines) {
             return org.pragmatica.lang.parse.Number.parseLong(lines[2])
-                      .flatMap(pid -> org.pragmatica.lang.parse.Number.parseLong(lines[3])
-                                         .map(start -> new Holder(lines[0], lines[1], pid, start)))
-                      .option();
+                                                   .flatMap(pid -> org.pragmatica.lang.parse.Number.parseLong(lines[3])
+                                                                                                   .map(start -> new Holder(lines[0],
+                                                                                                                            lines[1],
+                                                                                                                            pid,
+                                                                                                                            start)))
+                                                   .option();
         }
 
         /// True when this holder must be respected by `claimer`: it is not the claimer itself and may be alive.
         boolean holdsAgainst(Holder claimer) {
-            return !sameProcessAs(claimer) && mayBeAlive(claimer.host());
+            return ! sameProcessAs(claimer) && mayBeAlive(claimer.host());
         }
 
         private boolean sameProcessAs(Holder other) {
-            return nodeId.equals(other.nodeId) && host.equals(other.host) && pid == other.pid;
+            return nodeId.equals(other.nodeId)
+                   && host.equals(other.host)
+                   && pid == other.pid;
         }
 
         private boolean mayBeAlive(String claimerHost) {
-            return !host.equals(claimerHost) || isLiveProcess();
+            return ! host.equals(claimerHost) || isLiveProcess();
         }
 
         private boolean isLiveProcess() {
@@ -161,16 +169,14 @@ public final class MountClaim {
         }
 
         private static long startMillisOf(ProcessHandle handle) {
-            return Option.from(handle.info()
-                                     .startInstant())
+            return Option.from(handle.info().startInstant())
                          .map(java.time.Instant::toEpochMilli)
                          .or(0L);
         }
 
         private static String localHost() {
             return Result.lift(Causes::fromThrowable,
-                               () -> InetAddress.getLocalHost()
-                                                .getHostName())
+                               () -> InetAddress.getLocalHost().getHostName())
                          .or("unknown-host");
         }
     }

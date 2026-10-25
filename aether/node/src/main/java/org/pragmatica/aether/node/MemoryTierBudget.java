@@ -24,16 +24,13 @@ record MemoryTierBudget(long totalBytes) {
     static final double HEAP_FRACTION = 0.5;
 
     static MemoryTierBudget ofHeap(long maxHeapBytes, long reservedBytes) {
-        return new MemoryTierBudget(Math.max(0L, (long) (maxHeapBytes * HEAP_FRACTION) - reservedBytes));
+        return new MemoryTierBudget(Math.max(0L, (long)(maxHeapBytes * HEAP_FRACTION) - reservedBytes));
     }
 
     /// The sizes to build with: `requested` itself when its sum fits, else every entry scaled by the same ratio (rounded
     /// down, so the scaled sum never exceeds the budget).
     Map<String, Long> fit(Map<String, Long> requested) {
-        var sum = requested.values()
-                           .stream()
-                           .mapToLong(Long::longValue)
-                           .sum();
+        var sum = requested.values().stream().mapToLong(Long::longValue).sum();
 
         return sum <= totalBytes
                ? requested

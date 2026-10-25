@@ -781,7 +781,8 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private void registerDegradedGauge(String instance, StorageSetup setup) {
-        Supplier<Number> degraded = () -> setup.conditions().size();
+        Supplier<Number> degraded = () -> setup.conditions()
+                                               .size();
 
         observability.gauge("aether.storage.degraded", degraded, "instance", instance);
     }

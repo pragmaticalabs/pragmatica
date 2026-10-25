@@ -138,8 +138,7 @@ public final class LocalDiskTier implements StorageTier {
     /// node that owns the volume opens the tier before using it. A put creates the directories it needs on
     /// its own, so an unopened tier still writes correctly; it only keeps any stale partials.
     public Result<LocalDiskTier> open() {
-        return FileOps.createDirectoriesDurable(basePath)
-                      .flatMap(_ -> sweepAndCount());
+        return FileOps.createDirectoriesDurable(basePath).flatMap(_ -> sweepAndCount());
     }
 
     /// [#open] for the node that owns the volume (A0b): the directory is claimed for `nodeId` ([MountClaim]) right

@@ -74,15 +74,17 @@ public final class StorageAttentionWatch {
     private Unit observe(String instance, List<StorageCondition> now) {
         var before = raised.getOrDefault(instance, Set.of());
         var current = now.stream()
-                         .collect(Collectors.toMap(StorageCondition::kind, StorageCondition::detail, (a, _) -> a, HashMap::new));
+                         .collect(Collectors.toMap(StorageCondition::kind,
+                                                   StorageCondition::detail,
+                                                   (a, _) -> a,
+                                                   HashMap::new));
 
         now.stream()
            .filter(condition -> !before.contains(condition.kind()))
            .forEach(condition -> raise(instance, condition));
-        before.stream()
-              .filter(kind -> !current.containsKey(kind))
-              .forEach(kind -> recover(instance, kind));
-        raised.put(instance, Set.copyOf(current.keySet()));
+        before.stream().filter(kind -> !current.containsKey(kind)).forEach(kind -> recover(instance, kind));
+        raised.put(instance,
+                   Set.copyOf(current.keySet()));
 
         return unit();
     }
@@ -107,7 +109,9 @@ public final class StorageAttentionWatch {
     }
 
     static String subject(String instance, Kind kind) {
-        return instance + "/" + kind.name().toLowerCase().replace('_', '-');
+        return instance + "/" + kind.name()
+                                    .toLowerCase()
+                                    .replace('_', '-');
     }
 
     private static String recovery(Kind kind) {

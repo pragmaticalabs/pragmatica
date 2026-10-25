@@ -1007,7 +1007,6 @@ public final class ConfigLoader {
         var prefetch = doc.getBoolean(sectionName, "prefetch").or(true);
         var prefetchMaxInFlight = prefetchMaxInFlight(doc, sectionName);
         var maxBlockBytes = maxBlockBytes(doc, sectionName);
-
         var config = StorageConfig.storageConfig(memoryMaxBytes,
                                                  diskMaxBytes,
                                                  diskPath,
