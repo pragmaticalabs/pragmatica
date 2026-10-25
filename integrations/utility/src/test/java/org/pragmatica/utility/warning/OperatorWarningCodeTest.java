@@ -93,6 +93,15 @@ class OperatorWarningCodeTest {
         assertThat(UNCLOSED_BEFORE_THE_RULE).noneMatch(code -> code.level() == WarningLevel.INFO);
     }
 
+    /// #1038: a reap held by disabled auto-heal is a WARNING with an INFO recovery for the same subject.
+    @Test
+    void instanceReapHeld_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.recoveryOf()
+                                                            .unwrap()).isEqualTo(OperatorWarningCode.INSTANCE_REAP_HELD);
+        assertThat(OperatorWarningCode.INSTANCE_REAP_RELEASED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.INSTANCE_REAP_HELD.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
     /// #2306: the observer lag warning is closed by an INFO recovery of its own subsystem.
     @Test
     void observerConsensusLagging_isClosedByAnInfoRecovery() {

@@ -452,6 +452,14 @@ public enum OperatorWarningCode {
                                 "community-assignment",
                                 WarningLevel.INFO,
                                 COMMUNITY_ASSIGNMENT_UNPLACED),
+    /// Auto-heal is disabled, so the cluster did NOT delete the instance of a node it would otherwise have reaped (#1038): a departed node,
+    /// an orphan the sweep found, or the retry of either. The instance is kept for diagnosis and keeps billing. Subject is the node. Raised
+    /// once per node by the leader that held the reap. Closed by [#INSTANCE_REAP_RELEASED].
+    INSTANCE_REAP_HELD("instance-reap-held", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#INSTANCE_REAP_HELD], same subject (#1038): auto-heal is enabled again and the reap of the node went ahead, or the node
+    /// joined the cluster again and has nothing to reap. INFO, published only after a published held event for the node (#752 mechanism). It
+    /// is raised by the leader that held the reap: a leader change in between leaves the held event open.
+    INSTANCE_REAP_RELEASED("instance-reap-released", "deployment", WarningLevel.INFO, INSTANCE_REAP_HELD),
     /// A committed `[json]` configuration change was refused for a slice (#2378): the slice's HTTP routes keep the
     /// JSON codec selection they had. Subject is `<slice artifact>/json`; the message names every refused key, its
     /// value and why, and the selection kept. Raised once, on the transition into refusal, per node. The same
