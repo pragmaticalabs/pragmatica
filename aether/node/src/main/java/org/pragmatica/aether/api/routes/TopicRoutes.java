@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -255,16 +253,18 @@ public final class TopicRoutes implements RouteSource {
     }
 
     /// `group` is `artifactBase#method`; the `#` must travel percent-encoded (`%23`) or a client drops it
-    /// as a fragment, and the router hands the segment over undecoded — so it is decoded here. The CLI's
-    /// `RouteAssembler.encodeSegment` encodes it; a plain group id without `%` decodes to itself.
+    /// as a fragment. The CLI's `RouteAssembler.encodeSegment` encodes it, and the HTTP server decodes the
+    /// request path once (#2420), so `group` arrives decoded and is used as is: decoding it here again would
+    /// read a `%` that is part of the name as an escape. A malformed escape never gets this far; the server
+    /// answers it 400.
     private Promise<RebuildResponse> rebuild(String namespace,
                                              String topic,
                                              String version,
                                              String rebuildLiteral,
                                              String group) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
-                           .flatMap(address -> decodeGroup(group).flatMap(decoded -> knownGroupOnKnownTopic(address.asString(),
-                                                                                                            decoded)))
+                           .flatMap(address -> knownGroupOnKnownTopic(address.asString(),
+                                                                      group))
                            .fold(cause -> cause.<RebuildResponse> promise(),
                                  promise -> promise);
     }
@@ -306,14 +306,6 @@ public final class TopicRoutes implements RouteSource {
                                                      .equals(group))
                ? Result.success(group)
                : new ManagementServerError.NotFound("Consumer group '" + group + "' not found on " + topicStream).result();
-    }
-
-    /// `URLDecoder.decode` throws on a malformed escape (`%zz`, a trailing `%`); the group segment is caller input, so that
-    /// is a 400 carrying the offending segment, not a throw out of the handler (#1921).
-    private static Result<String> decodeGroup(String group) {
-        return Result.lift(_ -> new ManagementServerError.InvalidRequest("Malformed percent-escape in consumer group '" + group
-                                                                        + "'"),
-                           () -> URLDecoder.decode(group, StandardCharsets.UTF_8));
     }
 
     /// Two conditions, both LOCAL: the projection must be attached here AND this node must consume at

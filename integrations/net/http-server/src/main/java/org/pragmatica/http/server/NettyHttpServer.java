@@ -443,7 +443,15 @@ final class NettyHttpServer implements HttpServer {
                 return;
             }
 
-            var requestContext = createRequestContext(requestId, request);
+            var target = RequestTarget.requestTarget(request.uri());
+
+            if (target.isFailure()) {
+                rejectMalformedTarget(ctx, requestId, target);
+
+                return;
+            }
+
+            var requestContext = createRequestContext(requestId, request, target.unwrap());
             var responseWriter = new NettyResponseWriter(ctx,
                                                          requestId,
                                                          HttpUtil.isKeepAlive(request),
@@ -470,6 +478,15 @@ final class NettyHttpServer implements HttpServer {
             pendingResponses.incrementAndGet();
             new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(status,
                                                                                                     status.message());
+        }
+
+        /// #2419: a request target whose percent-escapes cannot be decoded is answered 400 on this transport as on HTTP/3,
+        /// instead of the decoder's exception escaping the handler and closing the connection with no response.
+        private void rejectMalformedTarget(ChannelHandlerContext ctx, String requestId, Result<RequestTarget> target) {
+            target.onFailure(cause -> log.debug("Rejecting request {} with 400: {}", requestId, cause.message()));
+            pendingResponses.incrementAndGet();
+            new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(HttpStatus.BAD_REQUEST,
+                                                                                                    "Malformed request target");
         }
 
         /// #2386: RFC 9112 §3.2 — a request with more than one `Host` line is answered 400, and the connection is
@@ -568,23 +585,25 @@ final class NettyHttpServer implements HttpServer {
             ctx.close();
         }
 
-        private HttpRequest createRequestContext(String requestId, FullHttpRequest request) {
-            var decoder = new QueryStringDecoder(request.uri());
-            var path = decoder.path();
+        private HttpRequest createRequestContext(String requestId, FullHttpRequest request, RequestTarget target) {
             // Netty validates the HTTP method before we receive it, so this will always succeed
             var method = HttpMethod.httpMethod(request.method().name()).fold(_ -> HttpMethod.GET, v -> v);
             var headers = Headers.headers(fieldMap(request.headers()));
             // #2310: the chunked trailer section; the aggregator leaves it empty for a request that sent none
             var trailers = Headers.trailers(fieldMap(request.trailingHeaders()));
-            // Parse query params
-            var queryParams = QueryParams.queryParams(decoder.parameters());
             // Read body
             var content = request.content();
             var body = new byte[content.readableBytes()];
 
             content.readBytes(body);
 
-            return new NettyRequestContext(requestId, method, path, headers, queryParams, body, trailers);
+            return new NettyRequestContext(requestId,
+                                           method,
+                                           target.path(),
+                                           headers,
+                                           target.queryParams(),
+                                           body,
+                                           trailers);
         }
 
         private static Map<String, List<String>> fieldMap(HttpHeaders fields) {
