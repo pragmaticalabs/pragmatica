@@ -96,7 +96,9 @@ class AetherNodeLeaderAwaitedTargetBootTest {
 
         node.kvStore().process(node.kvStore().createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(AppBlueprintKey.appBlueprintKey(OWNER), blueprint))));
         assertThat(node.kvStore().get(SliceTargetKey.sliceTargetKey(SLICE.base())).isPresent()).as("control: the blueprint is committed, its target is not").isFalse();
-        assertThat(node.eventAggregator().lastRaisedOperatorWarning().isPresent()).as("control: nothing raised yet").isFalse();
+        // The booted node's own storage may already have raised its degrade warnings (the synthesized instances cannot open a disk
+        // tier under the hermetic root, and say so since A0b); the control is about THIS warning, not about silence.
+        assertThat(isAwaitingTargetWarning(node.eventAggregator().lastRaisedOperatorWarning())).as("control: awaiting-target not raised yet").isFalse();
 
         ctx.setAwaitedTargetBound(timeSpan(1).millis());
         cdm.activate();
@@ -109,6 +111,13 @@ class AetherNodeLeaderAwaitedTargetBootTest {
             assertThat(raised.unwrap()).isInstanceOfSatisfying(ClusterEvent.OperatorWarning.class,
                                                               warning -> assertThat(warning.details()).containsEntry("code", "slice-start-awaiting-target"));
         });
+    }
+
+    private static boolean isAwaitingTargetWarning(Option<ClusterEvent> raised) {
+        return raised.filter(ClusterEvent.OperatorWarning.class::isInstance)
+                     .map(ClusterEvent.OperatorWarning.class::cast)
+                     .filter(warning -> "slice-start-awaiting-target".equals(warning.details().get("code")))
+                     .isPresent();
     }
 
     private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot) {
