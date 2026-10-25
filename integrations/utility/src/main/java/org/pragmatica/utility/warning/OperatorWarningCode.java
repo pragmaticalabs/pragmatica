@@ -456,7 +456,7 @@ public enum OperatorWarningCode {
     /// an orphan the sweep found, or the retry of either. The instance is kept for diagnosis and keeps billing. Subject is the node. Raised
     /// once per node by the leader that held the reap. Closed by [#INSTANCE_REAP_RELEASED].
     INSTANCE_REAP_HELD("instance-reap-held", "deployment", WarningLevel.WARNING),
-    /// The recovery of [#INSTANCE_REAP_HELD], same subject (#1038): auto-heal is enabled again and the reap of the node went ahead, or the node
+    /// The recovery of [#INSTANCE_REAP_HELD], same subject (#1038): auto-heal is enabled again and the reap of the node is no longer held (it still passes the usual liveness and refusal checks), or the node
     /// joined the cluster again and has nothing to reap. INFO, published only after a published held event for the node (#752 mechanism). It
     /// is raised by the leader that held the reap: a leader change in between leaves the held event open.
     INSTANCE_REAP_RELEASED("instance-reap-released", "deployment", WarningLevel.INFO, INSTANCE_REAP_HELD),

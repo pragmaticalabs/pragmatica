@@ -2608,7 +2608,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                   warningSink.get(),
                                                                   org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_REAP_RELEASED,
                                                                   nodeId.id(),
-                                                                  "Auto-heal is enabled again: the held reap of the instance of node {} goes ahead",
+                                                                  "Auto-heal is enabled again: the reap of the instance of node {} is no longer held",
                                                                   nodeId.id());
         }
 
