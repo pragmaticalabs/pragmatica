@@ -171,6 +171,57 @@ class JdbcSqlConnectorTypedErrorsTest {
     }
 
     @Test
+    void queryOne_severalRows_reachesCallerAsTheTypedMultipleResults() {
+        connector.update(INSERT, 2, "two").await().unwrap();
+
+        var cause = failureOf(connector.queryOne("SELECT name FROM typed_errors", row -> row.getString("name")));
+
+        assertThat(cause).isEqualTo(DatabaseConnectorError.multipleResults(2));
+    }
+
+    @Test
+    void queryOptional_mapperFailure_isNotSwallowedAsAnEmptyResult() {
+        var cause = failureOf(connector.queryOptional("SELECT name FROM typed_errors WHERE id = ?", UNDECODABLE, 1));
+
+        assertRowDecode(cause);
+    }
+
+    @Test
+    void transactional_rowDecodeFailureInCallback_reachesCallerUnchanged() {
+        var decodeFailure = new RowDecodeError.RowDecode("name", Causes.cause("corrupt value"));
+
+        var cause = failureOf(connector.transactional(tx -> decodeFailure.<String> promise()));
+
+        assertThat(cause).as("not replaced by a connection failure that a retry would re-drive").isSameAs(decodeFailure);
+    }
+
+    @Test
+    void transactional_failedCommit_keepsTheServersSqlState() {
+        connector.update("DROP TABLE IF EXISTS deferred_unique").await().unwrap();
+        connector.update("CREATE TABLE deferred_unique(id INT, CONSTRAINT deferred_unique_pk UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)").await().unwrap();
+
+        var cause = failureOf(connector.transactional(tx -> tx.update("INSERT INTO deferred_unique VALUES (1)")
+                                                              .flatMap(_ -> tx.update("INSERT INTO deferred_unique VALUES (1)"))));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("23505"));
+    }
+
+    @Test
+    void transactional_refusedConnection_isTransientAndKeepsTheSqlState() {
+        var dataSource = new PGSimpleDataSource();
+
+        dataSource.setUrl("jdbc:postgresql://127.0.0.1:1/none");
+        var unreachable = JdbcSqlConnector.jdbcSqlConnector(connector.config(), dataSource);
+
+        var cause = failureOf(unreachable.transactional(tx -> tx.update("SELECT 1")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("08001"));
+        assertThat(cause.isTransient()).isTrue();
+    }
+
+    @Test
     void queryOne_noRow_reachesCallerAsTheTypedResultNotFound() {
         var cause = failureOf(connector.queryOne("SELECT name FROM typed_errors WHERE id = ?", row -> row.getString("name"), 99));
 

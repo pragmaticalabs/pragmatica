@@ -165,6 +165,15 @@ class PgAsyncSqlConnectorTypedErrorsTest {
     }
 
     @Test
+    void transactional_rowDecodeFailureInCallback_reachesCallerUnchanged() {
+        var decodeFailure = new RowDecodeError.RowDecode("name", Causes.cause("corrupt value"));
+
+        var cause = failureOf(connector.transactional(tx -> decodeFailure.<String> promise()));
+
+        assertThat(cause).isSameAs(decodeFailure);
+    }
+
+    @Test
     void queryOne_noRow_reachesCallerAsTheTypedResultNotFound() {
         var cause = failureOf(connector.queryOne("SELECT name FROM typed_errors WHERE id = ?", row -> row.getString("name"), 99));
 

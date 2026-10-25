@@ -171,6 +171,32 @@ class JdbcJooqConnectorTypedErrorsTest {
     }
 
     @Test
+    void transactional_failedCommit_keepsTheServersSqlState() {
+        run("DROP TABLE IF EXISTS deferred_unique");
+        run("CREATE TABLE deferred_unique(id INT, CONSTRAINT deferred_unique_pk UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)");
+
+        var cause = failureOf(connector.transactional(tx -> tx.execute(tx.dsl().query("INSERT INTO deferred_unique VALUES (1)"))
+                                                              .flatMap(_ -> tx.execute(tx.dsl().query("INSERT INTO deferred_unique VALUES (1)")))));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("23505"));
+    }
+
+    @Test
+    void transactional_refusedConnection_isTransientAndKeepsTheSqlState() {
+        var dataSource = new PGSimpleDataSource();
+
+        dataSource.setUrl("jdbc:postgresql://127.0.0.1:1/none");
+        var unreachable = JdbcJooqConnector.jdbcJooqConnector(connector.config(), dataSource);
+
+        var cause = failureOf(unreachable.transactional(tx -> tx.execute(tx.dsl().query("SELECT 1"))));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("08001"));
+        assertThat(cause.isTransient()).isTrue();
+    }
+
+    @Test
     void fetchOne_noRow_reachesCallerAsTheTypedResultNotFound() {
         var cause = failureOf(connector.fetchOne(connector.dsl().resultQuery("SELECT name FROM typed_errors WHERE id = 99")));
 

@@ -177,6 +177,38 @@ class R2dbcSqlConnectorTypedErrorsTest {
     }
 
     @Test
+    void update_syntaxError_isQueryFailedKeepingItsSqlStateAndIsNotTransient() {
+        var cause = failureOf(connector.update("SELEC 1"));
+
+        assertThat(cause).isInstanceOf(R2dbcError.QueryFailed.class);
+        assertThat(((R2dbcError.QueryFailed) cause).sqlState()).isEqualTo(some("42601"));
+        assertThat(cause.isTransient()).isFalse();
+    }
+
+    @Test
+    void transactional_rowDecodeFailureInCallback_reachesCallerUnchanged() {
+        var decodeFailure = new RowDecodeError.RowDecode("name", Causes.cause("corrupt value"));
+
+        var cause = failureOf(connector.transactional(tx -> decodeFailure.<String> promise()));
+
+        assertThat(cause).isSameAs(decodeFailure);
+    }
+
+    @Test
+    void toConnectorError_driverErrors_keepTheirSqlStateOnTheConnectorError() {
+        var constraint = R2dbcSqlConnector.toConnectorError(new R2dbcError.ConstraintViolation("duplicate", some("23505")));
+        var connection = R2dbcSqlConnector.toConnectorError(new R2dbcError.ConnectionFailed("lost", some("57P01")));
+        var query = R2dbcSqlConnector.toConnectorError(new R2dbcError.QueryFailed("bad", some("42601")));
+
+        assertThat(constraint).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
+        assertThat(((DatabaseConnectorError) constraint).sqlState()).isEqualTo(some("23505"));
+        assertThat(connection).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+        assertThat(((DatabaseConnectorError) connection).sqlState()).isEqualTo(some("57P01"));
+        assertThat(query).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(((DatabaseConnectorError) query).sqlState()).isEqualTo(some("42601"));
+    }
+
+    @Test
     void queryOne_noRow_reachesCallerAsTheTypedNoResult() {
         var cause = failureOf(connector.queryOne("SELECT name FROM typed_errors WHERE id = 99", row -> row.getString("name")));
 

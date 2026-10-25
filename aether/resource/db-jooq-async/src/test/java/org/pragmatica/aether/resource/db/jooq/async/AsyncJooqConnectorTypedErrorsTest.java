@@ -91,6 +91,15 @@ class AsyncJooqConnectorTypedErrorsTest {
     }
 
     @Test
+    void toConnectorError_syntaxError_isQueryFailedKeepingItsSqlStateAndIsNotTransient() {
+        var cause = failureOf(mapped(operations.update("SELEC 1")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("42601"));
+        assertThat(cause.isTransient()).isFalse();
+    }
+
+    @Test
     void toConnectorError_lostConnection_isReportedTransient() {
         var cause = failureOf(killOwnBackend());
 
