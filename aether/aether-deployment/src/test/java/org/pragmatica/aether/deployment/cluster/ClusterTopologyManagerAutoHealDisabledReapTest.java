@@ -229,6 +229,22 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(eventMessages(OperatorWarningCode.INSTANCE_REAP_RELEASED)).anyMatch(message -> message.contains("joined the cluster again") && message.contains("nothing was deleted"));
     }
 
+    /// The held mark is the leader's own: a node held under one activation is held and announced again under the next, so the operator is not
+    /// left without an event when the leader changes.
+    @Test
+    void heldReap_afterTheManagerIsDeactivatedAndActivatedAgain_isHeldAndAnnouncedAgain() {
+        disableAutoHeal();
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD) == 1);
+
+        ctm.deactivate();
+        ctm.activate();
+        lost();
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventsOf(OperatorWarningCode.INSTANCE_REAP_HELD) == 2);
+        assertThat(terminates.get()).isZero();
+    }
+
     /// The retry path: the first attempt fails while auto-heal is enabled, the operator disables it before the retry, and the retry is held.
     @Test
     void retryOfAFailedReap_autoHealDisabledAfterTheFirstAttempt_terminatesNothing() {
