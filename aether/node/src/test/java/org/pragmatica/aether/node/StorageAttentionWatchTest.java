@@ -12,11 +12,16 @@ import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.apache.logging.log4j.Level;
 import org.mockito.Mockito;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.lang.Option;
 import org.pragmatica.storage.DemotionManager;
+import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.SnapshotManager;
+import org.pragmatica.storage.StorageGarbageCollector;
+import org.pragmatica.storage.StorageReadinessGate;
 import org.pragmatica.storage.StorageCondition;
 import org.pragmatica.storage.StorageCondition.Kind;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -156,6 +161,42 @@ class StorageAttentionWatchTest {
 
         assertThat(setups.get("artifacts").readinessGate().isWriteReady()).isFalse();
         setups.values().forEach(setup -> setup.instance().shutdown());
+    }
+
+    /// Mutation: `StorageMaintenanceDriver#tick` stops observing the attention watch -- a condition that appears after
+    /// boot is never reported.
+    @Test
+    void tick_observesTheAttentionWatch() {
+        var held = new CopyOnWriteArrayList<StorageCondition>();
+        var watch = StorageAttentionWatch.storageAttentionWatch(Map.of("artifacts", setupHolding(held)), sink);
+        var driver = StorageMaintenanceDriver.storageMaintenanceDriver(Mockito.mock(DemotionManager.class),
+                                                                       Mockito.mock(PromotionManager.class),
+                                                                       PromotionStallWatch.promotionStallWatch(Map.of(), sink),
+                                                                       watch,
+                                                                       Mockito.mock(StorageGarbageCollector.class),
+                                                                       Runnable::run);
+
+        held.add(StorageCondition.storageCondition(Kind.SNAPSHOT_WRITE_FAILING, "disk full"));
+        driver.tick();
+        awaitEvents(1);
+
+        assertThat(delivered).extracting(OperatorWarning::subject).containsExactly("artifacts/snapshot-write-failing");
+    }
+
+    /// Mutation: `DefaultStorageReadinessGate#consensusSynced` warns on the second ready signal -- the signal fires on
+    /// every entry to Active, so a node that re-enters Active would log a WARN each time.
+    @Test
+    void consensusSynced_repeatedReadySignal_staysSilent() {
+        try (var logs = LogCapture.capture("org.pragmatica.storage.DefaultStorageReadinessGate", Level.ALL, true)) {
+            var gate = StorageReadinessGate.storageReadinessGate();
+
+            gate.snapshotLoaded();
+            gate.consensusSynced();
+            gate.consensusSynced();
+
+            assertThat(gate.isWriteReady()).isTrue();
+            assertThat(logs.messages(Level.WARN)).isEmpty();
+        }
     }
 
     private Map<String, StorageSetup> healthySetups() {
