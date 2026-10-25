@@ -87,10 +87,10 @@ class MountClaimTest {
 
     @Test
     void openClaiming_secondTierOnTheSameMount_failsWithHeldAndTouchesNothing() throws IOException {
+        LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a")).unwrap();
         var partial = mount.resolve("ab").resolve("cd");
         Files.createDirectories(partial);
         var leftover = Files.writeString(partial.resolve("abcdef.1.partial"), "in-flight write of the first node");
-        LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a")).unwrap();
 
         var second = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-b"));
 
