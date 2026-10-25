@@ -298,6 +298,23 @@ directory, whose disk tier counts everything under it. A section that sets only 
 default. Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are refused
 at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
 
+**A disk tier that cannot open (A0b).** What happens depends on who chose the path. A `disk_path` the operator wrote that cannot be
+opened (not mounted, not creatable, no permission) **refuses the boot**, naming the instance and the path; mount it, or remove the
+key to use the default. A path nobody wrote (the synthesized `artifacts` and `content`, or an instance that omits `disk_path`) **degrades**:
+the instance runs on memory plus the shared tier, so a write is acknowledged without a local durable copy, and the node says so with a
+WARN, a `storage-degraded` cluster event (subject `<instance>/disk-tier-unavailable`) and the `aether.storage.degraded` gauge (the number of
+conditions the instance holds; zero is healthy). The stock container, which has no mount at the default, runs this way. `streams` is
+unchanged (it refuses or degrades by `aether.allowNonDurableStreams`, #1567).
+
+**One node per disk-tier directory (A0b).** A node claims the directory when it opens the disk tier (a `.mount-claim` file in it holding
+the node id, host and process). A second node that opens the same directory refuses to boot, naming the holder, whether or not
+`disk_path` was written. A claim whose process is gone is taken over. A claim written from another host cannot be checked from here and is
+refused until its file is removed. Give each node its own `disk_path`.
+
+**Memory tiers are bounded by the heap (A0b).** All memory tiers together (`memory_max_bytes` of every instance plus the 16 MiB `streams` tier)
+may take half of the JVM's maximum heap. A configured size that does not fit is cut, every instance in the same proportion, with a WARN
+and a `storage-degraded` event (subject `<instance>/memory-tier-clamped`). The defaults, 528 MiB in all, fit from 1.06 GiB of heap up.
+
 **Not the same as `[streams.X].encryption_key_id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
 `StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not

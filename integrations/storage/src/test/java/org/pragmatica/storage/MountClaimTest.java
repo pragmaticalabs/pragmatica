@@ -59,6 +59,24 @@ class MountClaimTest {
         assertThat(disk().open("node-b").isFailure()).isTrue();
     }
 
+    /// Mutation: `Holder.parse` accepts a short file (`lines.length >= 1`) -- the open dies on a bad index instead of
+    /// taking the unreadable claim over.
+    @Test
+    void open_claimFileThatIsNotAClaim_isTakenOver() throws IOException {
+        Files.writeString(mount.resolve(MountClaim.FILE_NAME), "half a claim");
+
+        assertThat(disk().open("node-b").isSuccess()).as("an unreadable claim names no live holder").isTrue();
+        assertThat(Files.readString(mount.resolve(MountClaim.FILE_NAME))).startsWith("node-b\n");
+    }
+
+    /// Mutation: the process id is read from the start-time line (`lines[2]` becomes `lines[3]`) -- a live holder looks gone.
+    @Test
+    void open_claimOfALiveProcessOnThisHost_isRefused() throws IOException {
+        Files.writeString(mount.resolve(MountClaim.FILE_NAME), claimOf("node-live", ProcessHandle.current().pid(), startOfThisProcess()));
+
+        assertThat(disk().open("node-b").isFailure()).isTrue();
+    }
+
     /// Mutation: `sameProcessAs` always false -- a node restarting in its own process is locked out by itself.
     @Test
     void open_sameNodeAgain_inTheSameProcess_isAllowed() {
