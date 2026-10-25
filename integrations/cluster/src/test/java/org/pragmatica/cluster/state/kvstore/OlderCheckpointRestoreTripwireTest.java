@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.rabia.infrastructure.OlderCheckpointCluster;
 import org.pragmatica.consensus.rabia.infrastructure.OlderCheckpointCluster.Applied;
@@ -74,11 +73,66 @@ class OlderCheckpointRestoreTripwireTest {
         }
     }
 
-    @Disabled("W1 (CommitRing, anchor): enable when the ring exists; a replica that followed the first history and resubscribes to the restarted cluster must be refused by its anchor and re-snapshot")
+    /// NT-O35: a replica that followed the first history, resubscribing to the restarted cluster's ring, is refused by its anchor. The replica is
+    /// a real store fed through `applyEffects` from the first history's ring; the restarted source is the real ring of a restarted core.
+    /// Mutation: drop the batch-id comparison in `CommitRing.verifyAnchor`, and the replica is granted.
     @Test
     void resubscribingReplica_isRefusedByItsAnchor() {
-        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("CommitRing"),
-                                     "W1 CommitRing with k = 8 (slot, batchId) anchor pairs",
-                                     "drive the restart above, resubscribe a replica that followed the first history, and assert it is refused (AHEAD or anchor mismatch) and takes a snapshot");
+        var first = OlderCheckpointCluster.fresh().awaitActive();
+        var replica = new RecordingReplica();
+
+        first.commit("common-0", "kept").commit("common-1", "kept");
+        var checkpoints = first.pauseAndCheckpoint();
+
+        first.commit("first-history-a", "old-a").commit("first-history-b", "old-b");
+        replica.follow(first.node(1).store().replicaRing());
+        first.close();
+
+        var second = OlderCheckpointCluster.restartedFrom(checkpoints).awaitActive();
+
+        try {
+            second.commit("second-history-a", "new-a").commit("second-history-b", "new-b");
+            var ring = second.node(1).store().replicaRing();
+            var result = ring.subscribeFrom(ring.tag(), replica.store.committedRevision(), replica.store.replicaRing().anchor(), CommitRing.subscription(_ -> {}));
+
+            assertThat(replica.store.replicaRing().anchor()).as("precondition: the replica holds anchor pairs of the first history").isNotEmpty();
+            assertThat(replica.store.committedRevision()).as("precondition: the replica's position is not ahead of the restarted source").isLessThanOrEqualTo(ring.nextSlot());
+            assertThat(result).as("NT-O35 (mutation: drop the batch-id comparison): the same slots carry different batches, so the anchor refuses").isInstanceOf(CommitRing.Refused.class);
+            assertThat(((CommitRing.Refused) result).reason()).isEqualTo(CommitRing.RefusalReason.AHEAD);
+        } finally {
+            second.close();
+        }
+    }
+
+    /// A replica as the design has it at this layer: a store fed the ring's entries through the raw write path; its own ring keeps the anchor.
+    private static final class RecordingReplica {
+        private final KVStore<StringKey, String> store = new KVStore<>(org.pragmatica.messaging.MessageRouter.mutable(),
+                                                                     new org.pragmatica.serialization.Serializer() {
+                                                                         @Override
+                                                                         public <T> void write(io.netty.buffer.ByteBuf buffer, T value) {}
+                                                                     },
+                                                                     new org.pragmatica.serialization.Deserializer() {
+                                                                         @Override
+                                                                         public <T> T read(io.netty.buffer.ByteBuf buffer) {
+                                                                             return null;
+                                                                         }
+                                                                     },
+                                                                     ReplicaKeyFilter.includeAll(),
+                                                                     new IncarnationSource() {
+                                                                         @Override
+                                                                         public IncarnationTag read(java.util.function.Function<StructuredKey, Object> lookup) {
+                                                                             return IncarnationTag.incarnationTag(1, "one-identity");
+                                                                         }
+
+                                                                         @Override
+                                                                         public boolean isIncarnationKey(StructuredKey key) {
+                                                                             return false;
+                                                                         }
+                                                                     },
+                                                                     CommitRing.DEFAULT_BUDGET_BYTES);
+
+        void follow(CommitRing source) {
+            source.entries().forEach(entry -> store.applyEffects(entry));
+        }
     }
 }

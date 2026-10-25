@@ -13,10 +13,10 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
-import org.pragmatica.aether.node.ReplicaSeam;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -29,10 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// The target is a worker holding a full KV replica minus an exclusion set: `ReplicaFilter` classifies every
 /// `AetherKey` class INCLUDE or EXCLUDE, and the initial EXCLUDE set is the stream cursor checkpoints and the
-/// cluster configuration. `ReplicaFilter` does not exist yet, so the real assertions are written against the
-/// projection, the only structure that exists: "the worker's view holds the key" stands in for "the replica holds
-/// the key". When W1 lands the filter, the PR that does so enables the real assertion and re-points it at the
-/// filter's replica; the enabled halves are deleted then, because they pin behaviour that is meant to change.
+/// cluster configuration. The filter exists (W1) and TW-O15 pins it; the worker replica does not exist yet, so the
+/// real assertions of TW-O1/O2 are written against the projection, the only per-worker view: "the worker's view holds
+/// the key" stands in for "the replica holds the key". The PR that lands the worker replica (W3/W4) enables them and
+/// re-points them at the replica; the enabled halves are deleted then, because they pin behaviour that is meant to change.
 class ReplicaFilterTripwireTest {
     private static final NodeId WORKER = new NodeId("worker");
     private static final NodeId CORE = new NodeId("core");
@@ -40,7 +40,6 @@ class ReplicaFilterTripwireTest {
     private static final ArtifactBase ARTIFACT_BASE = ArtifactBase.artifactBase("org.example:orders").unwrap();
     private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.example:blueprint:1.0.0").unwrap();
     private static final String OPAQUE = "opaque value: the unscoped arms of the projection never read it";
-    private static final String REPLICA_FILTER = "ReplicaFilter";
 
     /// The 20 `AetherKey` classes the projection gives NO scope (`WorkerMetadataIndex.scopesFor`, the arm that
     /// returns `Set.of()`), keyed by class name. `ClusterConfigKey` is the one the design keeps EXCLUDED.
@@ -104,7 +103,7 @@ class ReplicaFilterTripwireTest {
                                      .doesNotContainAnyElementsOf(keys.values());
     }
 
-    @Disabled("W1 (ReplicaFilter): enable when the worker holds a full replica minus the exclusion set, and re-point workerView at the filtered replica")
+    @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
     @Test
     void replicaHoldsEveryKeyOutsideTheFilter_andNoneInsideIt() {
         var index = WorkerMetadataIndex.workerMetadataIndex();
@@ -146,7 +145,7 @@ class ReplicaFilterTripwireTest {
                         .anyMatch(key -> key instanceof AetherKey.StreamCursorCheckpointKey);
     }
 
-    @Disabled("W1 (ReplicaFilter): enable when StreamCursorCheckpointKey is in the filter's EXCLUDE set")
+    @Disabled("enable at W3/W4 (worker replica): when the worker's view is the filtered replica, which leaves out StreamCursorCheckpointKey")
     @Test
     void replicaHoldsNoStreamCursorCheckpoint() {
         var index = WorkerMetadataIndex.workerMetadataIndex();
@@ -158,22 +157,95 @@ class ReplicaFilterTripwireTest {
                         .anyMatch(key -> key instanceof AetherKey.StreamRegistrationKey);
     }
 
+    /// TW-O15, flipped by W1. The filter is an exhaustive `switch` over the sealed `AetherKey` with no default, so a new key class does not
+    /// compile until it is classified: that property is the compiler's, and a reflection test cannot add to it. What the test pins is the
+    /// classification itself, on the classes the worker projection never saw (the 20 that had no scope) plus the excluded ones, and the
+    /// fail-closed rule for a key type the filter does not know.
     @Test
-    void typeProbe_findsAnExistingType() {
-        assertThat(ReplicaSeam.typeExists("WorkerMetadataIndex")).as("control: the probe sees a type that is on the classpath, so its 'absent' answers below mean something").isTrue();
+    void theFilterClassifiesTheKeyClasses_andFailsClosedOnAnUnknownKeyType() {
+        var filter = ReplicaFilter.replicaFilter();
+        var excluded = unscopedKeys().entrySet().stream().filter(entry -> filter.excludes(entry.getValue())).map(Map.Entry::getKey).toList();
+
+        assertThat(excluded).as("of the 20 classes the projection left unscoped only the cluster configuration is EXCLUDED (credentials in its TOML)").containsExactly("ClusterConfigKey");
+        assertThat(filter.excludes(new AetherKey.StreamCursorCheckpointKey("orders", 0, "billing"))).as("cursor checkpoints are EXCLUDED").isTrue();
+        assertThat(filter.excludes(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE)).as("the leader key is INCLUDED").isFalse();
+
+        var before = filter.foreignKeyExclusions();
+
+        assertThat(filter.excludes(new StructuredKey() {})).as("a key family the filter does not know is EXCLUDED").isTrue();
+        assertThat(filter.foreignKeyExclusions()).as("and counted").isEqualTo(before + 1);
     }
 
-    @Test
-    void noReplicaFilterExistsToClassifyAKeyClass_today() {
-        assertThat(ReplicaSeam.typeExists(REPLICA_FILTER)).as("TW-O15: W1 landed %s: enable theFilterClassifiesEveryAetherKeyClass with its reflection body, and delete this test", REPLICA_FILTER)
-                                               .isFalse();
+    /// Every concrete `AetherKey` class, found by walking the sealed hierarchy from `AetherKey.getPermittedSubclasses()`.
+    private static List<Class<?>> everyAetherKeyClass() {
+        var classes = new java.util.ArrayList<Class<?>>();
+
+        collectConcrete(AetherKey.class, classes);
+
+        return classes;
     }
 
-    @Disabled("W1 (ReplicaFilter): enable when ReplicaFilter exists and replace the body with the reflection test over AetherKey.class.getPermittedSubclasses()")
+    private static void collectConcrete(Class<?> type, List<Class<?>> classes) {
+        if (!type.isSealed()) {
+            classes.add(type);
+
+            return;
+        }
+
+        for (var permitted : type.getPermittedSubclasses()) {
+            collectConcrete(permitted, classes);
+        }
+    }
+
+    /// An instance of a key class with no constructor run: the filter's switch reads only the runtime class, so the components do not matter.
+    private static AetherKey instanceOf(Class<?> keyClass) {
+        try {
+            var field = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe");
+
+            field.setAccessible(true);
+            var unsafe = field.get(null);
+
+            return (AetherKey) unsafe.getClass().getMethod("allocateInstance", Class.class).invoke(unsafe, keyClass);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot instantiate " + keyClass.getName(), e);
+        }
+    }
+
+    /// TW-O15, the full classification: every `AetherKey` class in the sealed hierarchy, not a sample, is classified, and the EXCLUDE set is
+    /// exactly the stream cursor checkpoints and the cluster configuration. Mutation: move any other class (say `SliceTargetKey`) to EXCLUDE,
+    /// and the set has a third member.
     @Test
-    void theFilterClassifiesEveryAetherKeyClass() {
-        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists(REPLICA_FILTER),
-                                     "W1 ReplicaFilter",
-                                     "every concrete class in the AetherKey.class.getPermittedSubclasses() hierarchy is classified INCLUDE or EXCLUDE by ReplicaFilter (and the filter's switch has no default, so a new key class fails to compile)");
+    void everyAetherKeyClass_isIncluded_exceptTheStreamCursorCheckpointsAndTheClusterConfiguration() {
+        var classes = everyAetherKeyClass();
+        var excluded = classes.stream()
+                              .filter(keyClass -> ReplicaFilter.replicaFilter().excludes(instanceOf(keyClass)))
+                              .map(Class::getSimpleName)
+                              .collect(Collectors.toSet());
+
+        assertThat(classes).as("control: the walk reaches the whole hierarchy, the 20 classes of TW-O1 among them")
+                           .hasSizeGreaterThan(60)
+                           .extracting(Class::getSimpleName)
+                           .containsAll(unscopedKeys().keySet());
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey");
+    }
+
+    /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;
+    /// `AetherKey` re-declares it abstract, so every `AetherKey` class implements its own and none reaches that default.
+    @Test
+    void everyAetherKeyClass_declaresItsOwnAsString() {
+        var inheriting = everyAetherKeyClass().stream()
+                                              .filter(keyClass -> !declaresAsString(keyClass))
+                                              .map(Class::getSimpleName)
+                                              .toList();
+
+        assertThat(inheriting).as("AetherKey classes without their own asString()").isEmpty();
+    }
+
+    private static boolean declaresAsString(Class<?> keyClass) {
+        try {
+            return !java.lang.reflect.Modifier.isAbstract(keyClass.getDeclaredMethod("asString").getModifiers());
+        } catch (NoSuchMethodException _) {
+            return false;
+        }
     }
 }
