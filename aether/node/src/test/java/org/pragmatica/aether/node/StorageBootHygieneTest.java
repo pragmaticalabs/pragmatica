@@ -15,12 +15,14 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.storage.MountClaim;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.storage.ReadinessState;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -172,8 +174,11 @@ class StorageBootHygieneTest {
         var setups = boot(Map.of(), NODE).unwrap();
         AetherNode.signalReadyActivatingStorage(() -> {}, setups, () -> false);
 
-        AetherNode.signalReadyActivatingStorage(() -> {}, setups, () -> false);
+        try (var capture = LogCapture.capture("org.pragmatica.storage.DefaultStorageReadinessGate", Level.ALL, true)) {
+            AetherNode.signalReadyActivatingStorage(() -> {}, setups, () -> false);
 
+            assertThat(capture.events()).as("a repeated ready signal must not reach a gate that already synced").isEmpty();
+        }
         assertThat(setups.get("artifacts").readinessGate().state()).isEqualTo(ReadinessState.READY);
     }
 

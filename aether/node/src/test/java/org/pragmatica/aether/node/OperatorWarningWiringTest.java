@@ -153,6 +153,29 @@ class OperatorWarningWiringTest {
                                   .containsOnlyOnce("bindPromotionAlarm(streamPartitionBackfill,operatorWarningSink,kvStore,streamingConfig.promotionEscapeAfter());");
     }
 
+    /// A0b: storage is built before this node's aggregator exists, so its degrade reporters reach the sink only through this
+    /// call; the instance tests hand the reporter their own sink, so un-binding it here left them green.
+    @Test
+    void assembly_bindsEveryStorageInstancesDegradeReporterToThisNodesSink() {
+        assertThat(assemblyCode()).containsOnlyOnce("StorageFactory.bindOperatorWarnings(storageSetups,operatorWarningSink);");
+    }
+
+    /// A0b (SD-01/SB-11): the readiness gates learn about consensus at the node's ready signal. The gate tests call
+    /// `signalConsensusSynced` directly, so dropping the call from the signal left them green.
+    @Test
+    void assembly_signalsConsensusSyncedAtTheStorageReadySignal() {
+        assertThat(assemblyCode()).containsOnlyOnce("StorageFactory.signalConsensusSynced(storageSetups);");
+    }
+
+    /// A0b: the gauge a degraded instance is seen through is registered per instance by the management server.
+    @Test
+    void managementServer_registersTheDiskDegradedGaugePerInstance() throws Exception {
+        var source = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/java/org/pragmatica/aether/api/ManagementServer.java"))
+                                         .replaceAll("\\s+", "");
+
+        assertThat(source).containsOnlyOnce("observability.gauge(\"aether.storage.disk.degraded\",degraded,\"instance\",instance);");
+    }
+
     /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
     /// stripped; each pin must match exactly once across that set. See [AssemblySource].
     private static String assemblyCode() {
