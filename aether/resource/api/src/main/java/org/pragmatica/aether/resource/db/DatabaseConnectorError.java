@@ -46,6 +46,12 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConnectionFailed(message, cause));
         }
 
+        public static Result<ConnectionFailed> connectionFailed(String message,
+                                                                Option<Throwable> cause,
+                                                                Option<String> sqlState) {
+            return success(new ConnectionFailed(message, cause, sqlState));
+        }
+
         @Override
         public String message() {
             return "Connection failed: " + message;
@@ -66,7 +72,7 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     static ConnectionFailed connectionFailed(String message, Option<Throwable> cause, Option<String> sqlState) {
-        return new ConnectionFailed(message, cause, sqlState);
+        return ConnectionFailed.connectionFailed(message, cause, sqlState).unwrap();
     }
 
     static ConnectionFailed connectionFailed(Throwable cause) {
@@ -82,6 +88,13 @@ public sealed interface DatabaseConnectorError extends Cause {
 
         public static Result<QueryFailed> queryFailed(String sql, String message, Option<Throwable> cause) {
             return success(new QueryFailed(sql, message, cause));
+        }
+
+        public static Result<QueryFailed> queryFailed(String sql,
+                                                      String message,
+                                                      Option<Throwable> cause,
+                                                      Option<String> sqlState) {
+            return success(new QueryFailed(sql, message, cause, sqlState));
         }
 
         @Override
@@ -105,7 +118,7 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     static QueryFailed queryFailed(String sql, String message, Option<Throwable> cause, Option<String> sqlState) {
-        return new QueryFailed(sql, message, cause, sqlState);
+        return QueryFailed.queryFailed(sql, message, cause, sqlState).unwrap();
     }
 
     static QueryFailed queryFailed(String sql, Throwable cause) {
@@ -124,6 +137,12 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConstraintViolation(constraint, message));
         }
 
+        public static Result<ConstraintViolation> constraintViolation(String constraint,
+                                                                      String message,
+                                                                      Option<String> sqlState) {
+            return success(new ConstraintViolation(constraint, message, sqlState));
+        }
+
         @Override
         public String message() {
             return "Constraint violation (" + constraint + "): " + message;
@@ -131,7 +150,7 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     static ConstraintViolation constraintViolation(String constraint, String message, Option<String> sqlState) {
-        return new ConstraintViolation(constraint, message, sqlState);
+        return ConstraintViolation.constraintViolation(constraint, message, sqlState).unwrap();
     }
 
     static ConstraintViolation constraintViolation(String message) {
@@ -162,6 +181,10 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new TransactionRolledBack(reason));
         }
 
+        public static Result<TransactionRolledBack> transactionRolledBack(String reason, Option<String> sqlState) {
+            return success(new TransactionRolledBack(reason, sqlState));
+        }
+
         @Override
         public String message() {
             return "Transaction rolled back: " + reason;
@@ -169,7 +192,7 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     static TransactionRolledBack transactionRollback(String reason, Option<String> sqlState) {
-        return new TransactionRolledBack(reason, sqlState);
+        return TransactionRolledBack.transactionRolledBack(reason, sqlState).unwrap();
     }
 
     static TransactionRolledBack transactionRollback(String reason) {
