@@ -47,6 +47,7 @@ public final class StorageMaintenanceDriver {
     private final DemotionManager demotionManager;
     private final PromotionManager promotionManager;
     private final PromotionStallWatch stallWatch;
+    private final StorageAttentionWatch attentionWatch;
     private final StorageGarbageCollector garbageCollector;
     private final Executor promotionExecutor;
     private final AtomicBoolean promoting = new AtomicBoolean(false);
@@ -54,11 +55,13 @@ public final class StorageMaintenanceDriver {
     private StorageMaintenanceDriver(DemotionManager demotionManager,
                                      PromotionManager promotionManager,
                                      PromotionStallWatch stallWatch,
+                                     StorageAttentionWatch attentionWatch,
                                      StorageGarbageCollector garbageCollector,
                                      Executor promotionExecutor) {
         this.demotionManager = demotionManager;
         this.promotionManager = promotionManager;
         this.stallWatch = stallWatch;
+        this.attentionWatch = attentionWatch;
         this.garbageCollector = garbageCollector;
         this.promotionExecutor = promotionExecutor;
     }
@@ -70,6 +73,20 @@ public final class StorageMaintenanceDriver {
         return storageMaintenanceDriver(demotionManager,
                                         promotionManager,
                                         stallWatch,
+                                        StorageAttentionWatch.noWatch(),
+                                        garbageCollector);
+    }
+
+    /// The driver with a storage attention watch, looked at after every tick's passes ([StorageAttentionWatch#observe]).
+    public static StorageMaintenanceDriver storageMaintenanceDriver(DemotionManager demotionManager,
+                                                                    PromotionManager promotionManager,
+                                                                    PromotionStallWatch stallWatch,
+                                                                    StorageAttentionWatch attentionWatch,
+                                                                    StorageGarbageCollector garbageCollector) {
+        return storageMaintenanceDriver(demotionManager,
+                                        promotionManager,
+                                        stallWatch,
+                                        attentionWatch,
                                         garbageCollector,
                                         StorageMaintenanceDriver::startOnDaemonThread);
     }
@@ -81,9 +98,24 @@ public final class StorageMaintenanceDriver {
                                                              PromotionStallWatch stallWatch,
                                                              StorageGarbageCollector garbageCollector,
                                                              Executor promotionExecutor) {
+        return storageMaintenanceDriver(demotionManager,
+                                        promotionManager,
+                                        stallWatch,
+                                        StorageAttentionWatch.noWatch(),
+                                        garbageCollector,
+                                        promotionExecutor);
+    }
+
+    static StorageMaintenanceDriver storageMaintenanceDriver(DemotionManager demotionManager,
+                                                             PromotionManager promotionManager,
+                                                             PromotionStallWatch stallWatch,
+                                                             StorageAttentionWatch attentionWatch,
+                                                             StorageGarbageCollector garbageCollector,
+                                                             Executor promotionExecutor) {
         return new StorageMaintenanceDriver(demotionManager,
                                             promotionManager,
                                             stallWatch,
+                                            attentionWatch,
                                             garbageCollector,
                                             promotionExecutor);
     }
@@ -105,6 +137,7 @@ public final class StorageMaintenanceDriver {
         startPromotionUnlessRunning();
         var collected = garbageCollector.collectGarbage();
 
+        attentionWatch.observe();
         if (demoted > 0 || collected > 0) {
             log.info("Storage maintenance tick: {} block(s) demoted, {} block(s) garbage-collected", demoted, collected);
         }

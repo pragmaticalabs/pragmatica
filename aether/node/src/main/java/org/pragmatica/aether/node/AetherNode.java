@@ -3551,6 +3551,7 @@ public interface AetherNode extends ManageableNode {
             return;
         }
 
+        StorageFactory.signalConsensusSynced(storageSetups);
         StorageFactory.activateNodeMaintenance(storageSetups).onFailure(cause -> LOG.warn("Storage maintenance could not be activated: {}",
                                                                                           cause.message()));
     }

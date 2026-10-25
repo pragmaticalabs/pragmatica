@@ -1008,19 +1008,29 @@ public final class ConfigLoader {
         var prefetchMaxInFlight = prefetchMaxInFlight(doc, sectionName);
         var maxBlockBytes = maxBlockBytes(doc, sectionName);
 
-        return StorageConfig.storageConfig(memoryMaxBytes,
-                                           diskMaxBytes,
-                                           diskPath,
-                                           snapshotPath,
-                                           mutationThreshold,
-                                           snapshotInterval,
-                                           retentionCount,
-                                           walPath,
-                                           encrypted,
-                                           promotion,
-                                           prefetch,
-                                           prefetchMaxInFlight,
-                                           maxBlockBytes);
+        var config = StorageConfig.storageConfig(memoryMaxBytes,
+                                                 diskMaxBytes,
+                                                 diskPath,
+                                                 snapshotPath,
+                                                 mutationThreshold,
+                                                 snapshotInterval,
+                                                 retentionCount,
+                                                 walPath,
+                                                 encrypted,
+                                                 promotion,
+                                                 prefetch,
+                                                 prefetchMaxInFlight,
+                                                 maxBlockBytes);
+
+        return markedIfDiskPathWritten(doc, sectionName, config);
+    }
+
+    /// A0b: a written `disk_path` is the operator's own placement, so a disk tier that cannot open there refuses the boot.
+    /// An omitted key leaves the default (or the derived placement), which degrades instead.
+    private static StorageConfig markedIfDiskPathWritten(TomlDocument doc, String sectionName, StorageConfig config) {
+        return doc.hasKey(sectionName, "disk_path")
+               ? config.withOperatorDiskPath()
+               : config;
     }
 
     /// The largest block the instance accepts. A value that is not a positive integer is refused like any wrong-typed

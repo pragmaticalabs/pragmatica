@@ -458,6 +458,16 @@ public enum OperatorWarningCode {
     /// configuration fails the slice's next provisioning (restart or redeploy), so fix or remove the keys. Closed by
     /// [#JSON_CONFIG_APPLIED].
     JSON_CONFIG_REJECTED("json-config-rejected", "json", WarningLevel.CRITICAL),
+    /// A storage instance is running with less than it was configured for, or a protection it relies on has stopped
+    /// working (A0b): its disk tier could not open at a default path, its memory tier was cut to fit the heap, demotion
+    /// is refused because the only durable tier is over its watermark, the metadata snapshot cannot be written, or an
+    /// older snapshot was restored. Subject is `<instance>/<condition>`; the message says what is lost and what to do.
+    /// Raised once per appearance of the condition, per node. Closed by [#STORAGE_RECOVERED] for the conditions that can
+    /// end; a disk tier or memory tier degrade lasts until the node restarts.
+    STORAGE_DEGRADED("storage-degraded", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_DEGRADED], same subject: the condition is gone (the tier is under its watermark again,
+    /// a snapshot was written). INFO, published only after a published degrade event for the subject (#752 mechanism).
+    STORAGE_RECOVERED("storage-recovered", "storage", WarningLevel.INFO, STORAGE_DEGRADED),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);

@@ -1,5 +1,7 @@
 package org.pragmatica.storage;
 
+import java.util.List;
+
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -33,6 +35,12 @@ public interface SnapshotManager {
     long lastSnapshotEpoch();
     /// Timestamp of the last snapshot in milliseconds since epoch.
     long lastSnapshotTimestamp();
+
+    /// The conditions this manager holds right now that need an operator; empty when none. Sampled by the node's
+    /// storage attention watch, which reports each appearance and disappearance once.
+    default List<StorageCondition> conditions() {
+        return List.of();
+    }
 
     /// Factory method.
     static SnapshotManager snapshotManager(MetadataStore metadataStore, SnapshotConfig config) {

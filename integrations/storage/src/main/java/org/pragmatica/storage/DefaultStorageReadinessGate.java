@@ -68,7 +68,7 @@ final class DefaultStorageReadinessGate implements StorageReadinessGate {
     @Override
     @Contract
     public void consensusSynced() {
-        if (!state.compareAndSet(ReadinessState.SNAPSHOT_LOADED, ReadinessState.READY)) {
+        if (!state.compareAndSet(ReadinessState.SNAPSHOT_LOADED, ReadinessState.READY) && state.get() != ReadinessState.READY) {
             log.warn("consensusSynced() called in unexpected state: {}", state.get());
 
             return;

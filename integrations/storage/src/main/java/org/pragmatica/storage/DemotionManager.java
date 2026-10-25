@@ -25,6 +25,12 @@ public interface DemotionManager {
     /// Whether the demotion manager is currently active.
     boolean isActive();
 
+    /// The conditions this manager holds right now that need an operator; empty when none. Sampled by the node's
+    /// storage attention watch, which reports each appearance and disappearance once.
+    default List<StorageCondition> conditions() {
+        return List.of();
+    }
+
     record DemotionStats(int blocksDemoted, long bytesMoved, long lastRunMs) {
         static DemotionStats empty() {
             return new DemotionStats(0, 0, 0);

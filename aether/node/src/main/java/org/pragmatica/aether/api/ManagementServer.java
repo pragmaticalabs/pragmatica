@@ -748,6 +748,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                  .counterMap());
         registerStreamMemoryMetrics();
         registerStoragePromotionMetrics();
+        registerStorageDegradedMetrics();
         registerDhtCatchUpMetrics();
         var transport = tls.isPresent()
                         ? "HTTPS"
@@ -770,6 +771,19 @@ class ManagementServerImpl implements ManagementServer {
     /// `storage-promotion-stalled` operator event.
     private void registerStoragePromotionMetrics() {
         nodeSupplier.get().storageSetups().forEach(this::registerPromotionGauges);
+    }
+
+    /// A0b: how many conditions that need an operator each storage instance holds right now (a disk tier that could not
+    /// open at a default path, a memory tier cut to the heap budget, demotion refused, a failing or fallen-back metadata
+    /// snapshot). Non-zero is the standing counterpart of the `storage-degraded` operator event; zero is healthy.
+    private void registerStorageDegradedMetrics() {
+        nodeSupplier.get().storageSetups().forEach(this::registerDegradedGauge);
+    }
+
+    private void registerDegradedGauge(String instance, StorageSetup setup) {
+        Supplier<Number> degraded = () -> setup.conditions().size();
+
+        observability.gauge("aether.storage.degraded", degraded, "instance", instance);
     }
 
     private void registerPromotionGauges(String instance, StorageSetup setup) {

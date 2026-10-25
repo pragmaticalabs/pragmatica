@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -35,4 +36,9 @@ public interface StorageTier {
     default boolean isDurable() {
         return false;
     }
+
+    /// Gives up what opening the tier took for the node, such as a disk tier's mount claim. Called when the instance
+    /// shuts down. Defaults to nothing: only a tier that holds something overrides it.
+    @Contract
+    default void release() {}
 }

@@ -33,6 +33,7 @@ final class DefaultDemotionManager implements DemotionManager {
     private final AtomicReference<DemotionStats> stats = new AtomicReference<>(DemotionStats.empty());
     private volatile boolean active = false;
     private final AtomicBoolean refusing = new AtomicBoolean(false);
+    private volatile String refusalDetail = "";
 
     DefaultDemotionManager(List<StorageTier> tiers, MetadataStore metadataStore, DemotionConfig config) {
         this.tiers = List.copyOf(tiers);
@@ -126,7 +127,8 @@ final class DefaultDemotionManager implements DemotionManager {
     }
 
     /// Once per pressure episode (reset when the tier drops back under its high watermark), so a tick every
-    /// few minutes does not flood the log. TODO(#1574): also emit as an OperatorWarning cluster event.
+    /// few minutes does not flood the log. The episode is also a [StorageCondition] ([#conditions]), which the node
+    /// reports as an operator event when it begins and when it ends.
     private DemotionResult refuseDurableDemotion(StorageTier sourceTier) {
         if (!isAboveHighWatermark(sourceTier)) {
             refusing.set(false);
@@ -135,15 +137,24 @@ final class DefaultDemotionManager implements DemotionManager {
         }
 
         if (refusing.compareAndSet(false, true)) {
-            log.warn("Tier {} is above its high watermark ({} of {} bytes) but holds the only durable copy of its "
-                    + "blocks: nothing is demoted to a non-durable tier. Writes that need it fail with TierFull once "
-                    + "it is full; add capacity or a durable tier below it",
-                     sourceTier.level(),
-                     sourceTier.usedBytes(),
-                     sourceTier.maxBytes());
+            refusalDetail = describeRefusal(sourceTier);
+            log.warn("{}", refusalDetail);
         }
 
         return DemotionResult.NONE;
+    }
+
+    private static String describeRefusal(StorageTier sourceTier) {
+        return "Tier " + sourceTier.level() + " is above its high watermark (" + sourceTier.usedBytes() + " of "
+               + sourceTier.maxBytes() + " bytes) but holds the only durable copy of its blocks: nothing is demoted to a "
+               + "non-durable tier. Writes that need it fail with TierFull once it is full; add capacity or a durable tier below it";
+    }
+
+    @Override
+    public List<StorageCondition> conditions() {
+        return refusing.get()
+               ? List.of(StorageCondition.storageCondition(StorageCondition.Kind.DEMOTION_REFUSED, refusalDetail))
+               : List.of();
     }
 
     /// #250 review: mirrors the GC-side guard (`StorageInstance#deleteFromPrivateTiers`) rather than

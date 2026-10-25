@@ -1,5 +1,7 @@
 package org.pragmatica.storage;
 
+import java.nio.file.Path;
+
 import org.pragmatica.lang.Cause;
 
 
@@ -51,6 +53,22 @@ public sealed interface StorageError extends Cause {
         @Override
         public String message() {
             return "Block of " + size + " bytes exceeds the maximum block size of " + maxBytes + " bytes";
+        }
+    }
+
+    /// A disk tier's directory is claimed by another live node ([MountClaim]): two nodes on one mount would share each
+    /// other's blocks and could delete each other's files. Recovery: give each node its own directory; if the holder is
+    /// gone and sat on another host, remove the claim file by hand.
+    record MountClaimed(Path mount, String holderNodeId, String holderHost, long holderPid) implements StorageError {
+        static MountClaimed mountClaimed(Path mount, String holderNodeId, String holderHost, long holderPid) {
+            return new MountClaimed(mount, holderNodeId, holderHost, holderPid);
+        }
+
+        @Override
+        public String message() {
+            return "Storage directory " + mount + " is already claimed by node '" + holderNodeId + "' (process "
+                   + holderPid + " on " + holderHost + "): two nodes cannot share one mount. Give each node its own "
+                   + "disk_path; if that node is gone and ran on another host, remove " + mount.resolve(MountClaim.FILE_NAME);
         }
     }
 

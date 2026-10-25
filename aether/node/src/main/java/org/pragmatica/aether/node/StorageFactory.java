@@ -25,6 +25,7 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -55,6 +56,8 @@ import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.SnapshotConfig;
 import org.pragmatica.storage.SnapshotError;
 import org.pragmatica.storage.SnapshotManager;
+import org.pragmatica.storage.StorageCondition;
+import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
@@ -140,7 +143,34 @@ public final class StorageFactory {
                                Option<DhtMarkerCheck> dhtMarkerCheck,
                                Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker,
                                PromotionManager promotionManager,
-                               PrefetchManager prefetchManager) {
+                               PrefetchManager prefetchManager,
+                               List<StorageCondition> bootConditions) {
+        /// The setup as it was before the boot conditions existed: none.
+        public StorageSetup(String name,
+                            StorageInstance instance,
+                            SnapshotManager snapshotManager,
+                            StorageReadinessGate readinessGate,
+                            MetadataStore metadataStore,
+                            DemotionManager demotionManager,
+                            StorageGarbageCollector garbageCollector,
+                            Option<DhtMarkerCheck> dhtMarkerCheck,
+                            Option<EncryptingStorageTier.ArmedLocalDisk> committedDiskMarker,
+                            PromotionManager promotionManager,
+                            PrefetchManager prefetchManager) {
+            this(name,
+                 instance,
+                 snapshotManager,
+                 readinessGate,
+                 metadataStore,
+                 demotionManager,
+                 garbageCollector,
+                 dhtMarkerCheck,
+                 committedDiskMarker,
+                 promotionManager,
+                 prefetchManager,
+                 List.of());
+        }
+
         /// The setup as it was before cross-node prefetching: no prefetch manager (`PrefetchManager.NOOP`).
         public StorageSetup(String name,
                             StorageInstance instance,
@@ -289,6 +319,14 @@ public final class StorageFactory {
                                     promotionManager);
         }
 
+        /// A0b: the conditions this instance holds now that need an operator: what boot left standing, then what its
+        /// demotion and snapshot managers report. See [StorageAttentionWatch].
+        public List<StorageCondition> conditions() {
+            return Stream.of(bootConditions, demotionManager.conditions(), snapshotManager.conditions())
+                         .flatMap(List::stream)
+                         .toList();
+        }
+
         /// #1052: whether this instance's DHT tier is still waiting on its post-formation
         /// encryption-marker check, which retries while the DHT cannot answer. `false` for an instance
         /// with no DHT tier, and for a check that has finished either way. A refused check fails
@@ -315,7 +353,8 @@ public final class StorageFactory {
                                     dhtMarkerCheck,
                                     armedDisk,
                                     promotionManager,
-                                    prefetchManager);
+                                    prefetchManager,
+                                    bootConditions);
         }
     }
 
@@ -341,9 +380,22 @@ public final class StorageFactory {
     private record TierBuild(List<StorageTier> tiers,
                              Option<DhtMarkerCheck> dhtMarkerCheck,
                              Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk,
-                             Option<S3SharedTier.PendingMarker> sharedMarker) {
+                             Option<S3SharedTier.PendingMarker> sharedMarker,
+                             List<StorageCondition> conditions) {
+        private TierBuild(List<StorageTier> tiers,
+                          Option<DhtMarkerCheck> dhtMarkerCheck,
+                          Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk,
+                          Option<S3SharedTier.PendingMarker> sharedMarker) {
+            this(tiers, dhtMarkerCheck, armedDisk, sharedMarker, List.of());
+        }
+
         private TierBuild(List<StorageTier> tiers, Option<DhtMarkerCheck> dhtMarkerCheck) {
             this(tiers, dhtMarkerCheck, Option.empty(), Option.empty());
+        }
+
+        /// This build, running below what was configured: `condition` is what an operator is told.
+        private TierBuild degraded(StorageCondition condition) {
+            return new TierBuild(tiers, dhtMarkerCheck, armedDisk, sharedMarker, concat(conditions, List.of(condition)));
         }
 
         private TierBuild(List<StorageTier> tiers,
@@ -485,6 +537,14 @@ public final class StorageFactory {
                                                  .toList()).map(_ -> unit());
     }
 
+    /// The node reports ready: its consensus view is synced, so every instance's readiness gate becomes write-ready
+    /// (A0b). The ready signal fires on every entry to Active; the gate takes the second call as a no-op.
+    @Contract
+    public static void signalConsensusSynced(Map<String, StorageSetup> setups) {
+        setups.values()
+              .forEach(setup -> setup.readinessGate().consensusSynced());
+    }
+
     /// Mirror of [#activateNodeMaintenance], run when the node stops.
     public static Result<Unit> deactivateNodeMaintenance(Map<String, StorageSetup> setups) {
         return Result.allOf(nodeMaintenanceSetups(setups).stream()
@@ -585,7 +645,18 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StorageConfig defaults) {
-        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults, List.of()));
+        return createAll(configs, nodeId, dhtClient, keyring, defaults, Runtime.getRuntime().maxMemory());
+    }
+
+    /// [#createAll(Map, String, Option, Option, StorageConfig)] with the JVM's maximum heap supplied by the caller, so a
+    /// test can build as if under `-Xmx256m`. The memory tiers are sized against it ([MemoryTierBudget]).
+    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                       String nodeId,
+                                                       Option<DHTClient> dhtClient,
+                                                       Option<EncryptionKeyring> keyring,
+                                                       StorageConfig defaults,
+                                                       long maxHeapBytes) {
+        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults, List.of(), maxHeapBytes));
     }
 
     /// #852 round 2: the boot decision `AetherNode` actually makes -- the config-map instances AND
@@ -605,12 +676,24 @@ public final class StorageFactory {
                                                               Option<DHTClient> dhtClient,
                                                               Option<EncryptionKeyring> keyring,
                                                               StreamSetupRequest streams) {
+        return createAll(configs, nodeId, dhtClient, keyring, streams, Runtime.getRuntime().maxMemory());
+    }
+
+    /// [#createAll(Map, String, Option, Option, StreamSetupRequest)] with the JVM's maximum heap supplied by the
+    /// caller (see [MemoryTierBudget]); production passes the real one.
+    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                       String nodeId,
+                                                       Option<DHTClient> dhtClient,
+                                                       Option<EncryptionKeyring> keyring,
+                                                       StreamSetupRequest streams,
+                                                       long maxHeapBytes) {
         var results = pendingSetups(withoutStreamsSection(configs),
                                     nodeId,
                                     dhtClient,
                                     keyring,
                                     StorageConfig.storageConfig(),
-                                    StoragePathsOverlap.streamsClaims(streams));
+                                    StoragePathsOverlap.streamsClaims(streams),
+                                    maxHeapBytes);
 
         results.add(armStreamStorage(streams));
 
@@ -633,7 +716,8 @@ public final class StorageFactory {
                                                             Option<DHTClient> dhtClient,
                                                             Option<EncryptionKeyring> keyring,
                                                             StorageConfig defaults,
-                                                            List<StoragePathsOverlap.Claim> reserved) {
+                                                            List<StoragePathsOverlap.Claim> reserved,
+                                                            long maxHeapBytes) {
         var results = new ArrayList<Result<PendingSetup>>();
         var underived = UnderivedStoragePaths.find(configs);
         // #249: `configs` is the derived map ([#derivedStorage]); a shared-only instance still in it was never
@@ -653,7 +737,14 @@ public final class StorageFactory {
             return results;
         }
 
-        configs.forEach((name, config) -> results.add(createOne(name, config, nodeId, dhtClient, keyring)));
+        var memory = MemoryTierBudget.ofHeap(maxHeapBytes, STREAM_MEMORY_BYTES).fit(requestedMemory(effective));
+
+        configs.forEach((name, config) -> results.add(createOne(name,
+                                                                fitted(name, config, memory),
+                                                                nodeId,
+                                                                dhtClient,
+                                                                keyring,
+                                                                clampConditions(name, config, memory))));
         // Every node carries an `artifacts` storage instance — operators expect it without
         // having to opt-in via `[storage.artifacts]` in aether.toml. If explicit config wasn't
         // provided, synthesize one using `StorageConfig.storageConfig()` defaults; explicit
@@ -667,10 +758,11 @@ public final class StorageFactory {
         // a boot failure exactly like an explicit instance's, not a silently-dropped default.
         if (!configs.containsKey(ARTIFACTS_NAME)) {
             results.add(createOne(ARTIFACTS_NAME,
-                                  defaultArtifactsConfig(defaults, keyring.isPresent()),
+                                  fitted(ARTIFACTS_NAME, effective.get(ARTIFACTS_NAME), memory),
                                   nodeId,
                                   dhtClient,
-                                  keyring));
+                                  keyring,
+                                  clampConditions(ARTIFACTS_NAME, effective.get(ARTIFACTS_NAME), memory)));
         }
         // #783 ruling (2026-09-04): `content` -- the shared per-node StorageInstance ContentStore
         // resources provision through (registered as an SPI extension in AetherNode) -- used to be
@@ -683,13 +775,45 @@ public final class StorageFactory {
         // explicit `[storage.content]` section overrides it.
         if (!configs.containsKey(CONTENT_NAME)) {
             results.add(createOne(CONTENT_NAME,
-                                  defaultContentConfig(configs, defaults, keyring.isPresent()),
+                                  fitted(CONTENT_NAME, effective.get(CONTENT_NAME), memory),
                                   nodeId,
                                   dhtClient,
-                                  keyring));
+                                  keyring,
+                                  clampConditions(CONTENT_NAME, effective.get(CONTENT_NAME), memory)));
         }
 
         return results;
+    }
+
+    private static Map<String, Long> requestedMemory(Map<String, StorageConfig> effective) {
+        var requested = new LinkedHashMap<String, Long>();
+
+        effective.forEach((name, config) -> requested.put(name, config.memoryMaxBytes()));
+
+        return requested;
+    }
+
+    private static StorageConfig fitted(String name, StorageConfig config, Map<String, Long> memory) {
+        return config.withMemoryMaxBytes(memory.getOrDefault(name, config.memoryMaxBytes()));
+    }
+
+    /// A0b: the memory tier was cut to fit [MemoryTierBudget]. Warns now (the log is the floor) and returns the condition
+    /// the node raises as an operator event once its sink exists; nothing when the configured size fits.
+    private static List<StorageCondition> clampConditions(String name, StorageConfig config, Map<String, Long> memory) {
+        var fitted = memory.getOrDefault(name, config.memoryMaxBytes());
+
+        if (fitted >= config.memoryMaxBytes()) {
+            return List.of();
+        }
+
+        var detail = "Storage '" + name + "' memory tier is " + fitted + " bytes, not the configured "
+                     + config.memoryMaxBytes() + ": all memory tiers together are limited to "
+                     + (int) (MemoryTierBudget.HEAP_FRACTION * 100) + "% of the maximum heap. Raise -Xmx or lower "
+                     + "memory_max_bytes of the storage instances";
+
+        log.warn(detail);
+
+        return List.of(StorageCondition.storageCondition(StorageCondition.Kind.MEMORY_TIER_CLAMPED, detail));
     }
 
     /// #249: the node's storage map with every shared-only instance's paths derived, over the production defaults
@@ -1365,7 +1489,8 @@ public final class StorageFactory {
                                                   StorageConfig config,
                                                   String nodeId,
                                                   Option<DHTClient> dhtClient,
-                                                  Option<EncryptionKeyring> keyring) {
+                                                  Option<EncryptionKeyring> keyring,
+                                                  List<StorageCondition> inherited) {
         // #253 — the per-instance `[storage.<name>] encrypted` flag (not the presence of `keyring`
         // itself) decides whether THIS instance gets wrapped; other instances may share the same
         // node-wide keyring while staying plaintext.
@@ -1382,7 +1507,8 @@ public final class StorageFactory {
                                                          build.tiers(),
                                                          config,
                                                          nodeId,
-                                                         build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
+                                                         build.dhtMarkerCheck(),
+                                                         concat(inherited, build.conditions())).map(setup -> new PendingSetup(setup,
                                                                                                                build.armedDisk(),
                                                                                                                build.sharedMarker())));
     }
@@ -1396,6 +1522,7 @@ public final class StorageFactory {
                                                 Option<EncryptionKeyring> keyring) {
         return sharedTier(name, config.shared(), nodeId, dhtClient, keyring).flatMap(shared -> buildLocalTiers(name,
                                                                                                                config,
+                                                                                                               nodeId,
                                                                                                                shared,
                                                                                                                keyring));
     }
@@ -1419,6 +1546,7 @@ public final class StorageFactory {
 
     private static Result<TierBuild> buildLocalTiers(String name,
                                                      StorageConfig config,
+                                                     String nodeId,
                                                      TierBuild.SharedBuild shared,
                                                      Option<EncryptionKeyring> keyring) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
@@ -1426,9 +1554,31 @@ public final class StorageFactory {
         // #1569 A3: the tier is constructed read-only; this node owns the volume, so it opens it.
         return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
-                            .flatMap(LocalDiskTier::open)
-                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, shared),
+                            .flatMap(tier -> tier.open(nodeId))
+                            .fold(cause -> diskTierUnavailable(name, config, cause, memoryTier, shared),
                                   disk -> buildTierList(name, memoryTier, disk, diskPath, shared, keyring));
+    }
+
+    /// A disk tier that did not open. Three causes, three answers: a mount held by another live node refuses the boot
+    /// whatever the path (degrading would put two nodes on the mount's blocks through the back door); a path the
+    /// operator wrote in `disk_path` refuses it too, because the operator named a place and it is not there; any other
+    /// path (the synthesized `artifacts` and `content`, an instance that wrote none) degrades, because a container has no
+    /// mount at the default and that is how the stock image runs.
+    private static Result<TierBuild> diskTierUnavailable(String name,
+                                                         StorageConfig config,
+                                                         Cause cause,
+                                                         MemoryTier memoryTier,
+                                                         TierBuild.SharedBuild shared) {
+        if (cause instanceof StorageError.MountClaimed) {
+            return cause.result();
+        }
+
+        return config.diskPathOperatorSet()
+               ? Causes.cause("Disk tier for '" + name + "' cannot be opened at the configured disk_path "
+                              + config.diskPath() + ": " + cause.message()
+                              + ". Make the path available (mount, permissions, space), or remove disk_path to use the default",
+                              Option.some(cause)).result()
+               : handleDiskTierUnavailable(name, cause, memoryTier, shared);
     }
 
     /// Builds the DHT tier (from `dhtClient`/`dhtKeyPrefix`) and wraps it under `keyring` when
@@ -1740,7 +1890,20 @@ public final class StorageFactory {
                                                                TierBuild.SharedBuild shared) {
         log.warn("Disk tier for '{}' unavailable: {}, using memory + shared-tier fallback", name, cause.message());
 
-        return Result.success(withSharedTier(shared, List.of(memoryTier)));
+        return Result.success(withSharedTier(shared, List.of(memoryTier)).degraded(diskUnavailableCondition(name, cause)));
+    }
+
+    /// A put is acknowledged without a local durable copy while this stands, so the operator is told what is lost, why
+    /// and what to do (the same words go to the cluster event).
+    private static StorageCondition diskUnavailableCondition(String name, Cause cause) {
+        return StorageCondition.storageCondition(StorageCondition.Kind.DISK_TIER_UNAVAILABLE,
+                                                 "Storage '" + name + "' has no local disk tier (" + cause.message()
+                                                 + "): it runs on memory and the shared tier only, so a write is acknowledged without a local durable copy. "
+                                                 + "Mount the data directory and restart the node");
+    }
+
+    private static List<StorageCondition> concat(List<StorageCondition> first, List<StorageCondition> second) {
+        return Stream.concat(first.stream(), second.stream()).toList();
     }
 
     /// #858 BLOCKING #3 (unchanged from #253): the no-keyring branch checks
@@ -1789,7 +1952,8 @@ public final class StorageFactory {
                                                       List<StorageTier> tiers,
                                                       StorageConfig config,
                                                       String nodeId,
-                                                      Option<DhtMarkerCheck> dhtMarkerCheck) {
+                                                      Option<DhtMarkerCheck> dhtMarkerCheck,
+                                                      List<StorageCondition> bootConditions) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
         // The prefetch manager needs the instance, and the instance must tell the manager of every read hit: the
         // listener reaches the manager through a holder bound once both exist.
@@ -1837,7 +2001,8 @@ public final class StorageFactory {
                                                            dhtMarkerCheck,
                                                            Option.empty(),
                                                            promotionManager,
-                                                           prefetchManager);
+                                                           prefetchManager,
+                                                           bootConditions);
                                });
     }
 

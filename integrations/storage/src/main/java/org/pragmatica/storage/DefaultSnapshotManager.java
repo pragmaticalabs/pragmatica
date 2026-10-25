@@ -16,6 +16,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -47,6 +48,11 @@ import static org.pragmatica.lang.io.FileOps.writeString;
 /// Dual-condition trigger: snapshot when mutation count exceeds threshold OR time exceeds interval.
 final class DefaultSnapshotManager implements SnapshotManager {
     private static final Logger LOG = LoggerFactory.getLogger(DefaultSnapshotManager.class);
+    /// What the last snapshot write failed with, while it keeps failing; empty after a successful write. Read by
+    /// [#conditions].
+    private final AtomicReference<Option<String>> writeFailure = new AtomicReference<>(none());
+    /// Set when boot restored an older retained snapshot; cleared by the next successful write. Read by [#conditions].
+    private final AtomicReference<Option<String>> fellBack = new AtomicReference<>(none());
     private static final String SNAPSHOT_PREFIX = "snapshot-";
     private static final String SNAPSHOT_SUFFIX = ".dat";
     private static final String LATEST_POINTER = "LATEST";
@@ -163,9 +169,31 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
         return writeSnapshotToDisk(capture).onSuccess(_ -> recordSnapshotTaken(snapshot))
                                   .onSuccess(_ -> stampVolumeIdentity())
-                                  .onFailure(cause -> LOG.warn("Snapshot write failed: {}",
-                                                               cause.message()))
+                                  .onSuccessRun(this::clearWriteConditions)
+                                  .onFailure(this::recordWriteFailure)
                                   .map(_ -> snapshot);
+    }
+
+    @Contract
+    private void clearWriteConditions() {
+        writeFailure.set(none());
+        fellBack.set(none());
+    }
+
+    @Contract
+    private void recordWriteFailure(Cause cause) {
+        LOG.warn("Snapshot write failed: {}", cause.message());
+        writeFailure.set(Option.some("The metadata snapshot cannot be written (" + cause.message()
+                                     + "): references taken since the last good snapshot are not protected. Check the snapshot "
+                                     + "directory's free space and permissions"));
+    }
+
+    @Override
+    public List<StorageCondition> conditions() {
+        return java.util.stream.Stream.of(writeFailure.get().map(detail -> StorageCondition.storageCondition(StorageCondition.Kind.SNAPSHOT_WRITE_FAILING, detail)),
+                                          fellBack.get().map(detail -> StorageCondition.storageCondition(StorageCondition.Kind.SNAPSHOT_FELL_BACK, detail)))
+                                      .flatMap(Option::stream)
+                                      .toList();
     }
 
     /// #1353: the file `LATEST` names is tried first; when it is missing, torn or fails its hash
@@ -423,13 +451,17 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                .or(files);
     }
 
-    private static void reportFallback(Option<Path> unreadableLatest, Path candidate, MetadataSnapshot snapshot) {
+    @Contract
+    private void reportFallback(Option<Path> unreadableLatest, Path candidate, MetadataSnapshot snapshot) {
         LOG.warn("{}; restored another retained snapshot {} (epoch={}) instead. "
                 + "Metadata recorded only in the unreadable file is lost unless a WAL replays it. "
                 + "See docs/operators/runbooks/backup-recovery.md",
                  describeLatest(unreadableLatest),
                  candidate.getFileName(),
                  snapshot.epoch());
+        fellBack.set(Option.some(describeLatest(unreadableLatest) + "; the older snapshot " + candidate.getFileName()
+                                 + " (epoch " + snapshot.epoch() + ") was restored instead, so metadata recorded only in the "
+                                 + "unreadable file is lost unless a WAL replays it. See the backup-recovery runbook"));
     }
 
     /// #1013: nothing restored is two outcomes the caller has to keep apart. No `LATEST` file and

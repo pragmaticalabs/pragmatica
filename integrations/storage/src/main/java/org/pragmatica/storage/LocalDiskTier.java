@@ -4,12 +4,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -64,6 +66,7 @@ public final class LocalDiskTier implements StorageTier {
     private final Path basePath;
     private final AtomicLong usedBytes = new AtomicLong(0);
     private final AtomicLong writeSequence = new AtomicLong(0);
+    private final AtomicReference<Option<MountClaim>> claim = new AtomicReference<>(none());
     private final long maxBytes;
     private final TimeSpan readTimeout;
     private final Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride;
@@ -136,9 +139,40 @@ public final class LocalDiskTier implements StorageTier {
     /// its own, so an unopened tier still writes correctly; it only keeps any stale partials.
     public Result<LocalDiskTier> open() {
         return FileOps.createDirectoriesDurable(basePath)
-                      .flatMap(_ -> FileOps.walk(basePath, FileOps::isRegularFile))
+                      .flatMap(_ -> sweepAndCount());
+    }
+
+    /// [#open] for the node that owns the volume (A0b): the directory is claimed for `nodeId` ([MountClaim]) right
+    /// after it exists and BEFORE anything in it is touched, so a second node on the same mount is refused without
+    /// having removed a partial file or counted a block of the first. The claim is held until [#release].
+    public Result<LocalDiskTier> open(String nodeId) {
+        return FileOps.createDirectoriesDurable(basePath)
+                      .flatMap(_ -> MountClaim.mountClaim(basePath, nodeId))
+                      .onSuccess(this::holdClaim)
+                      .flatMap(_ -> sweepAndCount());
+    }
+
+    private Result<LocalDiskTier> sweepAndCount() {
+        return FileOps.walk(basePath, FileOps::isRegularFile)
                       .onSuccess(LocalDiskTier::removeLeftoverPartials)
                       .map(_ -> countUsedBytes());
+    }
+
+    @Contract
+    private void holdClaim(MountClaim taken) {
+        claim.set(some(taken));
+    }
+
+    /// Gives the mount claim up, when this tier holds one. A claim that cannot be removed is logged and left: the next
+    /// claimer finds this process gone and takes it over.
+    @Contract
+    @Override
+    public void release() {
+        claim.getAndSet(none())
+             .onPresent(held -> held.release()
+                                    .onFailure(cause -> log.warn("Mount claim of {} could not be released: {}",
+                                                                 basePath,
+                                                                 cause.message())));
     }
 
     @Override
@@ -344,9 +378,15 @@ public final class LocalDiskTier implements StorageTier {
 
     private static long blockBytes(List<Path> paths) {
         return paths.stream()
-                    .filter(path -> !isPartial(path))
+                    .filter(path -> !isPartial(path) && !isClaim(path))
                     .mapToLong(LocalDiskTier::fileSizeOrZero)
                     .sum();
+    }
+
+    private static boolean isClaim(Path path) {
+        return path.getFileName()
+                   .toString()
+                   .equals(MountClaim.FILE_NAME);
     }
 
     private static boolean isPartial(Path path) {

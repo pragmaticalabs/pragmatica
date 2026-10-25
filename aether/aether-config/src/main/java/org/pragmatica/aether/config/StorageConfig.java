@@ -40,6 +40,11 @@ import org.pragmatica.lang.Verify;
 /// their `encrypted` default), or, through [#derivingPaths], a section of another name that sets neither `disk_path`
 /// nor `snapshot_path` (N3). Every other shape carries false and is placed exactly as written -- a blank `diskPath`
 /// included, which never reads as "derive".
+/// `diskPathOperatorSet` (A0b) is true when the operator wrote `disk_path` for this instance. A disk tier that cannot be
+/// opened at an operator-set path refuses the boot (the operator named a place and it is not there); at a default or
+/// derived path (the synthesized `artifacts` and `content`, an instance that wrote no `disk_path`) the instance degrades
+/// to memory plus the shared tier, with a warning, a gauge and a cluster event, because containers legitimately have no
+/// mount at the default.
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -54,7 +59,8 @@ public record StorageConfig(long memoryMaxBytes,
                             int prefetchMaxInFlight,
                             SharedTierConfig shared,
                             boolean derivesPaths,
-                            int maxBlockBytes) {
+                            int maxBlockBytes,
+                            boolean diskPathOperatorSet) {
     /// The default for `prefetchMaxInFlight`; the prefetch manager's own default is pinned to the same number by a test.
     public static final int DEFAULT_PREFETCH_MAX_IN_FLIGHT = 4;
     /// The default for `maxBlockBytes`; the storage instance's own default is pinned to the same number by a test.
@@ -64,6 +70,41 @@ public record StorageConfig(long memoryMaxBytes,
     /// under that fixed, machine-global root; tests and co-located runs point it at their own directory.
     public static final String DEFAULT_ROOT_PROPERTY = "aether.storage.defaultRoot";
     private static final String DEFAULT_ROOT = "/data/aether";
+
+    /// The shape before `diskPathOperatorSet` existed: the disk path is not the operator's (it is a default or a derived
+    /// placement), so a disk tier that cannot open degrades instead of refusing the boot.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion,
+                         boolean prefetch,
+                         int prefetchMaxInFlight,
+                         SharedTierConfig shared,
+                         boolean derivesPaths,
+                         int maxBlockBytes) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
+             prefetch,
+             prefetchMaxInFlight,
+             shared,
+             derivesPaths,
+             maxBlockBytes,
+             false);
+    }
 
     /// The shape before `maxBlockBytes` existed: the limit takes its default.
     public StorageConfig(long memoryMaxBytes,
@@ -412,7 +453,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  prefetchMaxInFlight,
                                  shared,
                                  derivesPaths,
-                                 maxBlockBytes);
+                                 maxBlockBytes,
+                                 diskPathOperatorSet);
     }
 
     /// #249: an instance configured ONLY through `[storage.<name>.shared]`, with no `[storage.<name>]`
@@ -436,6 +478,47 @@ public record StorageConfig(long memoryMaxBytes,
                                  true);
     }
 
+    /// A0b: this configuration with its memory tier sized to `memoryMaxBytes`; every other setting is kept.
+    public StorageConfig withMemoryMaxBytes(long memoryMaxBytes) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
+                                 shared,
+                                 derivesPaths,
+                                 maxBlockBytes,
+                                 diskPathOperatorSet);
+    }
+
+    /// A0b: this configuration with its `disk_path` marked as the operator's own ([#diskPathOperatorSet]): a disk tier
+    /// that cannot open there refuses the boot. The loader sets it when the `disk_path` key was written.
+    public StorageConfig withOperatorDiskPath() {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
+                                 shared,
+                                 derivesPaths,
+                                 maxBlockBytes,
+                                 true);
+    }
+
     /// #249 N3: this configuration, marked as giving no paths of its own ([#derivesPaths]); the node derives them.
     public StorageConfig derivingPaths() {
         return new StorageConfig(memoryMaxBytes,
@@ -452,7 +535,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  prefetchMaxInFlight,
                                  shared,
                                  true,
-                                 maxBlockBytes);
+                                 maxBlockBytes,
+                                 diskPathOperatorSet);
     }
 
     /// #249 N3: this configuration placed on `diskPath` and `snapshotPath`, which are its own from now on
@@ -472,7 +556,8 @@ public record StorageConfig(long memoryMaxBytes,
                                  prefetchMaxInFlight,
                                  shared,
                                  false,
-                                 maxBlockBytes);
+                                 maxBlockBytes,
+                                 false);
     }
 
     /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.

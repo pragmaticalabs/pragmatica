@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.PromotionStallWatch;
+import org.pragmatica.aether.node.StorageAttentionWatch;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.StorageMaintenanceDriver;
 import org.pragmatica.aether.repository.RepositoryFactory;
@@ -207,6 +208,8 @@ public sealed interface StorageAssembly {
                                                                                          compositePromotionManager,
                                                                                          PromotionStallWatch.promotionStallWatch(storageSetups,
                                                                                                                                  operatorWarningSink),
+                                                                                         StorageAttentionWatch.storageAttentionWatch(storageSetups,
+                                                                                                                                     operatorWarningSink),
                                                                                          compositeGarbageCollector);
 
         LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",

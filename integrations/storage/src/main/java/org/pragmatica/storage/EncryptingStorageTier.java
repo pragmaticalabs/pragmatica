@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -191,9 +192,11 @@ public final class EncryptingStorageTier implements StorageTier {
     }
 
     private static boolean isBlockFile(Path path) {
-        return FileOps.isRegularFile(path) && !path.getFileName()
-                                                   .toString()
-                                                   .equals(MARKER_FILE_NAME);
+        return FileOps.isRegularFile(path) && !isBookkeeping(path.getFileName().toString());
+    }
+
+    private static boolean isBookkeeping(String fileName) {
+        return fileName.equals(MARKER_FILE_NAME) || fileName.equals(MountClaim.FILE_NAME);
     }
 
     /// #1190: the marker is a CREATE whose presence a later boot's fail-closed guard keys on, so it
@@ -321,6 +324,12 @@ public final class EncryptingStorageTier implements StorageTier {
                && framed[1] == MAGIC[1]
                && framed[2] == MAGIC[2]
                && framed[3] == MAGIC[3];
+    }
+
+    @Contract
+    @Override
+    public void release() {
+        delegate.release();
     }
 
     @Override
