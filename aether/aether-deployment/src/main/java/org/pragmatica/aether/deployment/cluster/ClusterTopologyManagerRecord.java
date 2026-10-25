@@ -80,6 +80,8 @@ import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -2604,12 +2606,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         if (heldReaps.remove(nodeId)) {
-            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
-                                                                  warningSink.get(),
-                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_REAP_RELEASED,
-                                                                  nodeId.id(),
-                                                                  "Auto-heal is enabled again: the reap of the instance of node {} is no longer held",
-                                                                  nodeId.id());
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_RELEASED,
+                                   nodeId.id(),
+                                   "Auto-heal is enabled again: the reap of the instance of node {} is no longer held",
+                                   nodeId.id());
         }
 
         return true;
@@ -2623,13 +2625,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void holdReap(NodeId nodeId, String path) {
         abandonedReaps.add(nodeId);
         if (heldReaps.add(nodeId)) {
-            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
-                                                                  warningSink.get(),
-                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_REAP_HELD,
-                                                                  nodeId.id(),
-                                                                  "Auto-heal is disabled, so the instance of node {} was NOT deleted ({}); it is kept for diagnosis and keeps billing; enable auto-heal to have it reaped, or terminate it at the provider yourself",
-                                                                  nodeId.id(),
-                                                                  path);
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_HELD,
+                                   nodeId.id(),
+                                   "Auto-heal is disabled, so the instance of node {} was NOT deleted ({}); it is kept for diagnosis and keeps billing; enable auto-heal to have it reaped, or terminate it at the provider yourself",
+                                   nodeId.id(),
+                                   path);
         } else {
             log.debug("CTM: {} of {} held again — auto-heal is still disabled", path, nodeId);
         }
@@ -2639,12 +2641,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void closeHeldAsRejoined(NodeId nodeId) {
         if (heldReaps.remove(nodeId)) {
-            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
-                                                                  warningSink.get(),
-                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_REAP_RELEASED,
-                                                                  nodeId.id(),
-                                                                  "Node {} joined the cluster again: the held reap of its previous incarnation no longer applies (nothing was deleted)",
-                                                                  nodeId.id());
+            OperatorWarnings.raise(log,
+                                   warningSink.get(),
+                                   OperatorWarningCode.INSTANCE_REAP_RELEASED,
+                                   nodeId.id(),
+                                   "Node {} joined the cluster again: the held reap of its previous incarnation no longer applies (nothing was deleted)",
+                                   nodeId.id());
         }
     }
 
