@@ -269,7 +269,10 @@ public sealed interface DatabaseConnectorError extends Cause {
     /// @param sql statement that failed, kept on a [QueryFailed]
     /// @param message driver message
     /// @param cause underlying driver failure, kept as the source
-    static DatabaseConnectorError fromSqlState(Option<String> sqlState, String sql, String message, Option<Throwable> cause) {
+    static DatabaseConnectorError fromSqlState(Option<String> sqlState,
+                                               String sql,
+                                               String message,
+                                               Option<Throwable> cause) {
         if (sqlState.filter(DatabaseConnectorError::isConstraintState).isPresent()) {
             return constraintViolation("unknown", message, sqlState);
         }

@@ -146,7 +146,8 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     private static <T> Promise<T> mapRow(PgRow row, RowMapper<T> mapper) {
-        return mapper.map(new PgRowAccessor(row)).async();
+        return mapper.map(new PgRowAccessor(row))
+                     .async();
     }
 
     private static Promise<int[]> executeBatch(Connection conn, String sql, List<Object[]> paramsList) {

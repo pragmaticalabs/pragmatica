@@ -203,7 +203,8 @@ public final class JdbcSqlConnector implements SqlConnector {
             return Result.success(none());
         }
 
-        return mapper.map(new JdbcRowAccessor(rs)).map(Option::some);
+        return mapper.map(new JdbcRowAccessor(rs))
+                     .map(Option::some);
     }
 
     private static <T> Result<List<T>> mapAllRows(ResultSet rs, RowMapper<T> mapper) throws SQLException {
@@ -257,8 +258,12 @@ public final class JdbcSqlConnector implements SqlConnector {
             case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation("unknown",
                                                                                                           e.getMessage(),
                                                                                                           option(e.getSQLState()));
-            case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage(), option(e.getSQLState()));
-            case SQLException e -> DatabaseConnectorError.fromSqlState(option(e.getSQLState()), sql, e.getMessage(), some(e));
+            case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage(),
+                                                                                                 option(e.getSQLState()));
+            case SQLException e -> DatabaseConnectorError.fromSqlState(option(e.getSQLState()),
+                                                                       sql,
+                                                                       e.getMessage(),
+                                                                       some(e));
             default -> DatabaseConnectorError.databaseFailure(throwable);
         };
     }

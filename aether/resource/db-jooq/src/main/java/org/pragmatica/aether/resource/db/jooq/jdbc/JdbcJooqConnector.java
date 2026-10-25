@@ -69,7 +69,10 @@ public final class JdbcJooqConnector implements JooqConnector {
 
     @Override
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-        return Promise.lift(e -> mapException(e, query.getSQL()), () -> doFetchOne(query)).flatMap(Result::async);
+        return Promise.lift(e -> mapException(e,
+                                              query.getSQL()),
+                            () -> doFetchOne(query))
+                      .flatMap(Result::async);
     }
 
     @Override
@@ -188,7 +191,7 @@ public final class JdbcJooqConnector implements JooqConnector {
 
     static DatabaseConnectorError mapException(Throwable throwable, String sql) {
         return sqlException(throwable).map(e -> mapSqlException(e, sql))
-                                      .or(() -> DatabaseConnectorError.databaseFailure(throwable));
+                           .or(() -> DatabaseConnectorError.databaseFailure(throwable));
     }
 
     /// jOOQ reports a JDBC failure as a `DataAccessException` whose cause is the `SQLException` carrying the SQLSTATE.
@@ -204,7 +207,8 @@ public final class JdbcJooqConnector implements JooqConnector {
             case SQLIntegrityConstraintViolationException c -> DatabaseConnectorError.constraintViolation("unknown",
                                                                                                           c.getMessage(),
                                                                                                           option(c.getSQLState()));
-            case SQLTransactionRollbackException r -> DatabaseConnectorError.transactionRollback(r.getMessage(), option(r.getSQLState()));
+            case SQLTransactionRollbackException r -> DatabaseConnectorError.transactionRollback(r.getMessage(),
+                                                                                                 option(r.getSQLState()));
             default -> DatabaseConnectorError.fromSqlState(option(e.getSQLState()), sql, e.getMessage(), some(e));
         };
     }
@@ -217,7 +221,10 @@ public final class JdbcJooqConnector implements JooqConnector {
 
         @Override
         public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()), () -> txFetchOne(query)).flatMap(Result::async);
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
+                                () -> txFetchOne(query))
+                          .flatMap(Result::async);
         }
 
         @Override

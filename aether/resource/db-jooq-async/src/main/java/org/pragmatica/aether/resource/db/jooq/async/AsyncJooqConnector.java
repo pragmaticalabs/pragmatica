@@ -158,10 +158,17 @@ final class AsyncJooqConnector implements JooqConnector {
             return switch (r2dbcError) {
                 case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
                 case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
-                case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message(), none(), c.sqlState());
-                case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation("unknown", v.constraint(), v.sqlState());
+                case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message(),
+                                                                                              none(),
+                                                                                              c.sqlState());
+                case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation("unknown",
+                                                                                                    v.constraint(),
+                                                                                                    v.sqlState());
                 case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
-                case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message(), none(), q.sqlState());
+                case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("",
+                                                                                    q.message(),
+                                                                                    none(),
+                                                                                    q.sqlState());
                 case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
             };
         }

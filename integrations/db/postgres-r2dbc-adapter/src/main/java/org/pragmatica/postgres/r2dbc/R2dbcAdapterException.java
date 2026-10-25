@@ -50,8 +50,14 @@ final class R2dbcAdapterException extends R2dbcException {
         var sqlState = sqlState(cause).or((String) null);
 
         return switch (cause) {
-            case SqlError.ServerErrorIntegrityConstraintViolation _ -> new R2dbcDataIntegrityViolationException(cause.message(), sqlState, 0, origin);
-            case SqlError.ServerErrorTransactionRollback _ -> new R2dbcRollbackException(cause.message(), sqlState, 0, origin);
+            case SqlError.ServerErrorIntegrityConstraintViolation _ -> new R2dbcDataIntegrityViolationException(cause.message(),
+                                                                                                                sqlState,
+                                                                                                                0,
+                                                                                                                origin);
+            case SqlError.ServerErrorTransactionRollback _ -> new R2dbcRollbackException(cause.message(),
+                                                                                         sqlState,
+                                                                                         0,
+                                                                                         origin);
             default -> cause.isTransient()
                        ? new R2dbcTransientResourceException(cause.message(), sqlState, 0, origin)
                        : new R2dbcAdapterException(cause.message(), sqlState, origin);
