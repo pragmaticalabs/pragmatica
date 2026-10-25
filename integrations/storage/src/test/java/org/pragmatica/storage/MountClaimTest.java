@@ -108,6 +108,33 @@ class MountClaimTest {
         assertThat(claimFile()).doesNotExist();
     }
 
+    /// An encrypted instance's tier is the wrapper, and the instance releases through the wrapper: a wrapper that kept the claim
+    /// would hold the mount of a node that had shut down.
+    @Test
+    void release_throughTheEncryptingWrapper_givesTheMountUp() {
+        var key = new byte[32];
+        new java.security.SecureRandom().nextBytes(key);
+        var keyring = EncryptionKeyring.encryptionKeyring(java.util.Map.of("k", BlockEncryptor.aesGcm(key, "k").unwrap()), "k").unwrap();
+        var disk = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a")).unwrap();
+        var armed = EncryptingStorageTier.armLocalDisk(disk, mount, keyring).unwrap();
+
+        armed.tier().release();
+
+        assertThat(claimFile()).doesNotExist();
+    }
+
+    @Test
+    void armingEncryption_overAClaimedMount_doesNotReadTheClaimAsPlaintext() {
+        var key = new byte[32];
+        new java.security.SecureRandom().nextBytes(key);
+        var keyring = EncryptionKeyring.encryptionKeyring(java.util.Map.of("k", BlockEncryptor.aesGcm(key, "k").unwrap()), "k").unwrap();
+        var disk = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a")).unwrap();
+
+        var armed = EncryptingStorageTier.armLocalDisk(disk, mount, keyring);
+
+        assertThat(armed.isSuccess()).as("the claim file is bookkeeping, not a plaintext block").isTrue();
+    }
+
     private boolean replaceClaimWith(String nodeId) {
         try {
             Files.writeString(claimFile(),

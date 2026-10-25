@@ -125,6 +125,29 @@ class StorageBootHygieneTest {
         assertThat(raisedOf(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE, "streams")).isEqualTo(1);
     }
 
+    /// The snapshot manager of a built instance reports through the instance's own reporter: a snapshot that cannot be written
+    /// (the hermetic snapshot path sits under a regular file) opens the write-failed condition on that instance.
+    @Test
+    void builtInstance_snapshotWriteFailure_opensItsConditionOnTheInstancesReporter() {
+        var setups = boot(Map.of(), NODE).unwrap();
+        var artifacts = setups.get("artifacts");
+
+        artifacts.snapshotManager().forceSnapshot();
+
+        assertThat(artifacts.degrade().isDegraded(OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_FAILED)).isTrue();
+    }
+
+    /// Both builders hand the instance's reporter to the demotion manager; the manager's own transition is tested in the
+    /// storage module with a tier that is full, which a built instance cannot be put in without 10 GiB of writes.
+    @Test
+    void factory_handsTheInstancesReporterToEveryDemotionManager() throws Exception {
+        var source = java.nio.file.Files.readString(Path.of("src/main/java/org/pragmatica/aether/node/StorageFactory.java"))
+                                         .replaceAll("\\s+", "");
+
+        assertThat(source.split(java.util.regex.Pattern.quote("DemotionManager.demotionManager(tiers,metadataStore,DemotionConfig.demotionConfig(),degrade)"), -1))
+            .as("one per instance builder (configured instances, streams)").hasSize(3);
+    }
+
     // --- item 5: mount claim at boot ---
     @Test
     void secondNodeOnTheSameMount_refusesBoot_andIsAdmittedAfterTheFirstShutsDown() {

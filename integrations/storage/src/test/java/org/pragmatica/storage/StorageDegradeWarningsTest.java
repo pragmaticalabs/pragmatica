@@ -52,6 +52,17 @@ class StorageDegradeWarningsTest {
     }
 
     @Test
+    void recovered_withoutAnOpenCondition_raisesNothing() throws Exception {
+        bind();
+
+        var transition = degrade.recovered(OperatorWarningCode.STORAGE_DEMOTION_REFUSED, "never refused");
+        Thread.sleep(100);
+
+        assertThat(transition).isFalse();
+        assertThat(raised).as("a recovery with nothing to recover from is not published").isEmpty();
+    }
+
+    @Test
     void bind_offersAConditionRaisedBeforeTheSinkExisted_once() throws Exception {
         degrade.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "cut");
 
