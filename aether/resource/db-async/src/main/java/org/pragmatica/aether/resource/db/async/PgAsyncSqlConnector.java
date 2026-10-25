@@ -142,7 +142,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
             results.add(mapper.map(new PgRowAccessor(row)));
         }
 
-        return Result.allOf(results).async();
+        return Result.firstFailureOf(results).async();
     }
 
     private static <T> Promise<T> mapRow(PgRow row, RowMapper<T> mapper) {
