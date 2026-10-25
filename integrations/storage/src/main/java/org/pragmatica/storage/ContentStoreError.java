@@ -26,6 +26,20 @@ public sealed interface ContentStoreError extends Cause {
         }
     }
 
+    /// The configured chunk size is not positive: no content can be split into chunks of `chunkSizeBytes`. The instance's
+    /// `maxBlockBytes` is named beside it so the refusal states what the size was judged against.
+    record ChunkSizeNotPositive(int chunkSizeBytes, int maxBlockBytes) implements ContentStoreError {
+        static ChunkSizeNotPositive chunkSizeNotPositive(int chunkSizeBytes, int maxBlockBytes) {
+            return new ChunkSizeNotPositive(chunkSizeBytes, maxBlockBytes);
+        }
+
+        @Override
+        public String message() {
+            return "chunkSizeBytes " + chunkSizeBytes
+                 + " must be at least 1 (the instance's maximum block size is " + maxBlockBytes + " bytes)";
+        }
+    }
+
     /// The configured chunk size would produce blocks the instance refuses: `requiredBlockBytes` is the largest block a
     /// full chunk makes once framed, `maxBlockBytes` the instance's limit, `largestChunkSize` the biggest chunk size that fits.
     record ChunkSizeExceedsBlockLimit(int chunkSizeBytes,

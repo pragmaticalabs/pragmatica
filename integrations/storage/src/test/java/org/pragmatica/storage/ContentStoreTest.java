@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
@@ -369,6 +370,69 @@ class ContentStoreTest {
             var padded = java.util.Arrays.copyOf(golden, golden.length + 1);
 
             assertThat(ContentManifest.fromBytes(padded).isEmpty()).isTrue();
+        }
+
+        /// A v2 payload (no envelope) with one id whose stored length is `idLength`, followed by `tailBytes` zero bytes.
+        private static byte[] payloadWithIdLength(int idLength, int tailBytes) {
+            return ByteBuffer.allocate(1 + 4 + 8 + 32 + 4 + 4 + tailBytes)
+                             .put(ContentManifest.FORMAT_VERSION)
+                             .putInt(4096)
+                             .putLong(10)
+                             .put(sequence(32))
+                             .putInt(1)
+                             .putInt(idLength)
+                             .array();
+        }
+
+        private static long allocatedBytesWhile(Runnable action) {
+            var bean = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+            var threadId = Thread.currentThread().threadId();
+            var before = bean.getThreadAllocatedBytes(threadId);
+
+            action.run();
+
+            return bean.getThreadAllocatedBytes(threadId) - before;
+        }
+
+        @Test
+        void manifest_idLengthPastTheRemainingBytes_isRefusedWithoutAllocatingIt() {
+            var eightMiB = 8 * 1024 * 1024;
+            var payload = payloadWithIdLength(eightMiB + 1, eightMiB);
+
+            ContentManifest.parseEnveloped(payloadWithIdLength(1, 1));  // warm-up: class loading must not count
+
+            var allocated = allocatedBytesWhile(() -> assertThat(ContentManifest.parseEnveloped(payload).isEmpty()).isTrue());
+
+            assertThat(allocated).as("remaining + 1 refused before any allocation of that length").isLessThan(1024 * 1024);
+        }
+
+        @Test
+        void manifest_idLengthOfExactlyTheRemainingBytes_isAccepted_asTheControl() {
+            var parsed = ContentManifest.parseEnveloped(payloadWithIdLength(3, 3));
+
+            assertThat(parsed.isPresent()).isTrue();
+            parsed.onPresent(m -> assertThat(m.chunkBlockIds()).containsExactly("000000"));
+        }
+
+        @Test
+        void manifest_idLengthPastTheRemainingBytes_isRefused_byOneByte() {
+            assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(4, 3)).isEmpty()).isTrue();
+        }
+
+        @Test
+        void manifest_negativeIdLength_isRefused() {
+            assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(-1, 8)).isEmpty()).isTrue();
+            assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(Integer.MIN_VALUE, 8)).isEmpty()).isTrue();
+        }
+
+        @Test
+        void manifest_idLengthOfIntegerMaxValue_isRefusedWithoutAllocating() {
+            for (var length : new int[]{Integer.MAX_VALUE, Integer.MAX_VALUE - 8}) {
+                var payload = payloadWithIdLength(length, 8);
+                var allocated = allocatedBytesWhile(() -> assertThat(ContentManifest.parseEnveloped(payload).isEmpty()).isTrue());
+
+                assertThat(allocated).as("id length " + length).isLessThan(1024 * 1024);
+            }
         }
 
         @Test

@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -388,5 +389,23 @@ class ContentStoreManifestFramingTest {
         assertThat(manifest.chunkSize()).isEqualTo(CHUNK_SIZE);
         assertThat(manifest.totalSize()).isEqualTo(data.length);
         assertThat(manifest.sha256()).isEqualTo(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data)));
+    }
+
+    @Test
+    void manifestWithACorruptIdLength_underATrustedRef_failsAsAManifestParseFailure() {
+        var corrupt = ByteBuffer.allocate(1 + 4 + 8 + 32 + 4 + 4 + 8)
+                                .put(ContentManifest.FORMAT_VERSION)
+                                .putInt(CHUNK_SIZE)
+                                .putLong(10)
+                                .put(new byte[32])
+                                .putInt(1)
+                                .putInt(Integer.MAX_VALUE)
+                                .array();
+
+        storage.swapRef("|corrupt", ContentEnvelope.wrap(ContentEnvelope.MANIFEST, corrupt)).await().unwrap();
+
+        store.get("corrupt").await()
+             .onSuccess(_ -> fail("a manifest naming an id longer than itself must not be read"))
+             .onFailure(cause -> assertThat(cause).isEqualTo(ContentStoreError.General.MANIFEST_PARSE_FAILED));
     }
 }

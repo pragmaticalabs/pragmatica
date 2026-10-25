@@ -89,6 +89,27 @@ class ContentStoreConfigBlockLimitTest {
     }
 
     @Test
+    void chunkSizeOfZeroOrLess_isRefusedNamingBothValues() {
+        for (var chunkSize : new int[]{0, -1}) {
+            ContentStoreConfig.contentStoreConfig(chunkSize, Compression.NONE)
+                              .validatedAgainst(CAP)
+                              .onSuccess(_ -> fail("chunkSizeBytes " + chunkSize + " can split nothing"))
+                              .onFailure(cause -> {
+                                  assertThat(cause).isInstanceOfSatisfying(ContentStoreError.ChunkSizeNotPositive.class, refusal -> {
+                                      assertThat(refusal.chunkSizeBytes()).isEqualTo(chunkSize);
+                                      assertThat(refusal.maxBlockBytes()).isEqualTo(CAP);
+                                  });
+                                  assertThat(cause.message()).contains("chunkSizeBytes " + chunkSize).contains(Integer.toString(CAP));
+                              });
+        }
+    }
+
+    @Test
+    void chunkSizeOfOne_isAccepted_asTheControl() {
+        assertThat(ContentStoreConfig.contentStoreConfig(1, Compression.NONE).validatedAgainst(CAP).isSuccess()).isTrue();
+    }
+
+    @Test
     void defaultConfig_fitsTheDefaultCap() {
         assertThat(ContentStoreConfig.contentStoreConfig().validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isSuccess()).isTrue();
     }
