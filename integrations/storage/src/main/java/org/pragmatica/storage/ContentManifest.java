@@ -105,28 +105,44 @@ public record ContentManifest(int chunkSize,
         var totalSize = buffer.getLong();
         var sha256 = readSha256(buffer);
         var count = buffer.getInt();
+
+        return readIds(buffer, count).filter(_ -> !buffer.hasRemaining() && count >= 1)
+                                     .map(ids -> contentManifest(chunkSize, totalSize, sha256, ids));
+    }
+
+    private static Option<List<String>> readIds(ByteBuffer buffer, int count) {
         var ids = new ArrayList<String>(Math.max(0,
                                                  Math.min(count, buffer.remaining() / Integer.BYTES)));
 
         for (int i = 0; i < count; i++) {
-            ids.add(readId(buffer));
+            var id = readId(buffer);
+
+            if (id.isEmpty()) {
+                return none();
+            }
+
+            id.onPresent(ids::add);
         }
 
-        return buffer.hasRemaining() || count < 1
-               ? none()
-               : some(contentManifest(chunkSize, totalSize, sha256, ids));
+        return some(ids);
     }
 
     private static String readSha256(ByteBuffer buffer) {
-        var bytes = new byte[SHA256_BYTES];
-
-        buffer.get(bytes);
-
-        return HexFormat.of().formatHex(bytes);
+        return readHex(buffer, SHA256_BYTES);
     }
 
-    private static String readId(ByteBuffer buffer) {
-        var bytes = new byte[buffer.getInt()];
+    /// An id whose stored length is negative or runs past the bytes left is refused before anything is allocated for
+    /// it, so a corrupt length cannot make the decode allocate or fail with an error [Result#lift] does not catch.
+    private static Option<String> readId(ByteBuffer buffer) {
+        var length = buffer.getInt();
+
+        return length < 0 || length > buffer.remaining()
+               ? none()
+               : some(readHex(buffer, length));
+    }
+
+    private static String readHex(ByteBuffer buffer, int length) {
+        var bytes = new byte[length];
 
         buffer.get(bytes);
 

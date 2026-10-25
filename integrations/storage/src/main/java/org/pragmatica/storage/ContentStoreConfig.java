@@ -33,9 +33,16 @@ public record ContentStoreConfig(int chunkSizeBytes, Compression compression) {
         return largestBlockBytes(chunkSizeBytes, compression);
     }
 
-    /// This configuration if its blocks fit an instance whose maximum block size is `maxBlockBytes`; otherwise a
+    /// This configuration if its chunk size is positive and its blocks fit an instance whose maximum block size is
+    /// `maxBlockBytes`; otherwise a [ContentStoreError.ChunkSizeNotPositive] naming the chunk size and the limit, or a
     /// [ContentStoreError.ChunkSizeExceedsBlockLimit] naming the chunk size, the block it needs and the limit.
     public Result<ContentStoreConfig> validatedAgainst(int maxBlockBytes) {
+        return chunkSizeBytes < 1
+               ? ContentStoreError.ChunkSizeNotPositive.chunkSizeNotPositive(chunkSizeBytes, maxBlockBytes).result()
+               : validatedAgainstBlockLimit(maxBlockBytes);
+    }
+
+    private Result<ContentStoreConfig> validatedAgainstBlockLimit(int maxBlockBytes) {
         return largestBlockBytes() <= maxBlockBytes
                ? Result.success(this)
                : ContentStoreError.ChunkSizeExceedsBlockLimit.chunkSizeExceedsBlockLimit(chunkSizeBytes,
