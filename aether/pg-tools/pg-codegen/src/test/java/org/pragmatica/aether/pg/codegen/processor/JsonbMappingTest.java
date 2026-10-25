@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -2069,6 +2070,144 @@ class JsonbMappingTest {
         @Test
         void jsonCastPair_isNotADocument_soTheSameStringMayFillATextColumn() throws Exception {
             assertCompilesWithoutDocuments("INSERT INTO documents (id, profile, title) VALUES (:id, :raw::jsonb, :raw)", "long id, String raw");
+        }
+
+        // --- a cast written after the operand of a JSON-path or containment operator ---
+        @Test
+        void castOnAnOperatorOperand_countsAsACast() throws Exception {
+            assertCompilesWithoutDocuments("DELETE FROM documents WHERE profile @> :raw::jsonb", "String raw");
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE profile @> :raw::jsonb", "String t, String raw");
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE id = 1 AND profile @> :raw::jsonb", "String t, String raw");
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE profile @> (:raw)::jsonb", "String t, String raw");
+            assertCompilesWithoutDocuments("UPDATE documents SET title = 'x' WHERE profile @> :raw::jsonb", "String raw");
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE (profile @> :raw::jsonb)", "String t, String raw");
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE profile @> :raw::json::jsonb", "String t, String raw");
+            assertCompilesWithoutDocuments("DELETE FROM pdocs WHERE body @> :raw::jsonb", "String raw");
+        }
+
+        @Test
+        void castOnAJsonPathKey_countsAsACast() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :t WHERE profile ->> :k::text = 'a'", "String t, String k");
+            assertCompilesWithoutDocuments("DELETE FROM documents WHERE profile ->> :k::text IS NOT NULL", "String k");
+            assertCompilesWithoutDocuments("DELETE FROM documents WHERE profile -> :k::text IS NOT NULL", "String k");
+            assertCompilesWithoutDocuments("DELETE FROM documents WHERE profile #>> :k::text IS NOT NULL", "String k");
+        }
+
+        @Test
+        void uncastOperatorOperand_inTheSamePlace_staysRefused() throws Exception {
+            assertNotPlaced("DELETE FROM documents WHERE profile @> :raw", "String raw", "raw");
+            assertNotPlaced("UPDATE documents SET title = :t WHERE profile @> :raw::jsonb AND title = lower(:raw2)", "String t, String raw, String raw2", "raw2");
+            assertNotPlaced("DELETE FROM documents WHERE profile ->> :k IS NOT NULL", "String k", "k");
+            assertNotPlaced("DELETE FROM documents WHERE profile -> :k IS NOT NULL", "String k", "k");
+            assertNotPlaced("DELETE FROM documents WHERE profile #>> :k IS NOT NULL", "String k", "k");
+        }
+
+        @Test
+        void castOnAnOperatorOperand_reachesOnlyTheLastOperand() throws Exception {
+            // PostgreSQL binds `::` to :b alone, so :a is still uncast.
+            assertNotPlaced("DELETE FROM documents WHERE profile ->> :a ->> :b::text IS NOT NULL", "String a, String b", "a");
+        }
+
+        // --- a cast to another type on a text column, and one error per cause ---
+        @Test
+        void castToAnotherType_onATextColumnPair_compiles() throws Exception {
+            assertCompilesWithoutDocuments("UPDATE documents SET title = :raw::text WHERE id = :id", "long id, String raw");
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile, title) VALUES (:id, '{}', :raw::text)", "long id, String raw");
+        }
+
+        @Test
+        void castToPgCatalogJson_onAJsonColumn_isAllowed() throws Exception {
+            assertCompilesWithoutDocuments("INSERT INTO documents (id, profile, legacy) VALUES (:id, '{}', :raw::pg_catalog.json)",
+                                           "long id, String raw");
+        }
+
+        @Test
+        void castToAnotherType_onAJsonPair_isOneErrorNotTwo() throws Exception {
+            var result = compileSql("INSERT INTO documents (id, profile) VALUES (:id, :p::text)", "long id, String p");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).containsOnlyOnce("[PG-VALIDATE]")
+                                            .contains("'p' is cast to a type other than json/jsonb and bound to column 'documents.profile' of type jsonb")
+                                            .doesNotContain("is a String bound to column");
+        }
+
+        @Test
+        void refusalMessages_nameTheWaysOut() throws Exception {
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw::text)",
+                          "long id, String raw",
+                          "which takes no other type. Cast it to jsonb (:raw::jsonb) or drop the cast");
+            assertRefused("INSERT INTO documents (id, profile) VALUES (:id, :raw)",
+                          "long id, String raw",
+                          "A String parameter is sent as varchar, which json/jsonb refuse: bind a record (a JSON document), JsonText, "
+                          + "or cast the parameter in the SQL (CAST(:raw AS jsonb))");
+            assertRefused("DELETE FROM documents WHERE profile @> :raw",
+                          "String raw",
+                          "which has json/jsonb columns. A String parameter is sent as varchar, which json/jsonb refuse: cast it in the SQL "
+                          + "to the type it is meant to be (:raw::text, CAST(:raw AS jsonb)), or write it directly against its column");
+            assertRefused("UPDATE documents SET profile = :doc WHERE title = :doc",
+                          "Profile doc",
+                          "of type text; a JSON document needs a json or jsonb column");
+            assertRefused("INSERT INTO documents (id, profile, title) VALUES (:id, :doc, :doc)",
+                          "long id, Profile doc",
+                          "so it is sent as a JSON document, and also to column 'documents.title', which cannot take that document. "
+                          + "Bind the other column to a parameter of its own type");
+        }
+
+        @Test
+        void jsonTextOnATextColumn_isADocumentMismatch_aRecordThereIsATypeError() throws Exception {
+            var jsonText = compileSql("UPDATE documents SET title = :raw WHERE id = :id", "long id, org.pragmatica.aether.resource.db.JsonText raw");
+            var record = compileSql("UPDATE documents SET title = :doc WHERE id = :id", "long id, Profile doc");
+
+            assertThat(jsonText.success()).isFalse();
+            assertThat(jsonText.diagnostics()).contains("'raw' is sent as a JSON document (inferred from its json/jsonb column) and also maps to column 'documents.title' of type text");
+            assertThat(record.success()).isFalse();
+            assertThat(record.diagnostics()).contains("Type mismatch: parameter 'doc' is test.Profile but column 'documents.title' is text")
+                                            .doesNotContain("inferred from its json/jsonb column");
+        }
+
+        @Test
+        void valueMappedToJsonText_onATextColumn_isNotReportedAsAnInferredDocument() throws Exception {
+            var result = compile(SETTINGS_REPO.replace("UPDATE documents SET profile = :settings WHERE id = :id",
+                                                       "UPDATE documents SET title = :settings WHERE id = :id"),
+                                 "test/SettingsRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).doesNotContain("inferred from its json/jsonb column");
+        }
+
+        // --- tripwires for #2413: placeable SELECT comparisons that are not placed today ---
+        @Test
+        void setOperationArms_shareOneScopeToday_soAStringAgainstTheJsonColumnCompiles() throws Exception {
+            var sql = "SELECT id FROM other WHERE profile = :a UNION SELECT id FROM documents WHERE profile = :raw";
+            var result = compileSql(sql, "String a, String raw");
+
+            assertThat(result.success()).as("enable at #2413: per-arm scope. " + sql + "\n" + result.diagnostics()).isTrue();
+            result = compileSql("SELECT id FROM other UNION SELECT id FROM documents WHERE profile = :raw", "String raw");
+            assertThat(result.success()).as("enable at #2413: per-arm scope.\n" + result.diagnostics()).isTrue();
+        }
+
+        @Disabled("#2413: a fresh scope per set-operation arm; PostgreSQL refuses jsonb = character varying in the second arm")
+        @Test
+        void setOperationArms_eachHaveTheirOwnScope_soTheStringAgainstTheJsonColumnIsRefused() throws Exception {
+            assertStringOnJsonRefused("SELECT id FROM other WHERE profile = :a UNION SELECT id FROM documents WHERE profile = :raw",
+                                              "String a, String raw");
+            assertStringOnJsonRefused("SELECT id FROM other UNION SELECT id FROM documents WHERE profile = :raw", "String raw");
+        }
+
+        @Test
+        void parenthesisedColumn_isNotRecognisedToday_soAStringAgainstTheJsonColumnCompiles() throws Exception {
+            var first = compileSql("SELECT id FROM documents WHERE (profile) = :raw", "String raw");
+            var second = compileSql("SELECT id FROM documents WHERE :raw IS DISTINCT FROM (profile)", "String raw");
+
+            assertThat(first.success()).as("enable at #2413: parenthesised column\n" + first.diagnostics()).isTrue();
+            assertThat(second.success()).as("enable at #2413: parenthesised column\n" + second.diagnostics()).isTrue();
+        }
+
+        @Disabled("#2413: a parenthesised column is still the column; PostgreSQL refuses jsonb = character varying")
+        @Test
+        void parenthesisedColumn_isRecognised_soTheStringAgainstTheJsonColumnIsRefused() throws Exception {
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE (profile) = :raw", "String raw");
+            assertStringOnJsonRefused("SELECT id FROM documents WHERE :raw IS DISTINCT FROM (profile)", "String raw");
         }
 
         // --- an inferred document also written against a text column ---

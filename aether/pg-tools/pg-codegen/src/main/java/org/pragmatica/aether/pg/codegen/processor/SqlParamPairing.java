@@ -35,8 +35,9 @@ import org.pragmatica.lang.Option;
 /// The column resolves through the statement's own tables: the target (by name and alias), `FROM`/`USING`
 /// relations, `EXCLUDED` inside `ON CONFLICT`, and the relations of each enclosing `SELECT`. A `WITH` name shadows the
 /// schema table it is named like: its columns are unknown, so it blocks resolution as a derived relation does. An
-/// occurrence under `::type` or `CAST(.. AS type)` is cast (to json, or to another type, by the outermost cast);
-/// every other occurrence is unplaced.
+/// occurrence under `::type` or `CAST(.. AS type)` is cast (to json, or to another type, by the outermost cast), also
+/// when the `::` follows the operand of a JSON-path or containment operator (`profile @> :raw::jsonb`); every other
+/// occurrence is unplaced.
 @Contract
 public final class SqlParamPairing {
     private SqlParamPairing() {}
@@ -233,6 +234,7 @@ public final class SqlParamPairing {
                 }
                 case "TypeCastExpr", "CastExpr" -> {
                     paramOf(node).filter(hit -> hit.cast() != Cast.NONE).onPresent(hit -> claimed.add(hit.offset()));
+                    operatorOperand(node).onPresent(hit -> claimed.add(hit.offset()));
                     visitChildren(node, scope);
                 }
                 // Visited by the statement that owns it, with the scope its names are visible in (visitWith).
@@ -601,6 +603,29 @@ public final class SqlParamPairing {
 
                 current = next.unwrap();
             }
+        }
+
+        /// The parameter a cast reaches through a trailing `@>`, `<@`, `&&`, `->`, `->>`, `#>` or `#>>` operator. The
+        /// grammar hangs those operators under the expression the `::` follows, so `profile @> :raw::jsonb` parses as
+        /// `(profile @> :raw)::jsonb`; PostgreSQL binds `::` to its left operand, `:raw`, and so does this. Only those
+        /// operators put a `PrimaryExpr` in a `PostfixOp` (`.field` and `.*` do not).
+        private Option<Hit> operatorOperand(CstNavigator typeCast) {
+            if (!typeCast.has("DataType")) {
+                return Option.empty();
+            }
+
+            return typeCast.child("PostfixExpr")
+                           .flatMap(Walker::lastOperator)
+                           .flatMap(operator -> operator.child("PrimaryExpr"))
+                           .flatMap(this::paramOf);
+        }
+
+        private static Option<CstNavigator> lastOperator(CstNavigator postfix) {
+            var operators = postfix.allChildren("PostfixOp");
+
+            return operators.isEmpty()
+                   ? Option.empty()
+                   : Option.present(operators.getLast());
         }
 
         private static Cast outermost(Cast seen, CstNavigator dataType) {
