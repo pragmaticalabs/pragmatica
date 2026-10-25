@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.ParameterError;
@@ -178,6 +179,11 @@ class ManagementStatusCoverageTest {
     void rawStreamError_reachingTheFunnel_answersItsClassStatus() {
         assertThat(ManagementStatus.statusOf(StreamError.General.BUFFER_FULL)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(ManagementStatus.statusOf(StreamError.General.CONSUMER_NOT_FOUND)).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void coordinatorNotLeader_answers409() {
+        assertThat(ManagementStatus.statusOf(ConsumerGroupCoordinator.CoordinatorError.NOT_LEADER)).isEqualTo(HttpStatus.CONFLICT);
     }
 
     @Test
