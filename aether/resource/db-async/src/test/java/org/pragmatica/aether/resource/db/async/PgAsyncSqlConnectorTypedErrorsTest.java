@@ -38,6 +38,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Self-skips when no Docker daemon is reachable.
 class PgAsyncSqlConnectorTypedErrorsTest {
     private static final String KILL_OWN_BACKEND = "SELECT pg_terminate_backend(pg_backend_pid())";
+    private static final String RAISE_SERIALIZATION_FAILURE = "DO $$ BEGIN RAISE EXCEPTION 'serialization failure' USING ERRCODE = '40001'; END $$";
     private static final String INSERT = "INSERT INTO typed_errors(id, name) VALUES (?, ?)";
     private static PostgreSQLContainer<?> postgres;
     private static SqlConnector connector;
@@ -105,6 +106,28 @@ class PgAsyncSqlConnectorTypedErrorsTest {
         assertThat(cause).isInstanceOf(SqlError.ServerErrorIntegrityConstraintViolation.class);
         assertThat(((SqlError.ServerError) cause).response().code()).isEqualTo("23505");
         assertThat(cause.isTransient()).isFalse();
+    }
+
+    @Test
+    void update_serverReportedSerializationFailure_keepsItsSqlStateAndIsTransient() {
+        var cause = failureOf(connector.update(RAISE_SERIALIZATION_FAILURE));
+
+        assertThat(cause).isInstanceOf(SqlError.ServerErrorTransactionRollback.class);
+        assertThat(((SqlError.ServerError) cause).response().code()).isEqualTo("40001");
+        assertThat(cause.isTransient()).isTrue();
+    }
+
+    @Test
+    void retryOnTransient_serverReportedSerializationFailure_isRetriedAndSucceeds() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<Integer>, String> method = _ -> attempts.incrementAndGet() == 1
+                                                    ? connector.update(RAISE_SERIALIZATION_FAILURE)
+                                                    : connector.update("UPDATE typed_errors SET name = 'retried' WHERE id = 1");
+
+        var updated = retrying().intercept(method).apply("x").await().fold(cause -> fail("must succeed: " + cause.message()), v -> v);
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(attempts.get()).isEqualTo(2);
     }
 
     @Test

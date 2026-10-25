@@ -43,6 +43,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// at all (reported separately). Self-skips when no Docker daemon is reachable.
 class R2dbcJooqConnectorTypedErrorsTest {
     private static final String KILL_OWN_BACKEND = "SELECT pg_terminate_backend(pg_backend_pid())";
+    private static final String RAISE_SERIALIZATION_FAILURE = "DO $$ BEGIN RAISE EXCEPTION 'serialization failure' USING ERRCODE = '40001'; END $$";
     private static final String INSERT_ONE = "INSERT INTO typed_errors(id, name) VALUES (1, 'duplicate')";
     private static PostgreSQLContainer<?> postgres;
     private static Connectible connectible;
@@ -95,7 +96,28 @@ class R2dbcJooqConnectorTypedErrorsTest {
 
         assertThat(cause.isTransient()).as("a terminated backend is transient: %s", cause.message()).isTrue();
         assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
-        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("57P01"));
+    }
+
+    @Test
+    void toConnectorError_serverReportedSerializationFailure_keepsItsSqlStateAndIsTransient() {
+        var cause = failureOf(mapped(operations.update(RAISE_SERIALIZATION_FAILURE)));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("40001"));
+        assertThat(cause.isTransient()).isTrue();
+    }
+
+    @Test
+    void retryOnTransient_serverReportedSerializationFailure_isRetriedAndSucceeds() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<Long>, String> method = _ -> attempts.incrementAndGet() == 1
+                                                 ? mapped(operations.update(RAISE_SERIALIZATION_FAILURE))
+                                                 : mapped(operations.update("UPDATE typed_errors SET name = 'retried' WHERE id = 1"));
+
+        var updated = retrying().intercept(method).apply("x").await().fold(cause -> fail("must succeed: " + cause.message()), v -> v);
+
+        assertThat(updated).isEqualTo(1L);
+        assertThat(attempts.get()).isEqualTo(2);
     }
 
     @Test

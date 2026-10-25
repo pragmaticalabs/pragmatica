@@ -39,6 +39,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// daemon is reachable.
 class JdbcJooqConnectorTypedErrorsTest {
     private static final String KILL_OWN_BACKEND = "SELECT pg_terminate_backend(pg_backend_pid()) AS killed";
+    private static final String RAISE_SERIALIZATION_FAILURE = "DO $$ BEGIN RAISE EXCEPTION 'serialization failure' USING ERRCODE = '40001'; END $$";
     private static final String INSERT_ONE = "INSERT INTO typed_errors(id, name) VALUES (1, 'duplicate')";
     private static PostgreSQLContainer<?> postgres;
     private static JooqConnector connector;
@@ -109,6 +110,28 @@ class JdbcJooqConnectorTypedErrorsTest {
         assertThat(cause).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
         assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("23505"));
         assertThat(cause.isTransient()).isFalse();
+    }
+
+    @Test
+    void execute_serverReportedSerializationFailure_keepsItsSqlStateAndIsTransient() {
+        var cause = failureOf(connector.execute(connector.dsl().query(RAISE_SERIALIZATION_FAILURE)));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.TransactionRolledBack.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("40001"));
+        assertThat(cause.isTransient()).isTrue();
+    }
+
+    @Test
+    void retryOnTransient_serverReportedSerializationFailure_isRetriedAndSucceeds() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<Integer>, String> method = _ -> attempts.incrementAndGet() == 1
+                                                    ? connector.execute(connector.dsl().query(RAISE_SERIALIZATION_FAILURE))
+                                                    : connector.execute(connector.dsl().query("UPDATE typed_errors SET name = 'retried' WHERE id = 1"));
+
+        var updated = retrying().intercept(method).apply("x").await().fold(cause -> fail("must succeed: " + cause.message()), v -> v);
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(attempts.get()).isEqualTo(2);
     }
 
     @Test
