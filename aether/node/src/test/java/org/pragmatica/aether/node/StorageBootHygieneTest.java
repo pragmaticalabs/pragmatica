@@ -74,12 +74,13 @@ class StorageBootHygieneTest {
     // --- items 1 and 2: operator-set disk_path refuses, node-placed tiers degrade ---
     @Test
     void operatorWrittenDiskPath_thatCannotOpen_failsTheBootNamingInstanceAndPath() {
-        var unopenable = configAt(HermeticStorage.uncreatableRootIn(tempDir)).withDiskPathExplicit();
+        // A sibling of the synthesized defaults' root, so the refusal cannot come from StoragePathsOverlap.
+        var unopenable = configAt(HermeticStorage.uncreatableRootIn(tempDir).resolveSibling("vault-root")).withDiskPathExplicit();
 
         var result = boot(Map.of("vault", unopenable), NODE);
 
         assertThat(result.isFailure()).as("an explicit disk_path that cannot open must refuse the boot").isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("vault").contains("disk_path").contains("refusing to boot"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("vault").contains("disk_path").contains("cannot be opened").doesNotContain("overlap"));
     }
 
     @Test
