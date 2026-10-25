@@ -154,8 +154,7 @@ public final class LocalDiskTier implements StorageTier {
 
     @Override
     public Unit release() {
-        claim.getAndSet(none())
-             .onPresent(MountClaim::release);
+        claim.getAndSet(none()).onPresent(MountClaim::release);
 
         return unit();
     }

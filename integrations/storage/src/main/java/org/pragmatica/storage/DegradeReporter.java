@@ -33,7 +33,9 @@ public final class DegradeReporter {
     private static final Logger log = LoggerFactory.getLogger(DegradeReporter.class);
 
     private final String instance;
+
     private final AtomicReference<OperatorWarningSink> sink = new AtomicReference<>(OperatorWarningSink.logOnly());
+
     private final Map<OperatorWarningCode, OperatorWarning> open = new ConcurrentHashMap<>();
 
     private DegradeReporter(String instance) {
@@ -48,8 +50,7 @@ public final class DegradeReporter {
     /// Routes this instance's warnings to `sink` and offers it the conditions already open.
     public Unit bind(OperatorWarningSink sink) {
         this.sink.set(sink);
-        open.values()
-            .forEach(sink::accept);
+        open.values().forEach(sink::accept);
 
         return unit();
     }
@@ -58,8 +59,7 @@ public final class DegradeReporter {
     public boolean degraded(OperatorWarningCode code, String template, Object... args) {
         var warning = OperatorWarning.operatorWarning(code,
                                                       instance,
-                                                      MessageFormatter.arrayFormat(template, args)
-                                                                      .getMessage());
+                                                      MessageFormatter.arrayFormat(template, args).getMessage());
 
         if (open.putIfAbsent(code, warning) != null) {
             return false;
@@ -78,7 +78,7 @@ public final class DegradeReporter {
         }
 
         return recoveryOf(code).map(recovery -> raiseRecovery(recovery, template, args))
-                               .or(false);
+                         .or(false);
     }
 
     /// True while `code` is open for this instance.

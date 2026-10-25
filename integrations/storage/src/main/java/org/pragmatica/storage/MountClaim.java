@@ -49,16 +49,16 @@ public final class MountClaim {
         @Override
         public String message() {
             return "Storage mount " + file.getParent()
-                   + " is already claimed by node '" + holderNodeId + "' (process " + holderPid
-                   + "); two nodes must not share a disk tier. Give this node its own disk_path, or if that process is gone, remove "
-                   + file;
+                 + " is already claimed by node '" + holderNodeId
+                 + "' (process " + holderPid
+                 + "); two nodes must not share a disk tier. Give this node its own disk_path, or if that process is gone, remove " + file;
         }
     }
 
     /// Claims `mount` for `nodeId`, creating the directory when it is missing. A second live claimant is refused with [Held].
     public static Result<MountClaim> claim(Path mount, String nodeId) {
-        return FileOps.createDirectoriesDurable(mount)
-                      .flatMap(dir -> acquire(dir.resolve(CLAIM_FILE), Holder.current(nodeId)));
+        return FileOps.createDirectoriesDurable(mount).flatMap(dir -> acquire(dir.resolve(CLAIM_FILE),
+                                                                              Holder.current(nodeId)));
     }
 
     /// Gives the mount up when this claim is still the one on file; a claim another node took over is left alone.
@@ -73,19 +73,19 @@ public final class MountClaim {
 
     private static Result<MountClaim> acquire(Path file, Holder mine) {
         return create(file, mine).fold(cause -> FileOps.exists(file)
-                                               ? reclaimOrRefuse(file, mine)
-                                               : cause.<MountClaim> result(),
+                                                ? reclaimOrRefuse(file, mine)
+                                                : cause.<MountClaim> result(),
                                        Result::success);
     }
 
     private static Result<MountClaim> create(Path file, Holder mine) {
         return Result.lift(Causes::fromThrowable,
                            () -> Files.write(file,
-                                             mine.render()
-                                                 .getBytes(StandardCharsets.UTF_8),
+                                             mine.render().getBytes(StandardCharsets.UTF_8),
                                              StandardOpenOption.CREATE_NEW,
                                              StandardOpenOption.WRITE,
-                                             StandardOpenOption.SYNC)).map(_ -> new MountClaim(file, mine));
+                                             StandardOpenOption.SYNC))
+                     .map(_ -> new MountClaim(file, mine));
     }
 
     private static Result<MountClaim> reclaimOrRefuse(Path file, Holder mine) {
@@ -93,7 +93,9 @@ public final class MountClaim {
                       .map(Holder::parse)
                       .flatMap(held -> held.filter(other -> other.alive() && !other.sameClaimant(mine))
                                            .fold(() -> takeOver(file, mine),
-                                                 other -> new Held(file, other.nodeId(), other.pid()).<MountClaim> result()));
+                                                 other -> new Held(file,
+                                                                   other.nodeId(),
+                                                                   other.pid()).<MountClaim> result()));
     }
 
     private static Result<MountClaim> takeOver(Path file, Holder mine) {
@@ -110,9 +112,7 @@ public final class MountClaim {
         }
 
         static Option<Holder> parse(String text) {
-            var lines = Arrays.stream(text.split("\n"))
-                              .map(String::trim)
-                              .toList();
+            var lines = Arrays.stream(text.split("\n")).map(String::trim).toList();
 
             return Option.all(valueOf(lines, "node"),
                               valueOf(lines, "pid").flatMap(Holder::number),
@@ -152,7 +152,7 @@ public final class MountClaim {
 
         private static Option<Long> number(String text) {
             return org.pragmatica.lang.parse.Number.parseLong(text)
-                                                    .option();
+                                                   .option();
         }
     }
 }

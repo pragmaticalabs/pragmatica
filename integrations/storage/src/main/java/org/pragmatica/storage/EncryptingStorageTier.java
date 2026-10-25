@@ -191,8 +191,7 @@ public final class EncryptingStorageTier implements StorageTier {
     }
 
     private static boolean isBlockFile(Path path) {
-        return FileOps.isRegularFile(path) && !isBookkeeping(path.getFileName()
-                                                                  .toString());
+        return FileOps.isRegularFile(path) && !isBookkeeping(path.getFileName().toString());
     }
 
     private static boolean isBookkeeping(String fileName) {

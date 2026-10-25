@@ -28,9 +28,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
-import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.FileOps.createDirectories;

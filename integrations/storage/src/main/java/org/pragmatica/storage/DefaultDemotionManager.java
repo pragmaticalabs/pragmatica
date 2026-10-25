@@ -10,9 +10,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
-import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
@@ -34,7 +34,6 @@ final class DefaultDemotionManager implements DemotionManager {
     private final AtomicReference<DemotionStats> stats = new AtomicReference<>(DemotionStats.empty());
     private volatile boolean active = false;
     private final AtomicBoolean refusing = new AtomicBoolean(false);
-
     private final DegradeReporter degrade;
 
     DefaultDemotionManager(List<StorageTier> tiers, MetadataStore metadataStore, DemotionConfig config) {
@@ -151,11 +150,10 @@ final class DefaultDemotionManager implements DemotionManager {
         if (refusing.compareAndSet(false, true)) {
             degrade.degraded(OperatorWarningCode.STORAGE_DEMOTION_REFUSED,
                              "Tier {} is above its high watermark ({} of {} bytes) and holds the only durable copy of its blocks: "
-                             + "nothing is demoted. Writes that need it fail with TierFull once it is full; add capacity or a durable tier below it",
+                            + "nothing is demoted. Writes that need it fail with TierFull once it is full; add capacity or a durable tier below it",
                              sourceTier.level(),
                              sourceTier.usedBytes(),
                              sourceTier.maxBytes());
-
         }
 
         return DemotionResult.NONE;

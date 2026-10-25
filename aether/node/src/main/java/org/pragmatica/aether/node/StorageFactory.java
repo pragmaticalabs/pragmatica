@@ -64,7 +64,6 @@ import org.pragmatica.storage.StorageReadinessGate;
 import org.pragmatica.storage.StorageTier;
 import org.pragmatica.storage.TierLevel;
 import org.pragmatica.storage.WritePolicy;
-
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
@@ -620,7 +619,12 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StorageConfig defaults) {
-        return createAll(configs, nodeId, dhtClient, keyring, defaults, Runtime.getRuntime().maxMemory());
+        return createAll(configs,
+                         nodeId,
+                         dhtClient,
+                         keyring,
+                         defaults,
+                         Runtime.getRuntime().maxMemory());
     }
 
     /// A0b: [#createAll] against a stated maximum heap instead of this JVM's, so a test can boot under a 256 MiB budget
@@ -1382,7 +1386,10 @@ public final class StorageFactory {
         var degrade = DegradeReporter.degradeReporter(STREAMS_NAME);
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig, degrade);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
-        var demotionManager = DemotionManager.demotionManager(tiers, metadataStore, DemotionConfig.demotionConfig(), degrade);
+        var demotionManager = DemotionManager.demotionManager(tiers,
+                                                              metadataStore,
+                                                              DemotionConfig.demotionConfig(),
+                                                              degrade);
         var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
@@ -1436,7 +1443,12 @@ public final class StorageFactory {
 
         clamp.onPresent(cut -> reportClamp(degrade, cut));
 
-        return createOne(name, clamp.map(cut -> config.withMemoryMaxBytes(cut.effectiveBytes())).or(config), nodeId, dhtClient, keyring, degrade);
+        return createOne(name,
+                         clamp.map(cut -> config.withMemoryMaxBytes(cut.effectiveBytes())).or(config),
+                         nodeId,
+                         dhtClient,
+                         keyring,
+                         degrade);
     }
 
     private static Result<PendingSetup> createOne(String name,
@@ -1455,16 +1467,16 @@ public final class StorageFactory {
         // so `createAll`'s aggregate failure -- and whatever aborts boot on it -- can report which
         // instance failed and why without re-deriving it from call-site context.
         return buildTiers(name, config, nodeId, dhtClient, effectiveKeyring, degrade).mapError(cause -> Causes.cause("Failed to create storage '" + name
-                                                                                                           + "': " + cause.message(),
-                                                                                                            Option.some(cause)))
+                                                                                                                    + "': " + cause.message(),
+                                                                                                                     Option.some(cause)))
                          .flatMap(build -> assembleSetup(name,
                                                          build.tiers(),
                                                          config,
                                                          nodeId,
                                                          build.dhtMarkerCheck(),
                                                          degrade).map(setup -> new PendingSetup(setup,
-                                                                                                               build.armedDisk(),
-                                                                                                               build.sharedMarker())));
+                                                                                                build.armedDisk(),
+                                                                                                build.sharedMarker())));
     }
 
     /// #249: the shared tier is built first -- for S3 that includes its boot probe -- so a tier that refuses
@@ -1852,9 +1864,11 @@ public final class StorageFactory {
     public record ConfiguredDiskPathUnopenable(String instance, String diskPath, Cause cause) implements Cause {
         @Override
         public String message() {
-            return "[storage." + instance + "] disk_path = '" + diskPath + "' cannot be opened (" + cause.message()
-                   + "); refusing to boot without the disk tier the operator asked for. Fix the mount or permissions,"
-                   + " or remove disk_path to take the node's default placement";
+            return "[storage." + instance
+                 + "] disk_path = '" + diskPath
+                 + "' cannot be opened (" + cause.message()
+                 + "); refusing to boot without the disk tier the operator asked for. Fix the mount or permissions,"
+                 + " or remove disk_path to take the node's default placement";
         }
     }
 
@@ -1870,12 +1884,11 @@ public final class StorageFactory {
     /// A0b: the instances whose memory tier must shrink for the sum of all of them (and `reservedBytes`, the streams' fixed hot
     /// ring) to fit in [#MEMORY_TIER_HEAP_FRACTION] of `heapBytes`. Empty when everything fits. The cut is proportional to what
     /// each instance asked for, so a small tier is not starved to feed a large one.
-    static Map<String, MemoryClamp> memoryClamps(Map<String, StorageConfig> effective, long reservedBytes, long heapBytes) {
-        var budget = Math.max(0L, (long) (heapBytes * MEMORY_TIER_HEAP_FRACTION) - reservedBytes);
-        var requested = effective.values()
-                                 .stream()
-                                 .mapToLong(StorageConfig::memoryMaxBytes)
-                                 .sum();
+    static Map<String, MemoryClamp> memoryClamps(Map<String, StorageConfig> effective,
+                                                 long reservedBytes,
+                                                 long heapBytes) {
+        var budget = Math.max(0L, (long)(heapBytes * MEMORY_TIER_HEAP_FRACTION) - reservedBytes);
+        var requested = effective.values().stream().mapToLong(StorageConfig::memoryMaxBytes).sum();
 
         return requested <= budget
                ? Map.of()
@@ -1891,12 +1904,14 @@ public final class StorageFactory {
         effective.forEach((name, config) -> clamps.put(name,
                                                        new MemoryClamp(config.memoryMaxBytes(),
                                                                        Math.max(MIN_MEMORY_TIER_BYTES,
-                                                                                (long) ((double) config.memoryMaxBytes() * budget / requested)),
+                                                                                (long)((double) config.memoryMaxBytes() * budget / requested)),
                                                                        heapBytes)));
 
         return clamps.entrySet()
                      .stream()
-                     .filter(entry -> entry.getValue().effectiveBytes() < entry.getValue().configuredBytes())
+                     .filter(entry -> entry.getValue()
+                                           .effectiveBytes() < entry.getValue()
+                                                                    .configuredBytes())
                      .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
@@ -1905,7 +1920,7 @@ public final class StorageFactory {
                          "Memory tier of {} bytes exceeds this node's budget; cut to {} bytes ({}% of the {}-byte maximum heap is shared by all instances)",
                          clamp.configuredBytes(),
                          clamp.effectiveBytes(),
-                         (int) (MEMORY_TIER_HEAP_FRACTION * 100),
+                         (int)(MEMORY_TIER_HEAP_FRACTION * 100),
                          clamp.heapBytes());
 
         return unit();
@@ -1914,8 +1929,8 @@ public final class StorageFactory {
     /// A0b: hands every instance's degrade reporter the node's operator-warning sink. Storage is built before the node's event
     /// aggregator exists, so a condition raised during the build is offered to the sink here, once.
     public static Unit bindOperatorWarnings(Map<String, StorageSetup> setups, OperatorWarningSink sink) {
-        setups.values()
-              .forEach(setup -> setup.degrade().bind(sink));
+        setups.values().forEach(setup -> setup.degrade()
+                                              .bind(sink));
 
         return unit();
     }
@@ -2001,7 +2016,10 @@ public final class StorageFactory {
                                                                                                    Path.of(config.snapshotPath())));
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig, degrade);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
-        var demotionManager = DemotionManager.demotionManager(tiers, metadataStore, DemotionConfig.demotionConfig(), degrade);
+        var demotionManager = DemotionManager.demotionManager(tiers,
+                                                              metadataStore,
+                                                              DemotionConfig.demotionConfig(),
+                                                              degrade);
         var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());

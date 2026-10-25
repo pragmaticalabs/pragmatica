@@ -775,7 +775,6 @@ class ManagementServerImpl implements ManagementServer {
 
     private void registerPromotionGauges(String instance, StorageSetup setup) {
         registerDiskDegradedGauge(instance, setup);
-
         var manager = setup.promotionManager();
 
         if (manager == PromotionManager.NOOP) {
