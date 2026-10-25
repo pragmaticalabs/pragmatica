@@ -524,6 +524,13 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `community-placement-cleared` (INFO — the other recovery: an operator cleared the operation; names the operator, the reason, the phase and both nodes, which the clear left as they were; also closes the warning cluster-wide)
 - `json-config-rejected` (CRITICAL — a committed `[json]` change was refused for a slice and its HTTP routes keep the JSON codec selection they had; `subject` is `<slice artifact>/json`, the message names each refused key, its value and why, and the selection kept; raised once per node on the transition into refusal; the same configuration fails the slice's next provisioning, issue #2378)
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
+- `storage-disk-tier-unavailable` (CRITICAL — a storage instance's disk tier could not be opened and the instance runs on memory plus the shared tier, so its writes are acknowledged without a durable local copy; raised for the instances the node placed itself (the synthesized `artifacts` and `content`, a derived path) and for `streams` on a directly built node, while an operator-written `disk_path` that cannot open refuses the boot; `subject` is the instance, gauge `aether.storage.disk.degraded{instance}` is 1; fixed by repairing the path and restarting, so it has no recovery event)
+- `storage-memory-tier-clamped` (WARNING — an instance's configured `memory_max_bytes` was cut because the memory tiers of all instances exceeded 25% of the maximum heap; `subject` is the instance, the message names the configured and effective bytes and the heap; boot-time, so it has no recovery event)
+- `storage-demotion-refused` (WARNING — a durable tier is above its high watermark and holds the only durable copy of its blocks, so nothing is demoted; writes that need it fail with `TierFull` once it is full; `subject` is the instance; raised once per episode)
+- `storage-demotion-resumed` (INFO — the recovery: the tier is back under its high watermark; published only after a published `storage-demotion-refused` for the same `subject`)
+- `storage-snapshot-write-failed` (WARNING — the instance's metadata snapshot cannot be written, so the references it holds are unprotected across a restart; `subject` is the instance; raised once, not on every 10 s tick)
+- `storage-snapshot-write-recovered` (INFO — the recovery: a snapshot was written; published only after a published `storage-snapshot-write-failed` for the same `subject`)
+- `storage-snapshot-fell-back` (WARNING — the newest snapshot was unreadable and an older retained one was restored, so metadata recorded only in the unreadable file is lost unless a WAL replays it; `subject` is the instance; a restore happens once at boot, so there is no recovery event)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
@@ -2271,7 +2278,7 @@ readiness.
 ```
 
 - `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
-- `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes.
+- `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes. `isReadReady` turns true once the local snapshot is loaded; `isWriteReady` turns true when the node reports ready (its DHT-backed instances admitted), and stays false before that. Nothing in the storage engine consults the gate yet: it is an observability signal.
 - `wal` (#634-3): live stream-WAL usage — non-`null` **only on the `streams` instance**. The WAL is a
   sibling directory of the segment store, not a storage tier, so without this field the `streams`
   instance under-reports its real disk footprint by the entire WAL. Every other instance reports

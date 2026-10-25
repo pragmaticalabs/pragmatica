@@ -298,6 +298,31 @@ directory, whose disk tier counts everything under it. A section that sets only 
 default. Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are refused
 at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
 
+**A disk tier that cannot open (A0b).** What happens depends on who placed it.
+- **An operator-written `disk_path` fails the boot.** A `[storage.<name>]` section that writes `disk_path` asked for that
+  tier; if the path cannot be opened (missing mount, permissions, a file in the way) the node refuses to start with
+  `[storage.<name>] disk_path = '...' cannot be opened (...)`. Fix the mount, or remove `disk_path` to take the node's default
+  placement.
+- **A tier the node placed degrades, loudly.** The synthesized `artifacts` and `content` defaults, a derived path, and a
+  section without `disk_path` keep running on memory plus the shared tier, as before. They now also raise the
+  `storage-disk-tier-unavailable` operator warning (a cluster event, subject = the instance) and set the gauge
+  `aether.storage.disk.degraded{instance}` to 1. Writes to such an instance are acknowledged without a durable local copy.
+- `streams` is unchanged: a production boot refuses an unopenable stream directory unless
+  `-Daether.allowNonDurableStreams=true` (#1567 F12); a directly built node that degrades raises the same warning.
+
+**One node per mount (A0b).** A node claims its disk tier's directory with a `.mount-claim` file naming the node and its
+process. A second live node on the same directory refuses to boot (`Storage mount ... is already claimed by node '...'`), because
+two nodes sharing a mount would each collect the other's blocks as orphans. A claim whose process is gone (or whose process id
+was recycled) is reclaimed at the next boot, and a graceful shutdown releases it. The liveness check is local to the host: two
+hosts on one network mount are not told apart, and a claim left by a host that is gone is removed by hand, as the refusal says.
+`streams` keeps its per-node directory instead.
+
+**Memory tiers are bounded by the heap (A0b).** The memory tiers of all instances together may take at most 25% of the JVM's
+maximum heap (the `streams` hot ring of 16 MiB counts against it). When the configured `memory_max_bytes` values add up to more,
+each instance is cut in proportion to what it asked for, never below 1 MiB, with a WARN and the `storage-memory-tier-clamped`
+operator warning naming the configured and the effective bytes. At the stock `-Xmx256m` the budget is 64 MiB, so the default
+256 + 256 MiB is cut. Raise `-Xmx`, or lower `memory_max_bytes`, to quiet it.
+
 **Not the same as `[streams.X].encryption_key_id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
 `StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not
