@@ -875,8 +875,19 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // arrives off this thread, so a stalled ledger writer parks this dial and nothing else.
             bootTokens.admitDurably(peerId,
                                     hello.bootToken())
-                      .onSuccess(admission -> ctx.executor()
-                                                 .execute(() -> attachAdmitted(ctx, hello, admission)));
+                      .onSuccess(admission -> onEventLoop(ctx,
+                                                          () -> attachAdmitted(ctx, hello, admission)));
+        }
+
+        /// The answer of a conflict verdict arrives on the ledger's writer thread and is handed to the event loop. An answer that
+        /// is already known arrives on the event loop itself and runs in place, exactly when the synchronous check used to run:
+        /// the common path keeps its timing relative to the other I/O of the link.
+        private void onEventLoop(ChannelHandlerContext ctx, Runnable action) {
+            if (ctx.executor().inEventLoop()) {
+                action.run();
+            } else {
+                ctx.executor().execute(action);
+            }
         }
 
         private void attachAdmitted(ChannelHandlerContext ctx,

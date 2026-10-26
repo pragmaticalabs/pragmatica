@@ -580,8 +580,19 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // serving peers that are already bound.
             bootTokens.admitDurably(hello.sender(),
                                     hello.bootToken())
-                      .onSuccess(admission -> ctx.executor()
-                                                 .execute(() -> completeHello(ctx, hello, admission)));
+                      .onSuccess(admission -> onEventLoop(ctx,
+                                                          () -> completeHello(ctx, hello, admission)));
+        }
+
+        /// The answer of a conflict verdict arrives on the ledger's writer thread and is handed to the event loop. An answer that
+        /// is already known arrives on the event loop itself and runs in place, exactly when the synchronous check used to run:
+        /// the common path keeps its timing relative to the other I/O of the link.
+        private void onEventLoop(ChannelHandlerContext ctx, Runnable action) {
+            if (ctx.executor().inEventLoop()) {
+                action.run();
+            } else {
+                ctx.executor().execute(action);
+            }
         }
 
         private void completeHello(ChannelHandlerContext ctx,
