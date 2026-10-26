@@ -747,6 +747,10 @@ final class NettyHttpServer implements HttpServer {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
             }
 
+            if (extraHeaders.contains(X_REQUEST_ID)) {
+                response.headers().remove(X_REQUEST_ID);
+            }
+
             response.headers().add(extraHeaders);
 
             return response;

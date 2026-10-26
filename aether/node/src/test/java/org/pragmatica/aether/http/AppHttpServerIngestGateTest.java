@@ -1284,6 +1284,8 @@ class AppHttpServerIngestGateTest {
         assertThat(refused.status()).as("worker busy and queue full").isEqualTo(503);
         if (protocol == Protocol.H1) {
             assertThat(refused.text()).containsIgnoringCase("retry-after: 5");
+            assertThat(java.util.regex.Pattern.compile("(?im)^x-request-id:").matcher(refused.text()).results().count())
+                .as("one X-Request-Id per response").isEqualTo(1);
         }
 
         gate.countDown();
@@ -1318,6 +1320,34 @@ class AppHttpServerIngestGateTest {
     @Test
     void partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered_overHttp3() throws Exception {
         partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered(Protocol.H3);
+    }
+
+    /// A nested multipart part would put its inner files past `max_files` (the decoder returns them as files): a route with
+    /// part limits refuses it 400 on the head of the scan, and the slice never sees it.
+    private void aNestedMultipartPart_onAPartLimitedRoute_isRefused400(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var inner = new StringBuilder();
+
+        for (int index = 0; index < 20; index++) {
+            inner.append("--IN\r\nContent-Disposition: file; filename=\"f").append(index).append(".bin\"\r\n\r\nx\r\n");
+        }
+
+        var nested = ("--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"n\"\r\nContent-Type: multipart/mixed; boundary=IN\r\n\r\n"
+                      + inner + "--IN--\r\n\r\n--" + BOUNDARY + "--\r\n").getBytes(StandardCharsets.ISO_8859_1);
+
+        assertThat(statusOf(protocol, "/api/files/", nested)).as("20 inner files, max_files = 2").isEqualTo(400);
+        assertThat(served.get()).as("never dispatched").isZero();
+        assertThat(statusOf(protocol, "/api/upload/", nested)).as("a route with no part limits is as before").isEqualTo(200);
+    }
+
+    @Test
+    void aNestedMultipartPart_onAPartLimitedRoute_isRefused400_overHttp1() throws Exception {
+        aNestedMultipartPart_onAPartLimitedRoute_isRefused400(Protocol.H1);
+    }
+
+    @Test
+    void aNestedMultipartPart_onAPartLimitedRoute_isRefused400_overHttp3() throws Exception {
+        aNestedMultipartPart_onAPartLimitedRoute_isRefused400(Protocol.H3);
     }
 
     /// What a worker throws is answered, not lost with the worker: the client gets a 500 instead of waiting for nothing.

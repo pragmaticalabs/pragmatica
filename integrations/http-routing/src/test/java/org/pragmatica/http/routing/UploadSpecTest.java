@@ -101,7 +101,7 @@ class UploadSpecTest {
 
     /// The message of the breach, or the empty string when the body is within every declared limit.
     private static String breachOf(UploadSpec spec, byte[] body) {
-        return spec.partBreach(body, CONTENT_TYPE).map(MultipartError.LimitExceeded::message).or("");
+        return spec.partBreach(body, CONTENT_TYPE).map(MultipartError::message).or("");
     }
 
     private static UploadSpec parts(long maxFiles, long maxFileBytes, long maxFields, long maxFieldBytes) {
@@ -215,6 +215,86 @@ class UploadSpecTest {
 
         assertThat(breachOf(spec, body(many))).isEqualTo("Multipart body has more than 200 parts");
         assertThat(breachOf(spec, body(withinCap))).isEmpty();
+    }
+
+    // ---- a nested multipart part is refused (400); the scan stops at the cap
+
+    private static String nestedWith(int innerFiles) {
+        var inner = new StringBuilder();
+
+        for (int index = 0; index < innerFiles; index++) {
+            inner.append("--IN\r\nContent-Disposition: file; filename=\"f").append(index).append(".bin\"\r\n\r\nx\r\n");
+        }
+
+        return "--XB\r\nContent-Disposition: form-data; name=\"n\"\r\nContent-Type: multipart/mixed; boundary=IN\r\n\r\n"
+               + inner + "--IN--\r\n\r\n";
+    }
+
+    @Test
+    void partBreach_aNestedMultipartPart_isRefused400_whateverItHolds() {
+        var twenty = parts(2, 0, 0, 0).partBreach(body(nestedWith(20)), CONTENT_TYPE).unwrap();
+
+        assertThat(twenty).isSameAs(MultipartError.General.NESTED_MULTIPART);
+        assertThat(twenty.httpStatus()).isEqualTo(org.pragmatica.http.HttpStatus.BAD_REQUEST);
+        assertThat(parts(0, 0, 5, 0).partBreach(body(nestedWith(1)), CONTENT_TYPE).unwrap())
+            .as("any part limit makes the route refuse it, even with one inner file").isSameAs(MultipartError.General.NESTED_MULTIPART);
+        assertThat(parts(2, 0, 0, 0).partBreach(body(file(1), file(1), nestedWith(3)), CONTENT_TYPE).unwrap())
+            .as("a nested part after the others, and the file count at its limit").isSameAs(MultipartError.General.NESTED_MULTIPART);
+        assertThat(UploadSpec.uploadSpec(true, 0, 0).partBreach(body(nestedWith(20)), CONTENT_TYPE).isPresent())
+            .as("a route with no part limits is not checked").isFalse();
+    }
+
+    @Test
+    void scan_stopsAtTheFirstNestedPart_whenAskedTo() {
+        var scanned = MultipartScan.scan(body(file(1), nestedWith(50), file(1)), "XB", 128, true);
+
+        assertThat(scanned.stopped()).isTrue();
+        assertThat(scanned.parts()).as("one file, then the nested part, nothing after").hasSize(2);
+        assertThat(MultipartScan.scan(body(file(1), nestedWith(50), file(1)), "XB").stopped()).as("the unbounded scan reads on").isFalse();
+    }
+
+    @Test
+    void scan_stopsAtThePartCap_withMemoryProportionalToTheCap() {
+        var tiny = (field("a", "1").repeat(200_000) + "--XB--\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var bounded = allocatedBy(() -> MultipartScan.scan(tiny, "XB", 128, true));
+        var unbounded = allocatedBy(() -> MultipartScan.scan(tiny, "XB"));
+        var scanned = MultipartScan.scan(tiny, "XB", 128, true);
+
+        assertThat(scanned.stopped()).isTrue();
+        assertThat(scanned.parts()).as("cap + 1 records, no more").hasSize(129);
+        assertThat(parts(2, 0, 0, 0).partBreach(tiny, CONTENT_TYPE).map(MultipartError::message).or(""))
+            .isEqualTo("Multipart body has more than 128 parts");
+        assertThat(bounded).as("allocated bytes of the bounded scan " + bounded + " against " + unbounded + " unbounded")
+                           .isLessThan(unbounded / 50);
+        assertThat(bounded).isLessThan(1_000_000L);
+    }
+
+    private static long allocatedBy(Runnable work) {
+        var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        var id = Thread.currentThread().threadId();
+        var before = threads.getThreadAllocatedBytes(id);
+
+        work.run();
+
+        return threads.getThreadAllocatedBytes(id) - before;
+    }
+
+    // ---- the scan's delimiter edges
+
+    @Test
+    void partBreach_aDelimiterFollowedByOneDash_isNotTheCloseDelimiter() {
+        var dash = "--XB-y\r\n";
+
+        assertThat(breachOf(parts(0, 0, 1, 0), body(field("a", "x"), dash, field("b", "2"))))
+            .as("the dash line is content of part a, and part b still counts").isEqualTo("Multipart body has more than 1 fields");
+    }
+
+    @Test
+    void partBreach_aTabAfterTheDelimiter_isTransportPadding() {
+        var tabbed = "--XB\t\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n2\r\n";
+
+        assertThat(breachOf(parts(0, 0, 1, 0), body(field("a", "1"), tabbed)))
+            .as("the tab-padded delimiter starts part b").isEqualTo("Multipart body has more than 1 fields");
     }
 
     @Test

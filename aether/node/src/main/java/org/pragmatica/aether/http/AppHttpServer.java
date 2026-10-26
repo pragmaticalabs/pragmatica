@@ -1311,15 +1311,15 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                      requestId,
                                                                      local))
                        .onPresent(cause -> sendProblem(response,
-                                                       HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                                                       cause.httpStatus(),
                                                        HttpError.clientMessage(cause),
                                                        path,
                                                        requestId));
     }
 
-    /// The part limit a multipart `request` exceeds, if the route declares any. A body that is not multipart, or is not a
+    /// The part limit a multipart `request` exceeds, or the nested part it carries (400), if the route declares any. A body that is not multipart, or is not a
     /// closed multipart, is not a breach: the handler answers it as it always has.
-    private static Option<MultipartError.LimitExceeded> partLimitBreach(HttpRequest request, UploadSpec spec) {
+    private static Option<MultipartError> partLimitBreach(HttpRequest request, UploadSpec spec) {
         return spec.partBreach(request.body(),
                                request.headers().get("content-type").or(""));
     }

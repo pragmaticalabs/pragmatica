@@ -35,7 +35,8 @@ public sealed interface MultipartError extends HttpStatusAware {
         MISSING_CONTENT_TYPE("Missing Content-Type header", HttpStatus.UNSUPPORTED_MEDIA_TYPE),
         MISSING_BOUNDARY("Multipart Content-Type has no boundary parameter", HttpStatus.BAD_REQUEST),
         MISSING_CLOSE_DELIMITER("Multipart body is incomplete or malformed: no closing boundary delimiter",
-                                HttpStatus.BAD_REQUEST);
+                                HttpStatus.BAD_REQUEST),
+        NESTED_MULTIPART("A nested multipart part is not accepted on a route with part limits", HttpStatus.BAD_REQUEST);
         private final String message;
         private final HttpStatus status;
         General(String message, HttpStatus status) {
