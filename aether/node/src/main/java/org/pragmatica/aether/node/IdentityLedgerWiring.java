@@ -162,7 +162,7 @@ public sealed interface IdentityLedgerWiring {
                                                            sink,
                                                            OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                                            subject,
-                                                           "The identity ledger write failed ({}): new peers are refused until it can be written.",
+                                                           "The identity ledger write failed ({}): retirements from now on will not survive a restart until a write succeeds.",
                                                            cause.message()));
     }
 

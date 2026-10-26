@@ -370,7 +370,7 @@ public enum OperatorWarningCode {
     ENTITY_OWNERSHIP_UNSETTLED_MINT("entity-ownership-unsettled-mint", "entity-ownership", WarningLevel.WARNING),
     /// This node's identity ledger (#2429) does not protect it: the ledger file was lost on a node that is not new (the node admits no new
     /// peer until it has merged with a peer's ledger), the ledger directory cannot be written at boot (the node runs without the restart
-    /// protection), or a ledger write failed (new peers are refused until a write succeeds). Subject is the node. Raised on the transition
+    /// protection), or a ledger write failed (retirements made from then on will not survive a restart until a write succeeds). Subject is the node. Raised on the transition
     /// into the state, not on every refused peer. Closed by [#IDENTITY_LEDGER_DURABLE].
     IDENTITY_LEDGER_NOT_DURABLE("identity-ledger-not-durable", "membership", WarningLevel.WARNING),
     /// The recovery of [#IDENTITY_LEDGER_NOT_DURABLE], same subject: a ledger write succeeded, so the node's retirements survive a restart
