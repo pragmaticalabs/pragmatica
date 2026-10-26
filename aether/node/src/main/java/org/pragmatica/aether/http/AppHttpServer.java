@@ -684,9 +684,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// A MAP stage, not an `onSuccess` observer: an observer runs concurrently with whoever awaits the rotation promise, so a
     /// caller reading `boundPort()` right after the rotation resolved could still see the old listener's port (#2152). As a stage,
     /// "the rotation resolved" implies "the new listeners are recorded".
-    private Promise<AppHttpContext.ServerPair> recordRotationApplied(AppHttpContext.ServerPair pair, RouteTable currentRoutes) {
+    private Promise<AppHttpContext.ServerPair> recordRotationApplied(AppHttpContext.ServerPair pair,
+                                                                     RouteTable currentRoutes) {
         context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(), pair.h3(), currentRoutes));
-
         // A report that Stopped or Starting discarded closed the new pair: the certificate is not applied, so the
         // rotation must not resolve as applied (cert automation would otherwise record a rotation that never took effect).
         return context.isRotationDiscarded()
