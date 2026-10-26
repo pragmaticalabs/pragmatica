@@ -2,8 +2,10 @@ package org.pragmatica.storage;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -201,15 +203,34 @@ final class DefaultDemotionManager implements DemotionManager {
         var candidates = metadataStore.listBlocksByTier(tierLevel);
         var access = metadataStore.accessTracker();
 
+        var heldBack = readsDecide()
+                       ? candidates.stream()
+                                   .filter(access::isHeldBack)
+                                   .map(BlockLifecycle::blockId)
+                                   .collect(Collectors.toSet())
+                       : Set.<BlockId> of();
+
         return candidates.stream()
-                         .filter(lc -> !readsDecide() || !access.isHeldBack(lc))
-                         .sorted(comparatorForStrategy(access))
+                         .sorted(rankingFor(heldBack, comparatorForStrategy(access)))
                          .limit(config.batchSize())
                          .toList();
     }
 
+    /// Candidates are only selected for a tier above its high watermark, so a block whose access is unknown is
+    /// still eligible: pressure overrides the hold-back. The hold-back only orders them -- after every block
+    /// whose reads are known, oldest-created first among themselves -- so the working set a restart forgot
+    /// is the last thing demoted, and nothing is demoted in a different order than it was created for want of reads.
+    private static Comparator<BlockLifecycle> rankingFor(Set<BlockId> heldBack, Comparator<BlockLifecycle> byStrategy) {
+        Comparator<BlockLifecycle> byCreation = Comparator.comparingLong(BlockLifecycle::createdAt);
+
+        return Comparator.<BlockLifecycle> comparingInt(lc -> heldBack.contains(lc.blockId()) ? 1 : 0)
+                         .thenComparing((a, b) -> heldBack.contains(a.blockId())
+                                                  ? byCreation.compare(a, b)
+                                                  : byStrategy.compare(a, b));
+    }
+
     /// Whether the strategy ranks by reads. AGE ranks by creation alone, so it has no use for access and an
-    /// unknown access (a block untouched since boot) is no reason to hold a block back.
+    /// unknown access (a block untouched since boot) changes nothing for it.
     private boolean readsDecide() {
         return config.strategy() != DemotionStrategy.AGE;
     }

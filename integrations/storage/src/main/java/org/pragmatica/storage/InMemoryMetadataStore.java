@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.UnaryOperator;
 
@@ -74,20 +75,35 @@ final class InMemoryMetadataStore implements MetadataStore {
         return claimed;
     }
 
-    /// The id is marked BEFORE the record exists, so a capture can never list the record unmarked. A claim
-    /// that loses unmarks only what it marked: the record it lost to belongs to someone else. While it holds
-    /// its mark, a loser can keep an acknowledged record out of ONE concurrent capture; that is no new
-    /// exposure, since any record newer than the last snapshot is absent from it until the next one.
+    /// The claim is decided and, if it wins, the id is marked, inside one atomic step on the record's map
+    /// entry: the mark exists before the record does, so no capture lists the new record unmarked, and a
+    /// claim that loses marks nothing, so it can never hide the acknowledged record it lost to from a capture.
     @Override
     public boolean claimUnacknowledged(BlockId blockId, BlockLifecycle sentinel) {
-        var marked = unacknowledged.add(blockId);
-        var claimed = claimBlock(blockId, sentinel);
+        var claimed = new AtomicBoolean();
 
-        if (!claimed && marked) {
-            unacknowledged.remove(blockId);
+        lifecycle.compute(blockId, (_, existing) -> claimOrKeep(existing, sentinel, claimed));
+
+        if (claimed.get() && !sentinel.cacheOnly()) {
+            epoch.incrementAndGet();
         }
 
-        return claimed;
+        return claimed.get();
+    }
+
+    private BlockLifecycle claimOrKeep(BlockLifecycle existing, BlockLifecycle sentinel, AtomicBoolean claimed) {
+        var replacesMarker = existing != null && existing.cacheOnly() && !sentinel.cacheOnly();
+
+        if (existing != null && !replacesMarker) {
+            return existing;
+        }
+
+        claimed.set(true);
+        unacknowledged.add(sentinel.blockId());
+
+        return existing == null
+               ? sentinel
+               : sentinel.withPresenceOf(existing);
     }
 
     @Override
