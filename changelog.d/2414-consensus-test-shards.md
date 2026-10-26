@@ -1,0 +1,3 @@
+### Changed (2026-10-26 — #2414: Consensus tests sat on build-and-test's longest dependency chain)
+- **Consensus's tests ran serially inside `Build and test all modules`, ~1050 s of the ~46 min step.** They now run in the `consensus-shard-1` and `consensus-shard-2` jobs (the Ember shard planner, `ember-shard.py --module consensus`); the main step compiles and installs Consensus with `-Dconsensus.skipTests=true`.
+- Every Consensus test class lands in exactly one shard, and a shard that reports a missing class or no reports fails [verified: `tools/test_consensus_shard.py`]. New required checks: `consensus-shard-1`, `consensus-shard-2`.
