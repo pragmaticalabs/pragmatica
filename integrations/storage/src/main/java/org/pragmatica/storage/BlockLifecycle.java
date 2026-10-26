@@ -9,11 +9,11 @@ import java.util.Set;
 /// @param blockId content-addressed block identifier
 /// @param presentIn set of tiers that currently hold this block
 /// @param refCount number of named references pointing to this block
-/// @param lastAccessedAt frozen at creation: reads never change a record. Deprecated, removed by a later snapshot-format
-/// change; what reads did is in [AccessTracker]
+/// @param lastAccessedAt frozen at creation: reads never change a record. Deprecated, removed by #2443; what reads
+/// did is in [AccessTracker]
 /// @param createdAt timestamp when first stored
-/// @param accessCount frozen at creation: reads never change a record. Deprecated, removed by a later snapshot-format
-/// change; what reads did is in [AccessTracker]
+/// @param accessCount frozen at creation: reads never change a record. Deprecated, removed by #2443; what reads
+/// did is in [AccessTracker]
 /// @param orphanedAt timestamp of the instant refCount last transitioned from >0 to <=0; 0 while
 /// referenced. [StorageGarbageCollector]'s grace period runs from here (#737 fix round 2) --
 /// lastAccessedAt is set at creation and refreshed only on a successful read, so using it for the
