@@ -118,22 +118,66 @@ class StorageInstanceAccessTrackingTest {
         assertThat(fixture.stillInMemory(newer)).isTrue();
     }
 
-    /// Inside the window a block read since boot is ranked on its reads and the unknown ones come after it;
-    /// once the window has passed the unknown block is just an old one and goes first.
+    /// Under pressure inside the window an unknown block goes before one read since boot, whatever the strategy
+    /// ranks by: the unknown one is created later and the read one has the strategy's preferred reads, so
+    /// neither creation order nor the strategy can pick it by luck.
     @Test
-    void demotion_ranksUnknownBlocksAfterTheOnesReadSinceBoot_untilTheWindowPasses() {
+    void demotion_ofAFullTier_takesTheUnknownBlockBeforeOneReadSinceBoot_lru() {
+        unknownGoesBeforeKnown(DemotionStrategy.LRU);
+    }
+
+    @Test
+    void demotion_ofAFullTier_takesTheUnknownBlockBeforeOneReadSinceBoot_lfu() {
+        unknownGoesBeforeKnown(DemotionStrategy.LFU);
+    }
+
+    @Test
+    void demotion_ofAFullTier_takesTheUnknownBlockBeforeOneReadSinceBoot_sizePressure() {
+        unknownGoesBeforeKnown(DemotionStrategy.SIZE_PRESSURE);
+    }
+
+    private static void unknownGoesBeforeKnown(DemotionStrategy strategy) {
         var clock = new AtomicLong(1_000_000);
         var tracker = AccessTracker.accessTracker(WARM_UP_MS, clock::get);
         var fixture = new Restored(tracker);
-        var unknown = fixture.add("restored unknown", 500L);
-        var known = fixture.add("restored known", 700L);
+        var known = fixture.add("restored known", 500L);
+        var unknown = fixture.add("restored unknown", 700L);
 
         tracker.record(known);
 
-        assertThat(fixture.demotion(DemotionStrategy.LRU, 1).demote()).isEqualTo(1);
-        assertThat(fixture.stillInMemory(known)).as("inside the window the read one is demoted first").isFalse();
-        assertThat(fixture.stillInMemory(unknown)).isTrue();
+        assertThat(fixture.demotion(strategy, 1).demote()).isEqualTo(1);
+        assertThat(fixture.stillInMemory(unknown)).as("the unknown block went").isFalse();
+        assertThat(fixture.stillInMemory(known)).as("the one read since boot stays").isTrue();
+    }
 
+    /// Blocks read since boot keep the tracker's order after the unknown ones: with two unknown blocks and two
+    /// read ones, a batch of three takes both unknown (oldest-created first) and then the read one the tracker
+    /// ranks first -- the one read less recently, though its record is the younger.
+    @Test
+    void demotion_ofAFullTier_ranksTheBlocksReadSinceBootByTheTracker_afterTheUnknownOnes() {
+        var clock = new AtomicLong(1_000_000);
+        var tracker = AccessTracker.accessTracker(WARM_UP_MS, clock::get);
+        var fixture = new Restored(tracker);
+        var readEarlier = fixture.add("restored read earlier", 800L);
+        var readLater = fixture.add("restored read later", 400L);
+        var unknownOlder = fixture.add("restored unknown older", 100L);
+        var unknownNewer = fixture.add("restored unknown newer", 900L);
+
+        tracker.record(readEarlier);
+        clock.addAndGet(5);
+        tracker.record(readLater);
+
+        assertThat(fixture.demotion(DemotionStrategy.LRU, 3).demote()).isEqualTo(3);
+        assertThat(fixture.stillInMemory(unknownOlder)).isFalse();
+        assertThat(fixture.stillInMemory(unknownNewer)).isFalse();
+        assertThat(fixture.stillInMemory(readEarlier)).as("least recently read goes third").isFalse();
+        assertThat(fixture.stillInMemory(readLater)).as("most recently read stays").isTrue();
+    }
+
+    /// Once the window has passed a block that was never read is no longer held back: it is ranked on its
+    /// (absent) reads like any other, and goes before the one read since boot.
+    @Test
+    void demotion_afterTheWindow_hasNoHoldBack() {
         var clockAfter = new AtomicLong(1_000_000);
         var trackerAfter = AccessTracker.accessTracker(WARM_UP_MS, clockAfter::get);
         var after = new Restored(trackerAfter);
@@ -149,16 +193,16 @@ class StorageInstanceAccessTrackingTest {
     }
 
     /// AGE ranks by creation alone: unknown access changes nothing for it, so inside the window the older
-    /// record goes first even though a younger one was read since boot.
+    /// record goes first even though it was read since boot and the younger one is unknown.
     @Test
     void ageDemotion_isNotReorderedByUnknownAccess() {
         var clock = new AtomicLong(1_000_000);
         var tracker = AccessTracker.accessTracker(WARM_UP_MS, clock::get);
         var fixture = new Restored(tracker);
-        var older = fixture.add("restored older unknown", 500L);
-        var younger = fixture.add("restored younger known", 700L);
+        var older = fixture.add("restored older known", 500L);
+        var younger = fixture.add("restored younger unknown", 700L);
 
-        tracker.record(younger);
+        tracker.record(older);
 
         assertThat(fixture.demotion(DemotionStrategy.AGE, 1).demote()).isEqualTo(1);
         assertThat(fixture.stillInMemory(older)).isFalse();
