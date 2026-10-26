@@ -57,9 +57,9 @@ class EmberLedgerLostTest {
         harness.deleteLedgerFile(harness.observer);
 
         var restartedB = harness.relaunch(harness.observer);
-        var verdict = harness.launchRetiredNodeId(restartedB);
+        var verdict = harness.launchRetiredNodeIdAlone(restartedB);
 
-        assertThat(verdict.linked()).as("a wiped holder links to no new peer").isFalse();
+        assertThat(verdict.linked()).as("a wiped holder links to no new peer (A is down: any CONNECTED link of it is X)").isFalse();
         assertThat(verdict.processExited()).as("it is not told its identity is retired: it is not a verdict").isFalse();
         assertThat(verdict.refusalsAdded()).as("an unavailable registry is not a refusal").isZero();
     }

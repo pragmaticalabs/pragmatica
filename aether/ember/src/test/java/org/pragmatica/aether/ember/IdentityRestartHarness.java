@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -209,26 +210,39 @@ final class IdentityRestartHarness {
 
     /// Start a process under X at X's own address and report `watcher`'s verdict on it: it exits refused, or `watcher` links
     /// to it. The harness registers the node before its start runs, so a refused process is seen leaving the registry.
+    /// "Links" reads `connectedPeerIds`, which also lists a peer in the transient EVICTED phase that a failed dial leaves
+    /// behind: right for a verdict that ends in an exit, too weak for [#launchRetiredNodeIdAlone].
     Verdict launchRetiredNodeId(AetherNode watcher) {
-        var refusalsBefore = refusals(watcher);
         var retiredId = new NodeId(retired);
+
+        return launchRetiredNodeId(watcher, node -> node.connectedPeerIds().contains(retiredId));
+    }
+
+    /// As [#launchRetiredNodeId], for a `watcher` that has no other live peer, so any CONNECTED link of it is a link to X.
+    /// `connectedNodeCount` counts the CONNECTED phase only: a dial that was refused or dropped leaves its peer EVICTED
+    /// (in `connectedPeerIds`, never connected), and that is not an admission.
+    Verdict launchRetiredNodeIdAlone(AetherNode watcher) {
+        return launchRetiredNodeId(watcher, node -> node.connectedNodeCount() > 0);
+    }
+
+    private Verdict launchRetiredNodeId(AetherNode watcher, Predicate<AetherNode> linked) {
+        var refusalsBefore = refusals(watcher);
 
         awaitSlotFree(SLOT_RETIRED);
         cluster.relaunchNode(retired, true);
-        var launched = cluster.getNode(retired).unwrap();
 
         awaitCondition("the watcher links to the process or the process exits",
-                       () -> cluster.getNode(retired).isEmpty() || watcher.connectedPeerIds().contains(retiredId),
+                       () -> cluster.getNode(retired).isEmpty() || linked.test(watcher),
                        VERDICT_BOUND_MS,
                        false);
         awaitCondition("a linked process stays linked",
-                       () -> cluster.getNode(retired).isEmpty() || !watcher.connectedPeerIds().contains(retiredId),
+                       () -> cluster.getNode(retired).isEmpty() || !linked.test(watcher),
                        STABLE_MS,
                        false);
 
         var exited = cluster.getNode(retired).isEmpty();
 
-        return new Verdict(exited, !exited && watcher.connectedPeerIds().contains(launched.self()), refusals(watcher) - refusalsBefore);
+        return new Verdict(exited, !exited && linked.test(watcher), refusals(watcher) - refusalsBefore);
     }
 
     static long refusals(AetherNode node) {
