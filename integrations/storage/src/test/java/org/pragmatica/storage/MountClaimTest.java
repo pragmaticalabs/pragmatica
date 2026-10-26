@@ -64,6 +64,27 @@ class MountClaimTest {
         assertThat(MountClaim.claim(mount, "node-b").isSuccess()).as("only a held lock is a claim").isTrue();
     }
 
+    /// The registry and the lock are keyed by the real path, so a symlinked alias of a held mount is the same mount: the refusal names
+    /// the holder instead of falling through to the lock layer, which cannot tell a second claimant of one JVM apart.
+    @Test
+    void claim_throughASymlinkedAlias_isRefusedNamingTheHolder() throws IOException {
+        var alias = Files.createSymbolicLink(mount.resolveSibling(mount.getFileName() + "-alias"), mount);
+
+        try {
+            MountClaim.claim(mount, "node-a").unwrap();
+
+            var refusal = MountClaim.claim(alias, "node-b");
+
+            assertThat(refusal.isFailure()).as("the alias is the same mount").isTrue();
+            refusal.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(MountClaim.Held.class);
+                assertThat(cause.message()).as("the holder is named, not 'another process'").contains("node-a");
+            });
+        } finally {
+            Files.deleteIfExists(alias);
+        }
+    }
+
     @Test
     void claim_sameNodeInTheSameProcess_takesTheClaimOver() {
         MountClaim.claim(mount, "node-a").unwrap();

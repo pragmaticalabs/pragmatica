@@ -409,6 +409,85 @@ class StorageDegradeWarningsTest {
         assertThat(published()).isEmpty();
     }
 
+    /// A block whose stored copy no longer hashes to its id fails the read; the operator hears of it once per instance, however many
+    /// reads fail after it.
+    @Test
+    void integrityFailure_onRead_raisesOnceForTheInstance() throws Exception {
+        var instance = StorageInstance.storageInstance("vault", List.of(new ScriptedTier(TierLevel.MEMORY, true)), WritePolicy.WRITE_THROUGH);
+
+        instance.reportTo(degrade);
+        bind();
+        var id = instance.put("some block".getBytes()).await().unwrap();
+
+        assertThat(instance.get(id).await().isFailure()).as("control: the tampered copy fails its integrity check").isTrue();
+        assertThat(instance.get(id).await().isFailure()).isTrue();
+        drain();
+
+        assertThat(published().stream().filter(w -> w.code() == OperatorWarningCode.STORAGE_INTEGRITY_FAILED).count()).isEqualTo(1);
+        assertThat(published().getFirst().subject()).isEqualTo("vault");
+        assertThat(published().getFirst().message()).contains("MEMORY").contains(id.toString());
+    }
+
+    @Test
+    void integrityFailure_beforeTheInstanceHasAReporter_isNotPublished() throws Exception {
+        var instance = StorageInstance.storageInstance("vault", List.of(new ScriptedTier(TierLevel.MEMORY, true)), WritePolicy.WRITE_THROUGH);
+
+        bind();
+        var id = instance.put("some block".getBytes()).await().unwrap();
+
+        assertThat(instance.get(id).await().isFailure()).isTrue();
+        drain();
+
+        assertThat(published()).as("only the reporter the node handed the instance publishes").isEmpty();
+    }
+
+    /// A write-behind flush that fails raises once for the episode; the first flush that lands after it closes the episode.
+    @Test
+    void writeBehindFlush_failingThenSucceeding_raisesOnceThenItsRecovery() throws Exception {
+        var slow = new ScriptedTier(TierLevel.REMOTE, false);
+        var instance = StorageInstance.storageInstance("vault",
+                                                       List.of(MemoryTier.memoryTier(1 << 20), slow),
+                                                       WritePolicy.WRITE_BEHIND);
+
+        try {
+            instance.reportTo(degrade);
+            bind();
+            slow.failing = true;
+
+            instance.put("first".getBytes()).await().unwrap();
+            awaitRaisedOf(OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED, 1);
+            instance.put("second".getBytes()).await().unwrap();
+            awaitFlushAttempts(slow, 2);
+            slow.failing = false;
+            instance.put("third".getBytes()).await().unwrap();
+            awaitRaisedOf(OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSHED, 1);
+            drain();
+
+            assertThat(raisedOf(OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED)).as("one warning for the episode").isEqualTo(1);
+            assertThat(raisedOf(OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSHED)).isEqualTo(1);
+        } finally {
+            instance.shutdown();
+        }
+    }
+
+    private void awaitRaisedOf(OperatorWarningCode code, int count) throws InterruptedException {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (raisedOf(code) < count && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(raisedOf(code)).as("%s warnings handed to the sink within 5 s", code).isGreaterThanOrEqualTo(count);
+    }
+
+    private static void awaitFlushAttempts(ScriptedTier tier, int count) throws InterruptedException {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (tier.puts.get() < count && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(tier.puts.get()).as("flush attempts reached the slow tier within 5 s").isGreaterThanOrEqualTo(count);
+    }
+
     private void awaitRaised(int count) throws InterruptedException {
         var deadline = System.nanoTime() + 5_000_000_000L;
 
@@ -460,6 +539,73 @@ class StorageDegradeWarningsTest {
         @Override
         public boolean isDurable() {
             return true;
+        }
+    }
+    /// A tier that keeps what it is given, optionally hands back a different block than it stored (a corrupt copy), and can be
+    /// told to fail its puts.
+    private static final class ScriptedTier implements StorageTier {
+        final java.util.concurrent.ConcurrentHashMap<BlockId, byte[]> blocks = new java.util.concurrent.ConcurrentHashMap<>();
+        final java.util.concurrent.atomic.AtomicInteger puts = new java.util.concurrent.atomic.AtomicInteger();
+        final TierLevel level;
+        final boolean tamper;
+        volatile boolean failing;
+
+        ScriptedTier(TierLevel level, boolean tamper) {
+            this.level = level;
+            this.tamper = tamper;
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return Promise.success(Option.option(blocks.get(id)).map(bytes -> tamper ? flipped(bytes) : bytes));
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            puts.incrementAndGet();
+
+            if (failing) {
+                return Causes.cause("scripted put failure").promise();
+            }
+
+            blocks.put(id, content);
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            blocks.remove(id);
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return Promise.success(blocks.containsKey(id));
+        }
+
+        @Override
+        public TierLevel level() {
+            return level;
+        }
+
+        @Override
+        public long usedBytes() {
+            return blocks.values().stream().mapToLong(bytes -> bytes.length).sum();
+        }
+
+        @Override
+        public long maxBytes() {
+            return 1L << 30;
+        }
+
+        private static byte[] flipped(byte[] bytes) {
+            var copy = bytes.clone();
+
+            copy[0] ^= 0x01;
+
+            return copy;
         }
     }
 }

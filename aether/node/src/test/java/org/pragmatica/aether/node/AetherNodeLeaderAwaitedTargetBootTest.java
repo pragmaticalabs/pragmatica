@@ -113,6 +113,30 @@ class AetherNodeLeaderAwaitedTargetBootTest {
         });
     }
 
+    /// A0b: storage is built before the node's event aggregator exists; the node binds every instance's degrade reporter to the
+    /// aggregator's sink once it does. The hermetic storage roots cannot hold a disk tier, so the booted node's instances degrade
+    /// while being built, and the aggregator of the booted node must show the storage warning. Red with the bind removed: the
+    /// conditions raised during the build then never reach the aggregator.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void bootedNode_whoseStorageDegradedWhileBuilding_showsTheStorageWarningOnItsAggregator() {
+        var self = NodeId.nodeId("storage-bind-" + UUID.randomUUID()).unwrap();
+        node = AetherNode.aetherNode(minimalConfig(self, tempDir), () -> {})
+                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
+                         .unwrap();
+        node.start().await(START_BOUND).onFailure(cause -> fail("start() must succeed: " + cause.message()));
+
+        await().atMost(Duration.ofSeconds(40)).untilAsserted(() -> assertThat(storageWarningCode(node.eventAggregator().lastRaisedOperatorWarning()))
+                .startsWith("storage-"));
+    }
+
+    private static String storageWarningCode(Option<ClusterEvent> raised) {
+        return raised.filter(ClusterEvent.OperatorWarning.class::isInstance)
+                     .map(ClusterEvent.OperatorWarning.class::cast)
+                     .map(warning -> String.valueOf(warning.details().get("code")))
+                     .or("none");
+    }
+
     private static boolean isAwaitingTargetWarning(Option<ClusterEvent> raised) {
         return raised.filter(ClusterEvent.OperatorWarning.class::isInstance)
                      .map(ClusterEvent.OperatorWarning.class::cast)

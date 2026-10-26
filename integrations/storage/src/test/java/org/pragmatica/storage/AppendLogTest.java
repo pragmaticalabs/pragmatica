@@ -453,6 +453,39 @@ class AppendLogTest {
         }
     }
 
+    /// A0b: a log that fail-stops tells its sink, once, naming the file and the cause; the appends it then refuses are not reports.
+    @Nested
+    class FailStopReport {
+        @Test
+        void failStop_reachesTheSinkOnce_withTheLogAndTheCause() {
+            var reports = new CopyOnWriteArrayList<String>();
+            var sink = new AppendLog.TornTailSink() {
+                @Override
+                public void accept(AppendLog.TornTail tornTail) {
+                    fail("no torn tail in this log");
+                }
+
+                @Override
+                public void failStopped(Path file, org.pragmatica.lang.Cause cause) {
+                    reports.add(file.getFileName() + "|" + cause.message());
+                }
+            };
+            var wal = AppendLog.open(file("failstop-sink.wal"), sink).unwrap();
+
+            appendSync(wal, 0L, payload(0), 1L);
+            var wrapper = injectForceFailingChannel(wal);
+
+            wrapper.failWrites = true;
+            wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("the frame write was injected to fail"));
+            restoreChannel(wal, wrapper);
+            wal.append(2L, payload(2), 1L).await().onSuccess(_ -> fail("a fail-stopped log refuses appends"));
+
+            assertThat(reports).as("one report for the fail-stop, none for the refused append").hasSize(1);
+            assertThat(reports.getFirst()).startsWith("failstop-sink.wal|");
+            wal.close();
+        }
+    }
+
     /// #1232 (ruling know 801a8b54e): a failed FRAME WRITE fail-stops the WAL exactly like a failed
     /// fsync. Otherwise a later frame that did land would leave a hole at the failed record's offset —
     /// the ring already assigned it — and recovery refuses a hole loudly rather than renumbering.

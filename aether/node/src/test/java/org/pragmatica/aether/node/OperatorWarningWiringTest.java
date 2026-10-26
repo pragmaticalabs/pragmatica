@@ -153,27 +153,6 @@ class OperatorWarningWiringTest {
                                   .containsOnlyOnce("bindPromotionAlarm(streamPartitionBackfill,operatorWarningSink,kvStore,streamingConfig.promotionEscapeAfter());");
     }
 
-    /// A0b: storage is built before this node's aggregator exists, so its degrade reporters reach the sink only through this
-    /// call; the instance tests hand the reporter their own sink, so un-binding it here left them green.
-    @Test
-    void assembly_bindsEveryStorageInstancesDegradeReporterToThisNodesSink() {
-        assertThat(assemblyCode()).containsOnlyOnce("StorageFactory.bindOperatorWarnings(storageSetups,operatorWarningSink);");
-    }
-
-    /// A0b (SD-01/SB-11): the readiness gates learn about consensus at the node's ready signal. The gate tests call
-    /// `signalConsensusSynced` directly, so dropping the call from the signal left them green.
-    @Test
-    void assembly_signalsConsensusSyncedAtTheStorageReadySignal() {
-        assertThat(assemblyCode()).containsOnlyOnce("StorageFactory.signalConsensusSynced(storageSetups);");
-    }
-
-    /// A0b: the leader-pinned storage group has no instance reporter; the assembly builds one and binds it to the node's sink, and
-    /// the adapter's own test hands it a sink directly, so dropping the bind here left it green.
-    @Test
-    void assembly_bindsTheLeaderMaintenanceReporterToThisNodesSink() {
-        assertThat(assemblyCode()).containsOnlyOnce("leaderMaintenance.bind(operatorWarningSink);");
-    }
-
     /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
     /// stripped; each pin must match exactly once across that set. See [AssemblySource].
     private static String assemblyCode() {

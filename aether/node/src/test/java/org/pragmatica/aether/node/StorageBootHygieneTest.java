@@ -35,11 +35,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `disk_path` refuses the boot, a tier the node placed degrades loudly), when a second node meets a held mount, when the
 /// memory tiers do not fit the heap, and when the node reports ready.
 ///
-/// Hermetic tests (CTO ruling 2): no production key exists for tests. [HermeticStorage] builds its configurations
+/// Hermetic tests: no production key exists for tests. [HermeticStorage] builds its configurations
 /// programmatically, and `diskPathExplicit` is set only by the config loader, so those configurations take the degrade path
 /// exactly as before; the refusal is exercised with a configuration marked as the loader would mark it.
 class StorageBootHygieneTest {
-    private static final String NODE = "node-a0b";
+    private static final String NODE = "node-a";
     private static final long MIB = 1024L * 1024;
 
     @TempDir
@@ -109,15 +109,18 @@ class StorageBootHygieneTest {
     }
 
     // --- items 1 and 2: operator-set disk_path refuses, node-placed tiers degrade ---
+    /// The path EXISTS but cannot be opened as a tier (a regular file where the directory should be): the existence check does not
+    /// shadow the open, and the refusal names the instance and the path. The absent-path arm is Q1's test below.
     @Test
-    void operatorWrittenDiskPath_thatCannotOpen_failsTheBootNamingInstanceAndPath() {
-        // A sibling of the synthesized defaults' root, so the refusal cannot come from StoragePathsOverlap.
-        var unopenable = configAt(HermeticStorage.uncreatableRootIn(tempDir).resolveSibling("vault-root")).withDiskPathExplicit();
+    void operatorWrittenDiskPath_thatExistsButCannotOpen_failsTheBootNamingInstanceAndPath() throws Exception {
+        var config = configAt(tempDir.resolve("vault-root")).withDiskPathExplicit();
+        Files.createDirectories(Path.of(config.diskPath()).getParent());
+        Files.writeString(Path.of(config.diskPath()), "a file where the mount directory should be");
 
-        var result = boot(Map.of("vault", unopenable), NODE);
+        var result = boot(Map.of("vault", config), NODE);
 
         assertThat(result.isFailure()).as("an explicit disk_path that cannot open must refuse the boot").isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("vault").contains("disk_path").contains("cannot be opened").doesNotContain("overlap"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("vault").contains("disk_path").contains(config.diskPath()).contains("cannot be opened").doesNotContain("does not exist").doesNotContain("overlap"));
     }
 
     @Test
@@ -457,6 +460,65 @@ class StorageBootHygieneTest {
         assertThat(MountClaim.claim(mount, "node-2").isSuccess()).as("the refused instance's claim was given back").isTrue();
     }
 
+    /// The refusal that reaches `assembleSetup` (a snapshot is on disk and does not restore, #1013) comes AFTER the tier took the claim,
+    /// and the instance never reaches the built list the refused-boot release walks, so its own tiers must give the claim back.
+    @Test
+    void bootRefusedByAnUnrestorableSnapshot_givesTheMountBack() throws Exception {
+        var config = configAt(tempDir.resolve("root"));
+        var snapshots = Path.of(config.snapshotPath());
+        Files.createDirectories(snapshots);
+        Files.writeString(snapshots.resolve("snapshot-0000000001.dat"), "garbage{{{");
+
+        var refused = boot(Map.of("vault", config), "node-1");
+
+        assertThat(refused.isFailure()).as("control: the unrestorable snapshot refuses the boot").isTrue();
+        assertThat(MountClaim.claim(Path.of(config.diskPath()), "node-2").isSuccess()).as("the refused instance's claim was given back").isTrue();
+    }
+
+    // --- Q1: an operator-set disk_path is never created ---
+    @Test
+    void operatorWrittenDiskPath_thatDoesNotExist_failsTheBootNamingTheCause_andIsNotCreated() {
+        var root = tempDir.resolve("not-there-yet");
+        var config = configAt(root).withDiskPathExplicit();
+
+        var result = boot(Map.of("vault", config), NODE);
+
+        assertThat(result.isFailure()).as("an operator-set path that is absent refuses the boot, even where it could be created").isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("vault")
+                                                              .contains("disk_path")
+                                                              .contains(config.diskPath())
+                                                              .contains("does not exist")
+                                                              .doesNotContain("overlap"));
+        assertThat(Files.exists(Path.of(config.diskPath()))).as("the node never creates an operator-set path").isFalse();
+        assertThat(Files.exists(root)).as("nor any directory above it").isFalse();
+    }
+
+    @Test
+    void operatorWrittenDiskPath_thatExists_bootsWithItsDiskTier() throws Exception {
+        var config = configAt(tempDir.resolve("mounted")).withDiskPathExplicit();
+        Files.createDirectories(Path.of(config.diskPath()));
+
+        var setups = boot(Map.of("vault", config), NODE).unwrap();
+
+        assertThat(hasLocalDisk(setups.get("vault"))).isTrue();
+        setups.values().forEach(setup -> setup.instance().shutdown());
+    }
+
+    @Test
+    void nodePlacedDiskPath_thatDoesNotExist_isCreated() {
+        var config = configAt(tempDir.resolve("placed-by-the-node"));
+
+        var setups = boot(Map.of("vault", config), NODE).unwrap();
+
+        assertThat(Files.isDirectory(Path.of(config.diskPath()))).as("a path the node placed itself may be created").isTrue();
+        assertThat(hasLocalDisk(setups.get("vault"))).isTrue();
+        setups.values().forEach(setup -> setup.instance().shutdown());
+    }
+
+    private static boolean hasLocalDisk(StorageFactory.StorageSetup setup) {
+        return setup.instance().tierInfo().stream().anyMatch(tier -> tier.level() == org.pragmatica.storage.TierLevel.LOCAL_DISK);
+    }
+
     // --- item 6: readiness gate ---
     @Test
     void readyNode_opensTheWriteSideOfEveryInstance() {
@@ -486,37 +548,43 @@ class StorageBootHygieneTest {
     }
 
     // --- item 8: memory tier clamp ---
+    /// The literal bytes, through the production boot decision (the `StreamSetupRequest` overload, with this heap and test-rooted
+    /// defaults supplied): a quarter of 256 MiB is 64 MiB; the streams ring keeps its fixed 16 MiB of it and the two default
+    /// instances share the other 48 MiB, 24 MiB each. Pinning the bytes rather than the constant is what makes a changed fraction or a
+    /// dropped ring reservation fail.
     @Test
-    void memoryTiers_underA256MibHeap_stayWithinTheHeapFraction() throws Exception {
-        var heap = 256 * MIB;
-        var setups = StorageFactory.createAll(Map.of(),
-                                              NODE,
-                                              Option.none(),
-                                              Option.none(),
-                                              HermeticStorage.synthesisDefaultsIn(tempDir),
-                                              heap).unwrap();
-        var total = setups.values().stream().mapToLong(StorageBootHygieneTest::memoryBytes).sum();
+    void memoryTiers_underA256MibHeap_shareExactly48MibBesideTheStreamsRing() throws Exception {
+        var setups = bootUnderHeap(256 * MIB);
 
         setups.get("artifacts").degrade().bind(sink);
         setups.get("content").degrade().bind(sink);
-        awaitRaised(4);
+        awaitRaisedOf(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "artifacts", 1);
+        awaitRaisedOf(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "content", 1);
 
-        assertThat(total).as("memory tiers of all instances").isLessThanOrEqualTo((long) (heap * StorageFactory.MEMORY_TIER_HEAP_FRACTION));
-        assertThat(raisedOf(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "artifacts")).isEqualTo(1);
-        assertThat(raisedOf(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "content")).isEqualTo(1);
+        assertThat(memoryBytes(setups.get("artifacts"))).isEqualTo(24 * MIB);
+        assertThat(memoryBytes(setups.get("content"))).isEqualTo(24 * MIB);
+        assertThat(memoryBytes(setups.get("streams"))).as("the streams ring is fixed, never clamped").isEqualTo(16 * MIB);
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "streams")).isZero();
     }
 
     @Test
     void memoryTiers_thatFit_areLeftAlone() {
-        var setups = StorageFactory.createAll(Map.of(),
-                                              NODE,
-                                              Option.none(),
-                                              Option.none(),
-                                              HermeticStorage.synthesisDefaultsIn(tempDir),
-                                              16 * 1024 * MIB).unwrap();
+        var setups = bootUnderHeap(16 * 1024 * MIB);
 
         assertThat(setups.get("artifacts").degrade().isDegraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED)).isFalse();
         assertThat(memoryBytes(setups.get("artifacts"))).isEqualTo(StorageConfig.storageConfig().memoryMaxBytes());
+    }
+
+    private Map<String, StorageFactory.StorageSetup> bootUnderHeap(long heapBytes) {
+        var request = new StorageFactory.StreamSetupRequest(Option.none(), tempDir.resolve("streams"), NODE, Option.none());
+
+        return StorageFactory.createAll(Map.of(),
+                                        NODE,
+                                        Option.none(),
+                                        Option.none(),
+                                        request,
+                                        HermeticStorage.synthesisDefaultsIn(tempDir),
+                                        () -> heapBytes).unwrap();
     }
 
     @Test
