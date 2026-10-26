@@ -10,6 +10,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.UploadConfig;
@@ -30,6 +31,7 @@ class UploadAdmissionRaceTest {
     private final AtomicInteger round = new AtomicInteger(-1);
     private final AtomicInteger finished = new AtomicInteger();
     private final AtomicBoolean stop = new AtomicBoolean();
+    private final AtomicReference<Throwable> workerFailure = new AtomicReference<>();
 
     @Test
     void saturationFlag_isClearOnceNothingIsInFlight_whateverOrderARefusalAndARelease_took() throws Exception {
@@ -53,7 +55,11 @@ class UploadAdmissionRaceTest {
                 finished.set(0);
                 round.set(current);
 
+                var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+
                 while (finished.get() < REFUSERS + 1) {
+                    assertThat(System.nanoTime()).as("round " + current + " did not finish: a worker failed with " + workerFailure.get())
+                                                 .isLessThan(deadline);
                     Thread.onSpinWait();
                 }
 
@@ -67,13 +73,24 @@ class UploadAdmissionRaceTest {
             pool.awaitTermination(10, TimeUnit.SECONDS);
         }
 
+        assertThat(workerFailure.get()).as("no worker failed").isNull();
         assertThat(stuck).as("rounds that ended with nothing in flight and the saturation flag still set, out of " + ROUNDS)
                          .isZero();
         assertThat(episodes.get()).as("control: refusals at the cap did happen, so the race was exercised").isPositive();
     }
 
     private static final class Permit {
-        final java.util.concurrent.atomic.AtomicReference<Runnable> release = new java.util.concurrent.atomic.AtomicReference<>(() -> {});
+        final AtomicReference<Runnable> release = new AtomicReference<>(() -> {});
+    }
+
+    /// A step that throws is recorded and the round still counts it finished, so the failure is reported rather than spun on.
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private void runStep(Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException e) {
+            workerFailure.compareAndSet(null, e);
+        }
     }
 
     /// Runs `step` once per round, as soon as the round starts; counts itself finished after each.
@@ -85,7 +102,7 @@ class UploadAdmissionRaceTest {
 
             if (current != last) {
                 last = current;
-                step.run();
+                runStep(step);
                 finished.incrementAndGet();
             } else {
                 Thread.onSpinWait();
