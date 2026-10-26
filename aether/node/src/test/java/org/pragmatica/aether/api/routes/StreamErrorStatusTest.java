@@ -44,7 +44,7 @@ class StreamErrorStatusTest {
     private static final NodeId NODE = NodeId.nodeId("node-1").unwrap();
     private static final Path WAL = Path.of("/tmp/wal");
 
-    private static Map<Object, HttpStatus> expectations() {
+    static Map<Object, HttpStatus> expectations() {
         var all = new java.util.LinkedHashMap<Object, HttpStatus>();
 
         for (var general : StreamError.General.values()) {

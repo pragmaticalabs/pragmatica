@@ -23,6 +23,36 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
+/// Lifecycle of the app HTTP listeners. Every state handles every event: an event is either acted on, or
+/// ignored for a reason that holds for that state. The reasons, per state (`AppHttpStateTotalityTest` pins
+/// the whole state x event matrix and fails when a state or an event is added without a row):
+///
+/// - Everywhere: `LeaderChange`, `NodeAdded` and `NodeGone` are ignored. They say nothing about the listeners,
+///   and the app HTTP adapter dispatches only its own events plus `QuorumEstablished`/`QuorumDisappeared`.
+/// - `CertRotationApplied` carries listeners the rotation has already bound (it stopped the previous pair
+///   first), so no state may drop it: that would leave the new pair bound and unreferenced (#2418).
+///   `Stopped` and `Starting` close it, `H1Only`/`H3Only`/`Dual` adopt it, `RouteReady` and `Quiesced`
+///   replace their pair with it, `CertRotating` completes the rotation.
+/// - Every state that replaces a pair with the reported one (`H1Only`, `H3Only`, `Dual`, `RouteReady`, `CertRotating`,
+///   `Quiesced`) also closes the pair it held. The adapter already stopped it, so this is idempotent, and it is what
+///   closes the pair of a first rotation that a second, overlapping one replaces.
+/// - `H1Ready`/`H3Ready` reaching a state that already holds (or is rotating) that listener close the surplus one;
+///   `RouteReady` and `Quiesced` take it as the replacement for the listener of that protocol.
+/// - `Stopped`: `StopRequested`/`Shutdown` (already stopped), `RouteTablePublished`, `CertRotationRequested`,
+///   `QuorumEstablished`, `QuorumDisappeared` (no listener to route, rotate or quiesce; a later start
+///   re-reads route table and quorum after its bind).
+/// - `Starting`: `StartRequested` (already starting), `RouteTablePublished`, `CertRotationRequested`,
+///   `QuorumEstablished`, `QuorumDisappeared` (nothing is bound yet; `republishStateAfterBind` re-reads route
+///   table and quorum from the authoritative suppliers once a listener is).
+/// - `H1Only`, `H3Only`, `Dual`: `StartRequested` (already started); `CertRotationRequested` (no route table to
+///   carry through a rotation, the previous pair stays until `CertRotationApplied` adopts the new one);
+///   `QuorumDisappeared` (no routes are served before the first route table, which is what `Quiesced` means).
+/// - `RouteReady`: `StartRequested` (already running), `QuorumEstablished` (already established).
+/// - `CertRotating`: `StartRequested`, `CertRotationRequested` (a rotation is already in flight; overlapping
+///   rotations are not serialized here), `QuorumEstablished` (the rotation completes first, and the route
+///   table is carried by this state).
+/// - `Quiesced`: `StartRequested`, `CertRotationRequested` (no routes to carry; the previous pair stays until
+///   `CertRotationApplied` replaces it), `RouteTablePublished` and `QuorumDisappeared` (already quiesced).
 public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEvent> {
     Logger LOG = LoggerFactory.getLogger(AppHttpState.class);
     AppHttpContext ctx();
@@ -37,6 +67,9 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
                                                                                       Option.some(server),
                                                                                       Option.none()));
                 case H3Ready(HttpServer h3) -> tx.handle(() -> stopOrphanedServer(ctx, Option.none(), Option.some(h3)));
+                case CertRotationApplied(var newServer, var newH3, _) -> tx.handle(() -> stopOrphanedServer(ctx,
+                                                                                                            newServer,
+                                                                                                            newH3));
                 default -> tx.ignore();
             }
         }
@@ -55,6 +88,30 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
         ctx.stopServers(server, h3);
     }
 
+    /// A listener reported to a state that already holds, or is about to hold, its own. The reporter
+    /// bound a port that nothing in the FSM references, so the only way to release it is to close it
+    /// here (#2418) — the same reasoning as [#stopOrphanedServer], for a state that is still running.
+    private static void stopSurplusServer(AppHttpContext ctx, Option<HttpServer> server, Option<HttpServer> h3) {
+        LOG.warn("App HTTP listener reported to a state that does not take it — closing the surplus listener (#2418)");
+        ctx.stopServers(server, h3);
+    }
+
+    /// The state that owns the listeners a certificate rotation bound while the FSM was before its
+    /// route table: the rotation already stopped the previous pair, so the new pair replaces it.
+    /// Closes the pair a rotation report replaces, then re-reads route table and quorum. The adapter stopped that pair
+    /// before it bound the new one, so the close is idempotent; it matters when a second, overlapping rotation replaces
+    /// the pair the first one reported, which would otherwise stay bound.
+    private static void retireAndRepublish(AppHttpContext ctx, Option<HttpServer> server, Option<HttpServer> h3) {
+        ctx.stopServers(server, h3);
+        ctx.republishStateAfterBind();
+    }
+
+    private static AppHttpState adopted(AppHttpContext ctx, Option<HttpServer> server, Option<HttpServer> h3) {
+        return server.<AppHttpState> fold(() -> h3.<AppHttpState> fold(ctx::starting, bound -> new H3Only(ctx, bound)),
+                                          bound -> h3.<AppHttpState> fold(() -> new H1Only(ctx, bound),
+                                                                          second -> new Dual(ctx, bound, second)));
+    }
+
     record Starting(AppHttpContext ctx) implements AppHttpState {
         @Override
         @Contract
@@ -62,6 +119,9 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
             switch (event) {
                 case H1Ready(HttpServer server) -> tx.transitionTo(new H1Only(ctx, server), ctx::republishStateAfterBind);
                 case H3Ready(HttpServer server) -> tx.transitionTo(new H3Only(ctx, server), ctx::republishStateAfterBind);
+                case CertRotationApplied(var newServer, var newH3, _) -> tx.handle(() -> stopSurplusServer(ctx,
+                                                                                                           newServer,
+                                                                                                           newH3));
                 case StopRequested _, ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
@@ -74,6 +134,13 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
         public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
             switch (event) {
                 case H3Ready(HttpServer h3) -> tx.transitionTo(new Dual(ctx, server, h3));
+                case H1Ready(HttpServer extra) -> tx.handle(() -> stopSurplusServer(ctx,
+                                                                                    Option.some(extra),
+                                                                                    Option.none()));
+                case CertRotationApplied(var newServer, var newH3, _) -> tx.transitionTo(adopted(ctx, newServer, newH3),
+                                                                                         () -> retireAndRepublish(ctx,
+                                                                                                                  Option.some(server),
+                                                                                                                  Option.none()));
                 case RouteTablePublished(RouteTable routes) -> tx.transitionTo(new RouteReady(ctx,
                                                                                               Option.some(server),
                                                                                               Option.none(),
@@ -96,6 +163,13 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
         public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
             switch (event) {
                 case H1Ready(HttpServer server) -> tx.transitionTo(new Dual(ctx, server, h3));
+                case H3Ready(HttpServer extra) -> tx.handle(() -> stopSurplusServer(ctx,
+                                                                                    Option.none(),
+                                                                                    Option.some(extra)));
+                case CertRotationApplied(var newServer, var newH3, _) -> tx.transitionTo(adopted(ctx, newServer, newH3),
+                                                                                         () -> retireAndRepublish(ctx,
+                                                                                                                  Option.none(),
+                                                                                                                  Option.some(h3)));
                 case RouteTablePublished(RouteTable routes) -> tx.transitionTo(new RouteReady(ctx,
                                                                                               Option.none(),
                                                                                               Option.some(h3),
@@ -117,6 +191,16 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
         @Contract
         public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
             switch (event) {
+                case H1Ready(HttpServer extra) -> tx.handle(() -> stopSurplusServer(ctx,
+                                                                                    Option.some(extra),
+                                                                                    Option.none()));
+                case H3Ready(HttpServer extra) -> tx.handle(() -> stopSurplusServer(ctx,
+                                                                                    Option.none(),
+                                                                                    Option.some(extra)));
+                case CertRotationApplied(var newServer, var newH3, _) -> tx.transitionTo(adopted(ctx, newServer, newH3),
+                                                                                         () -> retireAndRepublish(ctx,
+                                                                                                                  Option.some(server),
+                                                                                                                  Option.some(h3)));
                 case RouteTablePublished(RouteTable routes) -> tx.transitionTo(new RouteReady(ctx,
                                                                                               Option.some(server),
                                                                                               Option.some(h3),
@@ -144,6 +228,12 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
                                                                                      h3,
                                                                                      routes));
                 case H3Ready(HttpServer newH3) -> tx.transitionTo(new RouteReady(ctx, server, Option.some(newH3), routes));
+                case CertRotationApplied(var newServer, var newH3, _) -> tx.transitionTo(new RouteReady(ctx,
+                                                                                                        newServer,
+                                                                                                        newH3,
+                                                                                                        routes),
+                                                                                         () -> ctx.stopServers(server,
+                                                                                                               h3));
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.ignore();
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(new Quiesced(ctx, server, h3));
                 case CertRotationRequested(var bundle) -> tx.transitionTo(new CertRotating(ctx,
@@ -170,12 +260,20 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
                 case CertRotationApplied(var newServer, var newH3, var updated) -> tx.transitionTo(new RouteReady(ctx,
                                                                                                                   newServer,
                                                                                                                   newH3,
-                                                                                                                  updated));
+                                                                                                                  updated),
+                                                                                                   () -> ctx.stopServers(prevServer,
+                                                                                                                         prevH3));
                 case RouteTablePublished(RouteTable updated) -> tx.transitionTo(new CertRotating(ctx,
                                                                                                  prevServer,
                                                                                                  prevH3,
                                                                                                  newBundle,
                                                                                                  updated));
+                case H1Ready(HttpServer extra) -> tx.handle(() -> stopSurplusServer(ctx,
+                                                                                    Option.some(extra),
+                                                                                    Option.none()));
+                case H3Ready(HttpServer extra) -> tx.handle(() -> stopSurplusServer(ctx,
+                                                                                    Option.none(),
+                                                                                    Option.some(extra)));
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(new Quiesced(ctx, prevServer, prevH3));
                 case StopRequested _, ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped(),
                                                                                     () -> ctx.stopServers(prevServer,
@@ -198,6 +296,11 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
                 case RouteTablePublished _, ClusterFsmEvent.QuorumDisappeared _ -> tx.ignore();
                 case H1Ready(HttpServer newServer) -> tx.transitionTo(new Quiesced(ctx, Option.some(newServer), h3));
                 case H3Ready(HttpServer newH3) -> tx.transitionTo(new Quiesced(ctx, server, Option.some(newH3)));
+                case CertRotationApplied(var newServer, var newH3, _) -> tx.transitionTo(new Quiesced(ctx,
+                                                                                                      newServer,
+                                                                                                      newH3),
+                                                                                         () -> ctx.stopServers(server,
+                                                                                                               h3));
                 case StopRequested _, ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped(),
                                                                                     () -> ctx.stopServers(server, h3));
                 default -> tx.ignore();
