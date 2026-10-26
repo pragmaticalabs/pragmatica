@@ -49,6 +49,7 @@ import org.pragmatica.aether.node.AetherNode.QuicTransportCause;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.CoreAdmission;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
+import org.pragmatica.aether.node.IdentityLedgerWiring;
 import org.pragmatica.aether.node.ObservedIncarnation;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -459,6 +460,8 @@ public sealed interface MembershipAssembly {
         var communityDirectory = in.communityDirectory();
         var allEntries = in.allEntries();
         var swimHealthDetector = in.swimHealthDetector();
+
+        attachIdentityLedger(config, swimHealthDetector, operatorWarningSink);
         var presenceSampler = in.presenceSampler();
         var membershipFsm = in.membershipFsm();
         var routingCoreIds = in.routingCoreIds();
@@ -855,6 +858,18 @@ public sealed interface MembershipAssembly {
     /// the detector's monitor while the co-confirmation supplier walks the same member map) and the management
     /// reads, which hold no lock. Evaluations per second are the old trigger rate plus health/status polls.
     /// [unverified: no microbenchmark was run; the claim is the pass count and allocation, not a timing]
+    /// #2429: the node's identity ledger is attached to the shared boot-token registry and loaded here, at assembly, before the
+    /// transport starts and admission can consult it. A worker holds no ledger (it keeps per-observer admission).
+    private static Unit attachIdentityLedger(AetherNodeConfig config,
+                                             CoreSwimHealthDetector swimHealthDetector,
+                                             OperatorWarningSink operatorWarningSink) {
+        return configuredWorker(config)
+               ? Unit.unit()
+               : swimHealthDetector.bootTokens()
+                                   .map(tokens -> IdentityLedgerWiring.wire(config, tokens, operatorWarningSink))
+                                   .or(Unit.unit());
+    }
+
     static int derivedMemberCount(Option<MembershipFsm> membershipFsm, NodeId self, Option<VoterConfiguration> voters) {
         return Option.all(membershipFsm, voters)
                      .map((fsm, electorate) -> fsm.strictCoreObservedVoterCount(self, electorate::contains))

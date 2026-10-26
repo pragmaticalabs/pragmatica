@@ -78,6 +78,18 @@ A whole-snapshot `SyncResponse` must fit in one transport frame, which is capped
 
 While a peer's link is down, frames addressed to it wait in a per-peer buffer in memory. It holds at most 10,000 frames; each frame is held at most the offline-buffer cap (`offline_buffer_cap`, 30 s by default, taken from the cluster timeout configuration), and a request frame with a shorter caller deadline expires with it. When the buffer is full the oldest frame is dropped. Frames marked `NoOfflineBuffering` (entity forwards, Rabia `NewBatch`) are never buffered. A node restart loses the buffer. See [Guarantees](guarantees.md), summary row 32.
 
+## A retired NodeId is remembered on each core's disk, not by the cluster
+
+When a different process presents a boot token for a NodeId a core already knows, the core retires that NodeId for good (terminal removal: recover with a fresh NodeId). Each core also writes the retirement to its **identity ledger** before it answers the refusal, and loads the ledger before it admits anyone after a restart. A retirement therefore survives the restart of every core that held it, which the in-memory registry alone did not (#2429).
+
+What the ledger does and does not give you:
+
+- **Location.** `identity/<node-id>/ledger`, next to the artifacts `disk_path` (the same convention as the stream data directory). It must sit on the durable `${data.dir}` volume. A `disk_path` you set explicitly must be usable: if the ledger directory cannot be created or forced to disk the node does not start, and says why. With the built-in default path the node starts without the protection instead (WARN log, `identity-ledger-not-durable` event, `identity_ledger_durable` gauge at 0).
+- **Only retirements are kept**, not the boot tokens of live peers. A restarted node carries a new token, so remembering old ones would make a cold restart of the whole cluster refuse itself.
+- **Losing every core's disk** with its memory is a new cluster: nothing is left to remember the retirement, which is also how a cluster behaved before the ledger. Losing one core's **ledger file** (the directory still exists) leaves that core *wiped*: it cannot tell what it retired, so it admits no new peer (`identity-ledger-not-durable`) until a merge with a peer's ledger, which a later change adds. To start it as a new node, delete its whole `identity/<node-id>` directory.
+- **Workers hold no ledger.** They keep the per-observer registry, so a restarted worker has the old amnesia.
+- A local writer who can edit the file is inside the trust domain (see below).
+
 ## Single trust domain
 
 Aether runs within **one trust domain**:

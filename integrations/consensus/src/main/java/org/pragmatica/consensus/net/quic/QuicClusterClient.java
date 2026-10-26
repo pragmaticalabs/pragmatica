@@ -871,8 +871,21 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // Boot-token gate (terminal removal): a different process answering for a known
             // NodeId — or any process for a retired one — is refused before any attach, on the
             // same connect-failure path as an identity mismatch.
-            var admission = bootTokens.admit(peerId, hello.bootToken());
+            // Write-ahead (#2429): a first binding is answered only once the identity ledger holds it; the answer
+            // arrives off this thread, so a stalled ledger writer parks this dial and nothing else.
+            bootTokens.admitDurably(peerId, hello.bootToken())
+                      .onSuccess(admission -> onEventLoop(ctx, () -> attachAdmitted(ctx, hello, admission)));
+        }
 
+        private void onEventLoop(ChannelHandlerContext ctx, Runnable action) {
+            if (ctx.executor().inEventLoop()) {
+                action.run();
+            } else {
+                ctx.executor().execute(action);
+            }
+        }
+
+        private void attachAdmitted(ChannelHandlerContext ctx, NetworkMessage.Hello hello, BootTokens.Admission admission) {
             if (!admission.admitted()) {
                 log.warn("QUIC dialer refused {} (token {}) by the boot-token gate: {} (refusals={})",
                          peerId,

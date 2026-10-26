@@ -15,6 +15,8 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.nio.file.Path;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -42,13 +44,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                             supplies one. `Option.none()` means the node's history is UNKNOWN and
 ///                             it is held to the amnesiac's adoption bound, which is exactly #1171's
 ///                             behaviour. Absence NEVER relaxes anything; see [ParticipationMarker].
+/// @param identityLedgerFile  #2429 — where this node keeps its identity ledger, when the deployment states it
+///                             (the in-JVM harness does, so the file survives a stop/start of the same node id).
+///                             `Option.none()` means the node derives the location from its storage configuration.
 public record ProtocolConfig(TimeSpan cleanupInterval,
                              TimeSpan syncRetryInterval,
                              long removeOlderThanPhases,
                              int maxPendingBatches,
                              TimeSpan applyTimeout,
                              TimeSpan decisionGapTimeout,
-                             Option<ParticipationMarker> participationMarker) {
+                             Option<ParticipationMarker> participationMarker,
+                             Option<Path> identityLedgerFile) {
     /// Returns this configuration with another decision-gap timeout.
     public ProtocolConfig withDecisionGapTimeout(TimeSpan timeout) {
         return new ProtocolConfig(cleanupInterval,
@@ -57,7 +63,8 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   maxPendingBatches,
                                   applyTimeout,
                                   timeout,
-                                  participationMarker);
+                                  participationMarker,
+                                  identityLedgerFile);
     }
 
     /// Validates and creates a ProtocolConfig.
@@ -88,6 +95,7 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                                                                                                                                maxPending.intValue(),
                                                                                                                                                apply,
                                                                                                                                                DEFAULT_DECISION_GAP_TIMEOUT,
+                                                                                                                                               Option.none(),
                                                                                                                                                Option.none()));
     }
 
@@ -138,6 +146,7 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   DEFAULT_MAX_PENDING_BATCHES,
                                   DEFAULT_APPLY_TIMEOUT,
                                   DEFAULT_DECISION_GAP_TIMEOUT,
+                                  Option.none(),
                                   Option.none());
     }
 
@@ -157,7 +166,8 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   DEFAULT_MAX_PENDING_BATCHES,
                                   DEFAULT_APPLY_TIMEOUT,
                                   DEFAULT_DECISION_GAP_TIMEOUT,
-                                  participationMarker);
+                                  participationMarker,
+                                  Option.none());
     }
 
     /// Creates a test configuration with faster intervals.
@@ -169,13 +179,20 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     /// (`EmberCluster`) is the only caller that has one to supply: it CREATES the nodes, and only
     /// whatever creates a node can know that it is new.
     public static ProtocolConfig testConfig(Option<ParticipationMarker> participationMarker) {
+        return testConfig(participationMarker, Option.none());
+    }
+
+    /// #2429 — as above, also stating where the node keeps its identity ledger: the harness gives each node id a
+    /// restart-stable file, so a node that is stopped and started again finds what it had retired.
+    public static ProtocolConfig testConfig(Option<ParticipationMarker> participationMarker, Option<Path> identityLedgerFile) {
         return new ProtocolConfig(timeSpan(60).seconds(),
                                   timeSpan(100).millis(),
                                   100,
                                   DEFAULT_MAX_PENDING_BATCHES,
                                   DEFAULT_APPLY_TIMEOUT,
                                   DEFAULT_DECISION_GAP_TIMEOUT,
-                                  participationMarker);
+                                  participationMarker,
+                                  identityLedgerFile);
     }
 
     /// Configuration validation errors.

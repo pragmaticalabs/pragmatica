@@ -2530,6 +2530,9 @@ public final class SwimProtocol implements SwimMessageHandler {
             case ADMITTED -> true;
             case CONFLICT -> refuseConflict(peer, token);
             case RETIRED -> refuseRetired(peer, token);
+            // The registry cannot answer yet (#2429: ledger not loaded, not writable, node wiped): neither accepted nor a
+            // refusal. The evidence is dropped and arrives again with the next probe or gossip round.
+            case UNAVAILABLE -> false;
         };
     }
 
