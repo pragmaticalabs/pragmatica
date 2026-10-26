@@ -157,6 +157,17 @@ class OperatorWarningCodeTest {
     }
 
     private static final Set<OperatorWarningCode> UNCLOSED_BEFORE_THE_RULE = Set.of(
+        // A0b, added on purpose: facts about one boot with no runtime recovery. The disk tier and the memory budget are fixed when
+        // the instance is built and a snapshot is restored once; the only end of each is a restart, which starts a new event log slice.
+        OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE,
+        OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED,
+        OperatorWarningCode.STORAGE_SNAPSHOT_FELL_BACK,
+        OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
+        OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
+        OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
+        OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
+        OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
+        OperatorWarningCode.STORAGE_INTEGRITY_FAILED,
         OperatorWarningCode.SWIM_KILL_GATE_HELD,
         OperatorWarningCode.CORE_ABSENCE_FENCE,
         OperatorWarningCode.REPLICA_FSYNC_FAILED,

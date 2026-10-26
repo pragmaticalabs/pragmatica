@@ -28,6 +28,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,6 +83,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private final AtomicLong lastSnapshotEpoch = new AtomicLong();
     private final AtomicBoolean snapshotInProgress = new AtomicBoolean();
     private final AtomicBoolean volumeStampWarned = new AtomicBoolean();
+    private final DegradeReporter degrade;
     /// Serialises [#forceSnapshot]. The `maybeSnapshot` CAS only coalesces TICKS; `forceSnapshot`
     /// is also called from the HTTP route (`StorageRoutes.triggerSnapshot`) on another thread. A
     /// loser WAITS rather than coalescing: a forced snapshot must reflect state at or after the
@@ -92,6 +94,19 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config) {
         this(metadataStore, config, DefaultSnapshotManager::fsync);
+    }
+
+    /// Test seam: the sync step and the reporter. A fixture that fails the sync drives the write-failure transition.
+    DefaultSnapshotManager(MetadataStore metadataStore,
+                           SnapshotConfig config,
+                           Function<Path, Result<Unit>> fsync,
+                           DegradeReporter degrade) {
+        this(metadataStore, config, fsync, DefaultSnapshotManager::serializeBody, degrade);
+    }
+
+    /// The manager of a storage instance whose snapshot failures and fallbacks are reported through `degrade`.
+    DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config, DegradeReporter degrade) {
+        this(metadataStore, config, DefaultSnapshotManager::fsync, DefaultSnapshotManager::serializeBody, degrade);
     }
 
     /// Test seam: the sync step only, called once per written partial with its path, after
@@ -116,6 +131,15 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                    SnapshotConfig config,
                                    Function<Path, Result<Unit>> fsync,
                                    BiFunction<MetadataSnapshot, MetadataSnapshot.Body, String> serializer) {
+        this(metadataStore, config, fsync, serializer, DegradeReporter.degradeReporter("snapshot"));
+    }
+
+    private DefaultSnapshotManager(MetadataStore metadataStore,
+                                   SnapshotConfig config,
+                                   Function<Path, Result<Unit>> fsync,
+                                   BiFunction<MetadataSnapshot, MetadataSnapshot.Body, String> serializer,
+                                   DegradeReporter degrade) {
+        this.degrade = degrade;
         this.metadataStore = metadataStore;
         this.config = config;
         this.fsync = fsync;
@@ -163,9 +187,18 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
         return writeSnapshotToDisk(capture).onSuccess(_ -> recordSnapshotTaken(snapshot))
                                   .onSuccess(_ -> stampVolumeIdentity())
-                                  .onFailure(cause -> LOG.warn("Snapshot write failed: {}",
-                                                               cause.message()))
+                                  .onSuccess(_ -> degrade.recovered(OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_FAILED,
+                                                                    "Snapshot written again at epoch {}",
+                                                                    snapshot.epoch()))
+                                  .onFailure(cause -> reportWriteFailed(cause))
                                   .map(_ -> snapshot);
+    }
+
+    private void reportWriteFailed(Cause cause) {
+        LOG.warn("Snapshot write failed: {}", cause.message());
+        degrade.degraded(OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_FAILED,
+                         "Metadata snapshot cannot be written, so the references it holds are unprotected across a restart: {}",
+                         cause.message());
     }
 
     /// #1353: the file `LATEST` names is tried first; when it is missing, torn or fails its hash
@@ -423,7 +456,12 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                .or(files);
     }
 
-    private static void reportFallback(Option<Path> unreadableLatest, Path candidate, MetadataSnapshot snapshot) {
+    private void reportFallback(Option<Path> unreadableLatest, Path candidate, MetadataSnapshot snapshot) {
+        degrade.degraded(OperatorWarningCode.STORAGE_SNAPSHOT_FELL_BACK,
+                         "{}; restored another retained snapshot {} (epoch={}) instead",
+                         describeLatest(unreadableLatest),
+                         candidate.getFileName(),
+                         snapshot.epoch());
         LOG.warn("{}; restored another retained snapshot {} (epoch={}) instead. "
                 + "Metadata recorded only in the unreadable file is lost unless a WAL replays it. "
                 + "See docs/operators/runbooks/backup-recovery.md",

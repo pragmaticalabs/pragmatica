@@ -34,6 +34,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.storage.DegradeReporter;
 import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -201,8 +202,12 @@ public sealed interface StorageAssembly {
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
         var compositePromotionManager = StorageFactory.compositePromotionManager(storageSetups);
+        var leaderMaintenance = DegradeReporter.degradeReporter(DelegatedStorageAdapter.REPORT_SUBJECT);
+
+        leaderMaintenance.bind(operatorWarningSink);
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
-                                                                                      compositeGarbageCollector);
+                                                                                      compositeGarbageCollector,
+                                                                                      leaderMaintenance);
         var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
                                                                                          compositePromotionManager,
                                                                                          PromotionStallWatch.promotionStallWatch(storageSetups,

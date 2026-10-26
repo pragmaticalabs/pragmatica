@@ -38,4 +38,11 @@ public interface SnapshotManager {
     static SnapshotManager snapshotManager(MetadataStore metadataStore, SnapshotConfig config) {
         return new DefaultSnapshotManager(metadataStore, config);
     }
+
+    /// Factory method for an instance that reports its snapshot failures and fallbacks through `degrade`.
+    static SnapshotManager snapshotManager(MetadataStore metadataStore,
+                                           SnapshotConfig config,
+                                           DegradeReporter degrade) {
+        return new DefaultSnapshotManager(metadataStore, config, degrade);
+    }
 }

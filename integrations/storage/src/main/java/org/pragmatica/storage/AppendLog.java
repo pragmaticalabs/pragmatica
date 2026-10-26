@@ -173,10 +173,17 @@ public final class AppendLog implements AutoCloseable {
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
     private final EpochHistory epochs;
+    private final TornTailSink sink;
 
-    private AppendLog(Path file, FileChannel channel, long writePosition, long lastOffset, EpochHistory epochs) {
+    private AppendLog(Path file,
+                      FileChannel channel,
+                      long writePosition,
+                      long lastOffset,
+                      EpochHistory epochs,
+                      TornTailSink sink) {
         this.file = file;
         this.epochs = epochs;
+        this.sink = sink;
         this.channel = channel;
         this.writePosition = writePosition;
         this.lastOffset = lastOffset;
@@ -753,6 +760,7 @@ public final class AppendLog implements AutoCloseable {
                  + "reopen (node restart) recovers the valid prefix: {}",
                   file,
                   cause.message());
+        sink.failStopped(file, cause);
     }
 
     /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the
@@ -881,7 +889,8 @@ public final class AppendLog implements AutoCloseable {
                                                           channel,
                                                           new ScanResult(extent.validBytes(),
                                                                          extent.headOffset()),
-                                                          history));
+                                                          history,
+                                                          sink));
     }
 
     private static void closeQuietly(Path file, FileChannel channel) {
@@ -905,7 +914,8 @@ public final class AppendLog implements AutoCloseable {
     private static Result<AppendLog> truncateAndBuild(Path file,
                                                       FileChannel channel,
                                                       ScanResult result,
-                                                      EpochHistory history) {
+                                                      EpochHistory history,
+                                                      TornTailSink sink) {
         return Result.lift(t -> new WalError.OpenFailed(file,
                                                         t.getMessage()),
                            () -> channel.truncate(result.validEnd()))
@@ -913,7 +923,8 @@ public final class AppendLog implements AutoCloseable {
                                              channel,
                                              result.validEnd(),
                                              result.lastOffset(),
-                                             history));
+                                             history,
+                                             sink));
     }
 
     private static Result<FileChannel> openChannel(Path file) {
@@ -1124,6 +1135,11 @@ public final class AppendLog implements AutoCloseable {
         static TornTailSink logOnly() {
             return TornTailSink::ignore;
         }
+
+        /// Receives the fail-stop of a log (after its ERROR log line): a failed fsync, frame write or reopen has refused every later
+        /// append until the node restarts. Defaults to nothing, so a sink written for torn tails alone keeps compiling.
+        @Contract
+        default void failStopped(Path file, Cause cause) {}
 
         @Contract
         private static void ignore(TornTail tornTail) {}
