@@ -1069,6 +1069,62 @@ class ConfigLoaderTest {
         }
     }
 
+    @Test
+    void loadFromString_maxBlockBytesAbsent_isSixteenMiB() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            disk_path = "/data/aether/artifacts"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.storage().get("artifacts").maxBlockBytes()).isEqualTo(16_777_216));
+    }
+
+    @Test
+    void loadFromString_maxBlockBytes_isReadPerInstance() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.artifacts]
+            max_block_bytes = 1048576
+
+            [storage.content]
+            disk_path = "/data/aether/content"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.storage().get("artifacts").maxBlockBytes()).isEqualTo(1_048_576);
+                assertThat(config.storage().get("content").maxBlockBytes()).isEqualTo(16_777_216);
+            });
+    }
+
+    @Test
+    void loadFromString_maxBlockBytesNotAPositiveInteger_isRefused() {
+        for (var bad : new String[]{"0", "-3", "\"big\"", "2.5", "true"}) {
+            var toml = """
+                [cluster]
+                environment = "docker"
+                nodes = 5
+
+                [storage.artifacts]
+                max_block_bytes = %s
+                """.formatted(bad);
+
+            assertThat(ConfigLoader.loadFromString(toml).isFailure())
+                .as("max_block_bytes = %s is refused, never defaulted (#1455)", bad)
+                .isTrue();
+        }
+    }
+
     private static void assertWalPath(AetherConfig config, String expected, boolean explicit) {
         var storage = config.storage().get("streams");
 

@@ -104,9 +104,12 @@ final class DefaultContentStore implements ContentStore {
     private Promise<RefSwap> putChunked(String name, byte[] content) {
         var chunks = splitIntoChunks(content);
         var stored = new ArrayList<String>();
-        var attempt = storeAllChunks(chunks, 0, stored).flatMap(chunkIds -> storeManifestUnderName(name,
-                                                                                                   content.length,
-                                                                                                   chunkIds));
+        var attempt = BlockId.blockId(content)
+                             .async()
+                             .flatMap(whole -> storeAllChunks(chunks, 0, stored).flatMap(chunkIds -> storeManifestUnderName(name,
+                                                                                                                            content.length,
+                                                                                                                            whole.hexString(),
+                                                                                                                            chunkIds)));
 
         return releaseStoredOnFailure(attempt, stored);
     }
@@ -135,8 +138,8 @@ final class DefaultContentStore implements ContentStore {
     /// garbage collector could never collect it (#812). Chunk blocks below keep using plain `put` --
     /// they carry no name, and `put`'s own credit is the only thing holding them against GC; it is
     /// given back with [StorageInstance#release] when the manifest is superseded or deleted (#981).
-    private Promise<RefSwap> storeManifestUnderName(String name, long totalSize, List<String> chunkIds) {
-        var manifest = ContentManifest.contentManifest(name, totalSize, chunkIds);
+    private Promise<RefSwap> storeManifestUnderName(String name, long totalSize, String sha256, List<String> chunkIds) {
+        var manifest = ContentManifest.contentManifest(config.chunkSizeBytes(), totalSize, sha256, chunkIds);
 
         return storage.swapRef(ContentEnvelope.trustedRef(name), manifest.toBytes());
     }

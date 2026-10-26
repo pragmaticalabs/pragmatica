@@ -83,7 +83,8 @@ class KnownUnwiredSurfacesTest {
                   + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
     }
 
-    /// Reachability control for the read-hit listener overload of `StorageInstance.storageInstance`: `StorageFactory`
+    /// Reachability control for the read-hit listener overload of `StorageInstance.storageInstance` (the one that also
+    /// takes the instance's maximum block size, which `StorageFactory` passes from `max_block_bytes`): `StorageFactory`
     /// builds every production instance through it, so the scanner must reach it. It was registered here as unwired until
     /// the prefetch wiring landed; if this flips, the scanner or the wiring changed.
     ///
@@ -103,7 +104,8 @@ class KnownUnwiredSurfacesTest {
                                                                                     WritePolicy.class,
                                                                                     Option.class,
                                                                                     AppendLog.TornTailSink.class,
-                                                                                    Consumer.class));
+                                                                                    Consumer.class,
+                                                                                    int.class));
 
         assertTrue(reachability.isReachable(listenerOverload),
                    "The read-hit listener overload is no longer reached from production: StorageFactory stopped using it.");

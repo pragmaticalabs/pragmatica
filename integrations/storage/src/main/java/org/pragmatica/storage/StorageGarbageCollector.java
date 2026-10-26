@@ -12,10 +12,9 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// This interface provides the collection logic only. Scheduling is the caller's responsibility.
 ///
-/// In a clustered deployment, GC must run on exactly ONE node per storage instance. For an instance every
-/// node shares a view of, that is the leader: it activates GC on election and deactivates on demotion. An
-/// instance that exists once PER NODE over that node's own disk (the `streams` instance) is its node's alone,
-/// so each node runs its own (#1604).
+/// Local refcount GC deletes only from node-private tiers and a node's refcounts describe its own holdings, so it
+/// runs on EVERY node over that node's own disk: nothing about it is leader-only. Reclaiming a block on a SHARED tier
+/// is a different, cluster-wide operation and is not this collector's.
 public interface StorageGarbageCollector {
     /// Run one GC cycle. Returns the number of blocks collected.
     /// No-ops when not active.
