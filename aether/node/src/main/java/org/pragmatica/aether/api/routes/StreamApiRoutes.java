@@ -44,7 +44,7 @@ import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
-import org.pragmatica.aether.stream.replication.ReplicationError;
+import org.pragmatica.aether.stream.forward.StreamForwardHandler;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -899,14 +899,28 @@ public final class StreamApiRoutes implements RouteSource {
     /// committed owner ([StreamError.NotOwnerAppend]). Deliberately an allow-list, not "any `Cause.Transient`": a transient
     /// cause can follow a write (a timeout), and `PublishRetryable` says "refused before writing". No `Retry-After`, as
     /// on this path before (#1735).
+    ///
+    /// The list is the owner's own: `StreamForwardHandler.isRetryable` is the set of causes the owner answers a FORWARDED
+    /// publish with the retryable response for, and a publish this node serves as the owner uses the same predicate, so
+    /// a refusal answers the same status on both paths. It includes the transient capacity refusals (`ReshufflePaced`,
+    /// `MaterializeBudgetExceeded`, `STREAM_MEMORY_EXCEEDED`, `SEALING_BEHIND`, `SEGMENT_TIER_FULL`; #1980).
     static Cause retryableRefusal(String streamName, Cause cause) {
         return isPreAppendRefusal(cause)
                ? new ManagementServerError.PublishRetryable(streamName, cause)
+               : withoutRetryInvitation(cause);
+    }
+
+    /// A publish is not idempotent, so only a refusal on the pre-append list may answer a status that invites a retry
+    /// (503, 429). Any other raw [StreamError] would take its class status from the management funnel (often 503), so it
+    /// is pinned to the 500 a raw stream error answered on this route before the funnel classified stream errors.
+    private static Cause withoutRetryInvitation(Cause cause) {
+        return cause instanceof StreamError
+               ? new ManagementServerError.StreamRefused(HttpStatus.INTERNAL_SERVER_ERROR, cause)
                : cause;
     }
 
     private static boolean isPreAppendRefusal(Cause cause) {
-        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || cause instanceof StreamForwardError.RemotePublishRetryable || cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.OwnerNotActivated || cause instanceof StreamError.NotOwnerAppend;
+        return cause instanceof StreamForwardError.RemotePublishRetryable || StreamForwardHandler.isRetryable(cause);
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the
