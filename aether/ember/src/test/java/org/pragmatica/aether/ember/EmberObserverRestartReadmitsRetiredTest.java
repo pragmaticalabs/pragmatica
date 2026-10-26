@@ -144,7 +144,7 @@ class EmberObserverRestartReadmitsRetiredTest {
             .isNotIn("Dead", "Departing");
     }
 
-    @Disabled("needs a durable identity record (deliberately deferred): the restarted observer must refuse what it retired before the restart; today the registry is process memory")
+    @Disabled("enable at #2429 (durable identity record): the restarted observer must refuse what it retired before the restart; today the registry is process memory")
     @Test
     @Timeout(900)
     void restartedObserver_refusesAProcessForTheNodeIdItRetired_target() {

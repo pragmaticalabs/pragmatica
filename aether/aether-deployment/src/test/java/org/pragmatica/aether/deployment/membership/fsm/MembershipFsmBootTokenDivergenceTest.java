@@ -58,7 +58,7 @@ class MembershipFsmBootTokenDivergenceTest {
         assertThat(fsm.refusedProcessEvidenceCount()).isZero();
     }
 
-    @Disabled("the FSM must consult the registry; today it holds its own first-token-wins slot")
+    @Disabled("enable at #2429: the FSM must consult the registry; today it holds its own first-token-wins slot")
     @Test
     void governorReport_retiredAtTheRegistry_isRefusedByTheFsm_target() {
         retireAtRegistry();
@@ -81,7 +81,7 @@ class MembershipFsmBootTokenDivergenceTest {
         assertThat(fsm.refusedProcessEvidenceCount()).isZero();
     }
 
-    @Disabled("the FSM must consult the registry; today it holds its own first-token-wins slot")
+    @Disabled("enable at #2429: the FSM must consult the registry; today it holds its own first-token-wins slot")
     @Test
     void workerAdmission_retiredAtTheRegistry_isRefusedByTheFsm_target() {
         retireAtRegistry();
