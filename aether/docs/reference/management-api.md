@@ -6668,7 +6668,7 @@ When the node's own upload cap (`max_concurrent`) is reached, the first refused 
 
 **Known limits until streaming storage (U2).** Upload routes still read the whole body into memory before the slice runs: the limits above bound that memory per request and per node, they do not stream it. Two costs follow, both measured on one host with 64 other connections sampled every 20 ms:
 
-- Aggregating the body into one array holds the event loop that carries the upload's connection. Other connections on that loop stall by about 42, 160 and 320 ms for bodies of 100, 300 and 500 MiB. This is the remaining stall; the multipart part-limit check adds none of its own, because it runs off the loop.
+- Aggregating the body into one array holds the event loop that carries the upload's connection. Another connection on that loop saw a worst stall of 41-53 ms, 172-190 ms and 318-434 ms for bodies of 100, 300 and 500 MiB (three uploads each, on a quiet 16-core host). This is the remaining stall; the multipart part-limit check adds none of its own, because it runs off the loop.
 - A multipart body of 500 MiB needed about 1.6 GiB of heap and 1 GiB of direct memory in the same measurement. Size `max_size`, `max_concurrent`, `max_in_flight_size` and the node's heap together; the 256 MiB ceiling and the byte budget keep the defaults inside a node's heap, they do not make a smaller heap safe.
 
 ### Multipart File Upload
