@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -25,6 +26,7 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -636,23 +638,14 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StorageConfig defaults) {
-        return createAll(configs,
-                         nodeId,
-                         dhtClient,
-                         keyring,
-                         defaults,
-                         Runtime.getRuntime().maxMemory());
-    }
-
-    /// A0b: [#createAll] against a stated maximum heap instead of this JVM's, so a test can boot under a 256 MiB budget
-    /// without forking. Production callers never use it.
-    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
-                                                       String nodeId,
-                                                       Option<DHTClient> dhtClient,
-                                                       Option<EncryptionKeyring> keyring,
-                                                       StorageConfig defaults,
-                                                       long heapBytes) {
-        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults, List.of(), 0, heapBytes));
+        return admit(pendingSetups(configs,
+                                   nodeId,
+                                   dhtClient,
+                                   keyring,
+                                   defaults,
+                                   List.of(),
+                                   0,
+                                   Runtime.getRuntime().maxMemory()));
     }
 
     /// #852 round 2: the boot decision `AetherNode` actually makes -- the config-map instances AND
@@ -672,14 +665,34 @@ public final class StorageFactory {
                                                               Option<DHTClient> dhtClient,
                                                               Option<EncryptionKeyring> keyring,
                                                               StreamSetupRequest streams) {
+        return createAll(configs,
+                         nodeId,
+                         dhtClient,
+                         keyring,
+                         streams,
+                         StorageConfig.storageConfig(),
+                         () -> Runtime.getRuntime().maxMemory());
+    }
+
+    /// A0b: the body of the boot decision above, with the `defaults` the synthesized instances derive from and the maximum heap
+    /// the memory tiers are budgeted against supplied by the caller. The production overload passes the machine-global defaults and
+    /// this JVM's `maxMemory()`; a test passes defaults rooted in its own directory and a stated heap, and so drives the same
+    /// stream-ring reservation and clamp arithmetic that production runs, without forking a JVM.
+    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                       String nodeId,
+                                                       Option<DHTClient> dhtClient,
+                                                       Option<EncryptionKeyring> keyring,
+                                                       StreamSetupRequest streams,
+                                                       StorageConfig defaults,
+                                                       LongSupplier maxHeapBytes) {
         var results = pendingSetups(withoutStreamsSection(configs),
                                     nodeId,
                                     dhtClient,
                                     keyring,
-                                    StorageConfig.storageConfig(),
+                                    defaults,
                                     StoragePathsOverlap.streamsClaims(streams),
                                     STREAM_MEMORY_BYTES,
-                                    Runtime.getRuntime().maxMemory());
+                                    maxHeapBytes.getAsLong());
 
         results.add(armStreamStorage(streams));
 
@@ -996,6 +1009,12 @@ public final class StorageFactory {
                                                                     Function.identity())));
     }
 
+    /// A0b: an instance that is refused after its tiers were built (an unrestorable snapshot, a guard) never reaches the built list
+    /// [#releaseBuilt] walks, so its own tiers give back what they took, the mount claim included.
+    private static void releaseTiers(List<StorageTier> tiers) {
+        tiers.forEach(StorageTier::release);
+    }
+
     /// A0b: a boot refused for one instance gives back the mount claims the instances built before it already took, so a
     /// refused boot leaves no claim held by a process that is still alive (an in-process restart, a test).
     private static void releaseBuilt(List<Result<PendingSetup>> results) {
@@ -1122,22 +1141,28 @@ public final class StorageFactory {
                                   streamDataDir,
                                   nodeId,
                                   StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES,
-                                  Option.none());
+                                  Option.none(),
+                                  DegradeReporter.degradeReporter(STREAMS_NAME));
     }
 
     private static Result<StorageSetup> plainStreamStorage(Option<DHTClient> dhtClient,
                                                            Path streamDataDir,
                                                            String nodeId,
                                                            long diskMaxBytes,
-                                                           Option<Path> logRoot) {
+                                                           Option<Path> logRoot,
+                                                           DegradeReporter degrade) {
         var segmentsDir = streamDataDir.resolve("segments");
-        var build = buildStreamTiers(dhtClient, segmentsDir, streamDiskMaxBytes(diskMaxBytes, segmentsDir));
+        var build = buildStreamTiers(dhtClient,
+                                     segmentsDir,
+                                     streamDiskMaxBytes(diskMaxBytes, segmentsDir, degrade),
+                                     degrade);
 
         return assembleStreamSetup(build.tiers(),
                                    streamDataDir.resolve("snapshots"),
                                    nodeId,
                                    build.dhtMarkerCheck(),
-                                   logRoot);
+                                   logRoot,
+                                   degrade);
     }
 
     /// #253 — encrypted counterpart to the three-arg overload above. Streams has no per-instance
@@ -1179,6 +1204,7 @@ public final class StorageFactory {
     private static Result<PendingSetup> armStreamStorage(StreamSetupRequest request) {
         var segmentsDir = request.streamDataDir().resolve("segments");
         var snapshotDir = request.streamDataDir().resolve("snapshots");
+        var degrade = DegradeReporter.degradeReporter(STREAMS_NAME);
 
         return request.keyring()
                       .fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(segmentsDir, STREAMS_NAME)
@@ -1186,19 +1212,23 @@ public final class StorageFactory {
                                                                                         request.streamDataDir(),
                                                                                         request.nodeId(),
                                                                                         request.diskMaxBytes(),
-                                                                                        request.logRoot()))
+                                                                                        request.logRoot(),
+                                                                                        degrade))
                                                        .map(setup -> new PendingSetup(setup,
                                                                                       Option.none())),
                             ring -> armEncryptedStreamTiers(request.dhtClient(),
                                                             segmentsDir,
                                                             ring,
                                                             streamDiskMaxBytes(request.diskMaxBytes(),
-                                                                               segmentsDir)).flatMap(build -> assembleStreamSetup(build.tiers(),
-                                                                                                                                  snapshotDir,
-                                                                                                                                  request.nodeId(),
-                                                                                                                                  build.dhtMarkerCheck(),
-                                                                                                                                  request.logRoot()).map(setup -> new PendingSetup(setup,
-                                                                                                                                                                                   build.armedDisk()))));
+                                                                               segmentsDir,
+                                                                               degrade),
+                                                            degrade).flatMap(build -> assembleStreamSetup(build.tiers(),
+                                                                                                          snapshotDir,
+                                                                                                          request.nodeId(),
+                                                                                                          build.dhtMarkerCheck(),
+                                                                                                          request.logRoot(),
+                                                                                                          degrade).map(setup -> new PendingSetup(setup,
+                                                                                                                                                 build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
@@ -1239,14 +1269,27 @@ public final class StorageFactory {
         return streamDiskMaxBytes(configured, segmentsDir, StorageFactory::usableSpace);
     }
 
+    /// As above, reporting through the `streams` instance's `degrade` (A0b): a cap above the usable space, and a filesystem whose
+    /// usable space cannot be read, each reach the operator as well as the log.
+    static long streamDiskMaxBytes(long configured, Path segmentsDir, DegradeReporter degrade) {
+        return streamDiskMaxBytes(configured, segmentsDir, StorageFactory::usableSpace, degrade);
+    }
+
     /// As above with the filesystem's usable-space reading injected, for a test that needs a disk larger than
     /// the one it runs on.
     static long streamDiskMaxBytes(long configured, Path segmentsDir, Fn1<Option<Long>, Path> usableSpace) {
+        return streamDiskMaxBytes(configured, segmentsDir, usableSpace, DegradeReporter.degradeReporter(STREAMS_NAME));
+    }
+
+    static long streamDiskMaxBytes(long configured,
+                                   Path segmentsDir,
+                                   Fn1<Option<Long>, Path> usableSpace,
+                                   DegradeReporter degrade) {
         var usable = usableSpace.apply(segmentsDir);
 
         return configured > 0
-               ? configuredStreamDiskCap(configured, segmentsDir, usable)
-               : derivedStreamDiskCap(segmentsDir, usable.map(space -> space + tierBytes(segmentsDir)));
+               ? configuredStreamDiskCap(configured, segmentsDir, usable, degrade)
+               : derivedStreamDiskCap(segmentsDir, usable.map(space -> space + tierBytes(segmentsDir)), degrade);
     }
 
     /// Pure derivation over the tier's usable base (free space plus what the tier already holds), package-visible
@@ -1273,18 +1316,22 @@ public final class StorageFactory {
                     .sum();
     }
 
-    private static long configuredStreamDiskCap(long configured, Path segmentsDir, Option<Long> usable) {
+    private static long configuredStreamDiskCap(long configured,
+                                                Path segmentsDir,
+                                                Option<Long> usable,
+                                                DegradeReporter degrade) {
         usable.filter(space -> configured > space)
-              .onPresent(space -> log.warn("[streaming] segment_disk_max_bytes = {} exceeds the {} bytes usable at {}; "
-                                          + "stream seals will fail with TierFull before the cap is reached",
-                                           configured,
-                                           space,
-                                           segmentsDir));
+              .onPresent(space -> degrade.degraded(OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
+                                                   "[streaming] segment_disk_max_bytes = {} exceeds the {} bytes usable at {}; "
+                                                  + "stream seals will fail with TierFull before the cap is reached",
+                                                   configured,
+                                                   space,
+                                                   segmentsDir));
 
         return configured;
     }
 
-    private static long derivedStreamDiskCap(Path segmentsDir, Option<Long> usable) {
+    private static long derivedStreamDiskCap(Path segmentsDir, Option<Long> usable, DegradeReporter degrade) {
         var cap = usable.map(StorageFactory::derivedStreamDiskCap).or(STREAM_DISK_FLOOR_BYTES);
 
         usable.onPresent(space -> log.info("Streams disk tier cap derived as {} bytes ({} of the {} bytes usable by the tier at {}); "
@@ -1293,9 +1340,10 @@ public final class StorageFactory {
                                            STREAM_DISK_FRACTION,
                                            space,
                                            segmentsDir))
-              .onEmpty(() -> log.warn("Usable space at {} could not be read; streams disk tier cap falls back to {} bytes",
-                                      segmentsDir,
-                                      cap));
+              .onEmpty(() -> degrade.degraded(OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
+                                              "Usable space at {} could not be read; streams disk tier cap falls back to {} bytes",
+                                              segmentsDir,
+                                              cap));
 
         return cap;
     }
@@ -1322,13 +1370,14 @@ public final class StorageFactory {
     private static Result<TierBuild> armEncryptedStreamTiers(Option<DHTClient> dhtClient,
                                                              Path segmentsDir,
                                                              EncryptionKeyring keyring,
-                                                             long diskMaxBytes) {
+                                                             long diskMaxBytes,
+                                                             DegradeReporter degrade) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtBuild = maybeEncryptDht(STREAMS_NAME,
                                        dhtClient,
                                        STREAM_SEGMENTS_DHT_PREFIX,
                                        Option.some(keyring),
-                                       DegradeReporter.degradeReporter(STREAMS_NAME));
+                                       degrade);
 
         return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
                             .flatMap(LocalDiskTier::open)
@@ -1346,13 +1395,12 @@ public final class StorageFactory {
 
     /// The disk tier is constructed read-only and then OPENED (#1569 A3): this node owns its stream data
     /// directory, and opening is the step that creates it and sweeps stale partial blocks.
-    private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir, long diskMaxBytes) {
+    private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient,
+                                              Path segmentsDir,
+                                              long diskMaxBytes,
+                                              DegradeReporter degrade) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
-        var dhtBuild = maybeEncryptDht(STREAMS_NAME,
-                                       dhtClient,
-                                       STREAM_SEGMENTS_DHT_PREFIX,
-                                       Option.empty(),
-                                       DegradeReporter.degradeReporter(STREAMS_NAME));
+        var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty(), degrade);
 
         return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
                             .flatMap(LocalDiskTier::open)
@@ -1400,11 +1448,9 @@ public final class StorageFactory {
                                                             Path snapshotDir,
                                                             String nodeId,
                                                             Option<DhtMarkerCheck> dhtMarkerCheck,
-                                                            Option<Path> logRoot) {
+                                                            Option<Path> logRoot,
+                                                            DegradeReporter degrade) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
-        // One reporter per instance: the one the DHT marker check already carries, when there is one.
-        var degrade = dhtMarkerCheck.map(DhtMarkerCheck::degrade)
-                                    .or(() -> DegradeReporter.degradeReporter(STREAMS_NAME));
 
         tiers.forEach(tier -> tier.reportTo(degrade));
         // Sealed segments are cut by the stream sealer, not by a configured chunk size, so this instance keeps no
@@ -1417,6 +1463,8 @@ public final class StorageFactory {
                                                        tornTailSinkOf(degrade),
                                                        _ -> {},
                                                        Integer.MAX_VALUE);
+
+        instance.reportTo(degrade);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
                                                            STREAM_SNAPSHOT_MUTATION_THRESHOLD,
                                                            STREAM_SNAPSHOT_INTERVAL_MILLIS,
@@ -1440,14 +1488,12 @@ public final class StorageFactory {
         // metadata store and disk tier are node-private, so this node's records are the authority on them, and
         // GC deletes only from private tiers (deleteFromPrivateTiers skips the shared DHT tier). Pinned to the
         // leader, every other node would never reclaim its own disk once retention stopped deleting blocks.
-        garbageCollector.activate()
-                        .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}",
-                                                     cause.message()));
+        activateStreamsCollector(garbageCollector, degrade);
 
-        return guardVolume(tiers, snapshotDir).flatMap(_ -> restoreAndSignalReady(STREAMS_NAME,
-                                                                                  snapshotManager,
-                                                                                  metadataStore,
-                                                                                  readinessGate))
+        return guardVolume(tiers, snapshotDir, degrade).flatMap(_ -> restoreAndSignalReady(STREAMS_NAME,
+                                                                                           snapshotManager,
+                                                                                           metadataStore,
+                                                                                           readinessGate))
                           .map(_ -> {
                                    log.info("Storage 'streams' created: {} tier(s), data dir={}",
                                             tiers.size(),
@@ -1512,9 +1558,10 @@ public final class StorageFactory {
                                                          config,
                                                          nodeId,
                                                          build.dhtMarkerCheck(),
-                                                         degrade).map(setup -> new PendingSetup(setup,
-                                                                                                build.armedDisk(),
-                                                                                                build.sharedMarker())));
+                                                         degrade).onFailure(_ -> releaseTiers(build.tiers()))
+                                                        .map(setup -> new PendingSetup(setup,
+                                                                                       build.armedDisk(),
+                                                                                       build.sharedMarker())));
     }
 
     /// #249: the shared tier is built first -- for S3 that includes its boot probe -- so a tier that refuses
@@ -1563,6 +1610,12 @@ public final class StorageFactory {
                                                      DegradeReporter degrade) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
         var diskPath = Path.of(config.diskPath());
+
+        if (config.diskPathExplicit() && !Files.exists(diskPath)) {
+            return new ConfiguredDiskPathUnopenable(name,
+                                                    config.diskPath(),
+                                                    Causes.cause("the path does not exist and the node never creates an operator-set path")).result();
+        }
         // #1569 A3: the tier is constructed read-only; this node owns the volume, so it opens it -- after claiming the
         // mount for itself (A0b), so a node refused by another node's claim has touched nothing on it.
         return LocalDiskTier.localDiskTier(diskPath,
@@ -1925,8 +1978,9 @@ public final class StorageFactory {
         return Result.success(withSharedTier(shared, List.of(memoryTier)));
     }
 
-    /// A0b: `disk_path` was written by an operator in `[storage.<instance>]` and cannot be opened, so the boot is refused
-    /// rather than run without the tier the operator asked for. Recovery: make the path usable (mount, permissions, space), or
+    /// A0b: `disk_path` was written by an operator in `[storage.<instance>]` and does not exist or cannot be opened, so the boot is
+    /// refused rather than run without the tier the operator asked for. A missing path is refused, never created: on an unmounted
+    /// volume creating it would put the tier on the ephemeral layer underneath. Recovery: make the path usable (mount, permissions, space), or
     /// remove `disk_path` to take the node's default placement, which degrades loudly instead.
     public record ConfiguredDiskPathUnopenable(String instance, String diskPath, Cause cause) implements Cause {
         @Override
@@ -2002,7 +2056,7 @@ public final class StorageFactory {
         return unit();
     }
 
-    /// A0b (SD-01/SB-11): the readiness gate of every instance learns that consensus is synced when the node reports ready.
+    /// A0b: the readiness gate of every instance learns that consensus is synced when the node reports ready.
     /// Called from the same ready signal that activates maintenance, which is reached only after every DHT-backed instance was
     /// admitted. The ready signal can fire again, so only a gate that has loaded its snapshot and not yet synced is signalled.
     public static Unit signalConsensusSynced(Map<String, StorageSetup> setups) {
@@ -2078,6 +2132,8 @@ public final class StorageFactory {
                                                        id -> prefetchHolder.get()
                                                                            .recordAccess(id),
                                                        config.maxBlockBytes());
+
+        instance.reportTo(degrade);
         var prefetchManager = prefetchManagerFor(config, instance);
 
         prefetchHolder.set(prefetchManager);
@@ -2095,10 +2151,11 @@ public final class StorageFactory {
         var promotionManager = promotionManagerFor(config, tiers, metadataStore);
 
         return guardVolume(tiers,
-                           Path.of(config.snapshotPath())).flatMap(_ -> restoreAndSignalReady(name,
-                                                                                              snapshotManager,
-                                                                                              metadataStore,
-                                                                                              readinessGate))
+                           Path.of(config.snapshotPath()),
+                           degrade).flatMap(_ -> restoreAndSignalReady(name,
+                                                                       snapshotManager,
+                                                                       metadataStore,
+                                                                       readinessGate))
                           .map(_ -> {
                                    log.info("Storage '{}' created: {} tier(s), snapshot path={}",
                                             name,
@@ -2120,10 +2177,34 @@ public final class StorageFactory {
                                });
     }
 
-    /// A torn tail an append log cuts at open is raised as an operator warning for the instance (once: the cut is a fact of
-    /// the boot). The log writes its own WARN with every cut, so the sink only emits.
-    private static AppendLog.TornTailSink tornTailSinkOf(DegradeReporter degrade) {
-        return tail -> degrade.degraded(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "{}", tail.message());
+    /// The `streams` collector is activated when the instance is built, so a failure here is the only report the operator gets: ONE
+    /// operator warning for the instance, and no recovery, because nothing activates it again.
+    static Result<Unit> activateStreamsCollector(StorageGarbageCollector collector, DegradeReporter degrade) {
+        return collector.activate()
+                        .onFailure(cause -> degrade.degraded(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                                                             "Streams garbage collector could not be activated: {}; its garbage is not reclaimed",
+                                                             cause.message()));
+    }
+
+    /// A torn tail an append log cuts at open, and a log fail-stopping, are raised as operator warnings for the instance (once each: the
+    /// cut is a fact of the boot, and a restart is the only way out of a fail-stop). The log writes its own WARN with every cut, so the sink only emits.
+    static AppendLog.TornTailSink tornTailSinkOf(DegradeReporter degrade) {
+        return new AppendLog.TornTailSink() {
+            @Override
+            @Contract
+            public void accept(AppendLog.TornTail tail) {
+                degrade.degraded(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "{}", tail.message());
+            }
+
+            @Override
+            @Contract
+            public void failStopped(Path file, Cause cause) {
+                degrade.degraded(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
+                                 "Append log {} fail-stopped: {}; appends to it are refused until the node restarts",
+                                 file,
+                                 cause.message());
+            }
+        };
     }
 
     /// `[storage.<name>] promotion` (default on) picks the real manager or the inert one. Built dormant either way:
@@ -2165,7 +2246,10 @@ public final class StorageFactory {
 
     /// Wakes every instance's prefetch manager: a node that reports ready starts to gossip hints and act on them.
     public static Unit activatePrefetch(Map<String, StorageSetup> setups) {
-        prefetchManagers(setups).forEach((name, manager) -> activateOne(name, manager));
+        setups.entrySet()
+              .stream()
+              .filter(StorageFactory::hasRealPrefetch)
+              .forEach(entry -> activateOne(entry.getValue()));
 
         return unit();
     }
@@ -2177,11 +2261,18 @@ public final class StorageFactory {
         return unit();
     }
 
-    private static void activateOne(String name, PrefetchManager manager) {
-        manager.activate()
-               .onFailure(cause -> log.warn("Prefetch manager for '{}' could not be activated: {}",
-                                            name,
-                                            cause.message()));
+    private static void activateOne(StorageSetup setup) {
+        setup.prefetchManager()
+             .activate()
+             .onFailure(cause -> setup.degrade()
+                                      .degraded(OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,
+                                                "Prefetch manager for '{}' could not be activated: {}; reads are served without prefetch hints",
+                                                setup.name(),
+                                                cause.message()))
+             .onSuccess(_ -> setup.degrade()
+                                  .recovered(OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,
+                                             "Prefetch manager for '{}' started",
+                                             setup.name()));
     }
 
     /// #1473: the sentinel for a snapshot directory, present only when the instance's disk tier ARMED
@@ -2234,23 +2325,24 @@ public final class StorageFactory {
     /// #1473: a degraded disk tier is the ordinary state wherever `/data` is not writable, and a first boot
     /// on it is fine -- but a sentinel for the same snapshot directory says a volume was written here
     /// before, so the tier missing now is the unmounted volume and the node must not boot empty.
-    private static Result<Unit> guardVolume(List<StorageTier> tiers, Path snapshotPath) {
+    private static Result<Unit> guardVolume(List<StorageTier> tiers, Path snapshotPath, DegradeReporter degrade) {
         return hasLocalDisk(tiers)
-               ? Result.unitResult().onSuccessRun(() -> warnIfGuardInactive(snapshotPath))
+               ? Result.unitResult().onSuccessRun(() -> warnIfGuardInactive(snapshotPath, degrade))
                : sentinelFor(snapshotPath).flatMap(sentinel -> refuseIfPresent(sentinel, snapshotPath));
     }
 
     /// #1473: a sentinel on the guarded volume's own filesystem is lost with the volume, so the guard cannot
     /// fire. Said once per guarded volume, at boot, naming both paths.
-    private static void warnIfGuardInactive(Path snapshotPath) {
+    private static void warnIfGuardInactive(Path snapshotPath, DegradeReporter degrade) {
         var stateDir = stateDir();
 
         if (onSameFilesystem(stateDir, snapshotPath)) {
-            log.warn("Unmounted-volume guard is INACTIVE for {}: the state dir {} is on the same filesystem, so the "
-                    + "sentinel is lost with the volume. Put the state dir (-Daether.state.dir / AETHER_STATE_DIR) on "
-                    + "the boot filesystem or a separate small volume",
-                     snapshotPath,
-                     stateDir);
+            degrade.degraded(OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
+                             "Unmounted-volume guard is INACTIVE for {}: the state dir {} is on the same filesystem, so the "
+                            + "sentinel is lost with the volume. Put the state dir (-Daether.state.dir / AETHER_STATE_DIR) on "
+                            + "the boot filesystem or a separate small volume",
+                             snapshotPath,
+                             stateDir);
         }
     }
 

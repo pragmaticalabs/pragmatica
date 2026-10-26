@@ -461,7 +461,7 @@ public enum OperatorWarningCode {
     /// A storage instance's disk tier could not be opened and the instance runs without it (A0b): its writes are
     /// acknowledged on memory and the shared tier alone, which a node loss or a whole-cluster restart does not survive.
     /// Raised for the instances the node placed itself (the synthesized `artifacts` and `content`, a derived path) and for
-    /// `streams` on a directly built node; an operator-written `disk_path` that cannot open refuses the boot instead. The
+    /// `streams` on a directly built node; an operator-written `disk_path` that does not exist or cannot open refuses the boot instead. The
     /// subject is the instance. The tier is fixed at boot, so there is no recovery code: fix the path and restart.
     STORAGE_DISK_TIER_UNAVAILABLE("storage-disk-tier-unavailable", "storage", WarningLevel.CRITICAL),
     /// A configured memory tier was larger than the share of the heap storage may take, and was cut down to it (A0b). The
@@ -521,6 +521,41 @@ public enum OperatorWarningCode {
     /// cut happens once, at open, so there is no recovery code. Raised once per instance: a second log cut in the same boot is in
     /// the node log only.
     STORAGE_WAL_TAIL_CUT("storage-wal-tail-cut", "storage", WarningLevel.WARNING),
+    /// The unmounted-volume guard of a storage instance is inactive: its sentinel lives on the same filesystem as the guarded volume, so
+    /// it is lost with the volume and the node would boot empty on an unmounted one without refusing. The subject is the instance; the
+    /// message names both paths. Decided once, at boot, so there is no recovery code: move the state directory
+    /// (`-Daether.state.dir` / `AETHER_STATE_DIR`) off the volume and restart.
+    STORAGE_VOLUME_GUARD_INACTIVE("storage-volume-guard-inactive", "storage", WarningLevel.WARNING),
+    /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused until the node restarts and
+    /// recovers the valid prefix. The subject is the storage instance; the message names the log and the cause. Raised once per
+    /// instance (a second log failing in the same boot is in the node log only). No recovery code: a restart is the recovery.
+    STORAGE_WAL_FAIL_STOPPED("storage-wal-fail-stopped", "storage", WarningLevel.CRITICAL),
+    /// Block prefetching could not be started when the node reported ready, so the instance serves reads without the hints it would
+    /// have acted on. The subject is the instance. Closed by [#STORAGE_PREFETCH_STARTED].
+    STORAGE_PREFETCH_NOT_STARTED("storage-prefetch-not-started", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_PREFETCH_NOT_STARTED], same subject: the prefetch manager was activated. INFO, published only after a
+    /// published failure for the instance (#752 mechanism).
+    STORAGE_PREFETCH_STARTED("storage-prefetch-started", "storage", WarningLevel.INFO, STORAGE_PREFETCH_NOT_STARTED),
+    /// The configured `[streaming] segment_disk_max_bytes` is larger than the space usable where stream segments are kept, so stream
+    /// seals fail with `TierFull` before the cap is reached. The subject is `streams`. Decided once, at boot, so there is no recovery code:
+    /// lower the cap or grow the volume and restart.
+    STORAGE_STREAM_DISK_CAP_OVER_SPACE("storage-stream-disk-cap-over-space", "storage", WarningLevel.WARNING),
+    /// The space usable where stream segments are kept could not be read, so the streams disk tier cap fell back to its floor. The subject
+    /// is `streams`. Decided once, at boot, so there is no recovery code: set `[streaming] segment_disk_max_bytes` or fix the volume and restart.
+    STORAGE_STREAM_DISK_SPACE_UNREADABLE("storage-stream-disk-space-unreadable", "storage", WarningLevel.WARNING),
+    /// A block read from a tier did not hash to its id: the copy is corrupt and the read failed with an integrity error. The subject is the
+    /// instance; the message names the tier and the block. Raised once per instance (later corrupt reads are in the node log only), and
+    /// nothing observable proves a repair, so there is no recovery code.
+    STORAGE_INTEGRITY_FAILED("storage-integrity-failed", "storage", WarningLevel.CRITICAL),
+    /// A write-behind flush to a slower tier failed, so the block is acknowledged but not yet on that tier. The subject is the instance. Closed
+    /// by [#STORAGE_WRITE_BEHIND_FLUSHED].
+    STORAGE_WRITE_BEHIND_FLUSH_FAILED("storage-write-behind-flush-failed", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_WRITE_BEHIND_FLUSH_FAILED], same subject: a later flush succeeded. INFO, published only after a published
+    /// failure for the instance (#752 mechanism).
+    STORAGE_WRITE_BEHIND_FLUSHED("storage-write-behind-flushed",
+                                 "storage",
+                                 WarningLevel.INFO,
+                                 STORAGE_WRITE_BEHIND_FLUSH_FAILED),
     /// The recovery of [#JSON_CONFIG_REJECTED], same subject (#2378): a valid `[json]` configuration was adopted after a
     /// refusal. INFO, published only after a published rejection for the subject (#752 mechanism).
     JSON_CONFIG_APPLIED("json-config-applied", "json", WarningLevel.INFO, JSON_CONFIG_REJECTED);

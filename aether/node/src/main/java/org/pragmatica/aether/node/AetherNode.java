@@ -3537,7 +3537,7 @@ public interface AetherNode extends ManageableNode {
                                              Map<String, StorageFactory.StorageSetup> storageSetups,
                                              BooleanSupplier draining) {
         activateStorageUnlessDraining(storageSetups, draining);
-        // A0b (SD-01/SB-11): the node reports ready only once its DHT-backed instances were admitted, which is when
+        // A0b: the node reports ready only once its DHT-backed instances were admitted, which is when
         // each instance's write side may open.
         StorageFactory.signalConsensusSynced(storageSetups);
         signalReady.run();

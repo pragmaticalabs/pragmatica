@@ -42,7 +42,7 @@ import org.pragmatica.lang.Verify;
 /// included, which never reads as "derive".
 ///
 /// `diskPathExplicit` is true only when an operator wrote `disk_path` in the `[storage.<instance>]` section. A tier the
-/// operator placed that cannot be opened fails the boot; a tier the node placed (the synthesized `artifacts` and `content`
+/// operator placed that does not exist or cannot be opened fails the boot (the node never creates it); a tier the node placed (the synthesized `artifacts` and `content`
 /// defaults, a derived path, a section without `disk_path`) degrades to memory plus the shared tier, loudly. Every
 /// programmatic construction carries false: only the loader sets it.
 public record StorageConfig(long memoryMaxBytes,

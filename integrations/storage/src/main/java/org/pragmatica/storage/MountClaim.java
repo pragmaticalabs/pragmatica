@@ -26,8 +26,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// The exclusive claim one node holds on a disk-tier mount (A0b, `upload-overhaul-spec-v2` section 9 "Two nodes per
-/// mount"): an exclusive operating-system lock on a small file in the mount's base directory, held for as long as the
+/// The exclusive claim one node holds on a disk-tier mount (A0b, "two nodes per mount"): an exclusive operating-system lock on a small file in the mount's base directory, held for as long as the
 /// node's tier is in use.
 ///
 /// Two nodes that share one mount record their blocks separately and each collects the other's files as its own
