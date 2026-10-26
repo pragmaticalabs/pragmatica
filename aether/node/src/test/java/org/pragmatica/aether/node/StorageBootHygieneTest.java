@@ -354,7 +354,9 @@ class StorageBootHygieneTest {
         drain();
 
         assertThat(raisedOf(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "streams")).isEqualTo(1);
-        assertThat(raised.getFirst().message()).contains("torn tail").contains("0.wal");
+        // Not getFirst(): where the state directory shares the data volume's filesystem (CI) the instance also opens the guard-inactive condition.
+        assertThat(raised.stream().filter(warning -> warning.code() == OperatorWarningCode.STORAGE_WAL_TAIL_CUT).findFirst().orElseThrow().message())
+                .contains("torn tail").contains("0.wal");
     }
 
     /// The streams instance is assembled by its own builder; its gate must already be at SNAPSHOT_LOADED when the node's ready signal

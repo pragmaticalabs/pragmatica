@@ -386,9 +386,11 @@ class StorageFactoryDhtMarkerRetryTest {
         barrier.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "barrier");
         awaitRaisedOf(raised, OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED);
 
-        assertThat(raised).as("a refusal ends the boot; it opens no degrade condition (the hand-off is FIFO: the barrier is the only warning)")
-                          .extracting(OperatorWarning::subject)
-                          .containsExactly("barrier");
+        // The guard-inactive condition is a fact of the build environment (state directory on the data volume's filesystem), not of the refusal.
+        assertThat(raised.stream().filter(warning -> warning.code() != OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE).toList())
+                .as("a refusal ends the boot; it opens no degrade condition (the hand-off is FIFO: the barrier is the only warning)")
+                .extracting(OperatorWarning::subject)
+                .containsExactly("barrier");
         assertThat(setup.degrade().isDegraded(OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED)).isFalse();
     }
 
