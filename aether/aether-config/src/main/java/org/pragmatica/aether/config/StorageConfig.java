@@ -40,6 +40,11 @@ import org.pragmatica.lang.Verify;
 /// their `encrypted` default), or, through [#derivingPaths], a section of another name that sets neither `disk_path`
 /// nor `snapshot_path` (N3). Every other shape carries false and is placed exactly as written -- a blank `diskPath`
 /// included, which never reads as "derive".
+///
+/// `diskPathExplicit` is true only when an operator wrote `disk_path` in the `[storage.<instance>]` section. A tier the
+/// operator placed that does not exist or cannot be opened fails the boot (the node never creates it); a tier the node placed (the synthesized `artifacts` and `content`
+/// defaults, a derived path, a section without `disk_path`) degrades to memory plus the shared tier, loudly. Every
+/// programmatic construction carries false: only the loader sets it.
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
@@ -54,7 +59,8 @@ public record StorageConfig(long memoryMaxBytes,
                             int prefetchMaxInFlight,
                             SharedTierConfig shared,
                             boolean derivesPaths,
-                            int maxBlockBytes) {
+                            int maxBlockBytes,
+                            boolean diskPathExplicit) {
     /// The default for `prefetchMaxInFlight`; the prefetch manager's own default is pinned to the same number by a test.
     public static final int DEFAULT_PREFETCH_MAX_IN_FLIGHT = 4;
     /// The default for `maxBlockBytes`; the storage instance's own default is pinned to the same number by a test.
@@ -95,6 +101,40 @@ public record StorageConfig(long memoryMaxBytes,
              shared,
              derivesPaths,
              DEFAULT_MAX_BLOCK_BYTES);
+    }
+
+    /// The shape before `diskPathExplicit` existed: the disk path was not written by an operator.
+    public StorageConfig(long memoryMaxBytes,
+                         long diskMaxBytes,
+                         String diskPath,
+                         String snapshotPath,
+                         int snapshotMutationThreshold,
+                         String snapshotMaxInterval,
+                         int snapshotRetentionCount,
+                         String walPath,
+                         boolean encrypted,
+                         boolean promotion,
+                         boolean prefetch,
+                         int prefetchMaxInFlight,
+                         SharedTierConfig shared,
+                         boolean derivesPaths,
+                         int maxBlockBytes) {
+        this(memoryMaxBytes,
+             diskMaxBytes,
+             diskPath,
+             snapshotPath,
+             snapshotMutationThreshold,
+             snapshotMaxInterval,
+             snapshotRetentionCount,
+             walPath,
+             encrypted,
+             promotion,
+             prefetch,
+             prefetchMaxInFlight,
+             shared,
+             derivesPaths,
+             maxBlockBytes,
+             false);
     }
 
     /// Pre-promotion-key shape, kept so existing callers stay source-compatible; `promotion` defaults to on.
@@ -412,7 +452,49 @@ public record StorageConfig(long memoryMaxBytes,
                                  prefetchMaxInFlight,
                                  shared,
                                  derivesPaths,
-                                 maxBlockBytes);
+                                 maxBlockBytes,
+                                 diskPathExplicit);
+    }
+
+    /// This configuration with its memory tier cut to `memoryMaxBytes` (A0b: the heap-fraction clamp). Every other setting is kept.
+    public StorageConfig withMemoryMaxBytes(long memoryMaxBytes) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
+                                 shared,
+                                 derivesPaths,
+                                 maxBlockBytes,
+                                 diskPathExplicit);
+    }
+
+    /// The configuration of an instance whose `disk_path` an operator wrote: a tier that cannot be opened there fails
+    /// the boot instead of degrading.
+    public StorageConfig withDiskPathExplicit() {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath,
+                                 encrypted,
+                                 promotion,
+                                 prefetch,
+                                 prefetchMaxInFlight,
+                                 shared,
+                                 derivesPaths,
+                                 maxBlockBytes,
+                                 true);
     }
 
     /// #249: an instance configured ONLY through `[storage.<name>.shared]`, with no `[storage.<name>]`

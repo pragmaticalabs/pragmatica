@@ -298,6 +298,46 @@ directory, whose disk tier counts everything under it. A section that sets only 
 default. Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are refused
 at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
 
+**A disk tier that cannot open (A0b).** What happens depends on who placed it.
+- **An operator-written `disk_path` fails the boot, and is never created.** A `[storage.<name>]` section that writes
+  `disk_path` asked for that tier; if the path does not exist, or cannot be opened (permissions, a file in the way), the node
+  refuses to start with `[storage.<name>] disk_path = '...' cannot be opened (...)`. The node never creates an operator-set
+  path: on a volume that was not mounted, creating it would put the tier on the ephemeral layer underneath. Create or mount the
+  directory, fix the permissions, or remove `disk_path` to take the node's default placement (which the node may create).
+- **A tier the node placed degrades, loudly.** The synthesized `artifacts` and `content` defaults, a derived path, and a
+  section without `disk_path` keep running on memory plus the shared tier, as before. They now also raise the
+  `storage-disk-tier-unavailable` operator warning (a cluster event, subject = the instance) and set the gauge
+  `aether.storage.disk.degraded{instance}` to 1. Writes to such an instance are acknowledged without a durable local copy.
+- `streams` is unchanged: a production boot refuses an unopenable stream directory unless
+  `-Daether.allowNonDurableStreams=true` (#1567 F12); a directly built node that degrades raises the same warning.
+
+**One node per mount (A0b).** A node claims its disk tier's directory by taking an exclusive operating-system file lock on
+`.mount-claim` in it (`FileChannel.tryLock`), held for as long as the tier is in use. A second node on the same directory
+refuses to boot (`Storage mount ... is already claimed by node '...'`), because two nodes sharing a mount would each collect the
+other's blocks as orphans. The kernel drops the lock when its holder exits, however it exits, so nothing guesses whether a
+holder is alive and no stale claim is ever reclaimed or deleted; the node id and process id inside the file only name the
+holder in the refusal. A graceful shutdown (and a boot refused after the claim was taken) empties the file and drops the lock.
+What this does and does not guarantee:
+- It excludes every process that takes the claim on the same host kernel, including other containers that bind-mount the same
+  directory. Inside one JVM (Ember, Forge) a second node id on a held mount is refused too; the same node id taking its mount
+  again is a node restarted in that JVM and takes over.
+- The lock is advisory: a process that does not take the claim (an operator's `cp`, another program) is not excluded.
+- A mount shared between hosts (NFS and other network filesystems) is excluded only as far as that filesystem's lock service
+  is: it must enforce byte-range locks across clients, and a lock service that loses state can release a live holder's lock.
+  A filesystem without lock support fails the claim with an I/O error rather than passing silently; what that does to the boot
+  depends on who placed the tier: a node-placed (default or derived) tier degrades to memory plus the shared tier, with the
+  `storage-disk-tier-unavailable` warning, while an operator-written `disk_path` refuses the boot.
+- A refusal that names a process which no longer exists means the lock service still holds a dead client's lock; restart that
+  service or use another directory.
+`streams` keeps its per-node directory instead.
+
+**Memory tiers are bounded by the heap (A0b).** The memory tiers of all instances together may take at most 25% of the JVM's
+maximum heap (the `streams` hot ring of 16 MiB counts against it). When the configured `memory_max_bytes` values add up to more,
+each instance is cut in proportion to what it asked for, never below 1 MiB, with a WARN and the `storage-memory-tier-clamped`
+operator warning naming the configured and the effective bytes. At the stock `-Xmx256m` the 25% is 64 MiB, of which the `streams` ring takes 16 MiB, so the instances' memory tiers share
+48 MiB and the default 256 + 256 MiB is cut. The 1 MiB floor is applied after the cut, so with many instances the total can
+exceed the 25%. Raise `-Xmx`, or lower `memory_max_bytes`, to quiet it.
+
 **Not the same as `[streams.X].encryption_key_id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
 `StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not

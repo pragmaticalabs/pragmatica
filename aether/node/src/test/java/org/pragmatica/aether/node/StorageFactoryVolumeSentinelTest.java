@@ -49,7 +49,7 @@ class StorageFactoryVolumeSentinelTest {
     void pointTheStateDirAtTheTestDirectory() {
         previousRoot = System.getProperty(ROOT_PROPERTY);
         System.setProperty(ROOT_PROPERTY, stateDir().toString());
-        appender = LogCapture.capture(StorageFactory.class, Level.ALL, true);
+        appender = LogCapture.capture(org.pragmatica.storage.DegradeReporter.class, Level.ALL, true);
     }
 
     @AfterEach

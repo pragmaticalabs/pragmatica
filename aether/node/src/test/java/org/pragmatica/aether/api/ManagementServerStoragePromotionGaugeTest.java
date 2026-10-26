@@ -28,8 +28,12 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.storage.DegradeReporter;
+import org.pragmatica.storage.PrefetchManager;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.PromotionManager.PromotionStats;
+
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.RETURNS_DEFAULTS;
@@ -88,6 +92,28 @@ class ManagementServerStoragePromotionGaugeTest {
         assertThat(server.meterRegistry().find("aether.storage.promotion.blocks").tag("instance", "streams").gauge())
                 .as("an instance that never promotes has nothing to report")
                 .isNull();
+    }
+
+    /// Red with `registerDiskDegradedGauge(...)` removed from `registerPromotionGauges`: the gauge is then absent for every instance,
+    /// promoting or not. The registrar's own test calls it directly and cannot see that the server calls it.
+    @Test
+    @Timeout(60)
+    void startedServer_exposesTheDiskDegradedGaugePerInstance_readingItsReporter() {
+        var degraded = DegradeReporter.degradeReporter("artifacts");
+
+        degraded.degraded(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE, "no disk");
+        server = managementServer(Map.of("artifacts", setupReporting("artifacts", degraded),
+                                         "content", setupReporting("content", DegradeReporter.degradeReporter("content"))));
+
+        var started = server.start().await(START_BOUND);
+
+        assertThat(started.isSuccess()).as("control: the server started: %s", started).isTrue();
+        assertThat(gauge("aether.storage.disk.degraded", "artifacts")).isEqualTo(1.0);
+        assertThat(gauge("aether.storage.disk.degraded", "content")).isZero();
+    }
+
+    private static StorageSetup setupReporting(String name, DegradeReporter degrade) {
+        return new StorageSetup(name, null, null, null, null, null, null, Option.none(), Option.none(), PromotionManager.NOOP, PrefetchManager.NOOP, degrade);
     }
 
     private double gauge(String name, String instance) {

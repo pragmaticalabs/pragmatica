@@ -10,14 +10,11 @@ import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.ProblemDetail;
-import org.pragmatica.http.routing.ParameterError;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.utils.Causes;
 
 
 /// Canonical RFC 9457 ProblemDetail emission helper for the management plane.
@@ -28,13 +25,8 @@ import org.pragmatica.lang.utils.Causes;
 /// with the standard `type/title/status/detail/instance` members plus the `requestId`
 /// extension for request tracing.
 ///
-/// Cause → status resolution: any cause implementing `HttpStatusAware` surfaces its
-/// `httpStatus()` (which includes `HttpError` instances via the default mapping to
-/// `status()`); any other Cause defaults to HTTP 500. Per-domain sealed `*Error` types
-/// should implement `HttpStatusAware` with a default and per-variant overrides where
-/// semantics differ (e.g. `ClusterConfigError` defaults to 400 with `VersionConflict`→409,
-/// `ClusterNotFound`→404, etc.). The fallback to 500 preserves today's behavior for
-/// un-mapped causes — incrementally fixable per domain.
+/// Cause → status resolution is [ManagementStatus]: one classification for every cause, with the 500 fallback
+/// reserved for causes no rule covers and reported when one is met.
 public final class ProblemResponses {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
@@ -93,27 +85,10 @@ public final class ProblemResponses {
         return "application/problem+json";
     }
 
-    /// A cause's own status, a routing-layer [ParameterError] (a path or query value the caller got wrong: 400, #1921), or -- for a composite, which `Result.all` / `Result.allOf` hand back when several typed failures
-    /// funnel together -- the one status every member agrees on (#1921). Members that disagree, an empty composite and any other
-    /// untyped cause stay 500: the funnel then names a mixed failure, and 500 is the conservative answer for it.
-    private static HttpStatus resolveStatus(Cause cause) {
-        if (cause instanceof HttpStatusAware ha) {
-            return ha.httpStatus();
-        }
-
-        if (cause instanceof ParameterError) {
-            return HttpStatus.BAD_REQUEST;
-        }
-
-        if (cause instanceof Causes.CompositeCause composite) {
-            var statuses = composite.stream().map(member -> resolveStatus(member)).distinct().toList();
-
-            return statuses.size() == 1
-                   ? statuses.getFirst()
-                   : HttpStatus.INTERNAL_SERVER_ERROR;
-        }
-
-        return HttpStatus.INTERNAL_SERVER_ERROR;
+    /// The status the funnel answers for a cause. Total: every cause gets one, through the single classification in
+    /// [ManagementStatus]; a cause no rule covers answers 500 and is reported there.
+    static HttpStatus resolveStatus(Cause cause) {
+        return ManagementStatus.statusOf(cause);
     }
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {

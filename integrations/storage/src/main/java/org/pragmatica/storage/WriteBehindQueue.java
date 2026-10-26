@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -12,6 +13,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +31,9 @@ final class WriteBehindQueue {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicInteger flushFailures = new AtomicInteger();
     private final AtomicInteger interruptedInFlight = new AtomicInteger();
+
+    private final AtomicReference<DegradeReporter> degrade = new AtomicReference<>(DegradeReporter.degradeReporter("write-behind"));
+
     private volatile Thread drainThread;
 
     private WriteBehindQueue(int capacity) {
@@ -41,6 +46,13 @@ final class WriteBehindQueue {
 
     static WriteBehindQueue writeBehindQueue(int capacity) {
         return new WriteBehindQueue(capacity);
+    }
+
+    /// Hands the queue the degrade reporter of the instance it belongs to (A0b): one warning when a flush starts failing, its recovery
+    /// when a later flush succeeds.
+    @Contract
+    void reportTo(DegradeReporter reporter) {
+        degrade.set(reporter);
     }
 
     /// Start the drain thread. No-op if already active.
@@ -142,12 +154,30 @@ final class WriteBehindQueue {
         var put = entry.tier().put(entry.id(), entry.content());
 
         settle(put, entry).onFailure(c -> {
-            flushFailures.incrementAndGet();
-            log.warn("Write-behind flush failed for {} to {}: {}",
-                     entry.id(),
-                     entry.tier().level(),
-                     c.message());
-        });
+                                         flushFailures.incrementAndGet();
+                                         log.warn("Write-behind flush failed for {} to {}: {}",
+                                                  entry.id(),
+                                                  entry.tier().level(),
+                                                  c.message());
+                                         degrade.get()
+                                                .degraded(OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED,
+                                                          "Write-behind flush of block {} to tier {} failed: {}; acknowledged writes are not on that tier until a flush succeeds",
+                                                          entry.id(),
+                                                          entry.tier().level(),
+                                                          c.message());
+                                     })
+              .onSuccess(_ -> recoverIfFailing(entry));
+    }
+
+    /// Only a flush that follows a failure reaches the reporter, so the common success pays one map lookup.
+    private void recoverIfFailing(PendingWrite entry) {
+        var reporter = degrade.get();
+
+        if (reporter.isDegraded(OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED)) {
+            reporter.recovered(OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED,
+                               "Write-behind flush to tier {} succeeded",
+                               entry.tier().level());
+        }
     }
 
     /// The stop signal is `drainThread.interrupt()`, and since #914 an interrupted `await()` returns

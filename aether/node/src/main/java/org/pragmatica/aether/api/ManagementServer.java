@@ -103,6 +103,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.concurrent.PublishSlot;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.consensus.NodeId;
@@ -120,6 +121,7 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.aether.http.TlsRotation;
+import org.pragmatica.storage.DegradeReporter;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
@@ -773,6 +775,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private void registerPromotionGauges(String instance, StorageSetup setup) {
+        registerDiskDegradedGauge(observability, instance, setup.degrade());
         var manager = setup.promotionManager();
 
         if (manager == PromotionManager.NOOP) {
@@ -792,6 +795,20 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.storage.promotion.bytes", bytes, "instance", instance);
         observability.gauge("aether.storage.promotion.failed", failed, "instance", instance);
         observability.gauge("aether.storage.promotion.cycles", cycles, "instance", instance);
+    }
+
+    /// A0b: 1 while the instance runs without its disk tier (it degraded at boot to memory plus the shared tier), else 0. The
+    /// same condition raises the `storage-disk-tier-unavailable` operator warning.
+    static Unit registerDiskDegradedGauge(ObservabilityRegistry observability,
+                                          String instance,
+                                          DegradeReporter degrade) {
+        Supplier<Number> degraded = () -> degrade.isDegraded(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE)
+                                          ? 1
+                                          : 0;
+
+        observability.gauge("aether.storage.disk.degraded", degraded, "instance", instance);
+
+        return unit();
     }
 
     /// #1777: DHT partitions still catching up after `DHTAntiEntropy.STUCK_AFTER_ROUNDS` rounds — non-zero means a

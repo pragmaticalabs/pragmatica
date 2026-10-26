@@ -730,6 +730,9 @@ public final class ConfigLoader {
                     warnIgnoredStreamsKeys(doc, instanceName, sectionName);
                     instances.put(instanceName,
                                   markedIfPathless(doc, instanceName, sectionName, storageFromSection(doc, sectionName)));
+                    if (doc.hasKey(sectionName, "disk_path")) {
+                        instances.computeIfPresent(instanceName, (_, written) -> written.withDiskPathExplicit());
+                    }
                 }
             }
         }

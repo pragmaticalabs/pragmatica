@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -22,6 +23,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +47,12 @@ public interface StorageInstance {
     /// Store content -- computes SHA-256, deduplicates, writes through tiers. Content over the instance's maximum
     /// block size fails with [StorageError.BlockTooLarge].
     Promise<BlockId> put(byte[] content);
+
+    /// Hands the instance the degrade reporter it reports through (A0b): a block that fails its integrity check on read and a
+    /// write-behind flush that fails reach the operator. Called once, when the instance is assembled. Defaults to nothing.
+    default Unit reportTo(DegradeReporter reporter) {
+        return unit();
+    }
 
     /// The largest block this instance accepts, in bytes ([#DEFAULT_MAX_BLOCK_BYTES] unless it was built with another).
     default int maxBlockBytes() {
@@ -367,6 +375,9 @@ final class DefaultStorageInstance implements StorageInstance {
     private final Option<Path> logRoot;
     private final AppendLog.TornTailSink tornTailSink;
     private final Option<WriteBehindQueue> writeBehindQueue;
+
+    private final AtomicReference<DegradeReporter> degrade = new AtomicReference<>(DegradeReporter.degradeReporter("storage"));
+
     /// Non-capacity promotion failures per cache tier, for the WARN-once-then-every-N policy (#910).
     private final Map<TierLevel, AtomicLong> promotionFailures = new ConcurrentHashMap<>();
     private final SingleFlightCache readCache = SingleFlightCache.singleFlightCache();
@@ -793,9 +804,18 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
+    public Unit reportTo(DegradeReporter reporter) {
+        degrade.set(reporter);
+        writeBehindQueue.onPresent(queue -> queue.reportTo(reporter));
+
+        return unit();
+    }
+
+    @Override
     @Contract
     public void shutdown() {
         writeBehindQueue.onPresent(WriteBehindQueue::deactivate);
+        tiers.forEach(StorageTier::release);
         log.info("Storage instance '{}' shut down", name);
     }
 
@@ -1434,6 +1454,11 @@ final class DefaultStorageInstance implements StorageInstance {
                                                          StorageTier tier) {
         if (!computedId.equals(expectedId)) {
             log.warn("Integrity check failed in tier {} for block {}", tier.level(), expectedId);
+            degrade.get()
+                   .degraded(OperatorWarningCode.STORAGE_INTEGRITY_FAILED,
+                             "Integrity check failed in tier {} for block {}: the stored copy does not hash to its id and the read failed; later failures of this instance are in the node log only",
+                             tier.level(),
+                             expectedId);
 
             return StorageError.IntegrityError.integrityError(expectedId, computedId).promise();
         }
