@@ -527,18 +527,21 @@ PostgreSQL is the document store for slices: keep a document in a `jsonb` column
 A failure keeps what the database reported:
 
 - `sqlState()` returns the server's SQLSTATE (`Option<String>`) on `ConstraintViolation`, `QueryFailed`, `ConnectionFailed` and `TransactionRolledBack`.
-- Whether a retry may help is the type, never the message: `ConnectionFailed`, `TimedOut`, `TransactionRolledBack` and `PoolExhausted` are `Cause.Transient`, so `retry_on = "TRANSIENT"` retries them and leaves a `ConstraintViolation` alone. The SQLSTATE mapping is shared by the JDBC and R2DBC connectors: class `23` is a `ConstraintViolation`; class `40` a `TransactionRolledBack`; `08001/08003/08004/08006`, `57P01-57P03` and class `53` a `ConnectionFailed`; `08007` (transaction resolution unknown), `08P01` and `57014` (cancelled) are never retried.
+- Whether a retry may help is the type, never the message: `ConnectionFailed`, `TimedOut`, `TransactionRolledBack` and `PoolExhausted` are `Cause.Transient`, so `retry_on = "TRANSIENT"` retries them and leaves a `ConstraintViolation` alone. The SQLSTATE mapping: class `23` is a `ConstraintViolation`; class `40` a `TransactionRolledBack`; `08001/08003/08004/08006`, `57P01-57P03` and class `53` a `ConnectionFailed`; `08007` (transaction resolution unknown), `08P01` and `57014` (cancelled) are never retried.
 - A cause that is already typed reaches the caller unchanged: a `RowDecodeError.RowDecode` from a generated row mapper, a `ResultNotFound`, or a failure your transaction callback returns. No connector reduces a cause to its message.
 - `DatabaseFailure` carries the original `Throwable` of a failure no variant describes; it is never built from a message.
 
-Driver-level failures reach the caller as the driver layer's own typed errors on the connectors that do not map them; each keeps the SQLSTATE and the transient marker:
+The SQLSTATE mapping is one function (`DatabaseConnectorError.fromSqlState`) used by the JDBC, R2DBC and jOOQ connectors, so a server error reads the same through each. postgres-async (`async_url`) surfaces its driver's own typed `SqlError` instead (`SqlError.ServerError` with `response().code()` as the SQLSTATE, `Cause.Transient` on the same states and with the same `08007`/`08P01`/`57014` exclusions); it is not remapped.
 
 | Connector | Driver failures a slice sees | Row-decode failure | No row for `queryOne` |
 |-----------|------------------------------|--------------------|-----------------------|
-| postgres-async (`async_url`) | `SqlError` (`SqlError.ServerError` with `response().code()` as the SQLSTATE; `ServerErrorIntegrityConstraintViolation` for class 23) | `RowDecodeError` | `DatabaseConnectorError.ResultNotFound` |
-| R2DBC (`r2dbc_url`) | `R2dbcError` (`ConstraintViolation`, `ConnectionFailed`, `Timeout`, `QueryFailed`, each with `sqlState()`) | `RowDecodeError` | `R2dbcError.NoResult` |
+| postgres-async (`async_url`) | `SqlError` | `RowDecodeError` | `DatabaseConnectorError.ResultNotFound` |
+| R2DBC (`r2dbc_url`) | `DatabaseConnectorError` | `RowDecodeError` | `DatabaseConnectorError.ResultNotFound` |
 | JDBC (`jdbc_url`) | `DatabaseConnectorError` | `RowDecodeError` | `DatabaseConnectorError.ResultNotFound` |
-| jOOQ over JDBC, R2DBC or postgres-async | `DatabaseConnectorError` | a failure your transaction callback returns is passed through | `DatabaseConnectorError.ResultNotFound` |
+| jOOQ over JDBC | `DatabaseConnectorError` | a failure your transaction callback returns is passed through | `DatabaseConnectorError.ResultNotFound` |
+| jOOQ over R2DBC or postgres-async | **cannot run a query today (#2431)**; the error mapping is verified only at the `toConnectorError` level, not through `fetchOne`/`fetch`/`execute` | a failure your transaction callback returns is passed through | not reachable until #2431 is fixed |
+
+Parameterised statements through the postgres R2DBC adapter fail until #2432 is fixed.
 
 ### TOML Examples
 

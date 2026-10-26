@@ -61,6 +61,8 @@ class R2dbcAdapterExceptionTest {
 
         assertThat(exception).isNotInstanceOf(R2dbcTransientException.class);
         assertThat(exception.getSqlState()).isEqualTo("08007");
+        assertThat(exception.getCause()).isInstanceOfSatisfying(SqlException.class,
+                                                                origin -> assertThat(origin.error()).isSameAs(cause));
     }
 
     @Test

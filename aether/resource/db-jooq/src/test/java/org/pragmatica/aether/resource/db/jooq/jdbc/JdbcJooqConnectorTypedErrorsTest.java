@@ -113,6 +113,23 @@ class JdbcJooqConnectorTypedErrorsTest {
     }
 
     @Test
+    void execute_syntaxError_keepsTheDriverFailureAsTheCause() {
+        var cause = failureOf(connector.execute(connector.dsl().query("SELEC 1")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(((DatabaseConnectorError.QueryFailed) cause).cause().isPresent()).as("the driver failure is kept, not only its text").isTrue();
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("42601"));
+    }
+
+    @Test
+    void fetchOne_lostConnection_keepsTheDriverFailureAsTheCause() {
+        var cause = failureOf(killOwnBackend());
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+        assertThat(((DatabaseConnectorError.ConnectionFailed) cause).cause().isPresent()).isTrue();
+    }
+
+    @Test
     void execute_serverReportedSerializationFailure_keepsItsSqlStateAndIsTransient() {
         var cause = failureOf(connector.execute(connector.dsl().query(RAISE_SERIALIZATION_FAILURE)));
 

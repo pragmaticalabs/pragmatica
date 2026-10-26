@@ -41,6 +41,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class JdbcSqlConnectorTypedErrorsTest {
     private static final String KILL_OWN_BACKEND = "SELECT pg_terminate_backend(pg_backend_pid())";
     private static final String RAISE_SERIALIZATION_FAILURE = "DO $$ BEGIN RAISE EXCEPTION 'serialization failure' USING ERRCODE = '40001'; END $$";
+    private static final String RAISE_STATE = "DO $$ BEGIN RAISE EXCEPTION 'unretryable' USING ERRCODE = '%s'; END $$";
     private static final String INSERT = "INSERT INTO typed_errors(id, name) VALUES (?, ?)";
     private static PostgreSQLContainer<?> postgres;
     private static SqlConnector connector;
@@ -111,6 +112,49 @@ class JdbcSqlConnectorTypedErrorsTest {
         assertThat(cause).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
         assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("23505"));
         assertThat(cause.isTransient()).isFalse();
+    }
+
+
+    @Test
+    void update_unretryableStates_areQueryFailuresThatAreNotTransient() {
+        for (var state : new String[]{"08007", "08P01", "57014"}) {
+            var cause = failureOf(connector.update(RAISE_STATE.formatted(state)));
+
+            assertThat(cause).as(state).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+            assertThat(((DatabaseConnectorError) cause).sqlState()).as(state).isEqualTo(some(state));
+            assertThat(cause.isTransient()).as(state).isFalse();
+        }
+    }
+
+    @Test
+    void retryOnTransient_connectionStateThatIsUnretryable_isNotRetried() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<Integer>, String> method = _ -> {
+            attempts.incrementAndGet();
+
+            return connector.update(RAISE_STATE.formatted("08007"));
+        };
+
+        failureOf(retrying().intercept(method).apply("x"));
+
+        assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    void update_syntaxError_keepsTheDriverFailureAsTheCause() {
+        var cause = failureOf(connector.update("SELEC 1"));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(((DatabaseConnectorError.QueryFailed) cause).cause().isPresent()).as("the driver failure is kept, not only its text").isTrue();
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("42601"));
+    }
+
+    @Test
+    void queryOne_lostConnection_keepsTheDriverFailureAsTheCause() {
+        var cause = failureOf(connector.queryOne(KILL_OWN_BACKEND, row -> row.getBoolean("pg_terminate_backend")));
+
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+        assertThat(((DatabaseConnectorError.ConnectionFailed) cause).cause().isPresent()).isTrue();
     }
 
     @Test

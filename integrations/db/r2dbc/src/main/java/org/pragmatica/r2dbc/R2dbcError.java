@@ -154,12 +154,19 @@ public sealed interface R2dbcError extends Cause {
     }
 
     private static R2dbcError classifyBySqlState(R2dbcException e, Option<String> sqlState, boolean queryContext) {
-        if (sqlState.filter(state -> state.startsWith("08")).isPresent()) {
+        if (sqlState.filter(R2dbcError::isRetryableConnectionState).isPresent()) {
             return new ConnectionFailed(e.getMessage(), sqlState);
         }
 
         return queryContext
                ? new QueryFailed(e.getMessage(), sqlState)
                : databaseFailure(e);
+    }
+
+    /// Class `08` is a connection failure a retry may outlive, except `08007` (transaction resolution unknown: a COMMIT
+    /// whose reply was lost, so a retry could re-run a committed write) and `08P01` (protocol violation); the same
+    /// exclusion `DatabaseConnectorError.fromSqlState` applies.
+    private static boolean isRetryableConnectionState(String state) {
+        return state.startsWith("08") && !state.equals("08007") && !state.equals("08P01");
     }
 }

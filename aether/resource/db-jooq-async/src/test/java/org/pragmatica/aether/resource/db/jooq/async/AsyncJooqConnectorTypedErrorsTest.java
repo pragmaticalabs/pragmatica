@@ -44,6 +44,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class AsyncJooqConnectorTypedErrorsTest {
     private static final String KILL_OWN_BACKEND = "SELECT pg_terminate_backend(pg_backend_pid())";
     private static final String RAISE_SERIALIZATION_FAILURE = "DO $$ BEGIN RAISE EXCEPTION 'serialization failure' USING ERRCODE = '40001'; END $$";
+    private static final String RAISE_STATE = "DO $$ BEGIN RAISE EXCEPTION 'unretryable' USING ERRCODE = '%s'; END $$";
     private static final String INSERT_ONE = "INSERT INTO typed_errors(id, name) VALUES (1, 'duplicate')";
     private static PostgreSQLContainer<?> postgres;
     private static Connectible connectible;
@@ -107,11 +108,37 @@ class AsyncJooqConnectorTypedErrorsTest {
         assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
     }
 
+
+    @Test
+    void toConnectorError_unretryableStates_areQueryFailuresThatAreNotTransient() {
+        for (var state : new String[]{"08007", "08P01", "57014"}) {
+            var cause = failureOf(mapped(operations.update(RAISE_STATE.formatted(state))));
+
+            assertThat(cause).as(state).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+            assertThat(((DatabaseConnectorError) cause).sqlState()).as(state).isEqualTo(some(state));
+            assertThat(cause.isTransient()).as(state).isFalse();
+        }
+    }
+
+    @Test
+    void retryOnTransient_connectionStateThatIsUnretryable_isNotRetried() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<Long>, String> method = _ -> {
+            attempts.incrementAndGet();
+
+            return mapped(operations.update(RAISE_STATE.formatted("08007")));
+        };
+
+        failureOf(retrying().intercept(method).apply("x"));
+
+        assertThat(attempts.get()).isEqualTo(1);
+    }
+
     @Test
     void toConnectorError_serverReportedSerializationFailure_keepsItsSqlStateAndIsTransient() {
         var cause = failureOf(mapped(operations.update(RAISE_SERIALIZATION_FAILURE)));
 
-        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.TransactionRolledBack.class);
         assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("40001"));
         assertThat(cause.isTransient()).isTrue();
     }

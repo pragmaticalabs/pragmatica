@@ -68,6 +68,25 @@ class R2dbcErrorSqlStateTest {
     }
 
     @Test
+    void fromException_unretryableConnectionStates_areNotTransient() {
+        for (var state : new String[]{"08007", "08P01"}) {
+            var error = R2dbcError.fromException(new R2dbcNonTransientResourceException("unresolved", state), "COMMIT");
+
+            assertThat(error).as(state).isInstanceOfSatisfying(R2dbcError.QueryFailed.class,
+                                                               failed -> assertThat(failed.sqlState()).isEqualTo(some(state)));
+            assertThat(error.isTransient()).as(state).isFalse();
+        }
+    }
+
+    @Test
+    void fromException_withoutQueryContext_aNonConnectionDriverFailureIsADatabaseFailureCarryingIt() {
+        var failure = new R2dbcNonTransientResourceException("syntax error", "42601");
+
+        assertThat(R2dbcError.fromException(failure)).isInstanceOfSatisfying(R2dbcError.DatabaseFailure.class,
+                                                                             f -> assertThat(f.cause()).isSameAs(failure));
+    }
+
+    @Test
     void fromException_noSqlState_leavesItEmpty() {
         var error = R2dbcError.fromException(new R2dbcDataIntegrityViolationException("duplicate key"), "INSERT");
 

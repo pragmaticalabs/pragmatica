@@ -18,7 +18,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import org.pragmatica.postgres.r2dbc.PgAsyncConnectionFactory;
-import org.pragmatica.r2dbc.R2dbcError;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -39,11 +38,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// placeholder handling cannot run a parameterised statement). Before the fix a mapper failure was replaced by
 /// `DatabaseFailure(new RuntimeException(message))`, and the adapter reduced every driver failure to its message, so a
 /// constraint violation carried no SQLSTATE and a lost connection no transience. Driver failures now keep both
-/// as `R2dbcError`, so `RetryOn.TRANSIENT` retries a lost connection and leaves a constraint violation alone.
+/// as `DatabaseConnectorError`, so `RetryOn.TRANSIENT` retries a lost connection and leaves a constraint violation alone.
 /// Self-skips when no Docker daemon is reachable.
 class R2dbcSqlConnectorTypedErrorsTest {
     private static final String KILL_OWN_BACKEND = "SELECT pg_terminate_backend(pg_backend_pid())";
     private static final String RAISE_SERIALIZATION_FAILURE = "DO $$ BEGIN RAISE EXCEPTION 'serialization failure' USING ERRCODE = '40001'; END $$";
+    private static final String RAISE_STATE = "DO $$ BEGIN RAISE EXCEPTION 'unretryable' USING ERRCODE = '%s'; END $$";
     private static final String INSERT_ONE = "INSERT INTO typed_errors(id, name) VALUES (1, 'duplicate')";
     private static final String INSERT_TWO = "INSERT INTO typed_errors(id, name) VALUES (2, 'two')";
     private static PostgreSQLContainer<?> postgres;
@@ -114,8 +114,8 @@ class R2dbcSqlConnectorTypedErrorsTest {
     void update_uniqueViolation_keepsItsSqlStateAndIsNotTransient() {
         var cause = failureOf(connector.update(INSERT_ONE));
 
-        assertThat(cause).isInstanceOf(R2dbcError.ConstraintViolation.class);
-        assertThat(((R2dbcError.ConstraintViolation) cause).sqlState()).isEqualTo(some("23505"));
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("23505"));
         assertThat(cause.isTransient()).isFalse();
     }
 
@@ -124,15 +124,41 @@ class R2dbcSqlConnectorTypedErrorsTest {
         var cause = failureOf(connector.queryOne(KILL_OWN_BACKEND, row -> row.getBoolean("pg_terminate_backend")));
 
         assertThat(cause.isTransient()).as("a terminated backend is transient: %s", cause.message()).isTrue();
-        assertThat(cause).isInstanceOf(R2dbcError.ConnectionFailed.class);
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
+    }
+
+
+    @Test
+    void update_unretryableStates_areQueryFailuresThatAreNotTransient() {
+        for (var state : new String[]{"08007", "08P01", "57014"}) {
+            var cause = failureOf(connector.update(RAISE_STATE.formatted(state)));
+
+            assertThat(cause).as(state).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+            assertThat(((DatabaseConnectorError) cause).sqlState()).as(state).isEqualTo(some(state));
+            assertThat(cause.isTransient()).as(state).isFalse();
+        }
+    }
+
+    @Test
+    void retryOnTransient_connectionStateThatIsUnretryable_isNotRetried() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<Integer>, String> method = _ -> {
+            attempts.incrementAndGet();
+
+            return connector.update(RAISE_STATE.formatted("08007"));
+        };
+
+        failureOf(retrying().intercept(method).apply("x"));
+
+        assertThat(attempts.get()).isEqualTo(1);
     }
 
     @Test
     void update_serverReportedSerializationFailure_keepsItsSqlStateAndIsTransient() {
         var cause = failureOf(connector.update(RAISE_SERIALIZATION_FAILURE));
 
-        assertThat(cause).isInstanceOf(R2dbcError.ConnectionFailed.class);
-        assertThat(((R2dbcError.ConnectionFailed) cause).sqlState()).isEqualTo(some("40001"));
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.TransactionRolledBack.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("40001"));
         assertThat(cause.isTransient()).isTrue();
     }
 
@@ -180,8 +206,8 @@ class R2dbcSqlConnectorTypedErrorsTest {
     void update_syntaxError_isQueryFailedKeepingItsSqlStateAndIsNotTransient() {
         var cause = failureOf(connector.update("SELEC 1"));
 
-        assertThat(cause).isInstanceOf(R2dbcError.QueryFailed.class);
-        assertThat(((R2dbcError.QueryFailed) cause).sqlState()).isEqualTo(some("42601"));
+        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
+        assertThat(((DatabaseConnectorError) cause).sqlState()).isEqualTo(some("42601"));
         assertThat(cause.isTransient()).isFalse();
     }
 
@@ -196,9 +222,9 @@ class R2dbcSqlConnectorTypedErrorsTest {
 
     @Test
     void toConnectorError_driverErrors_keepTheirSqlStateOnTheConnectorError() {
-        var constraint = R2dbcSqlConnector.toConnectorError(new R2dbcError.ConstraintViolation("duplicate", some("23505")));
-        var connection = R2dbcSqlConnector.toConnectorError(new R2dbcError.ConnectionFailed("lost", some("57P01")));
-        var query = R2dbcSqlConnector.toConnectorError(new R2dbcError.QueryFailed("bad", some("42601")));
+        var constraint = R2dbcSqlConnector.toConnectorError(new org.pragmatica.r2dbc.R2dbcError.ConstraintViolation("duplicate", some("23505")));
+        var connection = R2dbcSqlConnector.toConnectorError(new org.pragmatica.r2dbc.R2dbcError.ConnectionFailed("lost", some("57P01")));
+        var query = R2dbcSqlConnector.toConnectorError(new org.pragmatica.r2dbc.R2dbcError.QueryFailed("bad", some("42601")));
 
         assertThat(constraint).isInstanceOf(DatabaseConnectorError.ConstraintViolation.class);
         assertThat(((DatabaseConnectorError) constraint).sqlState()).isEqualTo(some("23505"));
@@ -209,10 +235,10 @@ class R2dbcSqlConnectorTypedErrorsTest {
     }
 
     @Test
-    void queryOne_noRow_reachesCallerAsTheTypedNoResult() {
+    void queryOne_noRow_reachesCallerAsTheTypedResultNotFound() {
         var cause = failureOf(connector.queryOne("SELECT name FROM typed_errors WHERE id = 99", row -> row.getString("name")));
 
-        assertThat(cause).isSameAs(R2dbcError.NoResult.INSTANCE);
+        assertThat(cause).isSameAs(DatabaseConnectorError.ResultNotFound.INSTANCE);
     }
 
     @Test
