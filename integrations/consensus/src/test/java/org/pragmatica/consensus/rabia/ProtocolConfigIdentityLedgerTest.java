@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-package org.pragmatica.consensus.net;
 package org.pragmatica.consensus.rabia;
 
 import java.nio.file.Path;

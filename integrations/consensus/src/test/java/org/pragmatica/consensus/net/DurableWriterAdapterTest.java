@@ -14,7 +14,6 @@
  *  limitations under the License.
  */
 package org.pragmatica.consensus.net;
-package org.pragmatica.consensus.net;
 
 import java.nio.file.Path;
 
