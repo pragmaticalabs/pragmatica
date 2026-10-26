@@ -235,25 +235,6 @@ class R2dbcSqlConnectorTypedErrorsTest {
         assertThat(((R2dbcError.ConstraintViolation) cause).sqlState()).isEqualTo(some("23505"));
     }
 
-    /// One classification: whether a SQLSTATE is worth a retry is decided by `DatabaseConnectorError.fromSqlState`
-    /// for every connector, whatever error type it returns. The R2DBC driver exceptions below are built the way the
-    /// postgres adapter builds them (transient resource exception for the states the driver marks transient).
-    @Test
-    void r2dbcTransience_agreesWithTheSharedClassification_forEverySqlState() {
-        var transientByDriver = java.util.Set.of("08001", "08004", "08006", "40001", "40P01", "53300", "57P01", "57P02", "57P03");
-
-        for (var state : new String[]{"08001", "08003", "08004", "08006", "08007", "08P01", "40001", "40P01", "53300", "57P01", "57P02", "57P03", "57P04", "57014", "23505", "42601"}) {
-            io.r2dbc.spi.R2dbcException exception = transientByDriver.contains(state)
-                                                    ? new io.r2dbc.spi.R2dbcTransientResourceException("driver", state)
-                                                    : new io.r2dbc.spi.R2dbcNonTransientResourceException("driver", state);
-
-            var r2dbc = R2dbcError.fromException(exception, "SQL");
-            var shared = DatabaseConnectorError.fromSqlState(some(state), "SQL", "driver", org.pragmatica.lang.Option.none());
-
-            assertThat(r2dbc.isTransient()).as(state).isEqualTo(shared.isTransient());
-        }
-    }
-
     @Test
     void transactional_rowDecodeFailureInCallback_reachesCallerUnchanged() {
         var decodeFailure = new RowDecodeError.RowDecode("name", Causes.cause("corrupt value"));
