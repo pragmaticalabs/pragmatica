@@ -67,6 +67,17 @@ class StorageConfigPrefetchSettingsKeptTest {
     }
 
     @Test
+    void maxBlockBytes_survivesEveryCopyOfTheConfig() {
+        var base = StorageConfig.storageConfig(1, 2, tempDir.resolve("d").toString(), tempDir.resolve("snap").toString(), 7, "9s", 3, "wal", false, true, true, 4, 8192);
+
+        assertThat(base.maxBlockBytes()).isEqualTo(8192);
+        assertThat(base.withShared(S3).maxBlockBytes()).as("withShared").isEqualTo(8192);
+        assertThat(base.derivingPaths().maxBlockBytes()).as("derivingPaths").isEqualTo(8192);
+        assertThat(base.withPaths("a", "b").maxBlockBytes()).as("withPaths").isEqualTo(8192);
+        assertThat(StorageFactory.withDerivedPaths(Map.of("vault", base.derivingPaths()), defaults(), false).get("vault").maxBlockBytes()).as("derived placement").isEqualTo(8192);
+    }
+
+    @Test
     void pathlessSectionOfAnotherName_withS3_keepsPrefetchSettings() {
         var base = custom().withShared(S3).derivingPaths();
         var placed = StorageFactory.withDerivedPaths(Map.of("vault", base), defaults(), false).get("vault");

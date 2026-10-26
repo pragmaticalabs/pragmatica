@@ -1006,6 +1006,7 @@ public final class ConfigLoader {
         // Cross-node block prefetching: on unless an operator switches it off for the instance.
         var prefetch = doc.getBoolean(sectionName, "prefetch").or(true);
         var prefetchMaxInFlight = prefetchMaxInFlight(doc, sectionName);
+        var maxBlockBytes = maxBlockBytes(doc, sectionName);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -1018,7 +1019,15 @@ public final class ConfigLoader {
                                            encrypted,
                                            promotion,
                                            prefetch,
-                                           prefetchMaxInFlight);
+                                           prefetchMaxInFlight,
+                                           maxBlockBytes);
+    }
+
+    /// The largest block the instance accepts. A value that is not a positive integer is refused like any wrong-typed
+    /// value (#1455), never defaulted: a 0 or negative limit would refuse every write.
+    private static int maxBlockBytes(TomlDocument doc, String sectionName) {
+        return doc.getParsed(sectionName, "max_block_bytes", "a positive integer", ConfigLoader::positiveInt)
+                  .or(StorageConfig.DEFAULT_MAX_BLOCK_BYTES);
     }
 
     /// The most prefetches running at once. A value that is not a positive integer is refused like any wrong-typed

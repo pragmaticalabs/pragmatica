@@ -186,17 +186,17 @@ public sealed interface StorageAssembly {
         // `defaultContentStorage` call entirely outside `storageSetups`, so it never reached
         // compositeDemotionManager/compositeGarbageCollector and got no demotion or GC from this
         // driver; it is now synthesized through the same `createAll` path as `artifacts` (see the
-        // `contentStorage` invariant comment above) and is covered like every other entry. Leader-
-        // pinned activation below (toggleStorageOnLeaderChange) is unchanged — only the no-op
-        // stand-in is replaced. Both
+        // `contentStorage` invariant comment above) and is covered like every other entry. Leader
+        // activation below (toggleStorageOnLeaderChange) no longer activates any garbage collector (the
+        // composite's activate is a no-op: GC is per node, see StorageFactory#compositeGarbageCollector). Both
         // DefaultDemotionManager and DefaultStorageGarbageCollector self-gate on their internal
         // `active` flag, so the periodic driver below can call demote()/collectGarbage()
-        // unconditionally on every node (leader or not) and it safely no-ops until this node's
-        // adapter is activated.
+        // unconditionally on every node (leader or not) and it safely no-ops until that node's
+        // collector is activated.
         //
-        // Promotion, and demotion of `artifacts` and `content`, are NOT leader-pinned: their fast tiers are
-        // private to each node, so a leader-only manager would warm only the leader's caches. Both are
-        // activated on every node when it reports ready (signalReadyActivatingStorage, below) and deactivated
+        // Promotion, demotion and garbage collection of `artifacts` and `content` are NOT leader-pinned: their
+        // tiers are private to each node, so a leader-only manager would warm, shrink and reclaim only the
+        // leader's disk. All are activated on every node when it reports ready (signalReadyActivatingStorage, below) and deactivated
         // on stop. `streams` stays as it was: leader-pinned demotion, no promotion.
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);

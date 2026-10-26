@@ -13,7 +13,6 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.resource.artifact.ArtifactStore.ArtifactStoreError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.storage.BlockId;
-import org.pragmatica.storage.BlockMetadata;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageInstance.TierInfo;
@@ -854,11 +853,6 @@ class ArtifactStoreTest {
 
         @Override
         public Promise<BlockId> put(byte[] content) {
-            return put(content, BlockMetadata.blockMetadata(content.length));
-        }
-
-        @Override
-        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
             int n = putAttempts.incrementAndGet();
             if (n <= failuresToInject) {
                 if (mode == Mode.TRANSIENT) {
@@ -1025,11 +1019,6 @@ class ArtifactStoreTest {
 
         @Override
         public Promise<BlockId> put(byte[] content) {
-            return put(content, BlockMetadata.blockMetadata(content.length));
-        }
-
-        @Override
-        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
             recordPeak(inFlightPuts, peakPuts);
             var result = Promise.<BlockId>promise();
             SharedScheduler.schedule(() -> completePut(content, result), COMPLETION_DELAY);
@@ -1117,11 +1106,6 @@ class ArtifactStoreTest {
 
         @Override
         public Promise<BlockId> put(byte[] content) {
-            return put(content, BlockMetadata.blockMetadata(content.length));
-        }
-
-        @Override
-        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
             return BlockId.blockId(content).async().onSuccess(id -> blocks.put(id, content));
         }
 

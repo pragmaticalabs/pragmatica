@@ -95,6 +95,8 @@ class ManagementTopicExistenceStatusTest {
         }
     }
 
+    /// The group arrives as the HTTP server delivered it, decoded once (#2420): `app#onEvent`, not `app%23onEvent`.
+    ///
     /// Control, the boundary of this change: a KNOWN group whose projection this node does not host keeps the deliberate 409 (the
     /// rebuild is LOCAL; the message names the node to POST to). Without it the 404 could have swallowed that refusal.
     @Test
@@ -104,7 +106,7 @@ class ManagementTopicExistenceStatusTest {
         try {
             var failure = RouteProbe.failureOf(routes(manager, statuses(status(GROUP))),
                                                ManagementRoute.TOPICS_GROUP_REBUILD,
-                                               path("rebuild", "app%23onEvent"),
+                                               path("rebuild", "app#onEvent"),
                                                Map.of());
 
             assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.CONFLICT);
