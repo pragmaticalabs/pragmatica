@@ -52,41 +52,174 @@ class StorageInstanceAccessTrackingTest {
         assertThat(snapshotBody(store)).as("control: a write does change it").isNotEqualTo(afterWrites);
     }
 
-    /// After a boot nothing is known of how hot a block is. Inside the warm-up window demotion holds the
-    /// block back instead of treating "no read yet" as "cold"; once the window has passed it is a candidate.
+    private record Restored(MemoryTier memory, MemoryTier disk, MetadataStore store) {
+        Restored(AccessTracker tracker) {
+            this(MemoryTier.memoryTier(200, TierLevel.MEMORY),
+                 MemoryTier.memoryTier(2000, TierLevel.LOCAL_DISK),
+                 MetadataStore.inMemoryMetadataStore("post-boot", tracker));
+        }
+
+        /// A record from before this boot, as a snapshot restore installs it: created at `createdAt`, never read here.
+        BlockId add(String content, long createdAt) {
+            var id = BlockId.blockId(bytes(content)).unwrap();
+
+            memory.put(id, bytes(content)).await().unwrap();
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id,
+                                                                java.util.EnumSet.of(TierLevel.MEMORY),
+                                                                1,
+                                                                createdAt,
+                                                                createdAt,
+                                                                0));
+
+            return id;
+        }
+
+        DemotionManager demotion(DemotionStrategy strategy, int batch) {
+            var manager = DemotionManager.demotionManager(List.of(memory, disk),
+                                                          store,
+                                                          demotionConfig(strategy, 0.01, 0.009, batch));
+
+            manager.activate();
+
+            return manager;
+        }
+
+        boolean stillInMemory(BlockId id) {
+            return store.getLifecycle(id).unwrap().presentIn().contains(TierLevel.MEMORY);
+        }
+    }
+
+    /// A tier above its high watermark demotes: pressure overrides the post-boot hold-back, so a node that
+    /// restarts in a loop cannot pin a full tier. Pinned at the first and the last instant of the window.
     @Test
-    void demotion_holdsAnUnknownBlockInsideTheWarmUpWindow_andDemotesItAfter() {
+    void demotion_ofAFullTier_demotesAnUnknownBlockInsideTheWarmUpWindow() {
         var clock = new AtomicLong(1_000_000);
         var tracker = AccessTracker.accessTracker(WARM_UP_MS, clock::get);
-        var memory = MemoryTier.memoryTier(200, TierLevel.MEMORY);
-        var disk = MemoryTier.memoryTier(2000, TierLevel.LOCAL_DISK);
-        var store = MetadataStore.inMemoryMetadataStore("post-boot", tracker);
-        var content = bytes("restored block content");
-        var id = BlockId.blockId(content).unwrap();
+        var fixture = new Restored(tracker);
+        var id = fixture.add("restored block content", 500L);
+        var manager = fixture.demotion(DemotionStrategy.LRU, 10);
 
-        memory.put(id, content).await().unwrap();
-        // A record from before this boot, as a snapshot restore installs it: created earlier, never read here.
-        store.restoreLifecycles(List.of(BlockLifecycle.blockLifecycle(id,
-                                                                      java.util.EnumSet.of(TierLevel.MEMORY),
-                                                                      1,
-                                                                      500L,
-                                                                      500L,
-                                                                      0)));
+        assertThat(tracker.isHeldBack(fixture.store().getLifecycle(id).unwrap())).as("inside the window and unknown").isTrue();
+        assertThat(manager.demote()).as("full tier: demoted at once, window or not").isEqualTo(1);
+        assertThat(fixture.stillInMemory(id)).isFalse();
+    }
 
-        var manager = DemotionManager.demotionManager(List.of(memory, disk),
-                                                      store,
-                                                      demotionConfig(DemotionStrategy.LRU, 0.01, 0.009, 10));
+    /// Among blocks whose reads are unknown, the order is oldest-created first whatever the strategy ranks by:
+    /// SIZE_PRESSURE alone would take the newest first.
+    @Test
+    void demotion_ofUnknownBlocksInsideTheWindow_takesTheOldestCreatedFirst() {
+        var clock = new AtomicLong(1_000_000);
+        var fixture = new Restored(AccessTracker.accessTracker(WARM_UP_MS, clock::get));
+        var newer = fixture.add("restored newer", 600L);
+        var older = fixture.add("restored older", 500L);
 
-        manager.activate();
-        clock.addAndGet(WARM_UP_MS - 1);
+        assertThat(fixture.demotion(DemotionStrategy.SIZE_PRESSURE, 1).demote()).isEqualTo(1);
+        assertThat(fixture.stillInMemory(older)).as("the older-created one went").isFalse();
+        assertThat(fixture.stillInMemory(newer)).isTrue();
+    }
 
-        assertThat(manager.demote()).as("inside the window the unknown block is held back").isZero();
-        assertThat(store.getLifecycle(id).unwrap().presentIn()).contains(TierLevel.MEMORY);
+    /// Inside the window a block read since boot is ranked on its reads and the unknown ones come after it;
+    /// once the window has passed the unknown block is just an old one and goes first.
+    @Test
+    void demotion_ranksUnknownBlocksAfterTheOnesReadSinceBoot_untilTheWindowPasses() {
+        var clock = new AtomicLong(1_000_000);
+        var tracker = AccessTracker.accessTracker(WARM_UP_MS, clock::get);
+        var fixture = new Restored(tracker);
+        var unknown = fixture.add("restored unknown", 500L);
+        var known = fixture.add("restored known", 700L);
 
-        clock.addAndGet(1);
+        tracker.record(known);
 
-        assertThat(manager.demote()).as("after the window it is demoted").isEqualTo(1);
-        assertThat(store.getLifecycle(id).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
+        assertThat(fixture.demotion(DemotionStrategy.LRU, 1).demote()).isEqualTo(1);
+        assertThat(fixture.stillInMemory(known)).as("inside the window the read one is demoted first").isFalse();
+        assertThat(fixture.stillInMemory(unknown)).isTrue();
+
+        var clockAfter = new AtomicLong(1_000_000);
+        var trackerAfter = AccessTracker.accessTracker(WARM_UP_MS, clockAfter::get);
+        var after = new Restored(trackerAfter);
+        var unknownAfter = after.add("restored unknown", 500L);
+        var knownAfter = after.add("restored known", 700L);
+
+        trackerAfter.record(knownAfter);
+        clockAfter.addAndGet(WARM_UP_MS);
+
+        assertThat(after.demotion(DemotionStrategy.LRU, 1).demote()).isEqualTo(1);
+        assertThat(after.stillInMemory(unknownAfter)).as("after the window the older record goes first").isFalse();
+        assertThat(after.stillInMemory(knownAfter)).isTrue();
+    }
+
+    /// AGE ranks by creation alone: unknown access changes nothing for it, so inside the window the older
+    /// record goes first even though a younger one was read since boot.
+    @Test
+    void ageDemotion_isNotReorderedByUnknownAccess() {
+        var clock = new AtomicLong(1_000_000);
+        var tracker = AccessTracker.accessTracker(WARM_UP_MS, clock::get);
+        var fixture = new Restored(tracker);
+        var older = fixture.add("restored older unknown", 500L);
+        var younger = fixture.add("restored younger known", 700L);
+
+        tracker.record(younger);
+
+        assertThat(fixture.demotion(DemotionStrategy.AGE, 1).demote()).isEqualTo(1);
+        assertThat(fixture.stillInMemory(older)).isFalse();
+        assertThat(fixture.stillInMemory(younger)).isTrue();
+    }
+
+    /// The window is measured on a monotonic source from boot: a wall-clock step of an hour either way
+    /// changes nothing. Forward, the window does not end at once; backward, it does not stretch.
+    @Test
+    void warmUpWindow_isNotMovedByAWallClockStep() {
+        var wall = new AtomicLong(1_000_000);
+        var nanos = new AtomicLong(7_000_000_000L);
+        var tracker = AccessTracker.accessTracker(WARM_UP_MS, wall::get, nanos::get);
+        var record = BlockLifecycle.blockLifecycle(BlockId.blockId(bytes("stepped")).unwrap(),
+                                                   java.util.EnumSet.of(TierLevel.MEMORY), 1, 500L, 500L, 0);
+
+        step(wall, nanos, 1_000);
+        wall.addAndGet(3_600_000);
+
+        assertThat(tracker.isHeldBack(record)).as("+1 h wall step: still inside the window").isTrue();
+
+        step(wall, nanos, WARM_UP_MS - 1_000 - 1);
+
+        assertThat(tracker.isHeldBack(record)).as("one ms short of the window on the monotonic clock").isTrue();
+
+        step(wall, nanos, 1);
+
+        assertThat(tracker.isHeldBack(record)).as("the window ends on the monotonic clock").isFalse();
+
+        var wall2 = new AtomicLong(1_000_000);
+        var nanos2 = new AtomicLong(7_000_000_000L);
+        var tracker2 = AccessTracker.accessTracker(WARM_UP_MS, wall2::get, nanos2::get);
+
+        wall2.addAndGet(-3_600_000);
+        step(wall2, nanos2, WARM_UP_MS);
+
+        assertThat(tracker2.isHeldBack(record)).as("-1 h wall step: the window did not stretch").isFalse();
+    }
+
+    private static void step(AtomicLong wall, AtomicLong nanos, long ms) {
+        wall.addAndGet(ms);
+        nanos.addAndGet(ms * 1_000_000L);
+    }
+
+    /// Production runs the window the default constructor gives: 15 minutes, to the millisecond.
+    @Test
+    void productionWarmUpWindow_isFifteenMinutes() {
+        var wall = new AtomicLong(1_000_000);
+        var nanos = new AtomicLong(7_000_000_000L);
+        var tracker = AccessTracker.accessTracker(wall::get, nanos::get);
+        var record = BlockLifecycle.blockLifecycle(BlockId.blockId(bytes("production")).unwrap(),
+                                                   java.util.EnumSet.of(TierLevel.MEMORY), 1, 500L, 500L, 0);
+
+        wall.addAndGet(3_600_000);
+        nanos.addAndGet((15 * 60_000L - 1) * 1_000_000L);
+
+        assertThat(tracker.isHeldBack(record)).as("on the monotonic source, whatever the wall clock did").isTrue();
+
+        nanos.addAndGet(1_000_000L);
+
+        assertThat(tracker.isHeldBack(record)).isFalse();
     }
 
     /// A read inside the window makes the block known, and known blocks are ranked on what was read: the one
@@ -138,6 +271,34 @@ class StorageInstanceAccessTrackingTest {
 
         assertThat(store.getLifecycle(readLast).unwrap().presentIn()).contains(TierLevel.MEMORY);
         assertThat(store.getLifecycle(neverRead).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
+    }
+
+    /// SIZE_PRESSURE demotes the most recently read first, and what was read is in the tracker: the block
+    /// written first but read last goes, the unread newer one stays, though its record is the newer.
+    @Test
+    void sizePressureDemotion_ranksByTheReadsTheTrackerSaw() throws InterruptedException {
+        var memory = MemoryTier.memoryTier(200, TierLevel.MEMORY);
+        var disk = MemoryTier.memoryTier(2000, TierLevel.LOCAL_DISK);
+        var store = MetadataStore.inMemoryMetadataStore("size-pressure");
+        var node = StorageInstance.storageInstance("c08-size", List.of(memory, disk), store);
+        var readLast = node.put(bytes("written first, read last")).await().unwrap();
+
+        Thread.sleep(5);
+
+        var neverRead = node.put(bytes("written second, never read")).await().unwrap();
+
+        Thread.sleep(5);
+        node.get(readLast).await().unwrap();
+
+        var manager = DemotionManager.demotionManager(List.of(memory, disk),
+                                                      store,
+                                                      demotionConfig(DemotionStrategy.SIZE_PRESSURE, 0.01, 0.009, 1));
+
+        manager.activate();
+        manager.demote();
+
+        assertThat(store.getLifecycle(readLast).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
+        assertThat(store.getLifecycle(neverRead).unwrap().presentIn()).contains(TierLevel.MEMORY);
     }
 
     /// The record's own access fields are frozen at creation: reads leave the record exactly as it was, and

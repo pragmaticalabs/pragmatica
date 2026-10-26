@@ -161,13 +161,14 @@ class StorageInstanceUnacknowledgedClaimTest {
         var holder = new InMemoryMetadataStore[1];
         var map = new ConcurrentHashMap<BlockId, BlockLifecycle>() {
             @Override
-            public BlockLifecycle putIfAbsent(BlockId key, BlockLifecycle value) {
-                var previous = super.putIfAbsent(key, value);
+            public BlockLifecycle compute(BlockId key,
+                                          java.util.function.BiFunction<? super BlockId, ? super BlockLifecycle, ? extends BlockLifecycle> fn) {
+                var result = super.compute(key, fn);
 
                 seenRightAfterInsert.addAll(holder[0].listAllLifecycles());
                 markedRightAfterInsert.add(holder[0].isUnacknowledged(key));
 
-                return previous;
+                return result;
             }
         };
 
@@ -178,6 +179,56 @@ class StorageInstanceUnacknowledgedClaimTest {
         assertThat(holder[0].claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isTrue();
         assertThat(seenRightAfterInsert).as("a capture right after the insert lists nothing").isEmpty();
         assertThat(markedRightAfterInsert).as("and the id is already marked").containsExactly(true);
+    }
+
+    /// A put of content already stored claims its id again and loses to the acknowledged record. That loss
+    /// must never hide the acknowledged record from a snapshot capture, at any instant of the claim: the
+    /// record is older than the last snapshot, so a capture that skipped it would regress it. The map
+    /// hands the test the instant right before and right after the claim's step on the entry.
+    @Test
+    void claimUnacknowledged_losingToAnAcknowledgedRecord_neverHidesItFromACapture() {
+        var listedAround = new ArrayList<Integer>();
+        var holder = new InMemoryMetadataStore[1];
+        var armed = new java.util.concurrent.atomic.AtomicBoolean();
+        var map = new ConcurrentHashMap<BlockId, BlockLifecycle>() {
+            @Override
+            public BlockLifecycle putIfAbsent(BlockId key, BlockLifecycle value) {
+                capture();
+
+                return super.putIfAbsent(key, value);
+            }
+
+            @Override
+            public BlockLifecycle compute(BlockId key,
+                                          java.util.function.BiFunction<? super BlockId, ? super BlockLifecycle, ? extends BlockLifecycle> fn) {
+                capture();
+
+                var result = super.compute(key, fn);
+
+                capture();
+
+                return result;
+            }
+
+            private void capture() {
+                if (armed.get()) {
+                    listedAround.add(holder[0].listAllLifecycles().size());
+                }
+            }
+        };
+
+        holder[0] = InMemoryMetadataStore.inMemoryMetadataStore("duplicate-claim", AccessTracker.accessTracker(), map);
+
+        var id = BlockId.blockId(CONTENT).unwrap();
+
+        assertThat(holder[0].claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isTrue();
+        holder[0].acknowledgeClaim(id);
+        armed.set(true);
+
+        assertThat(holder[0].claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isFalse();
+        assertThat(listedAround).as("a capture was taken around the losing claim").isNotEmpty();
+        assertThat(listedAround).as("and listed the acknowledged record every time").containsOnly(1);
+        assertThat(holder[0].isUnacknowledged(id)).isFalse();
     }
 
     private static StorageInstance instance(MetadataStore store, LocalDiskTier disk) {

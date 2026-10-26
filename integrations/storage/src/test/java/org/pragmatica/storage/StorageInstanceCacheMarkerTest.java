@@ -399,6 +399,31 @@ class StorageInstanceCacheMarkerTest {
             assertThat(readerStore.getLifecycle(ids.get(6)).isPresent()).as("the table is full again after the sweep").isFalse();
         }
 
+        /// A marker is idle by the reads the tracker saw, not by its record's (frozen) time: of two markers
+        /// created together, the one read again inside the idle window survives the sweep, the other goes.
+        @Test
+        void sweep_keepsAMarkerReadInsideTheIdleWindow_andDropsTheOneThatWasNot() {
+            var clock = new AtomicLong(System.currentTimeMillis());
+
+            readerStore = MetadataStore.inMemoryMetadataStore("reader-clocked", AccessTracker.accessTracker(AccessTracker.DEFAULT_WARM_UP_MS, clock::get));
+
+            var bounded = readerInstance(DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(2, 1_000L, 100L), clock, _ -> {});
+            var kept = writeElsewhere("read-again");
+            var dropped = writeElsewhere("read-once");
+            var newcomer = writeElsewhere("newcomer");
+
+            bounded.get(kept).await().unwrap();
+            bounded.get(dropped).await().unwrap();
+            clock.addAndGet(800L);
+            bounded.get(kept).await().unwrap();
+            clock.addAndGet(800L);
+            bounded.get(newcomer).await().unwrap();
+
+            assertThat(readerStore.getLifecycle(kept).isPresent()).as("idle 800 ms of 1,000: kept").isTrue();
+            assertThat(readerStore.getLifecycle(dropped).isPresent()).as("idle 1,600 ms: swept").isFalse();
+            assertThat(readerStore.getLifecycle(newcomer).isPresent()).as("and its room went to the newcomer").isTrue();
+        }
+
         @Test
         void get_whileTheTableIsFull_sweepsAtMostOncePerInterval() {
             var clock = new AtomicLong(System.currentTimeMillis());

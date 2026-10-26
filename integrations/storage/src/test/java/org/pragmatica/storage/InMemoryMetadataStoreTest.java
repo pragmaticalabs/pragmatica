@@ -219,6 +219,33 @@ class InMemoryMetadataStoreTest {
             assertThat(store.listAllLifecycles()).extracting(BlockLifecycle::blockId).containsExactly(id);
         }
 
+        /// A claim for a real block replaces a cache-only marker and keeps the presence the marker recorded;
+        /// the replacement is a visible-to-nobody claim until acknowledged, and the epoch moves once, on the ack.
+        @Test
+        void claimUnacknowledged_overACacheMarker_replacesItKeepingItsPresence() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, java.util.Set.of(TierLevel.REMOTE)));
+
+            assertThat(store.claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isTrue();
+
+            var record = store.getLifecycle(id).unwrap();
+
+            assertThat(record.cacheOnly()).isFalse();
+            assertThat(record.presentIn()).containsExactlyInAnyOrder(TierLevel.REMOTE, TierLevel.LOCAL_DISK);
+            assertThat(store.isUnacknowledged(id)).isTrue();
+        }
+
+        /// A claim for a cache-only marker counts no epoch step, as for any marker: it is not a write.
+        @Test
+        void claimUnacknowledged_ofACacheMarker_movesNoEpoch() {
+            var id = blockIdOf(CONTENT_A);
+            var before = store.currentEpoch();
+
+            assertThat(store.claimUnacknowledged(id, BlockLifecycle.cacheOnlyLifecycle(id, java.util.Set.of(TierLevel.REMOTE)))).isTrue();
+            assertThat(store.currentEpoch()).isEqualTo(before);
+        }
+
         @Test
         void acknowledgeClaim_advancesTheEpoch_becauseTheRecordBecomesVisibleToSnapshots() {
             var id = blockIdOf(CONTENT_A);

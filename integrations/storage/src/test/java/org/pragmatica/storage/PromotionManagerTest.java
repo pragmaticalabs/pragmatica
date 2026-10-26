@@ -129,6 +129,79 @@ class PromotionManagerTest {
             assertThat(promoted).isZero();
         }
 
+        /// The window is judged on the tracker's last read, not on the record's own (frozen) time: the record
+        /// claims a read a moment ago, the tracker saw the last one ten minutes ago -- not promoted.
+        @Test
+        void promote_whoseTrackerSawTheLastReadOutsideTheWindow_isNotPromoted_whateverTheRecordSays() {
+            var config = promotionConfig(5, 300_000L, 10);
+            var id = BlockId.blockId(BLOCK_A).unwrap();
+
+            diskTier.put(id, BLOCK_A).await().unwrap();
+
+            var now = System.currentTimeMillis();
+            var tenMinutesAgo = now - 600_000L;
+            var staleTracker = AccessTracker.accessTracker(AccessTracker.DEFAULT_WARM_UP_MS, () -> tenMinutesAgo);
+            var store = MetadataStore.inMemoryMetadataStore("promotion-window", staleTracker);
+
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id, EnumSet.of(TierLevel.LOCAL_DISK), 1, now, now, 100));
+            reads(store, id, 100);
+
+            var pm = promotionManager(List.of(memoryTier, diskTier), store, config);
+            pm.activate();
+
+            assertThat(pm.promote()).isZero();
+        }
+
+        /// The converse: the record claims an old, never-read block, the tracker saw recent reads -- promoted.
+        @Test
+        void promote_whoseTrackerSawRecentReads_isPromoted_whateverTheRecordSays() {
+            var config = promotionConfig(5, 300_000L, 10);
+            var id = BlockId.blockId(BLOCK_A).unwrap();
+
+            diskTier.put(id, BLOCK_A).await().unwrap();
+
+            var tenMinutesAgo = System.currentTimeMillis() - 600_000L;
+
+            metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id,
+                                                                        EnumSet.of(TierLevel.LOCAL_DISK),
+                                                                        1,
+                                                                        tenMinutesAgo,
+                                                                        tenMinutesAgo,
+                                                                        0));
+            reads(metadataStore, id, 100);
+
+            var pm = promotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            pm.activate();
+
+            assertThat(pm.promote()).isEqualTo(1);
+        }
+
+        /// The most-read candidate goes first, by the tracker's count: two candidates whose records claim the
+        /// opposite order (the record counts are frozen and no input). One slot per cycle.
+        @Test
+        void promote_ranksCandidatesByTheReadsTheTrackerSaw_notTheirRecords() {
+            var config = promotionConfig(5, 300_000L, 1);
+            var lessRead = BlockId.blockId(BLOCK_A).unwrap();
+            var moreRead = BlockId.blockId(BLOCK_B).unwrap();
+
+            diskTier.put(lessRead, BLOCK_A).await().unwrap();
+            diskTier.put(moreRead, BLOCK_B).await().unwrap();
+
+            var now = System.currentTimeMillis();
+
+            metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(lessRead, EnumSet.of(TierLevel.LOCAL_DISK), 1, now, now, 1_000));
+            metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(moreRead, EnumSet.of(TierLevel.LOCAL_DISK), 1, now, now, 1));
+            reads(metadataStore, lessRead, 10);
+            reads(metadataStore, moreRead, 20);
+
+            var pm = promotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            pm.activate();
+
+            assertThat(pm.promote()).isEqualTo(1);
+            assertThat(memoryTier.exists(moreRead).await().unwrap()).as("the more-read one took the slot").isTrue();
+            assertThat(memoryTier.exists(lessRead).await().unwrap()).isFalse();
+        }
+
         @Test
         void promote_alreadyInFastestTier_noAction() {
             var config = promotionConfig(5, 300_000L, 10);
