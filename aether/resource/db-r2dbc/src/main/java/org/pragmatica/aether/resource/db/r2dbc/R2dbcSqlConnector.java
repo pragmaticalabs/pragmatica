@@ -59,7 +59,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                    (row, meta) -> mapRow(row, mapper),
                                    params)
                          .flatMap(R2dbcSqlConnector::unwrapMappedResult)
-        .mapError(R2dbcSqlConnector::toConnectorError);
+                         .mapError(R2dbcSqlConnector::toConnectorError);
     }
 
     @Override
@@ -68,7 +68,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                         (row, meta) -> mapRow(row, mapper),
                                         params)
                          .flatMap(R2dbcSqlConnector::unwrapOptionalResult)
-        .mapError(R2dbcSqlConnector::toConnectorError);
+                         .mapError(R2dbcSqlConnector::toConnectorError);
     }
 
     @Override
@@ -77,14 +77,14 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                     (row, meta) -> mapRow(row, mapper),
                                     params)
                          .flatMap(R2dbcSqlConnector::collectSuccessfulResults)
-        .mapError(R2dbcSqlConnector::toConnectorError);
+                         .mapError(R2dbcSqlConnector::toConnectorError);
     }
 
     @Override
     public Promise<Integer> update(String sql, Object... params) {
         return operations.update(sql, params)
                          .map(Long::intValue)
-        .mapError(R2dbcSqlConnector::toConnectorError);
+                         .mapError(R2dbcSqlConnector::toConnectorError);
     }
 
     @Override
@@ -93,14 +93,12 @@ public final class R2dbcSqlConnector implements SqlConnector {
             return Promise.success(new int[0]);
         }
 
-        return withConnection(conn -> executeBatch(conn, sql, paramsList))
-        .mapError(R2dbcSqlConnector::toConnectorError);
+        return withConnection(conn -> executeBatch(conn, sql, paramsList)).mapError(R2dbcSqlConnector::toConnectorError);
     }
 
     @Override
     public <T> Promise<T> transactional(SqlConnector.TransactionCallback<T> callback) {
-        return withConnection(conn -> beginAndExecute(conn, callback).fold(result -> resolveTransaction(conn, result)))
-        .mapError(R2dbcSqlConnector::toConnectorError);
+        return withConnection(conn -> beginAndExecute(conn, callback).fold(result -> resolveTransaction(conn, result))).mapError(R2dbcSqlConnector::toConnectorError);
     }
 
     @Override
@@ -240,10 +238,23 @@ public final class R2dbcSqlConnector implements SqlConnector {
         return switch (r2dbcError) {
             case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
             case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
-            case R2dbcError.ConnectionFailed c -> classified(c.sqlState(), c.message(), DatabaseConnectorError.connectionFailed(c.message(), none(), c.sqlState()));
-            case R2dbcError.ConstraintViolation v -> classified(v.sqlState(), v.constraint(), DatabaseConnectorError.constraintViolation("unknown", v.constraint(), v.sqlState()));
+            case R2dbcError.ConnectionFailed c -> classified(c.sqlState(),
+                                                             c.message(),
+                                                             DatabaseConnectorError.connectionFailed(c.message(),
+                                                                                                     none(),
+                                                                                                     c.sqlState()));
+            case R2dbcError.ConstraintViolation v -> classified(v.sqlState(),
+                                                                v.constraint(),
+                                                                DatabaseConnectorError.constraintViolation("unknown",
+                                                                                                           v.constraint(),
+                                                                                                           v.sqlState()));
             case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
-            case R2dbcError.QueryFailed q -> classified(q.sqlState(), q.message(), DatabaseConnectorError.queryFailed("", q.message(), none(), q.sqlState()));
+            case R2dbcError.QueryFailed q -> classified(q.sqlState(),
+                                                        q.message(),
+                                                        DatabaseConnectorError.queryFailed("",
+                                                                                           q.message(),
+                                                                                           none(),
+                                                                                           q.sqlState()));
             case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
         };
     }
@@ -254,7 +265,10 @@ public final class R2dbcSqlConnector implements SqlConnector {
     private static DatabaseConnectorError classified(Option<String> sqlState,
                                                      String message,
                                                      DatabaseConnectorError unclassified) {
-        return sqlState.map(state -> DatabaseConnectorError.fromSqlState(some(state), "", message, none()))
+        return sqlState.map(state -> DatabaseConnectorError.fromSqlState(some(state),
+                                                                         "",
+                                                                         message,
+                                                                         none()))
                        .or(unclassified);
     }
 
@@ -267,7 +281,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                                                               (row, meta) -> mapRow(row, mapper)),
                                                                 e -> R2dbcError.fromException(e, sql))
                                      .flatMap(R2dbcSqlConnector::unwrapMappedResult)
-            .mapError(R2dbcSqlConnector::toConnectorError);
+                                     .mapError(R2dbcSqlConnector::toConnectorError);
         }
 
         @Override
@@ -278,7 +292,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                                                                    (row, meta) -> mapRow(row, mapper)),
                                                                      e -> R2dbcError.fromException(e, sql))
                                      .flatMap(R2dbcSqlConnector::unwrapOptionalResult)
-            .mapError(R2dbcSqlConnector::toConnectorError);
+                                     .mapError(R2dbcSqlConnector::toConnectorError);
         }
 
         @Override
@@ -289,7 +303,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                                                                      (row, meta) -> mapRow(row, mapper)),
                                                                        e -> R2dbcError.fromException(e, sql))
                                      .flatMap(R2dbcSqlConnector::collectSuccessfulResults)
-            .mapError(R2dbcSqlConnector::toConnectorError);
+                                     .mapError(R2dbcSqlConnector::toConnectorError);
         }
 
         @Override
@@ -302,7 +316,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                                                                          e -> R2dbcError.fromException(e,
                                                                                                                        sql)))
                                      .map(Long::intValue)
-            .mapError(R2dbcSqlConnector::toConnectorError);
+                                     .mapError(R2dbcSqlConnector::toConnectorError);
         }
 
         @Override
@@ -318,7 +332,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
                                      .flatMap(results -> collectUpdateCounts(results,
                                                                              new int[results.size()],
                                                                              0))
-            .mapError(R2dbcSqlConnector::toConnectorError);
+                                     .mapError(R2dbcSqlConnector::toConnectorError);
         }
 
         @Override
