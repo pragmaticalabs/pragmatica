@@ -26,6 +26,44 @@ public sealed interface ContentStoreError extends Cause {
         }
     }
 
+    /// The configured chunk size is not positive: no content can be split into chunks of `chunkSizeBytes`. The instance's
+    /// `maxBlockBytes` is named beside it so the refusal states what the size was judged against.
+    record ChunkSizeNotPositive(int chunkSizeBytes, int maxBlockBytes) implements ContentStoreError {
+        static ChunkSizeNotPositive chunkSizeNotPositive(int chunkSizeBytes, int maxBlockBytes) {
+            return new ChunkSizeNotPositive(chunkSizeBytes, maxBlockBytes);
+        }
+
+        @Override
+        public String message() {
+            return "chunkSizeBytes " + chunkSizeBytes
+                 + " must be at least 1 (the instance's maximum block size is " + maxBlockBytes
+                 + " bytes)";
+        }
+    }
+
+    /// The configured chunk size would produce blocks the instance refuses: `requiredBlockBytes` is the largest block a
+    /// full chunk makes once framed, `maxBlockBytes` the instance's limit, `largestChunkSize` the biggest chunk size that fits.
+    record ChunkSizeExceedsBlockLimit(int chunkSizeBytes,
+                                      long requiredBlockBytes,
+                                      int maxBlockBytes,
+                                      long largestChunkSize) implements ContentStoreError {
+        static ChunkSizeExceedsBlockLimit chunkSizeExceedsBlockLimit(int chunkSizeBytes,
+                                                                     long requiredBlockBytes,
+                                                                     int maxBlockBytes,
+                                                                     long largestChunkSize) {
+            return new ChunkSizeExceedsBlockLimit(chunkSizeBytes, requiredBlockBytes, maxBlockBytes, largestChunkSize);
+        }
+
+        @Override
+        public String message() {
+            return "chunkSizeBytes " + chunkSizeBytes
+                 + " makes blocks of up to " + requiredBlockBytes
+                 + " bytes, over the instance's maximum block size of " + maxBlockBytes
+                 + " bytes; use a chunkSizeBytes of at most " + largestChunkSize
+                 + " or raise the instance's max_block_bytes";
+        }
+    }
+
     record ContentReassemblyFailed(String detail) implements ContentStoreError {
         @Override
         public String message() {
