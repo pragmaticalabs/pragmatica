@@ -49,7 +49,7 @@ public final class PgAsyncConnectionFactory implements ConnectionFactory {
     public Publisher<? extends io.r2dbc.spi.Connection> create() {
         return Mono.create(sink -> connectible.getConnection()
                                               .onSuccess(conn -> sink.success(new PgAsyncConnection(conn)))
-                                              .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                              .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     @Override

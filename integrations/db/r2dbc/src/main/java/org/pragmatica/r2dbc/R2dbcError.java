@@ -18,6 +18,7 @@ package org.pragmatica.r2dbc;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.SqlStates;
 
 import io.r2dbc.spi.R2dbcDataIntegrityViolationException;
 import io.r2dbc.spi.R2dbcException;
@@ -31,7 +32,11 @@ import static org.pragmatica.r2dbc.R2dbcError.DatabaseFailure.databaseFailure;
 /// Maps common R2DBC exceptions to domain-friendly error types.
 public sealed interface R2dbcError extends Cause {
     /// Connection to database failed.
-    record ConnectionFailed(String message) implements R2dbcError, Cause.Transient {
+    record ConnectionFailed(String message, Option<String> sqlState) implements R2dbcError, Cause.Transient {
+        public ConnectionFailed(String message) {
+            this(message, Option.none());
+        }
+
         @Override
         public String message() {
             return "Connection failed: " + message;
@@ -39,7 +44,11 @@ public sealed interface R2dbcError extends Cause {
     }
 
     /// SQL query execution failed.
-    record QueryFailed(String message) implements R2dbcError {
+    record QueryFailed(String message, Option<String> sqlState) implements R2dbcError {
+        public QueryFailed(String message) {
+            this(message, Option.none());
+        }
+
         public static QueryFailed queryFailed(String message) {
             return new QueryFailed(message);
         }
@@ -51,7 +60,11 @@ public sealed interface R2dbcError extends Cause {
     }
 
     /// Database constraint violation (unique, foreign key, etc).
-    record ConstraintViolation(String constraint) implements R2dbcError {
+    record ConstraintViolation(String constraint, Option<String> sqlState) implements R2dbcError {
+        public ConstraintViolation(String constraint) {
+            this(constraint, Option.none());
+        }
+
         @Override
         public String message() {
             return "Constraint violation: " + constraint;
@@ -102,13 +115,7 @@ public sealed interface R2dbcError extends Cause {
     ///
     /// @return Corresponding R2dbcError
     static R2dbcError fromException(Throwable throwable) {
-        return switch (throwable) {
-            case R2dbcTimeoutException e -> new Timeout(e.getMessage());
-            case R2dbcDataIntegrityViolationException e -> new ConstraintViolation(e.getMessage());
-            case R2dbcTransientException e -> new ConnectionFailed(e.getMessage());
-            case R2dbcException e -> Option.option(e.getSqlState()).filter(state -> state.startsWith("08")).map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage())).or(() -> databaseFailure(e));
-            default -> databaseFailure(throwable);
-        };
+        return classify(driverException(throwable), throwable, false);
     }
 
     /// Maps R2DBC exceptions with context to typed R2dbcError causes.
@@ -119,12 +126,41 @@ public sealed interface R2dbcError extends Cause {
     /// @return Corresponding R2dbcError
     @SuppressWarnings("unused")
     static R2dbcError fromException(Throwable throwable, String ignored) {
-        return switch (throwable) {
-            case R2dbcTimeoutException e -> new Timeout(e.getMessage());
-            case R2dbcDataIntegrityViolationException e -> new ConstraintViolation(e.getMessage());
-            case R2dbcTransientException e -> new ConnectionFailed(e.getMessage());
-            case R2dbcException e -> Option.option(e.getSqlState()).filter(state -> state.startsWith("08")).map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage())).or(() -> new QueryFailed(e.getMessage()));
-            default -> databaseFailure(throwable);
+        return classify(driverException(throwable), throwable, true);
+    }
+
+    /// The R2DBC exception a failure carries: the failure itself, or the one a wrapping layer (jOOQ's
+    /// `DataAccessException`) holds as its cause. The SQLSTATE and the transient / constraint classification live
+    /// on that exception, so reading only the outermost one loses them.
+    private static Option<R2dbcException> driverException(Throwable throwable) {
+        return throwable instanceof R2dbcException e
+               ? Option.some(e)
+               : Option.option(throwable.getCause()).flatMap(R2dbcError::driverException);
+    }
+
+    private static R2dbcError classify(Option<R2dbcException> driver, Throwable throwable, boolean queryContext) {
+        return driver.map(e -> classifyDriver(e, queryContext))
+                     .or(() -> databaseFailure(throwable));
+    }
+
+    private static R2dbcError classifyDriver(R2dbcException e, boolean queryContext) {
+        var sqlState = Option.option(e.getSqlState());
+
+        return switch (e) {
+            case R2dbcTimeoutException _ -> new Timeout(e.getMessage());
+            case R2dbcDataIntegrityViolationException _ -> new ConstraintViolation(e.getMessage(), sqlState);
+            case R2dbcTransientException _ -> new ConnectionFailed(e.getMessage(), sqlState);
+            default -> classifyBySqlState(e, sqlState, queryContext);
         };
+    }
+
+    private static R2dbcError classifyBySqlState(R2dbcException e, Option<String> sqlState, boolean queryContext) {
+        if (sqlState.filter(SqlStates::isTransient).isPresent()) {
+            return new ConnectionFailed(e.getMessage(), sqlState);
+        }
+
+        return queryContext
+               ? new QueryFailed(e.getMessage(), sqlState)
+               : databaseFailure(e);
     }
 }
