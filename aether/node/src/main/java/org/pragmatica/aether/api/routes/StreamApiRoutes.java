@@ -902,6 +902,15 @@ public final class StreamApiRoutes implements RouteSource {
     static Cause retryableRefusal(String streamName, Cause cause) {
         return isPreAppendRefusal(cause)
                ? new ManagementServerError.PublishRetryable(streamName, cause)
+               : withoutRetryInvitation(cause);
+    }
+
+    /// A publish is not idempotent, so only a refusal on the pre-append list may answer a status that invites a retry
+    /// (503, 429). Any other raw [StreamError] would take its class status from the management funnel (often 503), so it
+    /// is pinned to the 500 a raw stream error answered on this route before the funnel classified stream errors.
+    private static Cause withoutRetryInvitation(Cause cause) {
+        return cause instanceof StreamError
+               ? new ManagementServerError.StreamRefused(HttpStatus.INTERNAL_SERVER_ERROR, cause)
                : cause;
     }
 

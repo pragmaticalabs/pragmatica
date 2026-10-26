@@ -160,19 +160,19 @@ public final class MavenProtocolRoutes implements RouteHandler {
         }
 
         if (method == GET) {
-            handleGet(response, path);
+            handleGet(response, path, ctx.requestId());
 
             return true;
         }
 
         if (method == POST || method == PUT) {
-            handlePush(response, path, ctx.body());
+            handlePush(response, path, ctx.body(), ctx.requestId());
 
             return true;
         }
 
         if (method == DELETE) {
-            handleArchive(response, path);
+            handleArchive(response, path, ctx.requestId());
 
             return true;
         }
@@ -195,7 +195,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
     }
 
     @Contract
-    private void handlePush(ResponseWriter response, String path, byte[] content) {
+    private void handlePush(ResponseWriter response, String path, byte[] content, String requestId) {
         var admission = admitPush();
 
         if (admission == PushAdmission.DENIED) {
@@ -205,13 +205,13 @@ public final class MavenProtocolRoutes implements RouteHandler {
         }
 
         warnUnauthenticatedPush(admission, path);
-        handlePut(response, path, content);
+        handlePut(response, path, content, requestId);
     }
 
     /// `DELETE /repository/<groupPath>/<artifactId>/<version>` archives the version (#1778). Archiving
     /// changes what the cluster will resolve, so it takes the same OPERATOR-or-ADMIN admission as a push.
     @Contract
-    private void handleArchive(ResponseWriter response, String path) {
+    private void handleArchive(ResponseWriter response, String path, String requestId) {
         var admission = admitPush();
 
         if (admission == PushAdmission.DENIED) {
@@ -221,7 +221,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
         }
 
         warnUnauthenticatedPush(admission, path);
-        handleDelete(response, path);
+        handleDelete(response, path, requestId);
     }
 
     /// Defense-in-depth authorization for artifact publication (#282, #520). Artifact PUT/POST place
@@ -334,39 +334,39 @@ public final class MavenProtocolRoutes implements RouteHandler {
     }
 
     @Contract
-    private void handleGet(ResponseWriter response, String uri) {
+    private void handleGet(ResponseWriter response, String uri, String requestId) {
         var node = nodeSupplier.get();
 
         node.mavenProtocolHandler()
             .handleGet(uri)
             .timeout(requestTimeout)
             .onSuccess(r -> sendProtocolResponse(response, r))
-            .onFailure(cause -> sendFailureResponse(response, cause));
+            .onFailure(cause -> sendFailureResponse(response, cause, uri, requestId));
     }
 
     @Contract
-    private void handlePut(ResponseWriter response, String uri, byte[] content) {
+    private void handlePut(ResponseWriter response, String uri, byte[] content, String requestId) {
         var node = nodeSupplier.get();
 
         node.mavenProtocolHandler()
             .handlePut(uri, content)
             .timeout(requestTimeout)
             .onSuccess(r -> sendProtocolResponse(response, r))
-            .onFailure(cause -> sendFailureResponse(response, cause));
+            .onFailure(cause -> sendFailureResponse(response, cause, uri, requestId));
     }
 
     @Contract
-    private void handleDelete(ResponseWriter response, String uri) {
+    private void handleDelete(ResponseWriter response, String uri, String requestId) {
         var node = nodeSupplier.get();
 
         node.mavenProtocolHandler()
             .handleDelete(uri)
             .timeout(requestTimeout)
             .onSuccess(r -> sendProtocolResponse(response, r))
-            .onFailure(cause -> sendFailureResponse(response, cause));
+            .onFailure(cause -> sendFailureResponse(response, cause, uri, requestId));
     }
 
-    private void sendFailureResponse(ResponseWriter response, Cause cause) {
+    private void sendFailureResponse(ResponseWriter response, Cause cause, String uri, String requestId) {
         if (cause instanceof CoreError.Timeout) {
             response.error(HttpStatus.GATEWAY_TIMEOUT, HttpError.clientMessage(cause));
 
@@ -380,7 +380,9 @@ public final class MavenProtocolRoutes implements RouteHandler {
             return;
         }
 
-        response.internalError(cause);
+        // Every other cause goes through the management status funnel, like every other management route: its own
+        // status when it states one, else 500 with the unclassified-cause WARN (it used to bypass the funnel).
+        ProblemResponses.writeProblem(response, cause, uri, requestId);
     }
 
     private void sendProtocolResponse(ResponseWriter response, MavenResponse mavenResponse) {

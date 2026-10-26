@@ -37,7 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// - a type the table lists no longer exists (a rename: the table entry would silently stop applying),
 /// - a status differs from the pinned one.
 ///
-/// An ad-hoc `Causes.cause("text")` instance has no type, so it is outside this universe by construction.
+/// An ad-hoc `Causes.cause("text")` instance has no type, so it is outside this universe by construction. The walk covers
+/// `org.pragmatica.aether.api` only: a plain cause declared in another package that reaches a management route is answered
+/// 500 with one WARN, and this test stays green (a known bound, disclosed in the change that introduced the funnel).
 class ManagementStatusCoverageTest {
     private static final String UNCLASSIFIED = "UNCLASSIFIED";
     private static final String API_PACKAGE = "org/pragmatica/aether/api";
@@ -191,14 +193,42 @@ class ManagementStatusCoverageTest {
         assertThat(ManagementStatus.statusOf(new ParameterError.InvalidParameter("p"))).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
-    @Test
-    void unclassifiedCause_answers500_andIsReportedOnce() {
-        var untyped = Causes.cause("not a classified type");
+    /// Not in the central table and not `HttpStatusAware`: unclassified by construction. Declared in the test, so it is
+    /// outside the main classes the coverage walk scans.
+    private record Unlisted() implements Cause {
+        @Override
+        public String message() {
+            return "not a classified type";
+        }
+    }
 
-        assertThat(ManagementStatus.classifiedStatus(untyped).isEmpty()).isTrue();
-        assertThat(ManagementStatus.statusOf(untyped)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        assertThat(ManagementStatus.statusOf(untyped)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        assertThat(ManagementStatus.reportedTypes()).contains(untyped.getClass().getName());
+    private record UnlistedViaProblemResponses() implements Cause {
+        @Override
+        public String message() {
+            return "not a classified type, met through ProblemResponses";
+        }
+    }
+
+    @Test
+    void unclassifiedCause_answers500_andWarnsExactlyOncePerType() {
+        var type = Unlisted.class.getName();
+
+        assertThat(ManagementStatus.classifiedStatus(new Unlisted()).isEmpty()).isTrue();
+        assertThat(ManagementStatus.statusOf(new Unlisted())).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(ManagementStatus.statusOf(new Unlisted())).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(ManagementStatus.statusOf(new Unlisted())).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(ManagementStatus.warningsFor(type)).as("one WARN for three occurrences").isEqualTo(1);
+        assertThat(ManagementStatus.reportedTypes()).contains(type);
+    }
+
+    @Test
+    void problemResponses_reachesTheUnclassifiedWarning() {
+        var type = UnlistedViaProblemResponses.class.getName();
+
+        assertThat(ManagementStatus.warningsFor(type)).isZero();
+        assertThat(ProblemResponses.resolveStatus(new UnlistedViaProblemResponses())).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(ProblemResponses.resolveStatus(new UnlistedViaProblemResponses())).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(ManagementStatus.warningsFor(type)).as("the production funnel warns, once").isEqualTo(1);
     }
 
     @Test

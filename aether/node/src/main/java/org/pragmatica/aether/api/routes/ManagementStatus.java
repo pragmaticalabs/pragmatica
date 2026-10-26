@@ -27,8 +27,14 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-/// The one authority that turns a failure into a management-API HTTP status (the funnel behind
-/// [ProblemResponses#writeProblem]).
+/// The authority that turns a CAUSE into a management-API HTTP status (the funnel behind
+/// [ProblemResponses#writeProblem], which every management route and `MavenProtocolRoutes` write failures through).
+///
+/// Two other cause-to-status mappers remain in the management plane, both documented tables for failure classes that
+/// are not route errors: `ManagementServer.resolveSecurityErrorStatus` (authentication and authorisation denials:
+/// 401/403) and `ManagementServer.managementForwardFailureStatus` (a forwarded request that could not be delivered:
+/// `ForwardError.status()`, else 503). `MavenProtocolRoutes` keeps its own 504 (timeout) and 503 plus `Retry-After`
+/// (tier not admitted) and sends every other cause through this funnel.
 ///
 /// A cause is classified by exactly one of these rules, in this order:
 ///
@@ -54,6 +60,7 @@ import static org.pragmatica.lang.Option.some;
 public final class ManagementStatus {
     private static final Logger LOG = LoggerFactory.getLogger(ManagementStatus.class);
     private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
+    private static final Map<String, Integer> WARNINGS = new ConcurrentHashMap<>();
     private static final String API = "org.pragmatica.aether.api.";
     private static final String ROUTES = API + "routes.";
     private static final HttpStatus BAD_REQUEST = HttpStatus.BAD_REQUEST;
@@ -190,6 +197,11 @@ public final class ManagementStatus {
         return CENTRAL.keySet();
     }
 
+    /// How many unclassified-cause WARNs were emitted for this type: exactly 1 once it has met the funnel.
+    static int warningsFor(String type) {
+        return WARNINGS.getOrDefault(type, 0);
+    }
+
     /// The cause types reported as unclassified so far (each is logged once).
     static Set<String> reportedTypes() {
         return Set.copyOf(REPORTED);
@@ -224,6 +236,7 @@ public final class ManagementStatus {
         var type = cause.getClass().getName();
 
         if (REPORTED.add(type)) {
+            WARNINGS.merge(type, 1, Integer::sum);
             LOG.warn("Management cause {} has no HTTP status: answering 500. List it in ManagementStatus or give it HttpStatusAware ({})",
                      type,
                      cause.message());
