@@ -280,6 +280,7 @@ class UploadAdmissionTest {
         assertThat(admission.reservedBytes()).isZero();
         assertThat(admission.tryAcquire("bob", Long.MAX_VALUE).isSuccess()).as("alone again").isTrue();
         assertThat(admission.tryAcquire("carol", -5).isSuccess()).as("a negative declaration reserves nothing").isTrue();
+        assertThat(admission.reservedBytes()).as("and does not take bytes back from the others").isEqualTo(1_000);
     }
 
     @Test

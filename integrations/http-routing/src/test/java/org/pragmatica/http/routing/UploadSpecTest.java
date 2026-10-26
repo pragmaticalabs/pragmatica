@@ -199,6 +199,15 @@ class UploadSpecTest {
     }
 
     @Test
+    void partBreach_aDelimiterLookingLineThatDoesNotStartALine_doesNotSplitThePart() {
+        var lookalike = field("a", "ab--XB  \r\nrest");
+
+        assertThat(breachOf(parts(0, 0, 0, 5), body(lookalike))).as("one field of 14 bytes: --XB inside a line is content")
+                                                                .isEqualTo("A field in the multipart body is larger than 5 bytes");
+        assertThat(breachOf(parts(0, 0, 1, 0), body(lookalike))).isEmpty();
+    }
+
+    @Test
     void partBreach_moreThanTheDecoderPartCap_isAPartsBreach() {
         var spec = parts(0, 0, 200, 0);
         var many = java.util.stream.IntStream.range(0, 201).mapToObj(_ -> field("a", "1")).toArray(String[]::new);
