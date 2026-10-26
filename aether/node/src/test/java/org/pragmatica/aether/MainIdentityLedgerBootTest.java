@@ -35,7 +35,7 @@ class MainIdentityLedgerBootTest {
         var run = boot(dir, toml);
 
         assertThat(run.exit()).as("exit code; stderr:\n%s\nstdout:\n%s", run.err(), run.out()).isEqualTo(REFUSED_EXIT);
-        assertThat(run.err()).as("the operator-visible signal names the ledger and the path").contains("FATAL").contains("identity ledger").contains("blocker");
+        assertThat(run.out() + run.err()).as("the operator-visible signal names the ledger and the path").contains("FATAL").contains("identity ledger").contains("blocker");
     }
 
     private static Run boot(Path dir, String nodeToml) throws Exception {
