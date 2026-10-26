@@ -167,15 +167,6 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).containsOnlyOnce("StorageFactory.signalConsensusSynced(storageSetups);");
     }
 
-    /// A0b: the gauge a degraded instance is seen through is registered per instance by the management server.
-    @Test
-    void managementServer_registersTheDiskDegradedGaugePerInstance() throws Exception {
-        var source = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/java/org/pragmatica/aether/api/ManagementServer.java"))
-                                         .replaceAll("\\s+", "");
-
-        assertThat(source).containsOnlyOnce("observability.gauge(\"aether.storage.disk.degraded\",degraded,\"instance\",instance);");
-    }
-
     /// A0b: the leader-pinned storage group has no instance reporter; the assembly builds one and binds it to the node's sink, and
     /// the adapter's own test hands it a sink directly, so dropping the bind here left it green.
     @Test

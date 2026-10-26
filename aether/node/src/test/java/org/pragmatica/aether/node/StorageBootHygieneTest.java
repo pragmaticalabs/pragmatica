@@ -16,6 +16,7 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.storage.DegradeReporter;
 import org.pragmatica.storage.MountClaim;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.storage.ReadinessState;
@@ -45,6 +46,8 @@ class StorageBootHygieneTest {
     Path tempDir;
 
     private final List<OperatorWarning> raised = new CopyOnWriteArrayList<>();
+    private final java.util.concurrent.atomic.AtomicInteger barriers = new java.util.concurrent.atomic.AtomicInteger();
+    private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(raised::add);
 
     private Result<Map<String, StorageFactory.StorageSetup>> boot(Map<String, StorageConfig> configs, String nodeId) {
         return StorageFactory.createAll(configs,
@@ -62,6 +65,27 @@ class StorageBootHygieneTest {
         return raised.stream()
                      .filter(warning -> warning.code() == code && warning.subject().equals(subject))
                      .count();
+    }
+
+    /// Returns once everything handed to the sink before the call has been published: the hand-off is one FIFO worker, so a marker
+    /// warning that has come out of it was preceded by every earlier one. A "nothing was raised" assertion made after this is
+    /// decided by the queue, not by a pause that happened to be long enough.
+    private void drain() throws InterruptedException {
+        var subject = "barrier-" + barriers.incrementAndGet();
+        var barrier = DegradeReporter.degradeReporter(subject);
+
+        barrier.bind(sink);
+        barrier.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "barrier");
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (raised.stream().noneMatch(warning -> warning.subject().equals(subject)) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(raised).extracting(OperatorWarning::subject).as("the barrier came out of the hand-off within 5 s").contains(subject);
+    }
+
+    private List<OperatorWarning> published() {
+        return raised.stream().filter(warning -> !warning.subject().startsWith("barrier-")).toList();
     }
 
     private void awaitRaised(int count) throws InterruptedException {
@@ -100,8 +124,8 @@ class StorageBootHygieneTest {
     void synthesizedDefaults_thatCannotOpen_degradeWithOneWarningPerInstanceAndAGaugeState() throws Exception {
         var setups = boot(Map.of(), NODE).unwrap();
 
-        setups.get("artifacts").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
-        setups.get("content").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        setups.get("artifacts").degrade().bind(sink);
+        setups.get("content").degrade().bind(sink);
         awaitRaised(2);
 
         assertThat(setups).containsKeys("artifacts", "content");
@@ -117,7 +141,7 @@ class StorageBootHygieneTest {
     void bindOperatorWarnings_offersEveryInstancesBootConditionsToTheNodesSink() throws Exception {
         var setups = boot(Map.of(), NODE).unwrap();
 
-        StorageFactory.bindOperatorWarnings(setups, OperatorWarningSink.handingOffTo(raised::add));
+        StorageFactory.bindOperatorWarnings(setups, sink);
         awaitRaised(2);
 
         assertThat(raisedOf(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE, "artifacts")).isEqualTo(1);
@@ -146,7 +170,7 @@ class StorageBootHygieneTest {
                                                                                     NODE,
                                                                                     Option.none())).unwrap();
 
-        setups.get("streams").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        setups.get("streams").degrade().bind(sink);
         awaitRaised(1);
 
         assertThat(raisedOf(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE, "streams")).isEqualTo(1);
@@ -274,7 +298,7 @@ class StorageBootHygieneTest {
                                                     built.promotionManager(),
                                                     built.prefetchManager(),
                                                     built.degrade());
-        built.degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        built.degrade().bind(sink);
 
         var first = StorageFactory.activateNodeMaintenance(Map.of("artifacts", setup));
         var gcActiveAfterTheFailure = built.garbageCollector().isActive();
@@ -294,15 +318,15 @@ class StorageBootHygieneTest {
     @Test
     void activateNodeMaintenance_everyManagerStarting_raisesNothing() throws Exception {
         var setups = boot(Map.of(), NODE).unwrap();
-        setups.get("artifacts").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
-        setups.get("content").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        setups.get("artifacts").degrade().bind(sink);
+        setups.get("content").degrade().bind(sink);
         awaitRaised(2);
         raised.clear();
 
         StorageFactory.activateNodeMaintenance(setups).onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-        Thread.sleep(100);
+        drain();
 
-        assertThat(raised).isEmpty();
+        assertThat(published()).isEmpty();
     }
 
     /// A torn tail cut when the streams instance opens a partition log reaches the operator through the instance's reporter, once.
@@ -319,15 +343,32 @@ class StorageBootHygieneTest {
                                                             StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES, Option.some(logRoot));
         var streams = StorageFactory.createAll(HermeticStorage.nodeStorageIn(tempDir, false), NODE, Option.none(), Option.none(), request).unwrap()
                                     .get("streams");
-        streams.degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        streams.degrade().bind(sink);
 
         streams.instance().openLog("orders/0").unwrap().close();
         streams.instance().openLog("orders/0").unwrap().close();
         awaitRaisedOf(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "streams", 1);
-        Thread.sleep(100);
+        drain();
 
         assertThat(raisedOf(OperatorWarningCode.STORAGE_WAL_TAIL_CUT, "streams")).isEqualTo(1);
         assertThat(raised.getFirst().message()).contains("torn tail").contains("0.wal");
+    }
+
+    /// The streams instance is assembled by its own builder; its gate must already be at SNAPSHOT_LOADED when the node's ready signal
+    /// calls `signalConsensusSynced`, which signals only gates in that state.
+    @Test
+    void streamsInstance_reachesSnapshotLoadedAtBoot_andIsWriteReadyAfterTheConsensusSignal() {
+        var request = new StorageFactory.StreamSetupRequest(Option.none(), tempDir.resolve("streams"), NODE, Option.none(),
+                                                            StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES, Option.none());
+        var setups = StorageFactory.createAll(HermeticStorage.nodeStorageIn(tempDir, false), NODE, Option.none(), Option.none(), request).unwrap();
+        var gate = setups.get("streams").readinessGate();
+
+        assertThat(gate.state()).as("before the consensus signal").isEqualTo(ReadinessState.SNAPSHOT_LOADED);
+        assertThat(gate.isWriteReady()).isFalse();
+
+        StorageFactory.signalConsensusSynced(setups);
+
+        assertThat(gate.isWriteReady()).as("the signal reaches the streams gate too").isTrue();
     }
 
     /// A demotion manager whose activation fails while `broken` is set; everything else is the real one's.
@@ -389,18 +430,31 @@ class StorageBootHygieneTest {
     }
 
     @Test
-    void claimOfAProcessThatIsGone_isReclaimedAtBoot() throws Exception {
+    void leftoverClaimFileOfAProcessThatIsGone_doesNotRefuseTheBoot() throws Exception {
         var mount = tempDir.resolve("mount");
         Files.createDirectories(mount);
         var gone = new ProcessBuilder("true").start();
         gone.waitFor();
-        Files.writeString(mount.resolve(MountClaim.CLAIM_FILE),
-                          "node=node-dead\npid=" + gone.pid() + "\nstarted="
-                          + gone.toHandle().info().startInstant().map(java.time.Instant::toEpochMilli).orElse(0L) + "\n");
+        Files.writeString(mount.resolve(MountClaim.CLAIM_FILE), "node=node-dead\npid=" + gone.pid() + "\nstarted=1\n");
 
         var result = boot(Map.of("vault", configAt(mount)), "node-2");
 
-        assertThat(result.isSuccess()).as("a stale claim must not refuse the boot: %s", result).isTrue();
+        assertThat(result.isSuccess()).as("no lock is held on a dead process's leftover file: %s", result).isTrue();
+    }
+
+    /// An instance refused AFTER its tier took the claim (here the encryption guard: the directory was stamped encrypted, the node has
+    /// no keyring) gives the claim back; the instance never reaches the built list the refused-boot release walks.
+    @Test
+    void instanceRefusedAfterItsClaim_givesTheMountBack() throws Exception {
+        var root = tempDir.resolve("stamped");
+        var mount = root.resolve("storage");
+        Files.createDirectories(mount);
+        Files.writeString(mount.resolve(org.pragmatica.storage.EncryptingStorageTier.MARKER_FILE_NAME), "k");
+
+        var refused = boot(Map.of("vault", configAt(root)), "node-1");
+
+        assertThat(refused.isFailure()).as("an encrypted directory without a keyring refuses the boot").isTrue();
+        assertThat(MountClaim.claim(mount, "node-2").isSuccess()).as("the refused instance's claim was given back").isTrue();
     }
 
     // --- item 6: readiness gate ---
@@ -443,8 +497,8 @@ class StorageBootHygieneTest {
                                               heap).unwrap();
         var total = setups.values().stream().mapToLong(StorageBootHygieneTest::memoryBytes).sum();
 
-        setups.get("artifacts").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
-        setups.get("content").degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        setups.get("artifacts").degrade().bind(sink);
+        setups.get("content").degrade().bind(sink);
         awaitRaised(4);
 
         assertThat(total).as("memory tiers of all instances").isLessThanOrEqualTo((long) (heap * StorageFactory.MEMORY_TIER_HEAP_FRACTION));

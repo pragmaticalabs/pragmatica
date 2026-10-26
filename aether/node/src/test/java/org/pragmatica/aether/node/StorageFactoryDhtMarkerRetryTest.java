@@ -372,15 +372,23 @@ class StorageFactoryDhtMarkerRetryTest {
         var check = checkOf(setup);
         var raised = new CopyOnWriteArrayList<OperatorWarning>();
 
-        setup.degrade().bind(OperatorWarningSink.handingOffTo(raised::add));
+        var sink = OperatorWarningSink.handingOffTo(raised::add);
+
+        setup.degrade().bind(sink);
         client.seedMarker(check.dhtKeyPrefix(), "key-1");
 
         StorageFactory.verifyDhtMarker(client, check, SHORT_ATTEMPT_TIMEOUT, FAST_BACKOFF, NEVER_STOPPED)
                       .await(SETTLE_BOUND)
                       .onSuccess(_ -> fail("a marker present with no keyring must stay fatal"));
-        Thread.sleep(300);
+        var barrier = org.pragmatica.storage.DegradeReporter.degradeReporter("barrier");
 
-        assertThat(raised).as("a refusal ends the boot; it opens no degrade condition").isEmpty();
+        barrier.bind(sink);
+        barrier.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "barrier");
+        awaitRaisedOf(raised, OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED);
+
+        assertThat(raised).as("a refusal ends the boot; it opens no degrade condition (the hand-off is FIFO: the barrier is the only warning)")
+                          .extracting(OperatorWarning::subject)
+                          .containsExactly("barrier");
         assertThat(setup.degrade().isDegraded(OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED)).isFalse();
     }
 

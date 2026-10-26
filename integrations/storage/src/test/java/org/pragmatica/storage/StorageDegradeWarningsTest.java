@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -29,6 +30,8 @@ class StorageDegradeWarningsTest {
     Path tempDir;
 
     private final List<OperatorWarning> raised = new CopyOnWriteArrayList<>();
+    private final java.util.concurrent.atomic.AtomicInteger barriers = new java.util.concurrent.atomic.AtomicInteger();
+    private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(raised::add);
     private final DegradeReporter degrade = DegradeReporter.degradeReporter("vault");
 
     private long raisedOf(OperatorWarningCode code) {
@@ -36,7 +39,7 @@ class StorageDegradeWarningsTest {
     }
 
     private void bind() {
-        degrade.bind(OperatorWarningSink.handingOffTo(raised::add));
+        degrade.bind(sink);
     }
 
     @Test
@@ -56,10 +59,10 @@ class StorageDegradeWarningsTest {
         bind();
 
         var transition = degrade.recovered(OperatorWarningCode.STORAGE_DEMOTION_REFUSED, "never refused");
-        Thread.sleep(100);
+        drain();
 
         assertThat(transition).isFalse();
-        assertThat(raised).as("a recovery with nothing to recover from is not published").isEmpty();
+        assertThat(published()).as("a recovery with nothing to recover from is not published").isEmpty();
     }
 
     @Test
@@ -183,9 +186,227 @@ class StorageDegradeWarningsTest {
         tier.reportTo(degrade);
 
         tier.put(BlockId.blockId("fits".getBytes()).unwrap(), "fits".getBytes()).await().unwrap();
-        Thread.sleep(100);
+        drain();
 
-        assertThat(raised).as("a write that fits is not an operator event, and neither is the absence of a refusal").isEmpty();
+        assertThat(published()).as("a write that fits is not an operator event, and neither is the absence of a refusal").isEmpty();
+    }
+
+    /// Returns once everything handed to the sink before the call has been published: the hand-off is one FIFO worker, so a marker
+    /// warning that has come out of it was preceded by every earlier one. A "nothing was raised" assertion made after this is
+    /// decided by the queue, not by a pause that happened to be long enough.
+    private void drain() throws InterruptedException {
+        var subject = "barrier-" + barriers.incrementAndGet();
+        var barrier = DegradeReporter.degradeReporter(subject);
+
+        barrier.bind(sink);
+        barrier.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "barrier");
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (raised.stream().noneMatch(warning -> warning.subject().equals(subject)) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(raised).extracting(OperatorWarning::subject).as("the barrier came out of the hand-off within 5 s").contains(subject);
+    }
+
+    private List<OperatorWarning> published() {
+        return raised.stream().filter(warning -> !warning.subject().startsWith("barrier-")).toList();
+    }
+
+    /// A full tier that alternates large and small writes: the small ones fit, the large ones are refused. That is one episode
+    /// (it ends when a write as large as the smallest refused one fits), so the operator gets one warning and no recovery.
+    @Test
+    void diskTier_alternatingLargeAndSmallPutsWhileFull_isOneEpisode() throws Exception {
+        bind();
+        var tier = LocalDiskTier.localDiskTier(tempDir.resolve("blocks"), 10).unwrap().open().unwrap();
+        var held = BlockId.blockId("12345678".getBytes()).unwrap();
+        var large = BlockId.blockId("abcdefgh".getBytes()).unwrap();
+        tier.reportTo(degrade);
+
+        tier.put(held, "12345678".getBytes()).await().unwrap();
+        for (var i = 0; i < 3; i++) {
+            assertThat(tier.put(large, "abcdefgh".getBytes()).await().isFailure()).as("large put %d does not fit", i).isTrue();
+            var small = ("s" + i).getBytes();
+            if (i == 0) {
+                tier.put(BlockId.blockId(small).unwrap(), small).await().unwrap();
+            } else {
+                tier.delete(BlockId.blockId(("s" + (i - 1)).getBytes()).unwrap()).await().unwrap();
+                tier.put(BlockId.blockId(small).unwrap(), small).await().unwrap();
+            }
+        }
+        drain();
+
+        assertThat(published().stream().filter(w -> w.code() == OperatorWarningCode.STORAGE_TIER_FULL).count())
+            .as("one warning for the episode, however the writes alternate").isEqualTo(1);
+        assertThat(published().stream().filter(w -> w.code() == OperatorWarningCode.STORAGE_TIER_WRITABLE).count())
+            .as("a small write fitting does not end the episode of a large one").isZero();
+
+        tier.delete(held).await().unwrap();
+        tier.put(large, "abcdefgh".getBytes()).await().unwrap();
+        var deadline = System.nanoTime() + 5_000_000_000L;
+        while (raisedOf(OperatorWarningCode.STORAGE_TIER_WRITABLE) < 1 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_WRITABLE)).as("a write as large as the refused one fits: the episode ends").isEqualTo(1);
+    }
+
+    /// The episode ends at the SMALLEST size refused in it, not the largest or the latest.
+    @Test
+    void diskTier_episodeEndsWhenAWriteAsLargeAsTheSmallestRefusedOneFits() throws Exception {
+        bind();
+        var tier = LocalDiskTier.localDiskTier(tempDir.resolve("blocks"), 10).unwrap().open().unwrap();
+        var four = BlockId.blockId("1234".getBytes()).unwrap();
+        tier.reportTo(degrade);
+
+        tier.put(four, "1234".getBytes()).await().unwrap();
+        assertThat(tier.put(BlockId.blockId("123456789".getBytes()).unwrap(), "123456789".getBytes()).await().isFailure()).isTrue();
+        assertThat(tier.put(BlockId.blockId("abcdefgh".getBytes()).unwrap(), "abcdefgh".getBytes()).await().isFailure()).isTrue();
+        tier.delete(four).await().unwrap();
+        tier.put(BlockId.blockId("12".getBytes()).unwrap(), "12".getBytes()).await().unwrap();
+        drain();
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_WRITABLE)).as("a 2-byte write is smaller than the smallest refused (8)").isZero();
+
+        tier.put(BlockId.blockId("abcdefgh".getBytes()).unwrap(), "abcdefgh".getBytes()).await().unwrap();
+        var deadline = System.nanoTime() + 5_000_000_000L;
+        while (raisedOf(OperatorWarningCode.STORAGE_TIER_WRITABLE) < 1 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_FULL)).isEqualTo(1);
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_WRITABLE)).as("8 bytes fit: as large as the smallest refused").isEqualTo(1);
+
+        // A second episode starts from nothing: what the first one refused is forgotten.
+        tier.delete(BlockId.blockId("12".getBytes()).unwrap()).await().unwrap();
+        assertThat(tier.put(BlockId.blockId("987654321".getBytes()).unwrap(), "987654321".getBytes()).await().isFailure()).isTrue();
+        tier.delete(BlockId.blockId("abcdefgh".getBytes()).unwrap()).await().unwrap();
+        tier.put(BlockId.blockId("ABCDEFGH".getBytes()).unwrap(), "ABCDEFGH".getBytes()).await().unwrap();
+        drain();
+
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_FULL)).as("the second episode raised again").isEqualTo(2);
+        assertThat(raisedOf(OperatorWarningCode.STORAGE_TIER_WRITABLE)).as("8 bytes do not end an episode that refused 9").isEqualTo(1);
+    }
+
+    /// Rounds run in chunks that fit the hand-off queue (256), and every chunk is drained before the next: a full queue drops
+    /// events, which would read as a missing delivery.
+    private static final int CHUNK = 100;
+    private static final int CHUNKS = 20;
+
+    /// Binding while a condition is being raised must deliver it once, whichever side wins the race.
+    @Test
+    void degraded_racingWithBind_deliversTheConditionExactlyOnce() throws Exception {
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        try {
+            for (var chunk = 0; chunk < CHUNKS; chunk++) {
+                var reporters = new ArrayList<DegradeReporter>();
+                for (var i = 0; i < CHUNK; i++) {
+                    reporters.add(DegradeReporter.degradeReporter("race-" + chunk + "-" + i));
+                }
+                var raising = pool.submit(() -> {
+                    for (var reporter : reporters) {
+                        barrier.await();
+                        reporter.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "cut");
+                    }
+                    return null;
+                });
+                var binding = pool.submit(() -> {
+                    for (var reporter : reporters) {
+                        barrier.await();
+                        reporter.bind(sink);
+                    }
+                    return null;
+                });
+
+                raising.get();
+                binding.get();
+                drain();
+            }
+        } finally {
+            pool.shutdown();
+        }
+
+        for (var chunk = 0; chunk < CHUNKS; chunk++) {
+            for (var i = 0; i < CHUNK; i++) {
+                var subject = "race-" + chunk + "-" + i;
+                assertThat(raised.stream().filter(w -> w.subject().equals(subject)).count()).as("deliveries for %s", subject).isEqualTo(1);
+            }
+        }
+    }
+
+    /// A recovery raced against the condition it closes never reaches the sink first: raise and recover are serialised, so the
+    /// recovery either finds nothing open (and is silent) or follows the warning it closes.
+    @Test
+    void recovered_racingWithDegraded_neverPublishesTheRecoveryBeforeItsWarning() throws Exception {
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+
+        try {
+            for (var chunk = 0; chunk < CHUNKS; chunk++) {
+                var reporters = new ArrayList<DegradeReporter>();
+                for (var i = 0; i < CHUNK; i++) {
+                    var reporter = DegradeReporter.degradeReporter("order-" + chunk + "-" + i);
+                    reporter.bind(sink);
+                    reporters.add(reporter);
+                }
+                var raising = pool.submit(() -> {
+                    for (var reporter : reporters) {
+                        barrier.await();
+                        reporter.degraded(OperatorWarningCode.STORAGE_DEMOTION_REFUSED, "refused");
+                    }
+                    return null;
+                });
+                var recovering = pool.submit(() -> {
+                    for (var reporter : reporters) {
+                        barrier.await();
+                        reporter.recovered(OperatorWarningCode.STORAGE_DEMOTION_REFUSED, "resumed");
+                    }
+                    return null;
+                });
+
+                raising.get();
+                recovering.get();
+                drain();
+            }
+        } finally {
+            pool.shutdown();
+        }
+
+        var seenWarning = new java.util.HashSet<String>();
+        for (var warning : raised) {
+            if (warning.code() == OperatorWarningCode.STORAGE_DEMOTION_REFUSED) {
+                seenWarning.add(warning.subject());
+            } else if (warning.code() == OperatorWarningCode.STORAGE_DEMOTION_RESUMED) {
+                assertThat(seenWarning).as("recovery for %s published before its warning", warning.subject()).contains(warning.subject());
+            }
+        }
+    }
+
+    /// A code with no recovery stays open for the life of the instance: recovering it is a no-op and raising it again does nothing.
+    @Test
+    void recovered_ofACodeWithNoRecovery_keepsTheConditionOpen() throws Exception {
+        bind();
+        degrade.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "cut");
+
+        var transition = degrade.recovered(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "no such recovery");
+        var again = degrade.degraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED, "cut");
+        drain();
+
+        assertThat(transition).isFalse();
+        assertThat(degrade.isDegraded(OperatorWarningCode.STORAGE_MEMORY_TIER_CLAMPED)).as("still open").isTrue();
+        assertThat(again).as("an open condition is not raised again").isFalse();
+        assertThat(published()).hasSize(1);
+    }
+
+    /// A condition raised and recovered before the sink was bound is published neither way, so no recovery can precede its warning.
+    @Test
+    void recovered_beforeBind_publishesNeitherTheWarningNorTheRecovery() throws Exception {
+        degrade.degraded(OperatorWarningCode.STORAGE_DEMOTION_REFUSED, "refused");
+        degrade.recovered(OperatorWarningCode.STORAGE_DEMOTION_REFUSED, "resumed");
+
+        bind();
+        drain();
+
+        assertThat(published()).isEmpty();
     }
 
     private void awaitRaised(int count) throws InterruptedException {
