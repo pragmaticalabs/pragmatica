@@ -8,7 +8,9 @@ import org.pragmatica.lang.Option;
 /// Configuration for metadata snapshot manager.
 ///
 /// @param snapshotPath directory where snapshot files are stored
-/// @param mutationThreshold number of mutations before triggering a snapshot
+/// @param mutationThreshold number of mutations before triggering a snapshot. A mutation is a change to what
+///        the metadata asserts (a block recorded, a reference counted, a ref moved); a READ is not one, so read
+///        load never moves the snapshot cadence (C-08), and an unacknowledged claim is not captured (SB-02)
 /// @param maxIntervalMillis maximum time between snapshots
 /// @param retentionCount number of old snapshots to retain
 /// @param nodeId the node identity for snapshot attribution
