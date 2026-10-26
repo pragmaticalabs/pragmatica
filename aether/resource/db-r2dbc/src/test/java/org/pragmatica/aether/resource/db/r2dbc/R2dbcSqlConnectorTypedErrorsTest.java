@@ -299,7 +299,7 @@ class R2dbcSqlConnectorTypedErrorsTest {
     /// What the transaction callback itself observes when an operation fails and it recovers, before the failure leaves
     /// the transaction: the connector error, not the driver layer's.
     private static String kindSeenByCallback(Fn1<Promise<?>, SqlConnector> operation) {
-        return connector.transactional(tx -> operation.apply(tx).map(_ -> "succeeded").recover(cause -> Promise.success(cause.getClass().getSimpleName())))
+        return connector.transactional(tx -> operation.apply(tx).map(_ -> "succeeded").recover(cause -> cause.getClass().getSimpleName()))
                         .await()
                         .unwrap();
     }
