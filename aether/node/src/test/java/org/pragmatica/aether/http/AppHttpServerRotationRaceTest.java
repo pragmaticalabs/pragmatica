@@ -42,8 +42,12 @@ class AppHttpServerRotationRaceTest {
             TlsProbe.requireStarted(server.start().await(timeSpan(30).seconds()), "app TLS listener");
             var rotation = server.rotateCertificate(TlsProbe.validBundle("rotation-race-node"));
 
-            assertThat(rotation.isResolved()).as("the quorum drop must land mid-rotation").isFalse();
+            // No assertion between the two calls: the first AssertJ use costs tens of milliseconds, which is longer
+            // than the rotation takes, and the quorum drop would then land after the rotation had finished.
+            var unresolved = !rotation.isResolved();
+
             server.onQuorumStateChange(ClusterStateNotification.passive());
+            assertThat(unresolved).as("the quorum drop must land mid-rotation").isTrue();
 
             assertThat(rotation.await(timeSpan(60).seconds()).isSuccess()).as("the rotation itself succeeds").isTrue();
             assertThat(TlsProbe.httpsStatus(port)).as("the rotated listener serves on the configured port").isPositive();
@@ -64,8 +68,11 @@ class AppHttpServerRotationRaceTest {
         TlsProbe.requireStarted(server.start().await(timeSpan(30).seconds()), "app TLS listener");
         var rotation = server.rotateCertificate(TlsProbe.validBundle("rotation-race-node"));
 
-        assertThat(rotation.isResolved()).as("the stop must land mid-rotation").isFalse();
+        // No assertion before stop(): see the quorum-drop test.
+        var unresolved = !rotation.isResolved();
+
         server.stop().await(timeSpan(30).seconds());
+        assertThat(unresolved).as("the stop must land mid-rotation").isTrue();
         var outcome = rotation.await(timeSpan(60).seconds());
 
         assertThat(outcome.isFailure()).as("a rotation whose new listeners were closed is not reported as applied").isTrue();
