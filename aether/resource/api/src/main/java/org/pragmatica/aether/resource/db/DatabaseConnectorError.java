@@ -292,7 +292,10 @@ public sealed interface DatabaseConnectorError extends Cause {
                        .or(() -> queryFailed(sql, message, cause, sqlState));
     }
 
-    private static DatabaseConnectorError classified(String state, String sql, String message, Option<Throwable> cause) {
+    private static DatabaseConnectorError classified(String state,
+                                                     String sql,
+                                                     String message,
+                                                     Option<Throwable> cause) {
         var sqlState = some(state);
 
         return switch (SqlStates.classify(state)) {
