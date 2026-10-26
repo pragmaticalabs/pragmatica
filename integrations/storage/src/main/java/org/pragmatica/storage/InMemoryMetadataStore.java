@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.UnaryOperator;
@@ -16,16 +17,38 @@ import static org.pragmatica.lang.Option.option;
 /// Suitable for testing and single-node deployments.
 final class InMemoryMetadataStore implements MetadataStore {
     private final String instanceName;
-    private final ConcurrentHashMap<BlockId, BlockLifecycle> lifecycle = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<BlockId, BlockLifecycle> lifecycle;
     private final ConcurrentHashMap<String, BlockId> refs = new ConcurrentHashMap<>();
+    private final Set<BlockId> unacknowledged = ConcurrentHashMap.newKeySet();
     private final AtomicLong epoch = new AtomicLong();
+    private final AccessTracker accessTracker;
 
-    private InMemoryMetadataStore(String instanceName) {
+    private InMemoryMetadataStore(String instanceName,
+                                  AccessTracker accessTracker,
+                                  ConcurrentHashMap<BlockId, BlockLifecycle> lifecycle) {
         this.instanceName = instanceName;
+        this.accessTracker = accessTracker;
+        this.lifecycle = lifecycle;
     }
 
     static InMemoryMetadataStore inMemoryMetadataStore(String instanceName) {
-        return new InMemoryMetadataStore(instanceName);
+        return inMemoryMetadataStore(instanceName, AccessTracker.accessTracker());
+    }
+
+    static InMemoryMetadataStore inMemoryMetadataStore(String instanceName, AccessTracker accessTracker) {
+        return inMemoryMetadataStore(instanceName, accessTracker, new ConcurrentHashMap<>());
+    }
+
+    /// The record map is supplied so a test can observe the instant right after a record is inserted.
+    static InMemoryMetadataStore inMemoryMetadataStore(String instanceName,
+                                                       AccessTracker accessTracker,
+                                                       ConcurrentHashMap<BlockId, BlockLifecycle> lifecycle) {
+        return new InMemoryMetadataStore(instanceName, accessTracker, lifecycle);
+    }
+
+    @Override
+    public AccessTracker accessTracker() {
+        return accessTracker;
     }
 
     @Override
@@ -44,11 +67,40 @@ final class InMemoryMetadataStore implements MetadataStore {
     public boolean claimBlock(BlockId blockId, BlockLifecycle sentinel) {
         var claimed = lifecycle.putIfAbsent(blockId, sentinel) == null || replaceCacheMarker(blockId, sentinel);
 
-        if (claimed) {
+        if (claimed && !sentinel.cacheOnly()) {
             epoch.incrementAndGet();
         }
 
         return claimed;
+    }
+
+    /// The id is marked BEFORE the record exists, so a capture can never list the record unmarked. A claim
+    /// that loses unmarks only what it marked: the record it lost to belongs to someone else. While it holds
+    /// its mark, a loser can keep an acknowledged record out of ONE concurrent capture; that is no new
+    /// exposure, since any record newer than the last snapshot is absent from it until the next one.
+    @Override
+    public boolean claimUnacknowledged(BlockId blockId, BlockLifecycle sentinel) {
+        var marked = unacknowledged.add(blockId);
+        var claimed = claimBlock(blockId, sentinel);
+
+        if (!claimed && marked) {
+            unacknowledged.remove(blockId);
+        }
+
+        return claimed;
+    }
+
+    @Override
+    @Contract
+    public void acknowledgeClaim(BlockId blockId) {
+        if (unacknowledged.remove(blockId)) {
+            epoch.incrementAndGet();
+        }
+    }
+
+    @Override
+    public boolean isUnacknowledged(BlockId blockId) {
+        return unacknowledged.contains(blockId);
     }
 
     /// A claim for a real block replaces a cache-only marker (atomically, against the marker as read: a
@@ -68,6 +120,11 @@ final class InMemoryMetadataStore implements MetadataStore {
         var released = lifecycle.remove(blockId, sentinel);
 
         if (released) {
+            unacknowledged.remove(blockId);
+            accessTracker.forget(blockId);
+        }
+
+        if (released && !sentinel.cacheOnly()) {
             epoch.incrementAndGet();
         }
 
@@ -84,9 +141,16 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    public Option<BlockLifecycle> observeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
+        return option(lifecycle.computeIfPresent(blockId, (_, lc) -> updater.apply(lc)));
+    }
+
+    @Override
     @Contract
     public void removeLifecycle(BlockId blockId) {
         lifecycle.remove(blockId);
+        unacknowledged.remove(blockId);
+        accessTracker.forget(blockId);
         epoch.incrementAndGet();
     }
 
@@ -141,7 +205,10 @@ final class InMemoryMetadataStore implements MetadataStore {
 
     @Override
     public List<BlockLifecycle> listAllLifecycles() {
-        return List.copyOf(lifecycle.values());
+        return lifecycle.values()
+                        .stream()
+                        .filter(lc -> !unacknowledged.contains(lc.blockId()))
+                        .toList();
     }
 
     @Override
@@ -158,6 +225,7 @@ final class InMemoryMetadataStore implements MetadataStore {
     @Contract
     public void restoreLifecycles(List<BlockLifecycle> entries) {
         lifecycle.clear();
+        unacknowledged.clear();
         entries.forEach(lc -> lifecycle.put(lc.blockId(), lc));
         epoch.incrementAndGet();
     }

@@ -199,19 +199,27 @@ final class DefaultDemotionManager implements DemotionManager {
 
     private List<BlockLifecycle> selectCandidates(TierLevel tierLevel) {
         var candidates = metadataStore.listBlocksByTier(tierLevel);
+        var access = metadataStore.accessTracker();
 
         return candidates.stream()
-                         .sorted(comparatorForStrategy())
+                         .filter(lc -> !readsDecide() || !access.isHeldBack(lc))
+                         .sorted(comparatorForStrategy(access))
                          .limit(config.batchSize())
                          .toList();
     }
 
-    private Comparator<BlockLifecycle> comparatorForStrategy() {
+    /// Whether the strategy ranks by reads. AGE ranks by creation alone, so it has no use for access and an
+    /// unknown access (a block untouched since boot) is no reason to hold a block back.
+    private boolean readsDecide() {
+        return config.strategy() != DemotionStrategy.AGE;
+    }
+
+    private Comparator<BlockLifecycle> comparatorForStrategy(AccessTracker access) {
         return switch (config.strategy()) {
             case AGE -> Comparator.comparingLong(BlockLifecycle::createdAt);
-            case LFU -> Comparator.comparingInt(BlockLifecycle::accessCount);
-            case LRU -> Comparator.comparingLong(BlockLifecycle::lastAccessedAt);
-            case SIZE_PRESSURE -> Comparator.<BlockLifecycle> comparingLong(BlockLifecycle::lastAccessedAt).reversed();
+            case LFU -> Comparator.comparingInt(access::accessCount);
+            case LRU -> Comparator.comparingLong(access::lastAccessedAt);
+            case SIZE_PRESSURE -> Comparator.<BlockLifecycle> comparingLong(access::lastAccessedAt).reversed();
         };
     }
 

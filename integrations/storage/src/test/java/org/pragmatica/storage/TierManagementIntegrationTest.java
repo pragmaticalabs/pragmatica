@@ -156,8 +156,8 @@ class TierManagementIntegrationTest {
     }
 
     private void simulateHighAccessCount(BlockId id, int count) {
-        var now = System.currentTimeMillis();
-        metadataStore.computeLifecycle(id, lc -> BlockLifecycle.blockLifecycle(
-            lc.blockId(), lc.presentIn(), lc.refCount(), now, lc.createdAt(), count));
+        for (var i = 0; i < count; i++) {
+            metadataStore.accessTracker().record(id);
+        }
     }
 }

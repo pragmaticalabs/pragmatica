@@ -75,6 +75,11 @@ class StorageInstanceCacheMarkerTest {
         return content.getBytes(StandardCharsets.UTF_8);
     }
 
+    /// Reads are counted in the store's in-memory access tracker, not in the record (C-08).
+    private int accessesOf(BlockId id) {
+        return readerStore.accessTracker().accessCount(recordOf(id));
+    }
+
     private BlockLifecycle recordOf(BlockId id) {
         return readerStore.getLifecycle(id).unwrap();
     }
@@ -92,7 +97,7 @@ class StorageInstanceCacheMarkerTest {
             var record = recordOf(id);
 
             assertThat(record.cacheOnly()).isTrue();
-            assertThat(record.accessCount()).isEqualTo(3);
+            assertThat(accessesOf(id)).isEqualTo(3);
             assertThat(record.presentIn()).containsExactly(TierLevel.REMOTE);
             assertThat(record.isOrphaned()).isFalse();
             assertThat(readerStore.listBlocksByTier(TierLevel.REMOTE)).extracting(BlockLifecycle::blockId).containsExactly(id);
@@ -229,7 +234,7 @@ class StorageInstanceCacheMarkerTest {
             var content = bytes("owned-then-marker");
             var id = BlockId.blockId(content).unwrap();
             var fired = new AtomicBoolean();
-            // The put's claim fails because an owned record exists; before its credit lands, GC removed that
+            // The put's claim (claimUnacknowledged) fails because an owned record exists; before its credit lands, GC removed that
             // record and a reader of the block planted a marker.
             var racing = interleaving(fired, (store, method) -> swapOwnedForMarker(store, method, id));
             var instance = new DefaultStorageInstance("racing",
@@ -253,7 +258,7 @@ class StorageInstanceCacheMarkerTest {
         }
 
         private static void swapOwnedForMarker(MetadataStore store, Method method, BlockId id) {
-            if (method.getName().equals("claimBlock")) {
+            if (method.getName().equals("claimUnacknowledged")) {
                 store.removeLifecycle(id);
                 store.claimBlock(id, BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.REMOTE)));
             }
@@ -282,7 +287,7 @@ class StorageInstanceCacheMarkerTest {
         }
 
         private static void plantOwnedRecord(MetadataStore store, Method method, BlockId id) {
-            if (method.getName().equals("computeLifecycle")) {
+            if (method.getName().equals("observeLifecycle")) {
                 store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
             }
         }
@@ -312,7 +317,7 @@ class StorageInstanceCacheMarkerTest {
 
             reader.warm(id).await().unwrap();
 
-            assertThat(recordOf(id).accessCount()).isZero();
+            assertThat(accessesOf(id)).isZero();
             assertThat(accessed).isEmpty();
         }
 
@@ -586,6 +591,9 @@ class StorageInstanceCacheMarkerTest {
                                                            System.currentTimeMillis(),
                                                            6,
                                                            0L));
+            for (var i = 0; i < 6; i++) {
+                readerStore.accessTracker().record(owned);
+            }
 
             var promotion = PromotionManager.promotionManager(tiers,
                                                               readerStore,
@@ -593,7 +601,7 @@ class StorageInstanceCacheMarkerTest {
 
             promotion.activate();
 
-            assertThat(recordOf(stranded).accessCount()).as("control: the marker is the hotter of the two").isGreaterThan(recordOf(owned).accessCount());
+            assertThat(accessesOf(stranded)).as("control: the marker is the hotter of the two").isGreaterThan(accessesOf(owned));
             assertThat(promotion.promote()).as("a batch of one goes to the block that can move, not to the hotter marker with nowhere to go")
                                            .isEqualTo(1);
             assertThat(readerDisk.exists(owned).await().unwrap()).isTrue();
@@ -685,6 +693,9 @@ class StorageInstanceCacheMarkerTest {
                                                            System.currentTimeMillis(),
                                                            50,
                                                            0L));
+            for (var i = 0; i < 50; i++) {
+                readerStore.accessTracker().record(id);
+            }
 
             var promotion = PromotionManager.promotionManager(List.of(readerMemory, readerDisk, shared),
                                                               readerStore,

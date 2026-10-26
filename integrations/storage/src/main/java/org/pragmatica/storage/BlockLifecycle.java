@@ -9,9 +9,11 @@ import java.util.Set;
 /// @param blockId content-addressed block identifier
 /// @param presentIn set of tiers that currently hold this block
 /// @param refCount number of named references pointing to this block
-/// @param lastAccessedAt timestamp of last read access
+/// @param lastAccessedAt frozen at creation: reads never change a record. Deprecated, removed by a later snapshot-format
+/// change; what reads did is in [AccessTracker]
 /// @param createdAt timestamp when first stored
-/// @param accessCount total number of read accesses (for frequency-based eviction)
+/// @param accessCount frozen at creation: reads never change a record. Deprecated, removed by a later snapshot-format
+/// change; what reads did is in [AccessTracker]
 /// @param orphanedAt timestamp of the instant refCount last transitioned from >0 to <=0; 0 while
 /// referenced. [StorageGarbageCollector]'s grace period runs from here (#737 fix round 2) --
 /// lastAccessedAt is set at creation and refreshed only on a successful read, so using it for the
@@ -24,9 +26,9 @@ import java.util.Set;
 public record BlockLifecycle(BlockId blockId,
                              Set<TierLevel> presentIn,
                              int refCount,
-                             long lastAccessedAt,
+                             @Deprecated long lastAccessedAt,
                              long createdAt,
-                             int accessCount,
+                             @Deprecated int accessCount,
                              long orphanedAt,
                              boolean cacheOnly) {
     /// Defensive copy — ensure immutability of the tier set.
@@ -209,6 +211,8 @@ public record BlockLifecycle(BlockId blockId,
                                   cacheOnly);
     }
 
+    /// Not used by any reader: reads are recorded in [AccessTracker], never in the record.
+    @Deprecated
     public BlockLifecycle withAccessTimestamp() {
         return new BlockLifecycle(blockId,
                                   presentIn,

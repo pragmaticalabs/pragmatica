@@ -46,7 +46,15 @@ class PromotionManagerTest {
         var updated = BlockLifecycle.blockLifecycle(
             id, lifecycle.presentIn(), lifecycle.refCount(), now, lifecycle.createdAt(), accessCount);
         metadataStore.createLifecycle(updated);
+        reads(metadataStore, id, accessCount);
         return id;
+    }
+
+    /// Reads the tracker saw: the only place read access lives.
+    private static void reads(MetadataStore store, BlockId id, int count) {
+        for (var i = 0; i < count; i++) {
+            store.accessTracker().record(id);
+        }
     }
 
     /// Store a block in the disk tier with zero access count.
@@ -107,9 +115,13 @@ class PromotionManagerTest {
             var tenMinutesAgo = System.currentTimeMillis() - 600_000L;
             var lifecycle = BlockLifecycle.blockLifecycle(
                 id, EnumSet.of(TierLevel.LOCAL_DISK), 1, tenMinutesAgo, tenMinutesAgo, 100);
-            metadataStore.createLifecycle(lifecycle);
+            var staleTracker = AccessTracker.accessTracker(AccessTracker.DEFAULT_WARM_UP_MS, () -> tenMinutesAgo);
+            var staleStore = MetadataStore.inMemoryMetadataStore("promotion-test-stale", staleTracker);
 
-            var pm = promotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            staleStore.createLifecycle(lifecycle);
+            reads(staleStore, id, 100);
+
+            var pm = promotionManager(List.of(memoryTier, diskTier), staleStore, config);
             pm.activate();
 
             var promoted = pm.promote();
@@ -133,6 +145,7 @@ class PromotionManagerTest {
             var lifecycle = BlockLifecycle.blockLifecycle(
                 id, EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK), 1, now, now, 100);
             metadataStore.createLifecycle(lifecycle);
+            reads(metadataStore, id, 100);
 
             var pm = promotionManager(List.of(memoryTier, diskTier), metadataStore, config);
             pm.activate();
