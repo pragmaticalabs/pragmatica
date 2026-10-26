@@ -58,7 +58,7 @@ public sealed interface HttpServerError extends Cause {
         }
     }
 
-    /// The request target carried a malformed percent-escape (or too many query parameters), so it could not be decoded.
+    /// The request target carried a malformed percent-escape, so it could not be decoded.
     record MalformedRequestTarget(Cause cause) implements HttpServerError {
         @Override
         public String message() {

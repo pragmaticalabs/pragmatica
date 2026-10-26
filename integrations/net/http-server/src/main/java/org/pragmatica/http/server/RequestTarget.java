@@ -27,8 +27,9 @@ import io.netty.handler.codec.http.QueryStringDecoder;
 /// values whichever transport carried the request. The path keeps `+` literal; only the query reads it as a space.
 /// Everything past this point treats the values as decoded and never decodes them again (#2420).
 record RequestTarget(String path, QueryParams queryParams) {
-    /// A malformed percent-escape (`%zz`, a lone `%`) or a query beyond the decoder's parameter bound is a failure, not
-    /// a throw: each transport answers it 400.
+    /// A malformed percent-escape (`%zz`, a lone `%`) is a failure, not a throw: each transport answers it 400. A query
+    /// with more than the decoder's 1024 parameters is not a failure: the decoder drops the excess silently, on both
+    /// transports alike.
     static Result<RequestTarget> requestTarget(String uri) {
         return Result.lift(t -> new HttpServerError.MalformedRequestTarget(Causes.fromThrowable(t)),
                            () -> decode(uri));

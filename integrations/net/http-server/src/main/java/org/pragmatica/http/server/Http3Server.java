@@ -411,7 +411,6 @@ final class Http3Server {
             releaseBody();
         }
 
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
         private void dispatch(ChannelHandlerContext ctx) {
             var requestId = IdGenerator.generate("req");
             var responseWriter = new Http3ResponseWriter(ctx, requestId);
@@ -419,13 +418,17 @@ final class Http3Server {
 
             if (target.isFailure()) {
                 rejectMalformedTarget(responseWriter, requestId, target);
-
-                return;
+            } else {
+                dispatchRequest(requestId, responseWriter, target.unwrap());
             }
+        }
+
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
+        private void dispatchRequest(String requestId, Http3ResponseWriter responseWriter, RequestTarget target) {
             // #2310: building the request (headers, request trailers, body) is inside the guard too, so a failure there
             // is answered 500 instead of closing the stream from exceptionCaught
             try {
-                handler.accept(buildRequestContext(requestId, target.unwrap()), responseWriter);
+                handler.accept(buildRequestContext(requestId, target), responseWriter);
             } catch (Exception e) {
                 log.error("Error handling HTTP/3 request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");

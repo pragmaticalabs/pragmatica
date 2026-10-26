@@ -95,6 +95,56 @@ class RequestTargetParityTest {
         assertThat(overH3).as("a malformed target never reaches the handler over H3").isEmpty();
     }
 
+    /// A rejected request is answered exactly once and nothing after it is served: a well-formed request pipelined behind a
+    /// malformed one on the same connection gets no response and no handler call (the connection is closed after the 400).
+    @Test
+    void undecodableTarget_isAnsweredOnce_andNothingPipelinedBehindItIsServed_overH1() throws IOException {
+        var response = rawOverH1("GET /x%zz HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                                 + "GET /ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+
+        assertThat(response.split("HTTP/1\\.1 ", -1)).as("one status line in %s", response).hasSize(2);
+        assertThat(statusCode(response)).isEqualTo("400");
+        assertThat(overH1).isEmpty();
+    }
+
+    @Test
+    void undecodableTarget_isAnsweredOnce_overH3() {
+        var channel = h3Channel();
+        var headers = new DefaultHttp3Headers();
+
+        headers.method("GET");
+        headers.path("/x%zz");
+        channel.writeInbound(new DefaultHttp3HeadersFrame(headers));
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
+        channel.pipeline().fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
+
+        var statuses = new java.util.ArrayList<String>();
+
+        for (Object frame = channel.readOutbound(); frame != null; frame = channel.readOutbound()) {
+            if (frame instanceof Http3HeadersFrame headersFrame) {
+                statuses.add(headersFrame.headers().status().toString());
+            }
+        }
+
+        channel.finishAndReleaseAll();
+        assertThat(statuses).containsExactly("400");
+        assertThat(overH3).isEmpty();
+    }
+
+    /// Netty's query decoder keeps at most 1024 parameters and drops the rest without failing. Both transports hand the
+    /// handler the same truncated list (over HTTP/1.1 the 4096-byte request line limit only allows this many with
+    /// near-empty parameters), so a target past the bound is served, not rejected, and identically.
+    @Test
+    void queryBeyondTheDecodersBound_isTruncatedIdentically_onBothTransports() throws IOException {
+        var target = "/q?" + "a&".repeat(1100);
+
+        sendOverH1(target);
+        sendOverH3(target);
+
+        assertThat(overH1.getFirst().queryParams().getAll("a")).hasSize(1024);
+        assertThat(overH3.getFirst().queryParams().asMap()).isEqualTo(overH1.getFirst().queryParams().asMap());
+    }
+
     @Test
     void requestTarget_failsWithMalformedRequestTarget_carryingTheDecoderFailure() {
         RequestTarget.requestTarget("/x%zz")
@@ -150,6 +200,11 @@ class RequestTargetParityTest {
     }
 
     private String statusOverH1(String target) throws IOException {
+        return statusCode(rawOverH1("GET " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
+    }
+
+    /// Writes `requests` to a fresh server in one go and returns everything it sent before it closed the connection.
+    private String rawOverH1(String requests) throws IOException {
         var server = HttpServer.httpServer(HttpServerConfig.httpServerConfig("target-parity", 0),
                                            (request, writer) -> {
                                                overH1.add(request);
@@ -160,11 +215,10 @@ class RequestTargetParityTest {
 
         try (var socket = new Socket("127.0.0.1", server.port())) {
             socket.setSoTimeout(10_000);
-            socket.getOutputStream()
-                  .write(("GET " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().write(requests.getBytes(StandardCharsets.US_ASCII));
             socket.getOutputStream().flush();
 
-            return statusCode(new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII));
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
         } finally {
             server.stop().await(timeSpan(10).seconds());
         }
