@@ -48,7 +48,10 @@ class ConsensusShardTest(unittest.TestCase):
         self.assertLess(max(totals), BUDGET)
 
     def test_every_planned_class_has_a_weight(self):
-        self.assertEqual([c for c in self.classes if c not in self.weights], [])
+        missing = [c for c in self.classes if c not in self.weights]
+        self.assertEqual(missing, [], "Consensus test class(es) without a shard weight: " + ", ".join(missing)
+                         + ". Fix: add one line per class, `<ClassName> <seconds>`, to tools/consensus-shard-weights.txt "
+                         "(seconds = the class's surefire time from a CI run or a local run, rounded up; 1 for a fast unit test).")
 
     def test_verify_fails_on_zero_reports_and_on_a_missing_class(self):
         with tempfile.TemporaryDirectory() as d:

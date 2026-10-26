@@ -141,3 +141,4 @@ TopologyObserverTest 1
 TopologyObserverVoterQuorumTest 2
 V1554AmnesiaProbeTest 2
 V1796ProbeTest 1
+BootTokensTest 1
