@@ -121,6 +121,7 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.aether.http.TlsRotation;
+import org.pragmatica.storage.DegradeReporter;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
@@ -774,7 +775,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private void registerPromotionGauges(String instance, StorageSetup setup) {
-        registerDiskDegradedGauge(instance, setup);
+        registerDiskDegradedGauge(observability, instance, setup.degrade());
         var manager = setup.promotionManager();
 
         if (manager == PromotionManager.NOOP) {
@@ -798,13 +799,16 @@ class ManagementServerImpl implements ManagementServer {
 
     /// A0b: 1 while the instance runs without its disk tier (it degraded at boot to memory plus the shared tier), else 0. The
     /// same condition raises the `storage-disk-tier-unavailable` operator warning.
-    private void registerDiskDegradedGauge(String instance, StorageSetup setup) {
-        Supplier<Number> degraded = () -> setup.degrade()
-                                               .isDegraded(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE)
+    static Unit registerDiskDegradedGauge(ObservabilityRegistry observability,
+                                          String instance,
+                                          DegradeReporter degrade) {
+        Supplier<Number> degraded = () -> degrade.isDegraded(OperatorWarningCode.STORAGE_DISK_TIER_UNAVAILABLE)
                                           ? 1
                                           : 0;
 
         observability.gauge("aether.storage.disk.degraded", degraded, "instance", instance);
+
+        return unit();
     }
 
     /// #1777: DHT partitions still catching up after `DHTAntiEntropy.STUCK_AFTER_ROUNDS` rounds — non-zero means a

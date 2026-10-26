@@ -487,10 +487,12 @@ public enum OperatorWarningCode {
     /// unreadable file is lost unless a WAL replays it. The subject is the instance. A restore happens once, at boot, so no recovery.
     STORAGE_SNAPSHOT_FELL_BACK("storage-snapshot-fell-back", "storage", WarningLevel.WARNING),
     /// A write was refused because a durable local-disk tier is full: the tier is a required tier of its instance, so the put
-    /// fails with `TierFull` instead of landing on memory alone. Raised once per episode, on the first refused write. The
+    /// fails with `TierFull` instead of landing on memory alone. Raised once per episode, on the first refused write; the episode ends when
+    /// a write at least as large as the smallest one refused in it fits ([#STORAGE_TIER_WRITABLE]), so a full tier that alternates large and
+    /// small writes raises once. The
     /// subject is the instance. Closed by [#STORAGE_TIER_WRITABLE].
     STORAGE_TIER_FULL("storage-tier-full", "storage", WarningLevel.WARNING),
-    /// The recovery of [#STORAGE_TIER_FULL], same subject: a write fit on the tier again. INFO, published only after a published
+    /// The recovery of [#STORAGE_TIER_FULL], same subject: a write at least as large as the smallest one refused fit on the tier. INFO, published only after a published
     /// refusal for the instance (#752 mechanism).
     STORAGE_TIER_WRITABLE("storage-tier-writable", "storage", WarningLevel.INFO, STORAGE_TIER_FULL),
     /// The post-formation check of an instance's DHT encryption marker could not complete, so its DHT tier stays gated and the node

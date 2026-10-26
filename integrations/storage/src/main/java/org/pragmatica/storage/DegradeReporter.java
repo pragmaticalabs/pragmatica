@@ -29,6 +29,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// **The sink arrives late.** Storage is built before the node's event aggregator exists, so the instance starts with the
 /// log-only sink and the node binds the real one with [#bind]. A condition raised before then was logged when it was raised;
 /// binding offers it to the sink once, without logging it a second time.
+///
+/// **Ordering.** Raise, recover and bind are serialised, so a condition reaches a sink exactly once (at the raise, or at the
+/// bind when it was raised before it) and a recovery reaches the sink only after the condition it closes was offered to that
+/// same sink. A condition raised and recovered before the bind is logged both times and published neither.
 public final class DegradeReporter {
     private static final Logger log = LoggerFactory.getLogger(DegradeReporter.class);
 
@@ -48,7 +52,7 @@ public final class DegradeReporter {
     }
 
     /// Routes this instance's warnings to `sink` and offers it the conditions already open.
-    public Unit bind(OperatorWarningSink sink) {
+    public synchronized Unit bind(OperatorWarningSink sink) {
         this.sink.set(sink);
         open.values().forEach(sink::accept);
 
@@ -56,7 +60,7 @@ public final class DegradeReporter {
     }
 
     /// Opens `code` for this instance and raises it, once. Returns true when this call was the transition.
-    public boolean degraded(OperatorWarningCode code, String template, Object... args) {
+    public synchronized boolean degraded(OperatorWarningCode code, String template, Object... args) {
         var warning = OperatorWarning.operatorWarning(code,
                                                       instance,
                                                       MessageFormatter.arrayFormat(template, args).getMessage());
@@ -72,12 +76,9 @@ public final class DegradeReporter {
 
     /// Closes `code` for this instance and raises its recovery, once. Returns true when this call was the transition: a
     /// condition that was not open, or whose code has no recovery, raises nothing.
-    public boolean recovered(OperatorWarningCode code, String template, Object... args) {
-        if (open.remove(code) == null) {
-            return false;
-        }
-
-        return recoveryOf(code).map(recovery -> raiseRecovery(recovery, template, args))
+    public synchronized boolean recovered(OperatorWarningCode code, String template, Object... args) {
+        return recoveryOf(code).filter(_ -> open.remove(code) != null)
+                         .map(recovery -> raiseRecovery(recovery, template, args))
                          .or(false);
     }
 

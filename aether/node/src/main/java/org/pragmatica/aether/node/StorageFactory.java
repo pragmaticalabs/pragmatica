@@ -1569,7 +1569,7 @@ public final class StorageFactory {
                                            config.diskMaxBytes())
                             .flatMap(tier -> tier.openClaiming(nodeId))
                             .fold(cause -> handleDiskTierUnavailable(name, config, cause, memoryTier, shared, degrade),
-                                  disk -> buildTierList(name, memoryTier, disk, diskPath, shared, keyring));
+                                  disk -> buildTierList(name, memoryTier, disk, diskPath, shared, keyring).onFailure(_ -> disk.release()));
     }
 
     /// Builds the DHT tier (from `dhtClient`/`dhtKeyPrefix`) and wraps it under `keyring` when
