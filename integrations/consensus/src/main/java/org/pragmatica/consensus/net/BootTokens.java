@@ -222,7 +222,7 @@ public interface BootTokens {
                 return ledger.get()
                              .fold(() -> Promise.success(Unit.unit()),
                                    attached -> attached.record(peerFacts))
-                             .onSuccess(_ -> adoptMerge(peerFacts));
+                             .map(_ -> adoptMerge(peerFacts));
             }
 
             private Unit adoptMerge(IdentityFacts peerFacts) {

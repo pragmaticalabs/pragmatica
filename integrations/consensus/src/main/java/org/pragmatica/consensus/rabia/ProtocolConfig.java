@@ -55,6 +55,24 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                              TimeSpan decisionGapTimeout,
                              Option<ParticipationMarker> participationMarker,
                              Option<Path> identityLedgerFile) {
+    /// The shape before the identity ledger had a location: the node derives its own (`identityLedgerFile` absent).
+    public ProtocolConfig(TimeSpan cleanupInterval,
+                          TimeSpan syncRetryInterval,
+                          long removeOlderThanPhases,
+                          int maxPendingBatches,
+                          TimeSpan applyTimeout,
+                          TimeSpan decisionGapTimeout,
+                          Option<ParticipationMarker> participationMarker) {
+        this(cleanupInterval,
+             syncRetryInterval,
+             removeOlderThanPhases,
+             maxPendingBatches,
+             applyTimeout,
+             decisionGapTimeout,
+             participationMarker,
+             Option.none());
+    }
+
     /// Returns this configuration with another decision-gap timeout.
     public ProtocolConfig withDecisionGapTimeout(TimeSpan timeout) {
         return new ProtocolConfig(cleanupInterval,
