@@ -93,9 +93,12 @@ public final class OlderCheckpointCluster {
 
         @Override
         public <R> List<R> processCommitted(Batch<KVCommand<StringKey>> batch, long nextSlot) {
+            var results = super.<R> processCommitted(batch, nextSlot);
+
+            // Recorded after the store (revision, ring) has the batch: the cluster's commit() waits on this list, and callers then read the ring.
             applied.add(new Applied(nextSlot - 1, batch.id().toString(), batch.commands()));
 
-            return super.processCommitted(batch, nextSlot);
+            return results;
         }
 
         public List<Applied> applied() {
