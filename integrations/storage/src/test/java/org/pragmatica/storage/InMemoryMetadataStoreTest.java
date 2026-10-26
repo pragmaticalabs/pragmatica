@@ -246,6 +246,16 @@ class InMemoryMetadataStoreTest {
             assertThat(store.currentEpoch()).isEqualTo(before);
         }
 
+        /// A marker never replaces a marker: the second claim for one marker loses, as one real claim loses to another.
+        @Test
+        void claimUnacknowledged_ofACacheMarker_overACacheMarker_loses() {
+            var id = blockIdOf(CONTENT_A);
+            var marker = BlockLifecycle.cacheOnlyLifecycle(id, java.util.Set.of(TierLevel.REMOTE));
+
+            assertThat(store.claimUnacknowledged(id, marker)).isTrue();
+            assertThat(store.claimUnacknowledged(id, marker)).isFalse();
+        }
+
         @Test
         void acknowledgeClaim_advancesTheEpoch_becauseTheRecordBecomesVisibleToSnapshots() {
             var id = blockIdOf(CONTENT_A);
