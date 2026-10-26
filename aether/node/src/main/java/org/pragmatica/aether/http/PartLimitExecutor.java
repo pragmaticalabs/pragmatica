@@ -73,7 +73,8 @@ final class PartLimitExecutor {
 
     /// Test seam: the checks waiting for a worker.
     int queued() {
-        return executor.getQueue().size();
+        return executor.getQueue()
+                       .size();
     }
 
     /// Test seam: how many workers the pool grows to.
@@ -83,7 +84,9 @@ final class PartLimitExecutor {
 
     /// Test seam: how many checks may wait.
     int queueCapacity() {
-        return executor.getQueue().remainingCapacity() + executor.getQueue().size();
+        return executor.getQueue()
+                       .remainingCapacity() + executor.getQueue()
+                                                      .size();
     }
 
     private static Cause refusal(Throwable rejected) {
