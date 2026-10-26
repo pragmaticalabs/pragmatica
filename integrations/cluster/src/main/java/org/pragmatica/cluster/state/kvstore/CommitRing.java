@@ -278,9 +278,13 @@ public final class CommitRing {
     }
 
     /// Registers `subscription` at the frontier with no position and no catch-up: it receives only the entries appended after this call
-    /// (`LIVE_ONLY`, section 3.2 step 1: subscribe first, snapshot second). Refused `NOT_SERVING` while no incarnation is committed.
-    public Subscribe subscribeLive(Subscription subscription) {
-        return underLock(closes -> subscribeLiveLocked(closes, subscription));
+    /// (`LIVE_ONLY`, section 3.2 step 1: subscribe first, snapshot second). The tag check, the registration and the capture of the frontier
+    /// (`Granted.latest`) happen in ONE critical section, so the first entry delivered is exactly the frontier: none lost, none repeated.
+    /// Refused `NOT_SERVING` while no incarnation is committed. A replica that already holds a life sends its tag and a mismatch is refused
+    /// `INCARNATION_MISMATCH`, as [#subscribeFrom] does; a [IncarnationTag#NONE] replica (a fresh join, nothing to compare) makes no claim and is
+    /// not checked here, its snapshot being tag-checked on install.
+    public Subscribe subscribeLive(IncarnationTag replicaTag, Subscription subscription) {
+        return underLock(closes -> subscribeLiveLocked(closes, replicaTag, subscription));
     }
 
     /// The owner is done with `subscription` (its peer disconnected or resubscribed): it leaves the ring and is marked `RELEASED`. Fires no close.
@@ -485,9 +489,13 @@ public final class CommitRing {
         subscription.markClosed(CloseReason.RELEASED);
     }
 
-    private Subscribe subscribeLiveLocked(Closes closes, Subscription subscription) {
+    private Subscribe subscribeLiveLocked(Closes closes, IncarnationTag replicaTag, Subscription subscription) {
         if (tag.isNone()) {
             return new Refused(RefusalReason.NOT_SERVING, floor, tag);
+        }
+
+        if (!replicaTag.isNone() && !tag.matches(replicaTag)) {
+            return new Refused(RefusalReason.INCARNATION_MISMATCH, floor, tag);
         }
 
         closeOpenRange(closes);

@@ -238,7 +238,7 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
         var ring = store.replicaRing();
 
         return switch (request.mode()) {
-            case LIVE_ONLY -> ring.subscribeLive(subscription);
+            case LIVE_ONLY -> ring.subscribeLive(request.tag(), subscription);
             case FROM_ANCHOR -> ring.subscribeFrom(request.tag(), request.applied(), request.anchor(), subscription);
             case UNKNOWN -> new Refused(RefusalReason.NOT_SERVING, ring.floor(), ring.tag());
         };

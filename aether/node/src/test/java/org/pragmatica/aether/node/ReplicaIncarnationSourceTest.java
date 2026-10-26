@@ -110,7 +110,7 @@ class ReplicaIncarnationSourceTest {
 
         commit(store, 0, genesis("lineage", "id-A"));
         commit(store, 1, log("INFO"));
-        store.replicaRing().subscribeLive(CommitRing.subscription(closed::set));
+        store.replicaRing().subscribeLive(IncarnationTag.NONE, CommitRing.subscription(closed::set));
         commit(store, 2,
                new KVCommand.Remove<>(ClusterIncarnationKey.SINGLETON),
                genesis("lineage", "id-B"));

@@ -194,6 +194,21 @@ class ReplicaFeedServerTest {
             assertThat(harness.sentTo(PEER, ReplicaEntries.class)).singleElement().satisfies(ack -> assertThat(ack.latest()).isEqualTo(1));
         }
 
+        /// NT-O15. A LIVE_ONLY subscriber that already holds a life is checked against the ring's tag. Mutation: pass `IncarnationTag.NONE` instead of
+        /// `request.tag()` to `subscribeLive` in `subscribe` (a replica of another life is granted).
+        @Test
+        void liveOnly_fromAnotherLife_isRefusedIncarnationMismatch_andNothingIsRegistered() {
+            var harness = new Harness();
+            var otherLife = IncarnationTag.incarnationTag(TAG.incarnation(), TAG.incarnationId() + "-other");
+
+            harness.server.onSubscribe(new ReplicaSubscribe(PEER, 3, otherLife, 0, List.of(), SubscribeMode.LIVE_ONLY));
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).singleElement()
+                                                                  .satisfies(refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.INCARNATION_MISMATCH));
+            assertThat(harness.sentTo(PEER, ReplicaEntries.class)).isEmpty();
+            assertThat(harness.store.replicaRing().subscriptionCount()).isZero();
+        }
+
         /// NT-O20. Mutation: drop the `previous != null` release in `admit` (the first subscription keeps receiving).
         @Test
         void subscribe_releasesThePeersEarlierSubscription() {
