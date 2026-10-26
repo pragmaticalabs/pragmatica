@@ -234,6 +234,17 @@ class R2dbcSqlConnectorTypedErrorsTest {
     }
 
     @Test
+    void transactional_callbackSeesTheConnectorErrorOfEachOperation() {
+        RowMapper<String> mapper = row -> row.getString("name");
+
+        assertThat(kindSeenByCallback(tx -> tx.queryOne("SELEC 1", mapper))).isEqualTo("QueryFailed");
+        assertThat(kindSeenByCallback(tx -> tx.queryOptional("SELEC 1", mapper))).isEqualTo("QueryFailed");
+        assertThat(kindSeenByCallback(tx -> tx.queryList("SELEC 1", mapper))).isEqualTo("QueryFailed");
+        assertThat(kindSeenByCallback(tx -> tx.update("SELEC 1"))).isEqualTo("QueryFailed");
+        assertThat(kindSeenByCallback(tx -> tx.batch("SELEC 1", java.util.List.<Object[]> of(new Object[0])))).isEqualTo("QueryFailed");
+    }
+
+    @Test
     void transactional_failedCommit_keepsTheServersSqlState() {
         connector.update("DROP TABLE IF EXISTS deferred_unique").await().unwrap();
         connector.update("CREATE TABLE deferred_unique(id INT, CONSTRAINT deferred_unique_pk UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)").await().unwrap();
@@ -283,6 +294,14 @@ class R2dbcSqlConnectorTypedErrorsTest {
         var cause = failureOf(connector.queryOne("SELECT name FROM typed_errors WHERE id = 1", mapper));
 
         assertThat(cause).isSameAs(typed);
+    }
+
+    /// What the transaction callback itself observes when an operation fails and it recovers, before the failure leaves
+    /// the transaction: the connector error, not the driver layer's.
+    private static String kindSeenByCallback(Fn1<Promise<?>, SqlConnector> operation) {
+        return connector.transactional(tx -> operation.apply(tx).map(_ -> "succeeded").recover(cause -> Promise.success(cause.getClass().getSimpleName())))
+                        .await()
+                        .unwrap();
     }
 
     private static void assertSyntaxError(Promise<?> promise) {
