@@ -401,6 +401,25 @@ class RouteDslTest {
         }
 
         @Test
+        void parse_succeeds_forSurroundingWhitespace_trimmedBeforeMatching() {
+            var result = RouteDsl.parse("  GET /users  ");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> assertThat(route.pathTemplate()).isEqualTo("/users"));
+        }
+
+        @Test
+        void parse_succeeds_forBlankOrEmptyQueryPart_withNoQueryParams() {
+            var blank = RouteDsl.parse("GET /users?   ");
+            var empty = RouteDsl.parse("GET /users?");
+
+            assertThat(blank.isSuccess()).isTrue();
+            assertThat(empty.isSuccess()).isTrue();
+            blank.onSuccess(route -> assertThat(route.queryParams()).isEmpty());
+            empty.onSuccess(route -> assertThat(route.queryParams()).isEmpty());
+        }
+
+        @Test
         void parse_fails_forBlankDsl() {
             var result = RouteDsl.parse("   ");
 

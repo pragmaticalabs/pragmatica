@@ -129,7 +129,6 @@ public record RouteDsl(String method,
 
     private static List<QueryParam> parseQueryParams(String queryPart) {
         return Option.option(queryPart)
-                     .filter(part -> !part.isBlank())
                      .map(RouteDsl::queryParamsOf)
                      .or(List.of());
     }
