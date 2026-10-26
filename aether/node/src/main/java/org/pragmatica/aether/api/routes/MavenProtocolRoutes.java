@@ -379,7 +379,6 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
             return;
         }
-
         // Every other cause goes through the management status funnel, like every other management route: its own
         // status when it states one, else 500 with the unclassified-cause WARN (it used to bypass the funnel).
         ProblemResponses.writeProblem(response, cause, uri, requestId);
