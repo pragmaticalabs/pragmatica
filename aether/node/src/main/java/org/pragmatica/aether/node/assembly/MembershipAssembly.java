@@ -696,6 +696,13 @@ public sealed interface MembershipAssembly {
         refreshHierarchy.run();
         metricsScheduler.setPingTargetEligibility(peer -> hierarchyPeerPolicy.shouldPing(peer) || drainCommandRegistry.isDrainRequested(peer) || (!configuredWorker(config) && (workerAdmission.isPending(peer) || candidateHealth.isPending(peer))));
         metricsScheduler.setPeerMetricsForwarding(hierarchyPeerPolicy::forwardsPeerMetrics);
+        // W-OBS W2: the leader's cluster directory content, and the governor lookup of the pong path's sender gate (I-W14).
+        metricsScheduler.setDirectorySources(() -> ReplicaFeedAssembly.directoryNodes(membershipFsm),
+                                             () -> ReplicaFeedAssembly.directoryDhtReplication(kvStore));
+        metricsCollector.setDirectoryGovernor(sender -> ReplicaFeedAssembly.isOwnGovernor(config.self(),
+                                                                                          sender,
+                                                                                          communityDirectory::assignment,
+                                                                                          governorLookup));
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> {
                                                                    refreshHierarchy.run();
                                                                    metricsScheduler.publishObservationsNow();

@@ -4,6 +4,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
@@ -15,42 +16,64 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Manifest linking chunks of large content.
+/// Manifest linking chunks of large content, in the binary v2 framing.
 ///
-/// Serialized inside the content store's typed envelope ([ContentEnvelope]) as kind `M`, with every field length
-/// prefixed, so a name may contain any character (`|` included) and round-trips. Whether a value is a manifest is
-/// decided out of band: the store writes every value under a TRUSTED ref that no legacy value can occupy (see
-/// [ContentEnvelope#trustedRef]), and only there is the envelope kind byte believed.
+/// Serialized inside the content store's typed envelope ([ContentEnvelope]) as kind `M`: a version byte
+/// ([#FORMAT_VERSION]), the chunk size, the total size, the SHA-256 of the whole content (32 bytes), the chunk count,
+/// then each chunk id as length-prefixed bytes. The header carries the fields the object manifest will keep, so its
+/// layout does not change again when they are first read; nothing reads `chunkSize` or `sha256` yet. Two-level
+/// segments above 4096 chunks and the `SEGMENT` and `CATALOG_PAGE` kinds are not here: they come later, under a
+/// version bump. The manifest names
+/// no object: it is reached only from the ref the store wrote under a TRUSTED name (see [ContentEnvelope#trustedRef]),
+/// so there is no name to escape and no separator. Whether a value is a manifest is decided out of band, by that ref and
+/// the envelope kind the store itself wrote; content is never sniffed, so an upload whose bytes happen to be a valid
+/// manifest of any format is returned verbatim. A version this build does not know is refused, never guessed at.
 ///
-/// The format before the envelope, pipe-delimited text behind the magic `AHSE-MANIFEST:`, is still READ for a LEGACY
-/// name (a bare ref, which only a store from before the trusted namespace can have written), so content stored before
-/// the upgrade stays readable and its delete still releases its chunks. A legacy value is ambiguous by construction:
-/// a pre-upgrade upload that began with that magic is indistinguishable from a pre-upgrade manifest, so that one
-/// hazard remains for legacy data and ends when the name is rewritten (which moves it to the trusted ref) or deleted.
-/// A legacy value is never read as an envelope. Legacy manifests are parsed from the right, so a legacy name
-/// containing `|` is read too.
-public record ContentManifest(String name, long totalSize, int chunkCount, List<String> chunkBlockIds) {
+/// The pre-envelope text format, pipe-delimited behind the magic `AHSE-MANIFEST:`, is still READ for a LEGACY name (a bare
+/// ref, which only a store from before the trusted namespace can have written), so content stored before the upgrade
+/// stays readable and its delete still releases its chunks. A legacy value is ambiguous by construction: a pre-upgrade
+/// upload that began with that magic is indistinguishable from a pre-upgrade manifest, so that one hazard remains for
+/// legacy data and ends when the name is rewritten (which moves it to the trusted ref) or deleted. A legacy value is never
+/// read as an envelope. Legacy manifests are parsed from the right, so a legacy name containing `|` is read too.
+///
+/// `chunkSize` is 0 and `sha256` is empty on a manifest read from the legacy text format, which recorded neither; such
+/// a manifest is read, never written back.
+public record ContentManifest(int chunkSize,
+                              long totalSize,
+                              String sha256,
+                              int chunkCount,
+                              List<String> chunkBlockIds) {
     static final String MAGIC_HEADER = "AHSE-MANIFEST:";
+    static final byte FORMAT_VERSION = 2;
+    private static final int SHA256_BYTES = 32;
 
     public ContentManifest {
         chunkBlockIds = List.copyOf(chunkBlockIds);
     }
 
-    public static ContentManifest contentManifest(String name, long totalSize, List<String> chunkBlockIds) {
-        return new ContentManifest(name, totalSize, chunkBlockIds.size(), chunkBlockIds);
+    /// A manifest of `chunkSize` chunks of content of `totalSize` bytes whose SHA-256 is `sha256` (64 hex characters).
+    public static ContentManifest contentManifest(int chunkSize,
+                                                  long totalSize,
+                                                  String sha256,
+                                                  List<String> chunkBlockIds) {
+        return new ContentManifest(chunkSize, totalSize, sha256, chunkBlockIds.size(), chunkBlockIds);
     }
 
-    /// Serialize manifest to bytes for storage: envelope kind `M`, length-prefixed fields.
+    private static ContentManifest legacyManifest(long totalSize, List<String> chunkBlockIds) {
+        return new ContentManifest(0, totalSize, "", chunkBlockIds.size(), chunkBlockIds);
+    }
+
+    /// Serialize manifest to bytes for storage: envelope kind `M`, version byte, length-prefixed ids.
     public byte[] toBytes() {
-        var nameBytes = name.getBytes(StandardCharsets.UTF_8);
-        var idBytes = chunkBlockIds.stream().map(id -> id.getBytes(StandardCharsets.UTF_8)).toList();
-        var size = Integer.BYTES + nameBytes.length + Long.BYTES + Integer.BYTES + idBytes.stream()
-                                                                                          .mapToInt(id -> Integer.BYTES + id.length)
-                                                                                          .sum();
+        var idBytes = chunkBlockIds.stream().map(id -> HexFormat.of().parseHex(id)).toList();
+        var size = Byte.BYTES + Integer.BYTES + Long.BYTES + SHA256_BYTES + Integer.BYTES + idBytes.stream()
+                                                                                                   .mapToInt(id -> Integer.BYTES + id.length)
+                                                                                                   .sum();
         var body = ByteBuffer.allocate(size)
-                             .putInt(nameBytes.length)
-                             .put(nameBytes)
+                             .put(FORMAT_VERSION)
+                             .putInt(chunkSize)
                              .putLong(totalSize)
+                             .put(HexFormat.of().parseHex(sha256))
                              .putInt(chunkCount);
 
         idBytes.forEach(id -> body.putInt(id.length)
@@ -60,15 +83,10 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     }
 
     /// Parse an enveloped manifest, the form the content store writes under its trusted names. Returns None for
-    /// anything else, enveloped direct content and legacy text manifests included (a legacy text manifest is read
-    /// only for a legacy name, through [#fromLegacyBytes]).
+    /// anything else, enveloped direct content, an unknown version and legacy text manifests included (a legacy text
+    /// manifest is read only for a legacy name, through [#fromLegacyBytes]).
     public static Option<ContentManifest> fromBytes(byte[] data) {
         return ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, data).flatMap(ContentManifest::parseEnveloped);
-    }
-
-    /// Whether the bytes are an enveloped manifest. Enveloped direct content never is, whatever it begins with.
-    public static boolean isManifest(byte[] data) {
-        return fromBytes(data).isPresent();
     }
 
     static Option<ContentManifest> parseEnveloped(byte[] payload) {
@@ -79,27 +97,56 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     }
 
     private static Option<ContentManifest> decode(ByteBuffer buffer) {
-        var name = readString(buffer);
+        if (buffer.get() != FORMAT_VERSION) {
+            return none();
+        }
+
+        var chunkSize = buffer.getInt();
         var totalSize = buffer.getLong();
+        var sha256 = readSha256(buffer);
         var count = buffer.getInt();
+
+        return readIds(buffer, count).filter(_ -> !buffer.hasRemaining() && count >= 1)
+                      .map(ids -> contentManifest(chunkSize, totalSize, sha256, ids));
+    }
+
+    private static Option<List<String>> readIds(ByteBuffer buffer, int count) {
         var ids = new ArrayList<String>(Math.max(0,
                                                  Math.min(count, buffer.remaining() / Integer.BYTES)));
 
         for (int i = 0; i < count; i++) {
-            ids.add(readString(buffer));
+            var id = readId(buffer);
+
+            if (id.isEmpty()) {
+                return none();
+            }
+
+            id.onPresent(ids::add);
         }
 
-        return buffer.hasRemaining() || count < 1
-               ? none()
-               : some(contentManifest(name, totalSize, ids));
+        return some(ids);
     }
 
-    private static String readString(ByteBuffer buffer) {
-        var bytes = new byte[buffer.getInt()];
+    private static String readSha256(ByteBuffer buffer) {
+        return readHex(buffer, SHA256_BYTES);
+    }
+
+    /// An id whose stored length is negative or runs past the bytes left is refused before anything is allocated for
+    /// it, so a corrupt length cannot make the decode allocate or fail with an error [Result#lift] does not catch.
+    private static Option<String> readId(ByteBuffer buffer) {
+        var length = buffer.getInt();
+
+        return length < 0 || length > buffer.remaining()
+               ? none()
+               : some(readHex(buffer, length));
+    }
+
+    private static String readHex(ByteBuffer buffer, int length) {
+        var bytes = new byte[length];
 
         buffer.get(bytes);
 
-        return new String(bytes, StandardCharsets.UTF_8);
+        return HexFormat.of().formatHex(bytes);
     }
 
     /// The pre-envelope text format, `AHSE-MANIFEST:name|size|count|id...`.
@@ -135,24 +182,18 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
         return none();
     }
 
-    private static Option<ContentManifest> matchingCount(String name,
-                                                         long totalSize,
-                                                         int declared,
-                                                         int count,
-                                                         List<String> ids) {
+    private static Option<ContentManifest> matchingCount(long totalSize, int declared, int count, List<String> ids) {
         return declared == count
-               ? some(contentManifest(name, totalSize, ids))
+               ? some(legacyManifest(totalSize, ids))
                : none();
     }
 
     private static Option<ContentManifest> legacyCandidate(String[] parts, int countIndex, int count) {
-        var name = String.join("|",
-                               Arrays.asList(parts).subList(0, countIndex - 1));
         var ids = Arrays.asList(parts).subList(countIndex + 1, parts.length);
 
         return Result.all(Number.parseLong(parts[countIndex - 1]),
                           Number.parseInt(parts[countIndex]))
-                     .map((totalSize, declared) -> matchingCount(name, totalSize, declared, count, ids))
+                     .map((totalSize, declared) -> matchingCount(totalSize, declared, count, ids))
                      .option()
                      .flatMap(opt -> opt);
     }

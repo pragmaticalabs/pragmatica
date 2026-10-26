@@ -10,6 +10,7 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import org.jooq.DSLContext;
 import org.jooq.Query;
@@ -42,18 +43,16 @@ public interface JooqConnector extends DatabaseConnector {
         };
     }
 
-    static <R extends Record> R extractSingleResult(org.jooq.Result<R> result) {
+    static <R extends Record> Result<R> extractSingleResult(org.jooq.Result<R> result) {
         if (result.isEmpty()) {
-            return DatabaseConnectorError.ResultNotFound.INSTANCE.<R> result().unwrap();
+            return DatabaseConnectorError.ResultNotFound.INSTANCE.result();
         }
 
         if (result.size() > 1) {
-            return DatabaseConnectorError.multipleResults(result.size())
-                                         .<R> result()
-                                         .unwrap();
+            return DatabaseConnectorError.multipleResults(result.size()).result();
         }
 
-        return result.getFirst();
+        return Result.success(result.getFirst());
     }
 
     static <R extends Record> Option<R> extractOptionalResult(org.jooq.Result<R> result) {

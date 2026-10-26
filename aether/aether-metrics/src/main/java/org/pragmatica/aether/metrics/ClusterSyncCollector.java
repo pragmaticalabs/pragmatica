@@ -26,7 +26,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.cluster.metrics.ClusterDirectory;
 import org.pragmatica.cluster.metrics.CommunityReport;
+import org.pragmatica.cluster.metrics.DirectoryVersion;
 import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -270,6 +272,30 @@ public interface ClusterSyncCollector {
     @Contract
     default void setPingAuthority(Predicate<NodeId> isCore, Predicate<NodeId> isCurrentLeader) {}
 
+    /// The sender gate of the pong path (I-W14): a directory attached to a pong is installed only from a core, the current leader, or this
+    /// node's own governor. `isOwnGovernor` is the governor lookup; unconfigured collectors accept a directory from no governor.
+    @Contract
+    default void setDirectoryGovernor(Predicate<NodeId> isOwnGovernor) {}
+
+    /// The version of the directory this node holds, or [DirectoryVersion#NONE]. Reported on every ping and pong so a responder stops
+    /// attaching a directory the asker already holds.
+    default DirectoryVersion heldDirectoryVersion() {
+        return DirectoryVersion.NONE;
+    }
+
+    /// The directory this node holds: cached from an authority ping or an accepted pong, or produced by this node as leader. Nothing on a
+    /// worker reads it yet.
+    default Option<ClusterDirectory> heldDirectory() {
+        return Option.none();
+    }
+
+    /// The directory this node produced as leader: held under the same acceptance rule as a received one, so a producer behind the
+    /// directory it already holds installs nothing. Returns whether it was installed.
+    @Contract
+    default boolean installProducedDirectory(ClusterDirectory directory) {
+        return false;
+    }
+
     /// Authoritative live membership eligibility for observation producers; does not gate responses.
     default Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
         return Unit.unit();
@@ -378,6 +404,9 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<Predicate<NodeId>> eligibleProducer = new AtomicReference<>(_ -> false);
     private final AtomicReference<Predicate<NodeId>> coreSender = new AtomicReference<>(_ -> false);
     private final AtomicReference<Predicate<NodeId>> authoritySender = new AtomicReference<>(_ -> false);
+    private final AtomicReference<Predicate<NodeId>> ownGovernor = new AtomicReference<>(_ -> false);
+
+    private final AtomicReference<Option<ClusterDirectory>> heldDirectory = new AtomicReference<>(Option.none());
 
     private final AtomicReference<Runnable> corePingObserver = new AtomicReference<>(() -> {});
 
@@ -652,7 +681,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             acceptAuthoritativeView(ping);
         }
 
-        network.send(ping.sender(), buildPong());
+        network.send(ping.sender(), buildPong(ping.observedDirectoryGeneration()));
         if (authorized) {
             handleDrainCommand(ping);
         }
@@ -673,6 +702,62 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         processEvictionHints(ping);
         cacheReadinessView(ping);
         retainDispatchedNodes(ping);
+        cacheDirectory(ping);
+    }
+
+    /// The leader-ping path: reached only past the authority and term fence, so any directory it carries is the leader's.
+    private void cacheDirectory(ClusterSyncPing ping) {
+        ping.directory().onPresent(this::acceptDirectory);
+    }
+
+    /// I-W14, the single acceptance rule for both paths: a directory is installed iff its `(epoch triple, generation)` is strictly after the
+    /// version of the directory this node holds now (not after the observed epoch, which is zero on a member). The leader-ping path adds the
+    /// authority and term fence before it gets here; the pong path adds the sender gate.
+    private boolean acceptDirectory(ClusterDirectory incoming) {
+        var installed = heldDirectory.updateAndGet(held -> isNewerThan(incoming, held)
+                                                           ? Option.some(incoming)
+                                                           : held);
+
+        return installed.map(held -> held == incoming)
+                        .or(false);
+    }
+
+    private static boolean isNewerThan(ClusterDirectory incoming, Option<ClusterDirectory> held) {
+        return held.map(ClusterDirectory::version)
+                   .map(version -> incoming.version()
+                                           .isStrictlyAfter(version))
+                   .or(true);
+    }
+
+    private boolean isDirectorySender(NodeId sender) {
+        return coreSender.get()
+                         .test(sender) || authoritySender.get()
+                                                         .test(sender) || ownGovernor.get()
+                                                                                     .test(sender);
+    }
+
+    @Override
+    @Contract
+    public void setDirectoryGovernor(Predicate<NodeId> isOwnGovernor) {
+        ownGovernor.set(isOwnGovernor);
+    }
+
+    @Override
+    public DirectoryVersion heldDirectoryVersion() {
+        return heldDirectory.get()
+                            .map(ClusterDirectory::version)
+                            .or(DirectoryVersion.NONE);
+    }
+
+    @Override
+    public Option<ClusterDirectory> heldDirectory() {
+        return heldDirectory.get();
+    }
+
+    @Override
+    @Contract
+    public boolean installProducedDirectory(ClusterDirectory directory) {
+        return acceptDirectory(directory);
     }
 
     @Override
@@ -745,6 +830,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         if (coreSender.get().test(pong.sender())) {
             corePingObserver.get().run();
         }
+
+        pong.directory().filter(_ -> isDirectorySender(pong.sender())).onPresent(this::acceptDirectory);
         // #590: a pong is the leader's direct evidence that this peer answered. Recorded for EVERY
         // sender including self (a self-pong is trivially fresh) so the community-liveness read never
         // has to special-case the leader's own membership of a community.
@@ -1007,10 +1094,13 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                            : prev);
     }
 
-    private ClusterSyncPong buildPong() {
+    /// Reports the pair this node holds and attaches the directory iff it is strictly newer than the asker's, so a lagging responder never
+    /// attaches an older one and an asker that holds the current pair is never sent it again.
+    private ClusterSyncPong buildPong(DirectoryVersion askerHolds) {
         var epoch = observedEpoch.get();
         var buffer = peerObservationBuffer.get();
         var observation = localObservation();
+        var held = heldDirectory.get();
 
         return new ClusterSyncPong(self,
                                    observation,
@@ -1023,7 +1113,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    collectCommunityReports(),
                                    buffer.drainHealth(),
                                    buffer.drainConnectivity(),
-                                   Option.none());
+                                   Option.none(),
+                                   held.map(ClusterDirectory::version).or(DirectoryVersion.NONE),
+                                   held.filter(directory -> directory.version()
+                                                                     .isStrictlyAfter(askerHolds)));
     }
 
     /// Membership v2 (§7.5.3) — the string stamped onto the pong's `lifecycleState`

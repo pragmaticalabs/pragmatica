@@ -145,6 +145,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
@@ -549,7 +550,14 @@ public interface AetherNode extends ManageableNode {
                                                             ClusterEventsLimits clusterEventsLimits) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
-        var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
+        // W-OBS W2: the commit ring records and serves under the committed cluster incarnation (the production reader), filtered by the
+        // exhaustive replica filter, at the default byte budget.
+        var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter,
+                                                          serializer,
+                                                          deserializer,
+                                                          ReplicaFilter.replicaFilter(),
+                                                          ReplicaIncarnationSource.replicaIncarnationSource(),
+                                                          CommitRing.DEFAULT_BUDGET_BYTES);
         // #345 1c: the per-ownership-domain epoch high-water (data-plane half of the ownership
         // fence) must exist BEFORE the DHT storage engine, because the engine's owner-epoch gate is
         // backed by it. The SAME instance is threaded into assembleNode for its KV-router
@@ -3525,8 +3533,8 @@ public interface AetherNode extends ManageableNode {
         holder.onSubsystemsReady();
     }
 
-    /// Per-node storage maintenance starts with the node's readiness: promotion and demotion of `artifacts` and
-    /// `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
+    /// Per-node storage maintenance starts with the node's readiness: demotion, promotion and garbage collection of
+    /// `artifacts` and `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
     /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. FER (degrade forward):
     /// a manager that cannot start is logged and the node still becomes ready, with that instance's tiers unmaintained;
     /// promotion is an optimization, not a dependency.

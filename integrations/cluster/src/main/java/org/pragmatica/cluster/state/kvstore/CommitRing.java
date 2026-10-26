@@ -17,6 +17,7 @@ import java.util.function.ToIntFunction;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.serialization.Codec;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,12 +44,15 @@ public final class CommitRing {
     /// What a queued heartbeat counts against its subscriber's byte bound: a stalled subscriber on an idle cluster still overflows.
     static final int HEARTBEAT_BYTES = 64;
 
+    @Codec
     public enum RefusalReason {
         EVICTED,
         INCARNATION_MISMATCH,
         AHEAD,
         BUSY,
-        NOT_SERVING
+        NOT_SERVING,
+        /// Decoded from an ordinal this build does not know (a newer peer). A consumer treats it as an unusable position: discard, snapshot.
+        UNKNOWN
     }
 
     public enum CloseReason {
@@ -57,7 +61,9 @@ public final class CommitRing {
         OVERFLOW,
         /// A writer appended a slot behind the frontier; the ring did not record it and raised its floor to the frontier, so every position it
         /// could have granted before is refused `EVICTED` and the subscriber takes a snapshot.
-        OUT_OF_ORDER
+        OUT_OF_ORDER,
+        /// The subscriber's owner released it (the peer went away, or resubscribed); no transport close is fired.
+        RELEASED
     }
 
     public sealed interface Subscribe permits Granted, Refused {}
@@ -271,6 +277,22 @@ public final class CommitRing {
         return underLock(closes -> subscribeLocked(closes, replicaTag, applied, pairs, subscription));
     }
 
+    /// Registers `subscription` at the frontier with no position and no catch-up: it receives only the entries appended after this call
+    /// (`LIVE_ONLY`, section 3.2 step 1: subscribe first, snapshot second). The tag check, the registration and the capture of the frontier
+    /// (`Granted.latest`) happen in ONE critical section, so the first entry delivered is exactly the frontier: none lost, none repeated.
+    /// Refused `NOT_SERVING` while no incarnation is committed. A replica that already holds a life sends its tag and a mismatch is refused
+    /// `INCARNATION_MISMATCH`, as [#subscribeFrom] does; a [IncarnationTag#NONE] replica (a fresh join, nothing to compare) makes no claim and is
+    /// not checked here, its snapshot being tag-checked on install.
+    public Subscribe subscribeLive(IncarnationTag replicaTag, Subscription subscription) {
+        return underLock(closes -> subscribeLiveLocked(closes, replicaTag, subscription));
+    }
+
+    /// The owner is done with `subscription` (its peer disconnected or resubscribed): it leaves the ring and is marked `RELEASED`. Fires no close.
+    @Contract
+    public void unsubscribe(Subscription subscription) {
+        underLockDo(_ -> releaseLocked(subscription));
+    }
+
     /// The last pairs of effect entries applied, oldest first, as of now.
     public List<AnchorPair> anchor() {
         return underLock(_ -> List.copyOf(anchor));
@@ -278,6 +300,11 @@ public final class CommitRing {
 
     public IncarnationTag tag() {
         return underLock(_ -> tag);
+    }
+
+    /// How many subscriptions the ring offers to now.
+    public int subscriptionCount() {
+        return underLock(_ -> subscriptions.size());
     }
 
     public long floor() {
@@ -455,6 +482,26 @@ public final class CommitRing {
 
         return verifyAnchor(applied, pairs).<Subscribe> map(refusal -> refusal)
                            .or(() -> grant(closes, applied, subscription));
+    }
+
+    private void releaseLocked(Subscription subscription) {
+        subscriptions.remove(subscription);
+        subscription.markClosed(CloseReason.RELEASED);
+    }
+
+    private Subscribe subscribeLiveLocked(Closes closes, IncarnationTag replicaTag, Subscription subscription) {
+        if (tag.isNone()) {
+            return new Refused(RefusalReason.NOT_SERVING, floor, tag);
+        }
+
+        if (!replicaTag.isNone() && !tag.matches(replicaTag)) {
+            return new Refused(RefusalReason.INCARNATION_MISMATCH, floor, tag);
+        }
+
+        closeOpenRange(closes);
+        subscriptions.add(subscription);
+
+        return new Granted(List.of(), nextSlot, subscription);
     }
 
     private Subscribe grant(Closes closes, long applied, Subscription subscription) {
