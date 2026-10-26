@@ -4,9 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
-import java.util.concurrent.CyclicBarrier;
+import java.util.ArrayList;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -14,14 +16,20 @@ import org.pragmatica.aether.config.UploadConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The node cap's episode flag against a release that runs while a refusal is deciding.
+/// The node cap's episode flag against a release that runs while refusals are deciding.
 ///
-/// One permit is held at the cap; then, released together by a barrier, the holder gives it back while another upload is
-/// turned away at the cap. When the refusal read the node at its cap and the release already ran, a flag set after that
-/// stays set with nothing in flight, and the next episode's report is suppressed. Every round ends with nothing in flight,
-/// so the flag must be clear at the end of every round, whichever order the two took.
+/// One permit is held at the cap; then, started together on a spin barrier, the holder gives it back while several other
+/// uploads are turned away at the cap. A refusal that read the node at its cap before the release, and set the flag after
+/// the release had already looked at it, leaves the flag set with nothing in flight, and the next episode's report is
+/// suppressed. Every round ends with nothing in flight, so the flag must be clear at the end of every round, whichever
+/// order the release and the refusals took.
 class UploadAdmissionRaceTest {
-    private static final int ROUNDS = 100_000;
+    private static final int ROUNDS = 200_000;
+    private static final int REFUSERS = Math.max(2, Math.min(6, Runtime.getRuntime().availableProcessors() - 2));
+
+    private final AtomicInteger round = new AtomicInteger(-1);
+    private final AtomicInteger finished = new AtomicInteger();
+    private final AtomicBoolean stop = new AtomicBoolean();
 
     @Test
     void saturationFlag_isClearOnceNothingIsInFlight_whateverOrderARefusalAndARelease_took() throws Exception {
@@ -29,45 +37,61 @@ class UploadAdmissionRaceTest {
         var admission = UploadAdmission.uploadAdmission(UploadConfig.DEFAULT.withMaxConcurrent(1),
                                                         episodes::incrementAndGet,
                                                         () -> {});
-        var barrier = new CyclicBarrier(3);
-        var pool = Executors.newFixedThreadPool(2);
-        var stuck = new AtomicInteger();
+        var holder = new Permit();
+        var pool = Executors.newFixedThreadPool(REFUSERS + 1);
+        var workers = new ArrayList<Future<?>>();
+        var stuck = 0;
 
         try {
-            for (int round = 0; round < ROUNDS; round++) {
-                var holder = admission.tryAcquire("holder").unwrap();
+            workers.add(pool.submit(() -> work(() -> holder.release.get().run())));
+            for (int refuser = 0; refuser < REFUSERS; refuser++) {
+                workers.add(pool.submit(() -> work(() -> admission.tryAcquire("other").onSuccess(Runnable::run))));
+            }
 
-                var release = pool.submit(() -> {
-                    barrier.await();
-                    holder.run();
-                    barrier.await();
+            for (int current = 0; current < ROUNDS; current++) {
+                holder.release.set(admission.tryAcquire("holder").unwrap());
+                finished.set(0);
+                round.set(current);
 
-                    return null;
-                });
-                var refusal = pool.submit(() -> {
-                    barrier.await();
-                    admission.tryAcquire("other").onSuccess(Runnable::run);
-                    barrier.await();
-
-                    return null;
-                });
-
-                barrier.await();
-                barrier.await();
-                release.get();
-                refusal.get();
+                while (finished.get() < REFUSERS + 1) {
+                    Thread.onSpinWait();
+                }
 
                 if (admission.inFlight() == 0 && admission.saturated()) {
-                    stuck.incrementAndGet();
+                    stuck++;
                 }
             }
         } finally {
+            stop.set(true);
             pool.shutdownNow();
             pool.awaitTermination(10, TimeUnit.SECONDS);
         }
 
-        assertThat(stuck.get()).as("rounds that ended with nothing in flight and the saturation flag still set, out of " + ROUNDS)
-                               .isZero();
+        assertThat(stuck).as("rounds that ended with nothing in flight and the saturation flag still set, out of " + ROUNDS)
+                         .isZero();
         assertThat(episodes.get()).as("control: refusals at the cap did happen, so the race was exercised").isPositive();
+    }
+
+    private static final class Permit {
+        final java.util.concurrent.atomic.AtomicReference<Runnable> release = new java.util.concurrent.atomic.AtomicReference<>(() -> {});
+    }
+
+    /// Runs `step` once per round, as soon as the round starts; counts itself finished after each.
+    private Object work(Runnable step) {
+        var last = -1;
+
+        while (!stop.get()) {
+            var current = round.get();
+
+            if (current != last) {
+                last = current;
+                step.run();
+                finished.incrementAndGet();
+            } else {
+                Thread.onSpinWait();
+            }
+        }
+
+        return null;
     }
 }
