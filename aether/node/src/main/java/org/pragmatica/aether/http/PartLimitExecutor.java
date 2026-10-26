@@ -46,11 +46,13 @@ final class PartLimitExecutor {
 
     /// Half the processors, at least 2 and at most 8, with four queued checks for each.
     static PartLimitExecutor partLimitExecutor() {
-        var threads = Math.max(2,
-                               Math.min(MAX_THREADS,
-                                        Runtime.getRuntime().availableProcessors() / 2));
+        var threads = threadsFor(Runtime.getRuntime().availableProcessors());
 
         return partLimitExecutor(threads, threads * QUEUE_PER_THREAD);
+    }
+
+    static int threadsFor(int processors) {
+        return Math.max(2, Math.min(MAX_THREADS, processors / 2));
     }
 
     static PartLimitExecutor partLimitExecutor(int threads, int queueLength) {

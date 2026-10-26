@@ -81,12 +81,24 @@ class PartLimitExecutorTest {
     }
 
     @Test
-    void defaultSize_isHalfTheProcessors_betweenTwoAndEight_withFourQueuedChecksEach() {
-        var executor = PartLimitExecutor.partLimitExecutor();
-        var expected = Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors() / 2));
+    void threadsFor_isHalfTheProcessors_betweenTwoAndEight() {
+        assertThat(PartLimitExecutor.threadsFor(1)).isEqualTo(2);
+        assertThat(PartLimitExecutor.threadsFor(4)).isEqualTo(2);
+        assertThat(PartLimitExecutor.threadsFor(5)).isEqualTo(2);
+        assertThat(PartLimitExecutor.threadsFor(6)).isEqualTo(3);
+        assertThat(PartLimitExecutor.threadsFor(15)).isEqualTo(7);
+        assertThat(PartLimitExecutor.threadsFor(16)).isEqualTo(8);
+        assertThat(PartLimitExecutor.threadsFor(17)).isEqualTo(8);
+        assertThat(PartLimitExecutor.threadsFor(64)).isEqualTo(8);
+    }
 
-        assertThat(executor.threads()).isEqualTo(expected);
-        assertThat(executor.queueCapacity()).isEqualTo(expected * 4);
+    @Test
+    void defaultExecutor_hasThatManyWorkers_andFourQueuedChecksForEach() {
+        var executor = PartLimitExecutor.partLimitExecutor();
+        var threads = PartLimitExecutor.threadsFor(Runtime.getRuntime().availableProcessors());
+
+        assertThat(executor.threads()).isEqualTo(threads);
+        assertThat(executor.queueCapacity()).isEqualTo(threads * 4);
         assertThat(PartLimitExecutor.IDLE_SECONDS).isEqualTo(30);
     }
 }
