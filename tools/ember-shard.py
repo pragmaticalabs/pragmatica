@@ -63,7 +63,7 @@ def default_weight(weights):
 def assign(classes, weights, shards):
     """Longest-processing-time first; ties broken by name so the result is deterministic."""
     fallback = default_weight(weights)
-    ordered = sorted(classes, key=lambda c: (-weights.get(c, fallback), c))[1:]  # THROWAWAY gate probe: drops one class
+    ordered = sorted(classes, key=lambda c: (-weights.get(c, fallback), c))
     bins = [{"total": 0, "classes": []} for _ in range(shards)]
     for c in ordered:
         target = min(bins, key=lambda b: b["total"])
