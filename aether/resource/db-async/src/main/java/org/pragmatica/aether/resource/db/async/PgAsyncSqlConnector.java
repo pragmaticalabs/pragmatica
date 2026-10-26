@@ -12,7 +12,6 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -143,14 +142,11 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
             results.add(mapper.map(new PgRowAccessor(row)));
         }
 
-        return Result.allOf(results)
-                     .mapError(PgAsyncSqlConnector::toConnectorError)
-                     .async();
+        return Result.firstFailureOf(results).async();
     }
 
     private static <T> Promise<T> mapRow(PgRow row, RowMapper<T> mapper) {
         return mapper.map(new PgRowAccessor(row))
-                     .mapError(PgAsyncSqlConnector::toConnectorError)
                      .async();
     }
 
@@ -230,14 +226,6 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
         }
 
         return sb.toString();
-    }
-
-    private static DatabaseConnectorError toConnectorError(Cause cause) {
-        if (cause instanceof DatabaseConnectorError dce) {
-            return dce;
-        }
-
-        return DatabaseConnectorError.databaseFailure(new RuntimeException(cause.message()));
     }
 
     private record TransactionalSqlConnector(DatabaseConnectorConfig config, Transaction transaction) implements SqlConnector {
