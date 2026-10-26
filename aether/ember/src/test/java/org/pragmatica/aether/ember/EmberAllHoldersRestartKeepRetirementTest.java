@@ -49,6 +49,9 @@ class EmberAllHoldersRestartKeepRetirementTest {
                                                     && restartedB.connectedPeerIds().contains(new NodeId(harness.coreA)),
                                               90_000L);
 
+        assertThat(restartedA.transportMetrics().get("identity_ledger_durable").intValue()).as("the restarted holders report their ledger durable").isEqualTo(1);
+        assertThat(restartedB.transportMetrics().get("identity_ledger_durable").intValue()).isEqualTo(1);
+
         var refusalsBefore = IdentityRestartHarness.refusals(restartedA) + IdentityRestartHarness.refusals(restartedB);
         var verdict = harness.launchRetiredNodeId(restartedB);
 

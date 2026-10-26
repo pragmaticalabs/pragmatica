@@ -2538,6 +2538,12 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Tell the refused announcer explicitly, so it exits instead of announcing forever.
     private void refuseAnnounce(InetSocketAddress sender, NodeId refused) {
+        // A registry that cannot answer yet (#2429: ledger not loaded, node wiped) has not retired the NodeId: telling the
+        // announcer its identity is retired would make a healthy process exit. Only a retirement is a refusal.
+        if (!isRetired(refused)) {
+            return;
+        }
+
         transport.send(sender,
                        IdentityRefused.identityRefused(selfId,
                                                        refused,

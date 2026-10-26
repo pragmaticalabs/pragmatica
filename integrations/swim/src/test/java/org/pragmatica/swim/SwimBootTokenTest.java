@@ -193,6 +193,10 @@ class SwimBootTokenTest {
         assertThat(protocol.members()).as("not admitted while the registry cannot answer").doesNotContainKey(NODE_A);
         assertThat(protocol.bootTokenRefusals()).as("and not a refusal").isZero();
         assertThat(tokens.isRetired(NODE_A)).isFalse();
+        assertThat(targetTransport.sentMessages.stream()
+                                               .filter(sent -> sent.message() instanceof SwimMessage.IdentityRefused))
+            .as("the announcer is not told its identity is retired: it is not")
+            .isEmpty();
 
         tokens.preload(IdentityFacts.identityFacts(), false);
         announce(6, TOKEN);
