@@ -1253,7 +1253,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var metrics = new HashMap<String, Number>(quicMetrics.snapshot());
 
         metrics.put("boot_token_refusals_total", bootTokens.refusals());
-        metrics.put("identity_ledger_durable", bootTokens.ledgerDurable() ? 1 : 0);
+        metrics.put("identity_ledger_durable",
+                    bootTokens.ledgerDurable()
+                    ? 1
+                    : 0);
 
         return Map.copyOf(metrics);
     }

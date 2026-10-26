@@ -135,9 +135,10 @@ public interface BootTokens {
             private Admission answeredNow(Promise<Admission> verdict) {
                 var answer = new AtomicReference<>(Admission.UNAVAILABLE);
 
-                verdict.onSuccess(answer::set);
-
-                return answer.get();
+                return verdict.onSuccess(answer::set)
+                              .isResolved()
+                       ? answer.get()
+                       : Admission.UNAVAILABLE;
             }
 
             /// Every outcome that needs no write. [Admission#CONFLICT] here only means "a different process, not yet
@@ -172,14 +173,17 @@ public interface BootTokens {
                 if (!retired.add(peer)) {
                     return Promise.success(refused(Admission.RETIRED));
                 }
-
                 // FER: the retirement already stands in memory and is announced even when its ledger write fails; what is
                 // lost is protection across a restart of every holder, reported through the ledger's durability listener.
                 return ledger.get()
                              .fold(() -> Promise.success(announceRetirement(peer)),
-                                   held -> held.record(IdentityFacts.terminated(peer, TOKEN_CONFLICT))
-                                               .recover(_ -> Unit.unit())
-                                               .map(_ -> announceRetirement(peer)));
+                                   held -> retireDurably(held, peer));
+            }
+
+            private Promise<Admission> retireDurably(IdentityLedger held, NodeId peer) {
+                return held.record(IdentityFacts.terminated(peer, TOKEN_CONFLICT))
+                           .recover(_ -> Unit.unit())
+                           .map(_ -> announceRetirement(peer));
             }
 
             private Admission announceRetirement(NodeId peer) {

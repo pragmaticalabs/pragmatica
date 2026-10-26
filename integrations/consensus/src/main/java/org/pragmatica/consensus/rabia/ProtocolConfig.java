@@ -202,7 +202,8 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
 
     /// #2429 — as above, also stating where the node keeps its identity ledger: the harness gives each node id a
     /// restart-stable file, so a node that is stopped and started again finds what it had retired.
-    public static ProtocolConfig testConfig(Option<ParticipationMarker> participationMarker, Option<Path> identityLedgerFile) {
+    public static ProtocolConfig testConfig(Option<ParticipationMarker> participationMarker,
+                                            Option<Path> identityLedgerFile) {
         return new ProtocolConfig(timeSpan(60).seconds(),
                                   timeSpan(100).millis(),
                                   100,

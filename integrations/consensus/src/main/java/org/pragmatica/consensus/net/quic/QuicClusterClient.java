@@ -873,8 +873,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // same connect-failure path as an identity mismatch.
             // Write-ahead (#2429): a first binding is answered only once the identity ledger holds it; the answer
             // arrives off this thread, so a stalled ledger writer parks this dial and nothing else.
-            bootTokens.admitDurably(peerId, hello.bootToken())
-                      .onSuccess(admission -> onEventLoop(ctx, () -> attachAdmitted(ctx, hello, admission)));
+            bootTokens.admitDurably(peerId,
+                                    hello.bootToken())
+                      .onSuccess(admission -> onEventLoop(ctx,
+                                                          () -> attachAdmitted(ctx, hello, admission)));
         }
 
         private void onEventLoop(ChannelHandlerContext ctx, Runnable action) {
@@ -885,7 +887,9 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             }
         }
 
-        private void attachAdmitted(ChannelHandlerContext ctx, NetworkMessage.Hello hello, BootTokens.Admission admission) {
+        private void attachAdmitted(ChannelHandlerContext ctx,
+                                    NetworkMessage.Hello hello,
+                                    BootTokens.Admission admission) {
             if (!admission.admitted()) {
                 log.warn("QUIC dialer refused {} (token {}) by the boot-token gate: {} (refusals={})",
                          peerId,

@@ -74,8 +74,7 @@ public interface IdentityLedger {
 
                 @Override
                 public Result<Unit> moveAtomic(Path source, Path target) {
-                    return FileOps.moveAtomic(source, target)
-                                  .mapToUnit();
+                    return FileOps.moveAtomic(source, target).mapToUnit();
                 }
 
                 @Override
@@ -103,27 +102,22 @@ public interface IdentityLedger {
     @SuppressWarnings("JBCT-CAUSE-04")
     record WriteFailed(Cause origin, String message) implements Cause, Cause.Wrapped {
         static final Fn1<WriteFailed, Cause> FACTORY = Causes.forOneValue("Identity ledger write failed",
-                                                                                              WriteFailed::new);
+                                                                          WriteFailed::new);
     }
 
     Path file();
-
     /// Read the file and settle the state this node starts in. `createdNow` is the caller's statement that this node is
     /// being created now (its ledger directory did not exist), which turns a missing file into [Origin#CREATED]. A
     /// CREATED ledger is written empty at once, so a later restart finds a file and does not mistake itself for a
     /// wiped node; a WIPED ledger is NOT written, so the state survives a restart until a merge completes.
     Loading open(boolean createdNow);
-
     /// Every fact this ledger holds, durable or not yet.
     IdentityFacts facts();
-
     /// Union `delta` into the ledger and complete once the result is durable (F1-F3). Completes at once when `delta`
     /// adds nothing and the file already holds the ledger. Never blocks the caller.
     Promise<Unit> record(IdentityFacts delta);
-
     /// Whether the last write (or the load) left the file current.
     boolean durable();
-
     /// Register a listener told when durability is lost (the cause) and when it returns (empty). Called on the writer
     /// thread, at a transition only.
     Unit onDurabilityChange(Consumer<Option<Cause>> listener);
@@ -155,7 +149,9 @@ public interface IdentityLedger {
 
             loaded.onPresent(this::adopt);
 
-            return loaded.map(facts -> new Loading(facts, Origin.LOADED, Option.none()))
+            return loaded.map(facts -> new Loading(facts,
+                                                   Origin.LOADED,
+                                                   Option.none()))
                          .or(() -> settleMissing(createdNow));
         }
 
@@ -163,7 +159,7 @@ public interface IdentityLedger {
             var unwritable = createdNow
                              ? writeCurrent()
                              : probeWritable();
-            var cause = unwritable.fold(Option::<Cause>some, _ -> Option.<Cause>none());
+            var cause = unwritable.fold(Option::<Cause> some, _ -> Option.<Cause> none());
 
             durableFlag.set(createdNow && cause.isEmpty());
 
@@ -176,8 +172,7 @@ public interface IdentityLedger {
 
         /// A WIPED ledger must stay unwritten until a merge completes, so writability is probed with a throwaway file.
         private Result<Unit> probeWritable() {
-            var directory = file.toAbsolutePath()
-                                .getParent();
+            var directory = file.toAbsolutePath().getParent();
             var probe = directory.resolve(".identity-ledger-probe-" + System.nanoTime() + ".tmp");
 
             return FileOps.createDirectoriesDurable(directory)
@@ -208,13 +203,11 @@ public interface IdentityLedger {
         @Override
         public Promise<Unit> record(IdentityFacts delta) {
             state.updateAndGet(current -> current.merge(delta));
-
-            if (fileCurrent.get() && written.get()
-                                            .covers(delta)) {
+            if (fileCurrent.get() && written.get().covers(delta)) {
                 return Promise.success(Unit.unit());
             }
 
-            var pending = Promise.<Unit>promise();
+            var pending = Promise.<Unit> promise();
 
             queue.add(pending);
             startDrain();
@@ -224,10 +217,7 @@ public interface IdentityLedger {
 
         private Unit startDrain() {
             if (draining.compareAndSet(false, true)) {
-                Thread.ofPlatform()
-                      .daemon()
-                      .name("identity-ledger-writer")
-                      .start(this::drain);
+                Thread.ofPlatform().daemon().name("identity-ledger-writer").start(this::drain);
             }
 
             return Unit.unit();
@@ -250,8 +240,8 @@ public interface IdentityLedger {
 
             if (!batch.isEmpty()) {
                 var result = writeCurrent().onSuccess(_ -> markDurable())
-                                           .onFailure(this::markNotDurable)
-                                           .mapError(WriteFailed.FACTORY);
+                                         .onFailure(this::markNotDurable)
+                                         .mapError(WriteFailed.FACTORY);
 
                 batch.forEach(pending -> pending.resolve(result));
             }
@@ -261,10 +251,8 @@ public interface IdentityLedger {
 
         private Result<Unit> writeCurrent() {
             var snapshot = state.get();
-            var content = snapshot.render()
-                                  .getBytes(StandardCharsets.UTF_8);
-            var directory = file.toAbsolutePath()
-                                .getParent();
+            var content = snapshot.render().getBytes(StandardCharsets.UTF_8);
+            var directory = file.toAbsolutePath().getParent();
             var temp = directory.resolve(".identity-ledger-" + System.nanoTime() + ".tmp");
 
             return FileOps.createDirectoriesDurable(directory)

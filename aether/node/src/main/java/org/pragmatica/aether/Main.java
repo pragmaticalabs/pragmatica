@@ -359,8 +359,7 @@ public record Main(String[] args) {
     /// [IdentityLedgerWiring]). The same `verify* -> abortBoot` idiom as the gates above.
     @Contract
     private void enforceIdentityLedgerBootable(AetherNodeConfig config) {
-        IdentityLedgerWiring.verifyBootable(config)
-                            .onFailure(this::abortBoot);
+        IdentityLedgerWiring.verifyBootable(config).onFailure(this::abortBoot);
     }
 
     /// Boot gate: insecure dev-mode must be fundamentally incompatible with a real

@@ -20,8 +20,10 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Where this node keeps its identity ledger (#2429), and the boot steps that attach it to the node's
 /// [BootTokens] registry before any admission path can consult it.
@@ -49,15 +51,14 @@ public sealed interface IdentityLedgerWiring {
             return new LedgerUnusable(file,
                                       origin,
                                       "The identity ledger at " + file
-                                      + " cannot be created or forced to disk; the data path is set explicitly, so the node does not start without it."
-                                      + " Fix the volume or permissions of this path, or remove the explicit disk_path to run without the restart protection.");
+                                     + " cannot be created or forced to disk; the data path is set explicitly, so the node does not start without it."
+                                     + " Fix the volume or permissions of this path, or remove the explicit disk_path to run without the restart protection.");
         }
     }
 
     static Location location(AetherNodeConfig config) {
         return location(config.self(),
-                        config.protocol()
-                              .identityLedgerFile(),
+                        config.protocol().identityLedgerFile(),
                         config.storageConfig());
     }
 
@@ -70,16 +71,11 @@ public sealed interface IdentityLedgerWiring {
 
     private static Location derivedLocation(NodeId self, Map<String, StorageConfig> storage) {
         var defaults = StorageConfig.storageConfig();
-        var artifacts = Option.option(storage.get("artifacts"))
-                              .or(defaults);
-        var file = Path.of(artifacts.diskPath())
-                       .resolveSibling("identity")
-                       .resolve(self.id())
-                       .resolve("ledger");
+        var artifacts = Option.option(storage.get("artifacts")).or(defaults);
+        var file = Path.of(artifacts.diskPath()).resolveSibling("identity").resolve(self.id()).resolve("ledger");
 
         return new Location(file,
-                            !artifacts.diskPath()
-                                      .equals(defaults.diskPath()));
+                            !artifacts.diskPath().equals(defaults.diskPath()));
     }
 
     /// The boot gate: a stated location must be usable. Nothing is checked for a synthesized one.
@@ -90,13 +86,15 @@ public sealed interface IdentityLedgerWiring {
     static Result<Unit> verifyBootable(Location location) {
         return location.stated()
                ? unusableCause(location).fold(Result::unitResult,
-                                              cause -> LedgerUnusable.ledgerUnusable(location.file(), cause)
+                                              cause -> LedgerUnusable.ledgerUnusable(location.file(),
+                                                                                     cause)
                                                                      .result())
                : Result.unitResult();
     }
 
     private static Option<Cause> unusableCause(Location location) {
-        return IdentityLedger.identityLedger(location.file(), IdentityLedger.DurableWriter.fileOps())
+        return IdentityLedger.identityLedger(location.file(),
+                                             IdentityLedger.DurableWriter.fileOps())
                              .open(isNewDirectory(location))
                              .unwritable();
     }
@@ -121,24 +119,24 @@ public sealed interface IdentityLedgerWiring {
     }
 
     private static boolean isNewDirectory(Location location) {
-        return Files.notExists(location.file()
-                                       .toAbsolutePath()
-                                       .getParent());
+        return Files.notExists(location.file().toAbsolutePath().getParent());
     }
 
-    private static Unit raiseAtBoot(OperatorWarningSink sink, String subject, Location location, IdentityLedger.Loading loading) {
+    private static Unit raiseAtBoot(OperatorWarningSink sink,
+                                    String subject,
+                                    Location location,
+                                    IdentityLedger.Loading loading) {
         if (loading.origin() == IdentityLedger.Origin.WIPED) {
             return OperatorWarnings.raise(log,
                                           sink,
                                           OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                           subject,
                                           "The identity ledger {} is missing on a node that is not new, so this node cannot tell which"
-                                          + " NodeIds it retired before: it admits no NEW peer until it has merged with a peer's ledger."
-                                          + " Restart protection against a retired NodeId is off on this node until then."
-                                          + " To start it as a NEW node instead, stop it and delete the directory {}.",
+                                         + " NodeIds it retired before: it admits no NEW peer until it has merged with a peer's ledger."
+                                         + " Restart protection against a retired NodeId is off on this node until then."
+                                         + " To start it as a NEW node instead, stop it and delete the directory {}.",
                                           location.file(),
-                                          location.file()
-                                                  .getParent());
+                                          location.file().getParent());
         }
 
         return loading.unwritable()
@@ -148,8 +146,8 @@ public sealed interface IdentityLedgerWiring {
                                                             OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                                                             subject,
                                                             "The identity ledger {} cannot be written ({}): this node runs WITHOUT the"
-                                                            + " restart protection for retired NodeIds, as before the ledger existed."
-                                                            + " Put the data path on a writable durable volume.",
+                                                           + " restart protection for retired NodeIds, as before the ledger existed."
+                                                           + " Put the data path on a writable durable volume.",
                                                             location.file(),
                                                             cause.message()));
     }

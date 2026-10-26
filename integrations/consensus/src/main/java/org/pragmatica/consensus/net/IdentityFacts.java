@@ -92,8 +92,7 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
 
     /// The serialised ledger content: header, facts in a stable order, trailing digest.
     public String render() {
-        var body = Stream.concat(Stream.of(HEADER), terminatedLines())
-                         .reduce("", (text, line) -> text + line + "\n");
+        var body = Stream.concat(Stream.of(HEADER), terminatedLines()).reduce("", (text, line) -> text + line + "\n");
 
         return body + DIGEST_PREFIX + digestOf(body) + "\n";
     }
@@ -109,23 +108,19 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
         return terminated.entrySet()
                          .stream()
                          .sorted(Map.Entry.comparingByKey())
-                         .map(entry -> "T\t" + encode(entry.getKey()
-                                                           .id()) + "\t" + encode(entry.getValue()));
+                         .map(entry -> "T\t" + encode(entry.getKey().id()) + "\t" + encode(entry.getValue()));
     }
 
     private static Result<List<String>> verifyEnvelope(List<String> lines) {
         var size = lines.size();
 
-        if (size < 3 || !lines.get(size - 1)
-                              .isEmpty() || !HEADER.equals(lines.get(0))) {
+        if (size < 3 || !lines.get(size - 1).isEmpty() || !HEADER.equals(lines.get(0))) {
             return MALFORMED.result();
         }
 
         var factLines = lines.subList(1, size - 2);
         var body = HEADER + "\n" + String.join("",
-                                                factLines.stream()
-                                                         .map(line -> line + "\n")
-                                                         .toList());
+                                               factLines.stream().map(line -> line + "\n").toList());
 
         return (DIGEST_PREFIX + digestOf(body)).equals(lines.get(size - 2))
                ? Result.success(factLines)
@@ -136,7 +131,11 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
         return factLines.stream()
                         .map(IdentityFacts::parseFact)
                         .reduce(Result.success(EMPTY),
-                                (acc, fact) -> acc.flatMap(facts -> fact.map(facts::merge)));
+                                IdentityFacts::mergeParsed);
+    }
+
+    private static Result<IdentityFacts> mergeParsed(Result<IdentityFacts> accumulated, Result<IdentityFacts> next) {
+        return accumulated.flatMap(facts -> next.map(facts::merge));
     }
 
     private static Result<IdentityFacts> parseFact(String line) {
@@ -163,8 +162,7 @@ public record IdentityFacts(Map<NodeId, String> terminated) {
 
     private static String digestOf(String body) {
         return Result.lift(Causes::fromThrowable,
-                           () -> MessageDigest.getInstance("SHA-256")
-                                              .digest(body.getBytes(StandardCharsets.UTF_8)))
+                           () -> MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)))
                      .map(IdentityFacts::hex)
                      .or("");
     }
