@@ -3,11 +3,10 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
-import java.util.Set;
-
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.SqlStates;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -20,9 +19,9 @@ import static org.pragmatica.lang.utils.Causes.fromThrowable;
 ///
 /// A failure keeps what the database reported: the SQLSTATE of a server-side error is readable through
 /// [#sqlState()], and whether a retry may help is carried by [Cause.Transient] on the type, never by message
-/// text. [#fromSqlState(Option, String, String, Option)] is the one classification of a SQLSTATE every connector
-/// the JDBC and jOOQ connectors use; the driver-layer errors the R2DBC and postgres-async connectors surface
-/// (`R2dbcError`, `SqlError`) keep their own types and are held to the same retry decision by test. A connector never replaces a typed
+/// text. What a SQLSTATE means for a retry is decided by one classifier, [SqlStates], which
+/// [#fromSqlState(Option, String, String, Option)] and the R2DBC layer's `R2dbcError` both call; each connector
+/// family keeps its own error types. A connector never replaces a typed
 /// cause with a message-only [DatabaseFailure]: causes that are already typed (row-decode failures, this
 /// interface's own variants) reach the caller unchanged.
 public sealed interface DatabaseConnectorError extends Cause {
@@ -275,17 +274,9 @@ public sealed interface DatabaseConnectorError extends Cause {
         return DatabaseFailure.databaseFailure(cause).unwrap();
     }
 
-    /// Connection-class SQLSTATEs a retry must not repeat: `08007` (transaction resolution unknown, a COMMIT whose
-    /// reply was lost, so a retry could re-run a committed write) and `08P01` (protocol violation).
-    Set<String> UNRETRYABLE_CONNECTION_STATES = Set.of("08007", "08P01");
-
-    /// Server-going-away SQLSTATEs a retry may outlive: `57P01` admin shutdown, `57P02` crash shutdown, `57P03`
-    /// cannot connect now. `57014` (query cancelled) is deliberately absent: a cancel should surface, not be re-driven.
-    Set<String> SERVER_GONE_STATES = Set.of("57P01", "57P02", "57P03");
-
     /// Classifies a server-reported SQLSTATE into the connector failure it denotes: class `23` is a constraint
     /// violation, class `40` a rolled-back transaction, a connection state (class `08` except
-    /// [#UNRETRYABLE_CONNECTION_STATES]), a server-going-away state or class `53` (insufficient resources) a
+    /// [SqlStates]), a server-going-away state or class `53` (insufficient resources) a
     /// transient connection failure, anything else a failed query. The SQLSTATE stays readable on
     /// the result through [#sqlState()].
     ///
@@ -297,35 +288,19 @@ public sealed interface DatabaseConnectorError extends Cause {
                                                String sql,
                                                String message,
                                                Option<Throwable> cause) {
-        if (sqlState.filter(DatabaseConnectorError::isConstraintState).isPresent()) {
-            return constraintViolation("unknown", message, sqlState);
-        }
-
-        if (sqlState.filter(DatabaseConnectorError::isRollbackState).isPresent()) {
-            return transactionRollback(message, sqlState);
-        }
-
-        if (sqlState.filter(DatabaseConnectorError::isTransientConnectionState).isPresent()) {
-            return connectionFailed(message, cause, sqlState);
-        }
-
-        return queryFailed(sql, message, cause, sqlState);
+        return sqlState.map(state -> classified(state, sql, message, cause))
+                       .or(() -> queryFailed(sql, message, cause, sqlState));
     }
 
-    private static boolean isConstraintState(String sqlState) {
-        return sqlState.startsWith("23");
-    }
+    private static DatabaseConnectorError classified(String state, String sql, String message, Option<Throwable> cause) {
+        var sqlState = some(state);
 
-    private static boolean isRollbackState(String sqlState) {
-        return sqlState.startsWith("40");
-    }
-
-    private static boolean isTransientConnectionState(String sqlState) {
-        return isConnectionState(sqlState) || SERVER_GONE_STATES.contains(sqlState) || sqlState.startsWith("53");
-    }
-
-    private static boolean isConnectionState(String sqlState) {
-        return sqlState.startsWith("08") && !UNRETRYABLE_CONNECTION_STATES.contains(sqlState);
+        return switch (SqlStates.classify(state)) {
+            case CONSTRAINT_VIOLATION -> constraintViolation("unknown", message, sqlState);
+            case ROLLBACK -> transactionRollback(message, sqlState);
+            case TRANSIENT_CONNECTION -> connectionFailed(message, cause, sqlState);
+            case OTHER -> queryFailed(sql, message, cause, sqlState);
+        };
     }
 
     private static String limitLength(String s) {

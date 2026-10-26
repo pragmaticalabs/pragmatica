@@ -531,7 +531,7 @@ A failure keeps what the database reported:
 - A cause that is already typed reaches the caller unchanged: a `RowDecodeError.RowDecode` from a generated row mapper, a `ResultNotFound`, or a failure your transaction callback returns. No connector reduces a cause to its message.
 - `DatabaseFailure` carries the original `Throwable` of a failure no variant describes; it is never built from a message.
 
-Each connector family keeps its own error types (no second mapping into `DatabaseConnectorError`), but whether a SQLSTATE is worth a retry is one decision, `DatabaseConnectorError.fromSqlState`, whatever type a connector returns (a test pins R2DBC to it). postgres-async (`async_url`) surfaces its driver's `SqlError` (`SqlError.ServerError` with `response().code()` as the SQLSTATE, `Cause.Transient` on the same states and with the same `08007`/`08P01`/`57014` exclusions); R2DBC surfaces `R2dbcError`.
+Each connector family keeps its own error types (no second mapping into `DatabaseConnectorError`), but whether a SQLSTATE is worth a retry is one decision, `org.pragmatica.lang.utils.SqlStates`, called by `DatabaseConnectorError.fromSqlState` (JDBC, jOOQ) and by `R2dbcError` (R2DBC), whatever type a connector returns. postgres-async (`async_url`) surfaces its driver's `SqlError` (`SqlError.ServerError` with `response().code()` as the SQLSTATE, `Cause.Transient` on the same states and with the same `08007`/`08P01`/`57014` exclusions); R2DBC surfaces `R2dbcError`.
 
 | Connector | Driver failures a slice sees | Row-decode failure | No row for `queryOne` |
 |-----------|------------------------------|--------------------|-----------------------|
