@@ -411,18 +411,44 @@ final class Http3Server {
             releaseBody();
         }
 
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
         private void dispatch(ChannelHandlerContext ctx) {
             var requestId = IdGenerator.generate("req");
             var responseWriter = new Http3ResponseWriter(ctx, requestId);
+            var target = RequestTarget.requestTarget(targetOf(headersFrame.headers()));
+
+            if (target.isFailure()) {
+                rejectMalformedTarget(responseWriter, requestId, target);
+            } else {
+                dispatchRequest(requestId, responseWriter, target.unwrap());
+            }
+        }
+
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
+        private void dispatchRequest(String requestId, Http3ResponseWriter responseWriter, RequestTarget target) {
             // #2310: building the request (headers, request trailers, body) is inside the guard too, so a failure there
             // is answered 500 instead of closing the stream from exceptionCaught
             try {
-                handler.accept(buildRequestContext(requestId), responseWriter);
+                handler.accept(buildRequestContext(requestId, target), responseWriter);
             } catch (Exception e) {
                 log.error("Error handling HTTP/3 request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
+        }
+
+        /// #2419: the request target is decoded by the same function as on HTTP/1.1 (`RequestTarget`), and one whose
+        /// percent-escapes cannot be decoded is answered 400 there too; the buffered body is released unread.
+        private void rejectMalformedTarget(Http3ResponseWriter responseWriter,
+                                           String requestId,
+                                           Result<RequestTarget> target) {
+            target.onFailure(cause -> log.debug("Rejecting HTTP/3 request {} with 400: {}", requestId, cause.message()));
+            releaseBody();
+            responseWriter.error(HttpStatus.BAD_REQUEST, "Malformed request target");
+        }
+
+        private static String targetOf(Http3Headers h3Headers) {
+            return Option.option(h3Headers.path())
+                         .map(CharSequence::toString)
+                         .or("/");
         }
 
         private void appendData(ChannelHandlerContext ctx, ByteBuf content) {
@@ -488,25 +514,19 @@ final class Http3Server {
             }
         }
 
-        private HttpRequest buildRequestContext(String requestId) {
+        private HttpRequest buildRequestContext(String requestId, RequestTarget target) {
             var h3Headers = headersFrame.headers();
             var methodStr = Option.option(h3Headers.method()).map(CharSequence::toString).or("GET");
-            var pathStr = Option.option(h3Headers.path()).map(CharSequence::toString).or("/");
             var method = HttpMethod.httpMethod(methodStr).or(HttpMethod.GET);
-            var pathAndQuery = pathStr.split("\\?", 2);
-            var path = pathAndQuery[0];
-            var queryParams = parseQueryParams(pathAndQuery.length > 1
-                                               ? pathAndQuery[1]
-                                               : "");
             var headerMap = extractHeaders(h3Headers);
             var trailers = Headers.trailers(trailersFrame.map(frame -> extractHeaders(frame.headers())).or(Map.of()));
             var body = extractBody();
 
             return new Http3RequestContext(requestId,
                                            method,
-                                           path,
+                                           target.path(),
                                            Headers.headers(headerMap),
-                                           queryParams,
+                                           target.queryParams(),
                                            body,
                                            trailers);
         }
@@ -534,26 +554,6 @@ final class Http3Server {
             }
 
             return headerMap;
-        }
-
-        private static QueryParams parseQueryParams(String queryString) {
-            if (queryString.isEmpty()) {
-                return QueryParams.empty();
-            }
-
-            var params = new HashMap<String, List<String>>();
-
-            for (var param : queryString.split("&")) {
-                var kv = param.split("=", 2);
-
-                if (kv.length == 2) {
-                    params.computeIfAbsent(kv[0], _ -> new ArrayList<>()).add(kv[1]);
-                } else if (kv.length == 1) {
-                    params.computeIfAbsent(kv[0], _ -> new ArrayList<>()).add("");
-                }
-            }
-
-            return QueryParams.queryParams(params);
         }
 
         /// #2386: Netty raises each framing or message error of the stream here, synchronously, before it drops the

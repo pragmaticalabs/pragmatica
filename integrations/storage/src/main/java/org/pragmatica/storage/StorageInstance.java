@@ -36,10 +36,21 @@ import static org.pragmatica.lang.Unit.unit;
 /// Hierarchical storage instance with write-through and tier-waterfall reads.
 /// Each instance has its own name, tier configuration, and metadata tracking.
 public interface StorageInstance {
-    /// Store content -- computes SHA-256, deduplicates, writes through tiers.
+    /// The largest block an instance accepts unless built with another limit (`max_block_bytes` in the instance's
+    /// `[storage.<name>]` section). A put, putRef or swapRef of more bytes fails with [StorageError.BlockTooLarge]
+    /// before anything is claimed or written. Callers that split larger content (the content store, the artifact
+    /// store) cut it into blocks that fit: the content store refuses, when it is provisioned, a chunk size whose
+    /// blocks would not ([ContentStoreConfig#validatedAgainst]).
+    int DEFAULT_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
+    /// Store content -- computes SHA-256, deduplicates, writes through tiers. Content over the instance's maximum
+    /// block size fails with [StorageError.BlockTooLarge].
     Promise<BlockId> put(byte[] content);
-    /// Store content with explicit metadata.
-    Promise<BlockId> put(byte[] content, BlockMetadata metadata);
+
+    /// The largest block this instance accepts, in bytes ([#DEFAULT_MAX_BLOCK_BYTES] unless it was built with another).
+    default int maxBlockBytes() {
+        return DEFAULT_MAX_BLOCK_BYTES;
+    }
+
     /// Read content by block ID -- waterfall through tiers by latency.
     Promise<Option<byte[]>> get(BlockId id);
     /// Check if a block exists in any tier.
@@ -218,6 +229,8 @@ public interface StorageInstance {
     ///      existing record may belong to a write still in flight;
     ///   2. `refName` is pointed at the block, with [#putRef]'s counting;
     ///   3. [AppendLog#sealedThrough] advances to `toOffset`, which is what lets [AppendLog#truncate] pass it.
+    /// The maximum block size does not apply to a seal: the sealer chooses the range, and `streams`, the only
+    /// instance that seals, has no cap.
     /// A failure at any step leaves the log's seal bound where it was, so its records stay. "Durable" here
     /// means a tier reporting [StorageTier#isDurable] -- the local disk, or an S3 tier built from config (#249): an
     /// in-memory DHT tier never counts (#1544), and an instance with no
@@ -301,6 +314,25 @@ public interface StorageInstance {
                                            Option<Path> logRoot,
                                            AppendLog.TornTailSink tornTailSink,
                                            Consumer<BlockId> accessListener) {
+        return storageInstance(name,
+                               tiers,
+                               metadataStore,
+                               writePolicy,
+                               logRoot,
+                               tornTailSink,
+                               accessListener,
+                               DEFAULT_MAX_BLOCK_BYTES);
+    }
+
+    /// As above, with the largest block the instance accepts (`maxBlockBytes`, at least 1).
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy,
+                                           Option<Path> logRoot,
+                                           AppendLog.TornTailSink tornTailSink,
+                                           Consumer<BlockId> accessListener,
+                                           int maxBlockBytes) {
         return new DefaultStorageInstance(name,
                                           tiers,
                                           metadataStore,
@@ -308,7 +340,9 @@ public interface StorageInstance {
                                           logRoot,
                                           tornTailSink,
                                           accessListener,
-                                          DefaultStorageInstance.CacheMarkerLimits.DEFAULT);
+                                          DefaultStorageInstance.CacheMarkerLimits.DEFAULT,
+                                          System::currentTimeMillis,
+                                          maxBlockBytes);
     }
 }
 
@@ -350,6 +384,7 @@ final class DefaultStorageInstance implements StorageInstance {
     /// never land -- a ref, cursor or checkpoint naming it would then name nothing.
     private final Map<BlockId, Promise<Unit>> writing = new ConcurrentHashMap<>();
     private final Consumer<BlockId> accessListener;
+    private final int maxBlockBytes;
     /// Levels of the tiers that are cluster-shared: a copy there is not this node's, so a record that places
     /// the block only on these tiers holds nothing of this node's to track.
     private final Set<TierLevel> sharedLevels;
@@ -430,6 +465,29 @@ final class DefaultStorageInstance implements StorageInstance {
                            Consumer<BlockId> accessListener,
                            CacheMarkerLimits markerLimits,
                            LongSupplier clockMillis) {
+        this(name,
+             tiers,
+             metadataStore,
+             writePolicy,
+             logRoot,
+             tornTailSink,
+             accessListener,
+             markerLimits,
+             clockMillis,
+             DEFAULT_MAX_BLOCK_BYTES);
+    }
+
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot,
+                           AppendLog.TornTailSink tornTailSink,
+                           Consumer<BlockId> accessListener,
+                           CacheMarkerLimits markerLimits,
+                           LongSupplier clockMillis,
+                           int maxBlockBytes) {
+        this.maxBlockBytes = maxBlockBytes;
         this.accessListener = accessListener;
         this.markerLimits = markerLimits;
         this.clockMillis = clockMillis;
@@ -450,12 +508,12 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
-    public Promise<BlockId> put(byte[] content) {
-        return put(content, BlockMetadata.blockMetadata(content.length));
+    public int maxBlockBytes() {
+        return maxBlockBytes;
     }
 
     @Override
-    public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
+    public Promise<BlockId> put(byte[] content) {
         return BlockId.blockId(content)
                       .async()
                       .flatMap(id -> handlePut(id, content));
@@ -790,12 +848,14 @@ final class DefaultStorageInstance implements StorageInstance {
 
     // --- Write flow ---
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        return claimOrAwait(id,
-                            content,
-                            sentinelFor(id),
-                            this::writeThroughTiers,
-                            this::deduplicateBlock,
-                            this::handlePut);
+        return content.length > maxBlockBytes
+               ? StorageError.BlockTooLarge.blockTooLarge(content.length, maxBlockBytes).promise()
+               : claimOrAwait(id,
+                              content,
+                              sentinelFor(id),
+                              this::writeThroughTiers,
+                              this::deduplicateBlock,
+                              this::handlePut);
     }
 
     /// #1567: one writer per id at a time. The caller registers its own promise in [#writing] before it

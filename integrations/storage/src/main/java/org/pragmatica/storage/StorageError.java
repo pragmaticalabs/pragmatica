@@ -41,6 +41,19 @@ public sealed interface StorageError extends Cause {
         }
     }
 
+    /// A write of more bytes than the instance's maximum block size ([StorageInstance#DEFAULT_MAX_BLOCK_BYTES] unless
+    /// the instance was built with another). Nothing was claimed or written. Split the content into smaller blocks.
+    record BlockTooLarge(long size, long maxBytes) implements StorageError {
+        static BlockTooLarge blockTooLarge(long size, long maxBytes) {
+            return new BlockTooLarge(size, maxBytes);
+        }
+
+        @Override
+        public String message() {
+            return "Block of " + size + " bytes exceeds the maximum block size of " + maxBytes + " bytes";
+        }
+    }
+
     record TierFull(TierLevel tier, long usedBytes, long maxBytes) implements StorageError {
         static TierFull tierFull(TierLevel tier, long usedBytes, long maxBytes) {
             return new TierFull(tier, usedBytes, maxBytes);

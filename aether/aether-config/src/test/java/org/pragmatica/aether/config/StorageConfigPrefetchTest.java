@@ -64,4 +64,24 @@ class StorageConfigPrefetchTest {
         assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true, true, 7).prefetchMaxInFlight())
             .isEqualTo(7);
     }
+    @Test
+    void storageConfig_everyShapeWithoutALimit_takesSixteenMiB() {
+        assertThat(StorageConfig.storageConfig().maxBlockBytes()).isEqualTo(16_777_216);
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5).maxBlockBytes()).isEqualTo(16_777_216);
+        assertThat(StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", true, false, false, 3).maxBlockBytes())
+            .isEqualTo(16_777_216);
+        assertThat(new StorageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false).maxBlockBytes()).isEqualTo(16_777_216);
+        assertThat(StorageConfig.sharedOnly(SharedTierConfig.dht()).maxBlockBytes()).isEqualTo(16_777_216);
+        assertThat(StorageConfig.DEFAULT_MAX_BLOCK_BYTES).isEqualTo(16 * 1024 * 1024);
+    }
+
+    @Test
+    void storageConfig_explicitLimit_isKept_byEveryCopy() {
+        var base = StorageConfig.storageConfig(MEMORY, DISK, "d", "s", 1, "60s", 5, "wal", false, true, true, 4, 8192);
+
+        assertThat(base.maxBlockBytes()).isEqualTo(8192);
+        assertThat(base.withShared(SharedTierConfig.dht()).maxBlockBytes()).as("withShared").isEqualTo(8192);
+        assertThat(base.derivingPaths().maxBlockBytes()).as("derivingPaths").isEqualTo(8192);
+        assertThat(base.withPaths("a", "b").maxBlockBytes()).as("withPaths").isEqualTo(8192);
+    }
 }

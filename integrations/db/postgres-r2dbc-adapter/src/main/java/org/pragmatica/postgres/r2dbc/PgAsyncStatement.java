@@ -104,7 +104,7 @@ public final class PgAsyncStatement implements Statement {
         return Mono.create(sink -> connection.pgConnection()
                                              .completeQuery(sql)
                                              .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
-                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                             .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     private Mono<Result> executeSingleBinding() {
@@ -115,7 +115,7 @@ public final class PgAsyncStatement implements Statement {
         return Mono.create(sink -> connection.pgConnection()
                                              .completeQuery(sql, params)
                                              .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
-                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                             .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     private Flux<Result> executeMultipleBindings() {
@@ -130,7 +130,7 @@ public final class PgAsyncStatement implements Statement {
         return Mono.create(sink -> connection.pgConnection()
                                              .completeQuery(sql, params)
                                              .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
-                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+                                             .onFailure(cause -> sink.error(R2dbcAdapterException.from(cause))));
     }
 
     private void ensureCapacity(int index) {
