@@ -3525,8 +3525,8 @@ public interface AetherNode extends ManageableNode {
         holder.onSubsystemsReady();
     }
 
-    /// Per-node storage maintenance starts with the node's readiness: promotion and demotion of `artifacts` and
-    /// `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
+    /// Per-node storage maintenance starts with the node's readiness: demotion, promotion and garbage collection of
+    /// `artifacts` and `content` (see `StorageFactory#activateNodeMaintenance`), before the node reports ready. Reached only through
     /// [#markSubsystemsReadyOnceDhtAdmitted], so only after every DHT-backed instance is admitted. FER (degrade forward):
     /// a manager that cannot start is logged and the node still becomes ready, with that instance's tiers unmaintained;
     /// promotion is an optimization, not a dependency.

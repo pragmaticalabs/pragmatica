@@ -3,8 +3,6 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -67,8 +65,13 @@ public final class RouteMatcher {
     /// [#build] -- any two routes that both structurally match a given path are, by construction,
     /// either incompatible (impossible, since both matched) or one properly dominates the other
     /// (see [#dominates]) -- so the maximum by literal count always exists and is unique.
-    public Result<MatchedRoute> match(HttpMethod method, String rawPath) {
-        var segments = MavenRepositoryPath.foldGroup(method, splitSegments(rawPath));
+    ///
+    /// `path` is the request path as the HTTP server delivered it, already percent-decoded once
+    /// (`HttpRequest.path()`, #2419/#2420): the param values are handed over exactly as they
+    /// appear in it. Decoding them again would turn an encoded `%` into the escape it spells
+    /// (`%2541` -> `%41` -> `A`) and a literal `+` into a space.
+    public Result<MatchedRoute> match(HttpMethod method, String path) {
+        var segments = MavenRepositoryPath.foldGroup(method, splitSegments(path));
         var bucket = buckets.getOrDefault(new BucketKey(method, segments.size()), List.of());
         ManagementRoute best = null;
         var bestLiteralCount = -1;
@@ -83,10 +86,10 @@ public final class RouteMatcher {
         }
 
         if (best == null) {
-            return ManagementRouteError.noMatch(method, rawPath).result();
+            return ManagementRouteError.noMatch(method, path).result();
         }
 
-        var values = decode(extractParamValues(best.tokens(), segments));
+        var values = extractParamValues(best.tokens(), segments);
 
         return Result.success(MatchedRoute.matchedRoute(best, values));
     }
@@ -180,16 +183,6 @@ public final class RouteMatcher {
         }
 
         return segments;
-    }
-
-    private static List<String> decode(List<String> segments) {
-        var decoded = new ArrayList<String>(segments.size());
-
-        for (var seg : segments) {
-            decoded.add(URLDecoder.decode(seg, StandardCharsets.UTF_8));
-        }
-
-        return decoded;
     }
 
     private record BucketKey(HttpMethod method, int length) {}

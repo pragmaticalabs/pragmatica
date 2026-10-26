@@ -11,52 +11,33 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.http.HttpStatus;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #1921 (c): `TOPICS_GROUP_REBUILD` percent-decodes its group segment with `URLDecoder.decode`, which THROWS on a malformed
-/// escape. The throw happened inside the handler's flatMap, so the caller's typo (`...%zz`) never became a response status.
+/// #2420: `TOPICS_GROUP_REBUILD` takes its group segment as the HTTP server delivered it, percent-decoded once. It used to
+/// decode the segment again with `URLDecoder.decode` (#1921 (c) made a malformed escape a 400 there), which read a `%` that
+/// is part of a group name as an escape. A malformed escape in the request path is now refused by the server itself (400,
+/// `RequestTargetParityTest`), so it never reaches this handler.
 class ManagementTopicGroupDecodeStatusTest {
     private static final List<String> ADDRESS = List.of("ns", "events", "1.0.0", "rebuild");
 
     @Test
-    void topicsGroupRebuild_answers400_whenTheGroupHasAMalformedPercentEscape() {
-        var failure = RouteProbe.failureOf(routes(new AtomicReference<>()).routes(),
-                                           ManagementRoute.TOPICS_GROUP_REBUILD,
-                                           withGroup("billing%zz"),
-                                           Map.of());
+    void topicsGroupRebuild_doesNotDecodeTheGroupAgain_whenItCarriesAPercent() {
+        for (var group : List.of("billing%zz", "billing%", "artifact%23method")) {
+            var reached = new AtomicReference<String>();
 
-        assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(failure.message()).contains("billing%zz");
-    }
+            try {
+                RouteProbe.run(routes(reached).routes(), ManagementRoute.TOPICS_GROUP_REBUILD, withGroup(group), Map.of());
+            } catch (UnsupportedOperationException expected) {
+                // the probe node refuses every call: reaching it is the whole assertion
+            }
 
-    @Test
-    void topicsGroupRebuild_answers400_whenTheGroupEndsInALoneEscapeMarker() {
-        var failure = RouteProbe.failureOf(routes(new AtomicReference<>()).routes(),
-                                           ManagementRoute.TOPICS_GROUP_REBUILD,
-                                           withGroup("billing%"),
-                                           Map.of());
-
-        assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.BAD_REQUEST);
-    }
-
-    /// Control: a well-formed escape still decodes and reaches the node, so the 400 is the decode refusal and not a blanket
-    /// refusal of group names that contain `%`.
-    @Test
-    void topicsGroupRebuild_reachesTheNodeWithTheDecodedGroup_whenTheEscapeIsWellFormed() {
-        var reached = new AtomicReference<String>();
-
-        try {
-            RouteProbe.run(routes(reached).routes(), ManagementRoute.TOPICS_GROUP_REBUILD, withGroup("artifact%23method"), Map.of());
-        } catch (UnsupportedOperationException expected) {
-            // the probe node refuses every call: reaching it is the whole assertion
+            assertThat(reached.get()).as("group '%s' is a name, not an escape: the handler goes on to the node", group)
+                                     .isNotNull();
         }
-
-        assertThat(reached.get()).isNotNull();
     }
 
     private static List<String> withGroup(String group) {

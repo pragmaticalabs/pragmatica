@@ -15,7 +15,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.BlockId;
-import org.pragmatica.storage.BlockMetadata;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
@@ -327,11 +326,6 @@ class StorageSegmentSinkTest {
         @Override
         public Promise<BlockId> put(byte[] content) {
             return delegate.put(content);
-        }
-
-        @Override
-        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
-            return delegate.put(content, metadata);
         }
 
         @Override

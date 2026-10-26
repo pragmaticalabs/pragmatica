@@ -243,6 +243,7 @@ Per-instance opt-in (any `[storage.<name>]` section, e.g. `[storage.artifacts]`)
 |-----------|---------|-------------|
 | `encrypted` | false | Wraps this instance's disk/DHT tiers in `EncryptingStorageTier`. Requires `[storage.encryption]` to be present with at least one key |
 | `prefetch` | true | Cross-node block prefetching for this instance: the node gossips hints about the blocks it reads often (one instance, one random peer, once per SWIM probe round) and copies hinted blocks into its own memory tier. `false` switches it off for the instance. Not read for `streams`, which prefetches its own segments |
+| `max_block_bytes` | 16777216 (16 MiB) | The largest block this instance accepts. A `put`, `putRef` or `swapRef` of more bytes is refused with `BlockTooLarge` before anything is claimed or written; a `ContentStore` whose `chunkSizeBytes` would make larger blocks (the chunk plus 7 bytes of envelope, plus the size header and codec expansion when compressed) is refused when it is provisioned, naming both values. Must be a positive integer; a value that is not is refused at load. Not read for `streams`, whose sealed segments are not capped |
 | `prefetch_max_in_flight` | 4 | The most prefetches running at once on this instance. A hint that finds every slot taken is dropped and counted (`droppedInFlight` under `prefetch` in `GET /api/v1/storage/{name}`), never queued. Must be a positive integer; a value that is not is refused at load. Not read for `streams` |
 
 Per-instance kill switch for background tier promotion (any `[storage.<name>]` section except `streams`, which never promotes):
@@ -511,7 +512,8 @@ do reach the bucket, one object per block. Collection of unreferenced blocks in 
 GC, a later phase: until then the bucket only grows by what explicit deletes leave behind.
 
 **Block size.** The block size is the `ContentStore` resource's `chunkSizeBytes` (`ContentStoreConfig`,
-default 4 MiB), unchanged by this section. Each block is one PUT and one GET, so per-request cost and
+default 4 MiB), unchanged by this section. It must fit the instance's `max_block_bytes` (default 16 MiB) once
+framed; a larger `chunkSizeBytes` is refused when the store is provisioned. Each block is one PUT and one GET, so per-request cost and
 latency dominate on S3 (a 5 GiB object at 4 MiB is 1280 PUTs); S3-backed content stores may want larger
 blocks. No default changes here.
 
