@@ -209,6 +209,61 @@ class ReplicaFeedServerTest {
             assertThat(harness.store.replicaRing().subscriptionCount()).isZero();
         }
 
+        /// NT-O13. A catch-up longer than the configured weight is split into several messages, each within it (an entry weighs its effects plus
+        /// one). Mutation: drop the flush in `sendCatchUp` (one message), change the weight formula, or skip `batch.clear()`/`weight = 0`.
+        @Test
+        void catchUp_isSplitIntoMessagesOfBoundedWeight() {
+            var harness = new Harness(new ReplicaFeedLimits(64 * 1024, 2, 5_000, 2, 1 << 20, 8, 30_000, 256, 4));
+
+            for (var slot = 1; slot <= 5; slot++) {
+                harness.commit(slot, put("k" + slot, "v"));
+            }
+
+            harness.server.onSubscribe(fromAnchor(PEER, 7, 2, List.of(anchorAt(harness, 1))));
+
+            var catchUp = harness.sentTo(PEER, ReplicaEntries.class);
+
+            assertThat(catchUp.stream().map(message -> message.entries().stream().map(ReplicaEntry::slot).toList()).toList())
+                .as("four entries of weight two, at most four per message").containsExactly(List.of(2L, 3L), List.of(4L, 5L));
+        }
+
+        /// NT-O13. One tick sends at most the configured number of messages to a subscriber; the rest wait for the next tick, so one busy
+        /// subscriber cannot starve the others, and no message is lost at the cap. Red on the head before the fix: the drain loop polled one message past the cap and dropped it
+        /// (3rd tick saw 4 of 5). Mutation: drop the `remaining > 0` bound in `drainUpTo`, or off by one.
+        @Test
+        void tick_sendsAtMostTheDrainCapPerSubscriber_andTheRestOnTheNextTick() {
+            var harness = new Harness(new ReplicaFeedLimits(64 * 1024, 2, 5_000, 2, 1 << 20, 8, 30_000, 2, 256));
+
+            harness.server.onSubscribe(liveOnly(PEER, 1));
+            for (var slot = 1; slot <= 5; slot++) {
+                harness.commit(slot, put("k" + slot, "v"));
+            }
+
+            var live = (java.util.function.Supplier<Long>) () -> harness.sentTo(PEER, ReplicaEntries.class).stream().filter(message -> message.subSeq() > 0).count();
+
+            harness.server.tick();
+            assertThat(live.get()).as("first tick").isEqualTo(2L);
+            harness.server.tick();
+            assertThat(live.get()).as("second tick").isEqualTo(4L);
+            harness.server.tick();
+            assertThat(live.get()).as("third tick drains the rest").isEqualTo(5L);
+        }
+
+        /// The counters the server publishes count what happened. Mutation: drop the increment in `admit` (subscribed) or in `refuse` (refused).
+        @Test
+        void counters_countSubscriptionsAndRefusals() {
+            var harness = new Harness();
+
+            harness.server.onSubscribe(liveOnly(PEER, 1));
+            harness.server.onSubscribe(liveOnly(OTHER, 2));
+            harness.serving.set(false);
+            harness.server.onSubscribe(liveOnly(THIRD, 3));
+            harness.server.onSubscribe(liveOnly(THIRD, 4));
+
+            assertThat(harness.server.counters().get("replica_subscribed_total")).isEqualTo(2L);
+            assertThat(harness.server.counters().get("replica_refused_total")).isEqualTo(2L);
+        }
+
         /// NT-O20. Mutation: drop the `previous != null` release in `admit` (the first subscription keeps receiving).
         @Test
         void subscribe_releasesThePeersEarlierSubscription() {
@@ -340,7 +395,7 @@ class ReplicaFeedServerTest {
             return chunks;
         }
 
-        /// NT-O16. Mutation: slice `end` one byte short or long, or compute the hash over anything but the whole snapshot.
+        /// NT-O16. Mutation: slice `end` one byte short or long (the exact-size assertion goes red for short), or compute the hash over anything but the whole snapshot.
         @Test
         void snapshot_isServedInOrderedChunks_thatReassembleToTheCapturedImage() throws Exception {
             var harness = new Harness(new ReplicaFeedLimits(16, 2, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
@@ -355,6 +410,7 @@ class ReplicaFeedServerTest {
             assertThat(chunks.size()).as("more than one chunk at 16 bytes").isGreaterThan(1);
             assertThat(chunks).extracting(ReplicaSnapshotChunk::offset).isSorted();
             assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.bytes().length).isLessThanOrEqualTo(16));
+            assertThat(chunks.subList(0, chunks.size() - 1)).as("every chunk but the last is exactly the configured size").allSatisfy(chunk -> assertThat(chunk.bytes().length).isEqualTo(16));
             assertThat(whole).isEqualTo(expected.bytes());
             assertThat(chunks).allSatisfy(chunk -> {
                 assertThat(chunk.hash()).isEqualTo(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(expected.bytes())));
@@ -455,6 +511,68 @@ class ReplicaFeedServerTest {
             assertThat(harness.sentTo(THIRD, ReplicaSnapshotChunk.class)).as("PEER's transfer finished, so its slot is free").isNotEmpty();
         }
 
+        /// NT-O18. A peer that restarts the SAME `(peer, requestId)` twice holds one serve slot, not three. Mutation: drop the `finish(key, old)`
+        /// on restart in `beginTransfer` (each restart leaks a permit, the old transfer leaves the map and idle abandonment never frees it).
+        @Test
+        void snapshot_restartOfTheSameRequest_releasesTheEarlierPermit() {
+            var harness = new Harness(new ReplicaFeedLimits(8, 2, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
+
+            harness.commit(1, put("a", "1"));
+            harness.server.onSnapshotRequest(firstRequest(PEER, 1));
+            harness.server.onSnapshotRequest(firstRequest(PEER, 1));
+            harness.server.onSnapshotRequest(firstRequest(PEER, 1));
+            harness.server.onSnapshotRequest(firstRequest(OTHER, 2));
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).as("the restarts are served").isEmpty();
+            assertThat(harness.sentTo(OTHER, ReplicaRefused.class)).as("one slot held by PEER, one free for OTHER").isEmpty();
+            assertThat(harness.sentTo(OTHER, ReplicaSnapshotChunk.class)).isNotEmpty();
+            assertThat(harness.server.counters().get("replica_transfers")).isEqualTo(2L);
+        }
+
+        /// NT-O18. A capture that fails (no incarnation committed yet) gives its serve permit back: after two failures a request that can be served
+        /// is not `BUSY`. Mutation: drop `serves.release()` in `abandonStart`.
+        @Test
+        void snapshot_failedCapture_releasesItsPermit() {
+            var harness = new Harness();
+            var empty = FeedFixtures.store();
+            var bare = ReplicaFeedServer.replicaFeedServer(CORE,
+                                                           empty,
+                                                           org.pragmatica.cluster.state.kvstore.ReplicaKeyFilter.includeAll(),
+                                                           (peer, message) -> harness.sent.add(new FeedFixtures.Sent(peer, message)),
+                                                           () -> true,
+                                                           _ -> true,
+                                                           _ -> true,
+                                                           Runnable::run,
+                                                           harness.nanos::get,
+                                                           new ReplicaFeedLimits(8, 1, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
+
+            bare.onSnapshotRequest(firstRequest(PEER, 1));
+            bare.onSnapshotRequest(firstRequest(PEER, 2));
+            FeedFixtures.commit(empty, 0, new org.pragmatica.cluster.state.kvstore.KVCommand.Put<>(FeedFixtures.IncKey.INSTANCE, new FeedFixtures.IncValue(1, "A")));
+            bare.onSnapshotRequest(firstRequest(PEER, 3));
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).extracting(ReplicaRefused::reason)
+                                                                  .as("the two failed captures, and no BUSY from a leaked permit")
+                                                                  .containsExactly(RefusalReason.NOT_SERVING, RefusalReason.NOT_SERVING);
+            assertThat(harness.sentTo(PEER, ReplicaSnapshotChunk.class)).isNotEmpty();
+        }
+
+        /// NT-O16. A continuation at exactly the end offset has nothing to send and is refused `EVICTED`. Mutation: `<` to `<=` in `continueTransfer`.
+        @Test
+        void snapshot_continuationAtExactlyTheEndOffset_isRefusedEvicted() {
+            var harness = new Harness(new ReplicaFeedLimits(8, 2, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
+
+            harness.commit(1, put("a", "1"));
+            harness.server.onSnapshotRequest(firstRequest(PEER, 1));
+
+            var first = harness.sentTo(PEER, ReplicaSnapshotChunk.class).getFirst();
+
+            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(PEER, 1, first.tag(), first.revision(), first.hash(), first.total()));
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).singleElement()
+                                                                  .satisfies(refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
+        }
+
         /// NT-O18. A transfer nobody pulls from is abandoned and frees its slot. Mutation: drop `abandonIdleTransfers` from `tick`.
         @Test
         void snapshot_idleTransferIsAbandoned_andFreesItsSlot() {
@@ -542,7 +660,7 @@ class ReplicaFeedServerTest {
         }
 
         /// NT-O20. A peer whose link is gone (or that is no longer eligible) is released at the next tick, so the ring stops offering to it.
-        /// Mutation: drop `releaseGone` from `tick`.
+        /// Mutation: drop `releaseGone` from `tick`, or drop the `unsubscribe` call in `release` (the ring keeps filling an orphan subscription).
         @Test
         void tick_releasesTheSubscriptionOfAPeerThatWentAway() {
             var harness = new Harness();
@@ -556,6 +674,7 @@ class ReplicaFeedServerTest {
             harness.server.tick();
 
             assertThat(harness.server.counters().get("replica_subscribers")).isZero();
+            assertThat(harness.store.replicaRing().subscriptionCount()).as("the ring no longer offers to the gone peers' subscriptions").isZero();
             assertThat(harness.sentTo(PEER, ReplicaEntries.class).stream().filter(message -> message.subSeq() > 0)).isEmpty();
             assertThat(harness.sentTo(OTHER, ReplicaEntries.class).stream().filter(message -> message.subSeq() > 0)).isEmpty();
         }
@@ -627,6 +746,22 @@ class ReplicaFeedServerTest {
 
             assertThat(cache.get(TAG, 3).isPresent()).as("an entry past its age is never served").isFalse();
             assertThat(cache.size()).isZero();
+        }
+
+        /// I-W11 (snapshot cache). `size()` counts only entries within their age. Mutation: drop `dropExpired` from `size`. (The `dropExpired` in
+        /// `put` is equivalent: expired entries are always the oldest, so the bound loop drops them first anyway.)
+        @Test
+        void snapshotCache_doesNotCountExpiredEntries() {
+            var now = new java.util.concurrent.atomic.AtomicLong();
+            var cache = new SnapshotCache(2, 1_000L, now::get);
+
+            cache.put(cached(1, now.get()));
+
+            assertThat(cache.size()).isEqualTo(1);
+
+            now.set(2_000L);
+
+            assertThat(cache.size()).as("an expired entry is not counted").isZero();
         }
 
         private static SnapshotCache.Cached cached(long revision, long storedAt) {

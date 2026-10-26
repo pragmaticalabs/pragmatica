@@ -17,6 +17,9 @@ class BusyBackoffTest {
         assertThat(IntStream.rangeClosed(1, 7).mapToObj(BusyBackoff::ceilingMillis).toList())
             .containsExactly(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 15_000L, 15_000L);
         assertThat(BusyBackoff.ceilingMillis(1_000)).as("a long run of refusals neither overflows nor leaves the cap").isEqualTo(15_000L);
+        assertThat(BusyBackoff.MIN_DELAY_MILLIS).as("the documented floor").isEqualTo(250L);
+        assertThat(BusyBackoff.BASE_MILLIS).as("the documented base").isEqualTo(1_000L);
+        assertThat(BusyBackoff.CAP_MILLIS).as("the documented cap").isEqualTo(15_000L);
         assertThat(BusyBackoff.ceilingMillis(0)).as("no refusal yet draws from the first ceiling").isEqualTo(1_000L);
     }
 
@@ -27,7 +30,7 @@ class BusyBackoffTest {
             for (var refusals = 1; refusals <= 8; refusals++) {
                 var delay = BusyBackoff.delayMillis("node-" + node, refusals);
 
-                assertThat(delay).isBetween(BusyBackoff.MIN_DELAY_MILLIS, Math.max(BusyBackoff.MIN_DELAY_MILLIS, BusyBackoff.ceilingMillis(refusals)));
+                assertThat(delay).as("floor 250 ms, ceiling min(15 s, 1 s x 2^(n-1)), stated by literal").isBetween(250L, Math.max(250L, Math.min(15_000L, 1_000L << (refusals - 1))));
             }
         }
     }

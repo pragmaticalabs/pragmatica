@@ -142,6 +142,25 @@ class CommitRingFeedSeamsTest {
         return result;
     }
 
+    /// Amendment 1's invariant with an OPEN trailing range: slots advanced without an effect leave the range [2, 5) open; `subscribeLive` closes it
+    /// before it registers, so the first entry delivered starts exactly at the granted frontier. Mutation: drop `closeOpenRange` from `subscribeLiveLocked`
+    /// (the first entry then starts at 2, behind the frontier the subscriber was told).
+    @Test
+    void subscribeLive_withAnOpenRange_deliversAFirstEntryThatStartsAtTheGrantedFrontier() {
+        var ring = ring();
+
+        ring.append(TAG, 1, "id-1", effect("a"), 2);
+        ring.advance(TAG, 5);
+
+        var subscription = CommitRing.subscription(_ -> {});
+        var granted = (Granted) ring.subscribeLive(IncarnationTag.NONE, subscription);
+
+        ring.append(TAG, 5, "id-5", effect("b"), 6);
+
+        assertThat(granted.latest()).isEqualTo(5);
+        assertThat(subscription.poll().unwrap()).isInstanceOfSatisfying(QueuedEntry.class, queued -> assertThat(queued.entry().from()).isEqualTo(granted.latest()));
+    }
+
     /// Needs no position, so it is granted on a ring that never recorded an effect. Mutation: route it through `subscribeFrom` with the ring's
     /// own (empty) anchor, which refuses an unanchored position AHEAD.
     @Test

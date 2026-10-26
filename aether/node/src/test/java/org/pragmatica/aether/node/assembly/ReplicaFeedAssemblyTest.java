@@ -83,6 +83,15 @@ class ReplicaFeedAssemblyTest {
         return store;
     }
 
+    /// The documented bounds of the serve pool and the two ticks, pinned by literal. Mutation: change any constant in `ReplicaFeedAssembly`.
+    @Test
+    void servePoolAndTickIntervals_areTheDocumentedValues() {
+        assertThat(ReplicaFeedAssembly.SERVE_THREADS).isEqualTo(4);
+        assertThat(ReplicaFeedAssembly.SERVE_QUEUE).isEqualTo(64);
+        assertThat(ReplicaFeedAssembly.DRAIN_INTERVAL.nanos()).as("50 ms drain poll").isEqualTo(50_000_000L);
+        assertThat(ReplicaFeedAssembly.HEARTBEAT_INTERVAL.nanos()).as("1 s heartbeat").isEqualTo(1_000_000_000L);
+    }
+
     /// Mutation: drop the `!worker` term, the `active` term or the `!pendingCatchUp` term.
     @Test
     void servesReplicaFeed_isTrueOnlyForAnActiveCoreThatIsNotBehind() {
