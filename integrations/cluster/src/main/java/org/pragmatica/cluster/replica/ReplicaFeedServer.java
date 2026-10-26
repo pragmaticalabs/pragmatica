@@ -321,14 +321,20 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
             return;
         }
 
-        var sent = 0;
-        var next = served.subscription().poll();
+        drainUpTo(served, limits.drainMessagesPerTick());
+    }
 
-        while (next.isPresent() && sent < limits.drainMessagesPerTick()) {
-            next.onPresent(message -> push(served, message));
-            sent++;
-            next = served.subscription().poll();
+    /// Sends at most `remaining` queued messages, in order. A message is taken from the queue only when it can be sent: taking one past the cap would
+    /// drop it and leave a gap in the subscriber's sequence.
+    private void drainUpTo(Served served, int remaining) {
+        if (remaining > 0) {
+            served.subscription().poll().onPresent(message -> sendAndContinue(served, message, remaining));
         }
+    }
+
+    private void sendAndContinue(Served served, CommitRing.Message message, int remaining) {
+        push(served, message);
+        drainUpTo(served, remaining - 1);
     }
 
     private void push(Served served, CommitRing.Message message) {
