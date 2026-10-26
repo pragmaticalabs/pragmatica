@@ -2824,6 +2824,8 @@ public class RabiaEngine<C extends Command> {
                                               : state.lastCommittedPhase());
         state.configuration().onPresent(this::adoptSyncedConfiguration);
         persistRestoredState();
+        runIsolated("phase publish",
+                    () -> stateMachine.onPhaseCompleted(currentPhase.get().value()));
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
 
@@ -4104,6 +4106,10 @@ public class RabiaEngine<C extends Command> {
         this.currentPhase.updateAndGet(p -> p.compareTo(nextPhase) >= 0
                                             ? p
                                             : nextPhase);
+        // Placed before the observer branch below returns, so every completed slot is reported, V0 and empty ones included. Isolated: a
+        // throwing state machine must not leave the engine InPhase with no restart of the next phase.
+        runIsolated("phase publish",
+                    () -> stateMachine.onPhaseCompleted(currentPhase.get().value()));
         if (!bufferedDecisions.isEmpty()) {
             safeExecute(this::releaseBufferedDecision);
         }

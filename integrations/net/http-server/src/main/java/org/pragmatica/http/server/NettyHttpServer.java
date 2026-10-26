@@ -413,6 +413,9 @@ final class NettyHttpServer implements HttpServer {
         /// response, read on the event loop, hence atomic. While it is non-zero the client is waiting on us, so a
         /// silent connection is not idle.
         private final AtomicInteger pendingResponses = new AtomicInteger();
+        /// Set on the event loop when a request is refused with its connection closing (#2419): a request pipelined behind
+        /// it on the same connection is dropped, not dispatched.
+        private boolean refusing;
 
         HttpRequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                            Map<String, WebSocketEndpoint> wsEndpoints) {
@@ -433,6 +436,10 @@ final class NettyHttpServer implements HttpServer {
             // WebSocket upgrades never reach here: WebSocketUpgradeRouter consumes them
             var requestId = IdGenerator.generate("req");
 
+            if (refusing) {
+                return;
+            }
+
             if (request.decoderResult().isFailure()) {
                 rejectUndecodable(ctx, requestId, request);
 
@@ -445,7 +452,20 @@ final class NettyHttpServer implements HttpServer {
                 return;
             }
 
-            var requestContext = createRequestContext(requestId, request);
+            var target = RequestTarget.requestTarget(request.uri());
+
+            if (target.isFailure()) {
+                rejectMalformedTarget(ctx, requestId, target);
+            } else {
+                dispatchRequest(ctx, request, requestId, target.unwrap());
+            }
+        }
+
+        private void dispatchRequest(ChannelHandlerContext ctx,
+                                     FullHttpRequest request,
+                                     String requestId,
+                                     RequestTarget target) {
+            var requestContext = createRequestContext(requestId, request, target);
             var responseWriter = new NettyResponseWriter(ctx,
                                                          requestId,
                                                          HttpUtil.isKeepAlive(request),
@@ -472,6 +492,20 @@ final class NettyHttpServer implements HttpServer {
             pendingResponses.incrementAndGet();
             new NettyResponseWriter(ctx, requestId, false, pendingResponses::decrementAndGet).error(status,
                                                                                                     status.message());
+        }
+
+        /// #2419: a request target whose percent-escapes cannot be decoded is answered 400 on this transport as on HTTP/3,
+        /// instead of the decoder's exception escaping the handler and closing the connection with no response.
+        private void rejectMalformedTarget(ChannelHandlerContext ctx, String requestId, Result<RequestTarget> target) {
+            target.onFailure(cause -> log.debug("Rejecting request {} with 400: {}", requestId, cause.message()));
+            refusing = true;
+            // Not counted in pendingResponses, unlike the two rejects above: that count only keeps the read-idle close away
+            // from a connection awaiting a response, and this one closes with the response (keepAlive false) and is no
+            // longer read from (refusing), so there is no later idle check the count could change.
+            new NettyResponseWriter(ctx,
+                                    requestId,
+                                    false,
+                                    () -> {}).error(HttpStatus.BAD_REQUEST, "Malformed request target");
         }
 
         /// #2386: RFC 9112 §3.2 — a request with more than one `Host` line is answered 400, and the connection is
@@ -570,23 +604,25 @@ final class NettyHttpServer implements HttpServer {
             ctx.close();
         }
 
-        private HttpRequest createRequestContext(String requestId, FullHttpRequest request) {
-            var decoder = new QueryStringDecoder(request.uri());
-            var path = decoder.path();
+        private HttpRequest createRequestContext(String requestId, FullHttpRequest request, RequestTarget target) {
             // Netty validates the HTTP method before we receive it, so this will always succeed
             var method = HttpMethod.httpMethod(request.method().name()).fold(_ -> HttpMethod.GET, v -> v);
             var headers = Headers.headers(fieldMap(request.headers()));
             // #2310: the chunked trailer section; the aggregator leaves it empty for a request that sent none
             var trailers = Headers.trailers(fieldMap(request.trailingHeaders()));
-            // Parse query params
-            var queryParams = QueryParams.queryParams(decoder.parameters());
             // Read body
             var content = request.content();
             var body = new byte[content.readableBytes()];
 
             content.readBytes(body);
 
-            return new NettyRequestContext(requestId, method, path, headers, queryParams, body, trailers);
+            return new NettyRequestContext(requestId,
+                                           method,
+                                           target.path(),
+                                           headers,
+                                           target.queryParams(),
+                                           body,
+                                           trailers);
         }
 
         private static Map<String, List<String>> fieldMap(HttpHeaders fields) {

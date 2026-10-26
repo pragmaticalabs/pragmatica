@@ -4,6 +4,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
@@ -14,6 +15,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +62,7 @@ public final class LocalDiskTier implements StorageTier {
     /// reader or a crash in that window found nothing at the block path (#1169, correcting the
     /// #910 ruling -- `know: 812d4de2c`).
     private static final String PARTIAL_SUFFIX = ".partial";
+    private static final long NO_REFUSAL = Long.MAX_VALUE;
 
     private final Path basePath;
     private final AtomicLong usedBytes = new AtomicLong(0);
@@ -69,6 +72,11 @@ public final class LocalDiskTier implements StorageTier {
     private final Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride;
     private final Fn2<Result<Unit>, Path, byte[]> writer;
     private final Fn1<Result<Unit>, Path> directoryForcer;
+    private final AtomicReference<Option<MountClaim>> claim = new AtomicReference<>(none());
+    /// The smallest put refused for want of space in the current full episode; [#NO_REFUSAL] when none is open.
+    private final AtomicLong smallestRefused = new AtomicLong(NO_REFUSAL);
+
+    private final AtomicReference<DegradeReporter> degrade = new AtomicReference<>(DegradeReporter.degradeReporter("disk-tier"));
 
     private LocalDiskTier(Path basePath,
                           long maxBytes,
@@ -141,6 +149,30 @@ public final class LocalDiskTier implements StorageTier {
                       .map(_ -> countUsedBytes());
     }
 
+    /// [#open] after `nodeId` has claimed the mount exclusively ([MountClaim]): the claim is taken before the open
+    /// removes anything, so a node refused here has touched nothing on the mount. A claim held by another live node
+    /// fails with [MountClaim.Held]. The claim is given up by [#release], and at once when the open itself fails.
+    public Result<LocalDiskTier> openClaiming(String nodeId) {
+        return MountClaim.claim(basePath, nodeId)
+                         .onSuccess(held -> claim.set(some(held)))
+                         .flatMap(_ -> open())
+                         .onFailure(_ -> release());
+    }
+
+    @Override
+    public Unit release() {
+        claim.getAndSet(none()).onPresent(MountClaim::release);
+
+        return unit();
+    }
+
+    @Override
+    public Unit reportTo(DegradeReporter reporter) {
+        degrade.set(reporter);
+
+        return unit();
+    }
+
     @Override
     public Promise<Option<byte[]>> get(BlockId id) {
         // Per-read deadline placed immediately after the lift (per Promise.timeout's contract)
@@ -154,11 +186,10 @@ public final class LocalDiskTier implements StorageTier {
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
         if (!reserveCapacity(content.length)) {
-            return StorageError.TierFull.tierFull(TierLevel.LOCAL_DISK,
-                                                  usedBytes.get(),
-                                                  maxBytes)
-                                        .promise();
+            return refuseFull(content.length);
         }
+
+        reportWritable(content.length);
         // A write that failed after reserveCapacity keeps no reservation: the tier would otherwise
         // over-count by the whole block until restart (review of #1095, SF-2 — reproduced under a
         // real ENOSPC). Released here, exactly once, whatever stage failed; the on-disk state is
@@ -172,6 +203,34 @@ public final class LocalDiskTier implements StorageTier {
                             () -> writeBlock(id, content))
                       .flatMap(Promise::resolved)
                       .withFailure(_ -> usedBytes.addAndGet(-content.length));
+    }
+
+    /// The put needs this tier and it is full: one operator warning per episode (the first refusal), then the typed error to
+    /// the caller. The episode ends when a write at least as large as the smallest one refused in it fits
+    /// ([#reportWritable]): a small write fitting while a larger one is still refused does not end it, so a full tier that
+    /// alternates large and small writes raises once, not on every alternation.
+    private Promise<Unit> refuseFull(int refusedLength) {
+        smallestRefused.accumulateAndGet(refusedLength, Math::min);
+        degrade.get()
+               .degraded(OperatorWarningCode.STORAGE_TIER_FULL,
+                         "Disk tier {} is full ({} of {} bytes): writes that need it fail with TierFull until space is freed; "
+                        + "raise [storage] disk_max_bytes, free disk space, or let demotion and garbage collection catch up",
+                         basePath,
+                         usedBytes.get(),
+                         maxBytes);
+
+        return StorageError.TierFull.tierFull(TierLevel.LOCAL_DISK,
+                                              usedBytes.get(),
+                                              maxBytes)
+                                    .promise();
+    }
+
+    private void reportWritable(int fittedLength) {
+        if (fittedLength >= smallestRefused.get()) {
+            smallestRefused.set(NO_REFUSAL);
+            degrade.get()
+                   .recovered(OperatorWarningCode.STORAGE_TIER_FULL, "Disk tier {} accepts writes again", basePath);
+        }
     }
 
     /// Atomic CAS capacity reservation — prevents TOCTOU race.
@@ -344,9 +403,15 @@ public final class LocalDiskTier implements StorageTier {
 
     private static long blockBytes(List<Path> paths) {
         return paths.stream()
-                    .filter(path -> !isPartial(path))
+                    .filter(path -> !isPartial(path) && !isClaim(path))
                     .mapToLong(LocalDiskTier::fileSizeOrZero)
                     .sum();
+    }
+
+    private static boolean isClaim(Path path) {
+        return path.getFileName()
+                   .toString()
+                   .equals(MountClaim.CLAIM_FILE);
     }
 
     private static boolean isPartial(Path path) {

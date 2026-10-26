@@ -15,13 +15,17 @@ class KVStoreCanonicalSnapshotTest {
         @Override public int hashCode() { return 7; }
     }
 
-    @Test
-    void snapshotsIgnoreInsertionOrderEvenWhenKeysCollide() {
+    private static SliceCodec codec() {
         var codecs = new ArrayList<SliceCodec.TypeCodec<?>>(KvstoreCodecs.CODECS);
         codecs.add(new SliceCodec.TypeCodec<>(Key.class, SliceCodec.deterministicTag(Key.class.getName()),
             (codec, buffer, key) -> codec.write(buffer, key.name()),
             (codec, buffer) -> new Key((String) codec.read(buffer))));
-        var codec = SliceCodec.sliceCodec(frameworkCodecs(), codecs);
+        return SliceCodec.sliceCodec(frameworkCodecs(), codecs);
+    }
+
+    @Test
+    void snapshotsIgnoreInsertionOrderEvenWhenKeysCollide() {
+        var codec = codec();
         var first = new KVStore<Key, String>(MessageRouter.mutable(), codec, codec);
         var second = new KVStore<Key, String>(MessageRouter.mutable(), codec, codec);
         var a = new KVCommand.Put<>(new Key("a"), "one");
@@ -29,5 +33,20 @@ class KVStoreCanonicalSnapshotTest {
         first.process(first.createBatch(List.of(a, b)));
         second.process(second.createBatch(List.of(b, a)));
         assertThat(first.makeSnapshot().unwrap()).isEqualTo(second.makeSnapshot().unwrap());
+    }
+
+    /// The replica snapshot is encoded canonically too (spec section 2.5), so two stores at one state give one image whatever the insertion
+    /// order. Mutation: encode it with the plain serializer, and the colliding keys keep their insertion order in the bytes.
+    @Test
+    void replicaSnapshotsIgnoreInsertionOrderEvenWhenKeysCollide() {
+        var codec = codec();
+        var first = new KVStore<Key, String>(MessageRouter.mutable(), codec, codec);
+        var second = new KVStore<Key, String>(MessageRouter.mutable(), codec, codec);
+        var a = new KVCommand.Put<>(new Key("a"), "one");
+        var b = new KVCommand.Put<>(new Key("b"), "two");
+        first.process(first.createBatch(List.of(a, b)));
+        second.process(second.createBatch(List.of(b, a)));
+        assertThat(first.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap().bytes())
+            .isEqualTo(second.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap().bytes());
     }
 }

@@ -23,6 +23,8 @@ class TransientClassificationTest {
             new SqlError.ServerErrorTransactionRollback(new SqlError.ServerResponse("40001", "ERROR", "could not serialize access"), "serialization_failure"),
             new SqlError.ServerConnectionException(new SqlError.ServerResponse("08006", "FATAL", "connection failure"), "connection_failure"),
             new SqlError.ServerConnectionException(new SqlError.ServerResponse("08001", "FATAL", "unable to connect"), "sqlclient_unable_to_establish_sqlconnection"),
+            // 08003: no statement ran, a fresh connection is safe (agrees with SqlStates, #2408)
+            new SqlError.ServerConnectionException(new SqlError.ServerResponse("08003", "FATAL", "connection does not exist"), "connection_does_not_exist"),
             new SqlError.ServerConnectionException(new SqlError.ServerResponse("08004", "FATAL", "rejected"), "sqlserver_rejected_establishment_of_sqlconnection"),
             new SqlError.ServerErrorOperatorIntervention(new SqlError.ServerResponse("57P01", "FATAL", "terminating connection due to administrator command"), "admin_shutdown"),
             new SqlError.ServerErrorOperatorIntervention(new SqlError.ServerResponse("57P02", "FATAL", "crash"), "crash_shutdown"),

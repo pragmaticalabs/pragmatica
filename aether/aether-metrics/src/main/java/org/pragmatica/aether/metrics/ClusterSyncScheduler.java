@@ -19,12 +19,14 @@ import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
@@ -33,6 +35,7 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
@@ -90,6 +93,11 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     /// `ClusterSyncContext`. Default no-op for test doubles that don't drive provisioning.
     @Contract
     default void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {}
+
+    /// W-OBS: wires the leader's cluster directory content (the addressed nodes and the DHT replication). Forwarded into the
+    /// `ClusterSyncContext`. Default no-op for test doubles that carry no directory.
+    @Contract
+    default void setDirectorySources(Supplier<List<NodeInfo>> nodes, Supplier<Result<DhtReplication>> dhtReplication) {}
 
     /// Full cluster metrics are delivered only to eligible core consumers.
     @Contract
@@ -421,6 +429,12 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
     @Contract
     public void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {
         context.setDispatchedNodesSupplier(supplier);
+    }
+
+    @Override
+    @Contract
+    public void setDirectorySources(Supplier<List<NodeInfo>> nodes, Supplier<Result<DhtReplication>> dhtReplication) {
+        context.setDirectorySources(nodes, dhtReplication);
     }
 
     @Override

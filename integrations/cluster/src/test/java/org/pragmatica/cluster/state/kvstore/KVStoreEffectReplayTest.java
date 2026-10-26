@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 
 import io.netty.buffer.ByteBuf;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -25,8 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the commands. A replica applies those results through the raw `KVStore.applyEffects`, which skips every fence, because
 /// the fences are decided by the core and several depend on keys the replica does not hold. The enabled halves pin
 /// the store properties that force that design; the `@Disabled` halves are the properties `applyEffects` must have.
-/// None of the target members (`applyEffects`, `CommitRing`, the phase hook) exist at this commit, so each `@Disabled`
-/// body fails with a message naming the missing member when enabled; the W1 PR wires the body to the real member.
+/// W1 landed `applyEffects`, `CommitRing` and the phase hook, so the real assertions of O6, O7, O8 and O14 are enabled here and the
+/// absence tripwires are gone; the enabled halves that pin store behaviour W1 does not change stay.
 ///
 /// `ClusterConfigKey` lives in a module this one does not depend on, so a stand-in key plays the excluded key.
 class KVStoreEffectReplayTest {
@@ -105,29 +104,9 @@ class KVStoreEffectReplayTest {
         return core;
     }
 
-    /// The seam `applyEffects` will be reached through. At this commit the member does not exist, so reaching it is the failure.
+    /// Applies the effects of one batch to a replica through the raw write path.
     private static void applyEffects(KVStore<StructuredKey, Object> replica, long slot, List<KVCommand<StructuredKey>> effects) {
-        if (!ReplicaSeam.kvStoreHasMethod("applyEffects")) {
-            throw new AssertionError("W1 adds KVStore.applyEffects(entry): raw storage put/remove, no fence, no witness, no merge; slot " + slot + " effects " + effects);
-        }
-
-        throw new AssertionError("KVStore.applyEffects exists now: replace the body of this helper with the real call, then this assertion is the property to hold");
-    }
-
-    /// Absence tripwires: ENABLED, they go red when the member lands, and their message names the `@Disabled` tests to enable then.
-    @Test
-    void applyEffects_doesNotExistYet_today() {
-        assertThat(ReplicaSeam.kvStoreHasMethod("applyEffects")).as("W1 landed KVStore.applyEffects: enable effectsOfTheTransaction_throughApplyEffects_giveAStoreEqualToTheCoresMinusExcludedKeys (TW-O6) and witnesslessRemoveEffect_landsThroughApplyEffects (TW-O14), wire the applyEffects helper of this class to the real method, and delete this test").isFalse();
-    }
-
-    @Test
-    void commitRing_doesNotExistYet_today() {
-        assertThat(ReplicaSeam.typeExists("CommitRing")).as("W1 landed CommitRing: enable uncommittedProcess_invalidatesTheRing (TW-O7), OlderCheckpointRestoreTripwireTest#resubscribingReplica_isRefusedByItsAnchor (TW-O13) and ReplicaFeedInterleaveModelTest#realRingAndApplier_neverSkipAnEntry (TW-O16), and delete this test").isFalse();
-    }
-
-    @Test
-    void kvStorePhaseHook_doesNotExistYet_today() {
-        assertThat(ReplicaSeam.kvStoreHasMethod("onPhaseCompleted")).as("W1 landed KVStore.onPhaseCompleted: enable revision_equalsTheEnginePhase_afterV0AndEmptySlots (TW-O8 store half) together with ReplicaFeedEngineTripwireTest#stateMachine_isToldTheNewFrontier_afterEveryCompletedSlot (TW-O8 engine half), and delete this test").isFalse();
+        assertThat(replica.applyEffects(new ReplicaEntry(IncarnationTag.NONE, slot, slot, "batch-" + slot, List.copyOf(effects))).isSuccess()).isTrue();
     }
 
     @Test
@@ -153,7 +132,6 @@ class KVStoreEffectReplayTest {
                 .isTrue();
     }
 
-    @Disabled("W1 (applyEffects): enable when KVStore.applyEffects exists; wire applyEffects(...) in this class to it")
     @Test
     void effectsOfTheTransaction_throughApplyEffects_giveAStoreEqualToTheCoresMinusExcludedKeys() {
         var core = coreHolding(true);
@@ -184,12 +162,17 @@ class KVStoreEffectReplayTest {
         assertThat(store.committedRevision()).as("TW-O7: process(batch) changes state but not the revision, so a ring keyed on the revision would not see it").isEqualTo(5L);
     }
 
-    @Disabled("W1 (CommitRing): enable when the ring exists; assert an uncommitted process() raises the ring floor to the frontier and closes live sinks with EVICTED")
     @Test
     void uncommittedProcess_invalidatesTheRing() {
-        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("CommitRing"),
-                                     "W1 CommitRing",
-                                     "KVStore.process (the uncommitted write path) invalidates the ring: the floor jumps to the frontier and live sinks close EVICTED");
+        var store = RingFixtures.genesisStore();
+
+        RingFixtures.commit(store, 1, RingFixtures.put("a", "1"));
+        assertThat(store.replicaRing().entries()).as("precondition: the ring holds the committed batch").hasSize(1);
+
+        store.process(store.createBatch(List.of(RingFixtures.put("u", "uncommitted"))));
+
+        assertThat(store.replicaRing().entries()).as("TW-O7: the uncommitted write path invalidates the ring").isEmpty();
+        assertThat(store.replicaRing().floor()).as("the floor jumps to the frontier").isEqualTo(store.committedRevision());
     }
 
     @Test
@@ -204,12 +187,19 @@ class KVStoreEffectReplayTest {
         assertThat(store.get(DEPLOYMENT).unwrap()).as("control: the restore installed the snapshot").isEqualTo("snapshot");
     }
 
-    @Disabled("W1 (Q-E phase hook): enable when KVStore.onPhaseCompleted exists; assert revision == engine phase after V0 and empty slots and after an empty-snapshot restore")
     @Test
     void revision_equalsTheEnginePhase_afterV0AndEmptySlots() {
-        throw ReplicaSeam.failClosed(ReplicaSeam.kvStoreHasMethod("onPhaseCompleted"),
-                                     "W1 KVStore.onPhaseCompleted",
-                                     "after onPhaseCompleted(nextSlot) for every completed slot, V0 and empty included, and after an empty-snapshot restore, committedRevision == the engine phase frontier");
+        var store = RingFixtures.genesisStore();
+
+        RingFixtures.commit(store, 1, RingFixtures.put("a", "1"));
+        store.onPhaseCompleted(5);
+        assertThat(store.committedRevision()).as("TW-O8: V0 and empty slots 2..4 advance the revision to the engine phase").isEqualTo(5L);
+
+        var restored = RingFixtures.store();
+
+        restored.restoreCommittedSnapshot(new byte[0], 2).unwrap();
+        restored.onPhaseCompleted(5);
+        assertThat(restored.committedRevision()).as("and so does an empty-snapshot restore followed by the engine's hook").isEqualTo(5L);
     }
 
     @Test
@@ -232,7 +222,6 @@ class KVStoreEffectReplayTest {
         assertThat(store.get(OWNED).isPresent()).as("control: the same Remove with a current witness deletes, so the refusals above are the missing witness").isFalse();
     }
 
-    @Disabled("W1 (applyEffects): enable when KVStore.applyEffects exists; a witnessless Remove recorded by the core must land on the replica")
     @Test
     void witnesslessRemoveEffect_landsThroughApplyEffects() {
         var replica = store();

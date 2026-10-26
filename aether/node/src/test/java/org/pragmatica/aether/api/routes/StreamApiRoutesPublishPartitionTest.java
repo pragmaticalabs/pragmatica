@@ -254,15 +254,19 @@ class StreamApiRoutesPublishPartitionTest {
     }
 
     /// Control: the allow-list is not widened to every transient cause or every stream error. A timeout may follow a
-    /// write, and an oversize event or an unknown stream is the client's, so these keep their own cause (and status).
+    /// write, and an oversize event or an unknown stream is not a refusal to retry, so these are NOT turned into the
+    /// retryable 503: a non-stream cause keeps itself, a raw stream error keeps the 500 it answered on publish (the
+    /// management funnel would otherwise give it its class status, which for some of them is a retry-inviting 503).
     @Test
     void retryableRefusal_doesNotWidenToOtherTransientOrPermanentCauses() {
-        Cause[] others = {StreamForwardError.General.FORWARD_TIMEOUT,
-                          new StreamError.StreamNotFound("s"),
-                          new StreamError.EventTooLarge(2, 1)};
+        Cause timeout = StreamForwardError.General.FORWARD_TIMEOUT;
 
-        for (var cause : others) {
-            assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, cause)).as(cause.getClass().getSimpleName()).isSameAs(cause);
+        assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, timeout)).isSameAs(timeout);
+        for (Cause cause : new Cause[]{new StreamError.StreamNotFound("s"), new StreamError.EventTooLarge(2, 1)}) {
+            var refused = StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, cause);
+
+            assertThat(ManagementStatus.statusOf(refused)).as(cause.getClass().getSimpleName()).isEqualTo(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR);
+            assertThat(refused.message()).isEqualTo(cause.message());
         }
     }
 

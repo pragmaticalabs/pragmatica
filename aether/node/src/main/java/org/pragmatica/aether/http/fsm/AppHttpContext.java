@@ -133,6 +133,12 @@ public final class AppHttpContext {
         return fsm.current() instanceof AppHttpState.RouteReady || fsm.current() instanceof AppHttpState.CertRotating;
     }
 
+    /// Whether a rotation report arriving now is discarded: `Stopped` and `Starting` close the pair it carries, so the
+    /// certificate was not applied (the adapter fails the rotation instead of reporting it applied).
+    public boolean isRotationDiscarded() {
+        return fsm.current() instanceof AppHttpState.Stopped || fsm.current() instanceof AppHttpState.Starting;
+    }
+
     public boolean isQuiesced() {
         return fsm.current() instanceof AppHttpState.Quiesced;
     }

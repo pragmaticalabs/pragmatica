@@ -159,11 +159,16 @@ class RouteMatcherTest {
         assertThat(result.isSuccess()).isTrue();
     }
 
+    /// #2420: the path arrives already decoded once (`HttpRequest.path()`), so the matcher hands its segments over as they
+    /// are. `%2541` is the text `%41` after that one decode and must stay `%41`; a `+` is a literal plus in a path segment.
     @Test
-    void match_decodesUrlEncodedSegments() {
-        var result = matcher.match(GET, "/api/v1/deploy/abc%20def");
-        result.onSuccess(matched -> assertThat(matched.param("id").or((String) null)).isEqualTo("abc def"));
-        assertThat(result.isSuccess()).isTrue();
+    void match_handsSegmentsOver_withoutDecodingThemAgain() {
+        for (var segment : new String[]{"%41", "a+b", "abc%20def", "100%"}) {
+            var result = matcher.match(GET, "/api/v1/deploy/" + segment);
+
+            result.onSuccess(matched -> assertThat(matched.param("id").or((String) null)).isEqualTo(segment));
+            assertThat(result.isSuccess()).isTrue();
+        }
     }
 
     @Test

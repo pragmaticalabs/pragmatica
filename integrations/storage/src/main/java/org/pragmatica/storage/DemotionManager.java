@@ -41,4 +41,12 @@ public interface DemotionManager {
                                            DemotionConfig config) {
         return new DefaultDemotionManager(tiers, metadataStore, config);
     }
+
+    /// Factory method for an instance that reports a refused demotion through `degrade`.
+    static DemotionManager demotionManager(List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           DemotionConfig config,
+                                           DegradeReporter degrade) {
+        return new DefaultDemotionManager(tiers, metadataStore, config, degrade);
+    }
 }

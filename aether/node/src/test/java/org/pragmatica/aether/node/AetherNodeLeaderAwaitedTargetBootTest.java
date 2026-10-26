@@ -96,7 +96,9 @@ class AetherNodeLeaderAwaitedTargetBootTest {
 
         node.kvStore().process(node.kvStore().createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(AppBlueprintKey.appBlueprintKey(OWNER), blueprint))));
         assertThat(node.kvStore().get(SliceTargetKey.sliceTargetKey(SLICE.base())).isPresent()).as("control: the blueprint is committed, its target is not").isFalse();
-        assertThat(node.eventAggregator().lastRaisedOperatorWarning().isPresent()).as("control: nothing raised yet").isFalse();
+        // The booted node's own storage may already have raised its degrade warnings (the synthesized instances cannot open a disk
+        // tier under the hermetic root, and say so since A0b); the control is about THIS warning, not about silence.
+        assertThat(isAwaitingTargetWarning(node.eventAggregator().lastRaisedOperatorWarning())).as("control: awaiting-target not raised yet").isFalse();
 
         ctx.setAwaitedTargetBound(timeSpan(1).millis());
         cdm.activate();
@@ -109,6 +111,37 @@ class AetherNodeLeaderAwaitedTargetBootTest {
             assertThat(raised.unwrap()).isInstanceOfSatisfying(ClusterEvent.OperatorWarning.class,
                                                               warning -> assertThat(warning.details()).containsEntry("code", "slice-start-awaiting-target"));
         });
+    }
+
+    /// A0b: storage is built before the node's event aggregator exists; the node binds every instance's degrade reporter to the
+    /// aggregator's sink once it does. The hermetic storage roots cannot hold a disk tier, so the booted node's instances degrade
+    /// while being built, and the aggregator of the booted node must show the storage warning. Red with the bind removed: the
+    /// conditions raised during the build then never reach the aggregator.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void bootedNode_whoseStorageDegradedWhileBuilding_showsTheStorageWarningOnItsAggregator() {
+        var self = NodeId.nodeId("storage-bind-" + UUID.randomUUID()).unwrap();
+        node = AetherNode.aetherNode(minimalConfig(self, tempDir), () -> {})
+                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
+                         .unwrap();
+        node.start().await(START_BOUND).onFailure(cause -> fail("start() must succeed: " + cause.message()));
+
+        await().atMost(Duration.ofSeconds(40)).untilAsserted(() -> assertThat(storageWarningCode(node.eventAggregator().lastRaisedOperatorWarning()))
+                .startsWith("storage-"));
+    }
+
+    private static String storageWarningCode(Option<ClusterEvent> raised) {
+        return raised.filter(ClusterEvent.OperatorWarning.class::isInstance)
+                     .map(ClusterEvent.OperatorWarning.class::cast)
+                     .map(warning -> String.valueOf(warning.details().get("code")))
+                     .or("none");
+    }
+
+    private static boolean isAwaitingTargetWarning(Option<ClusterEvent> raised) {
+        return raised.filter(ClusterEvent.OperatorWarning.class::isInstance)
+                     .map(ClusterEvent.OperatorWarning.class::cast)
+                     .filter(warning -> "slice-start-awaiting-target".equals(warning.details().get("code")))
+                     .isPresent();
     }
 
     private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot) {

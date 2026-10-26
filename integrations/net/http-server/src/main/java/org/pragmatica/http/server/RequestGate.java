@@ -38,7 +38,6 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.LastHttpContent;
-import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -226,7 +225,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     }
 
     private static HttpRequest headOf(io.netty.handler.codec.http.HttpRequest head) {
-        var decoder = new QueryStringDecoder(head.uri());
+        var target = RequestTarget.lenientTarget(head.uri());
         var method = HttpMethod.httpMethod(head.method().name()).or(HttpMethod.GET);
         var fields = new LinkedHashMap<String, List<String>>();
 
@@ -238,9 +237,9 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
 
         return new HeadRequest(IdGenerator.generate("req"),
                                method,
-                               decoder.path(),
+                               target.path(),
                                Headers.headers(fields),
-                               QueryParams.queryParams(decoder.parameters()));
+                               target.queryParams());
     }
 
     /// The head of a request: everything but a body, which has not arrived.
