@@ -2478,6 +2478,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
                 OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
                 OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
+                OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_MISSING,
                 OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
                 OperatorWarningCode.SLICE_START_AWAITING_TARGET,
