@@ -116,6 +116,7 @@ class AppHttpServerIngestGateTest {
     private final AtomicReference<String> dispatchThread = new AtomicReference<>("");
     private final AtomicInteger entered = new AtomicInteger();
     private volatile CountDownLatch gate = new CountDownLatch(0);
+    private volatile boolean failDispatch;
     private final HttpRouteRegistry registry = HttpRouteRegistry.httpRouteRegistry();
     private AppHttpServer server;
     private int port;
@@ -545,6 +546,9 @@ class AppHttpServerIngestGateTest {
             dispatchThread.set(Thread.currentThread().getName());
             entered.incrementAndGet();
             awaitGate();
+            if (failDispatch) {
+                throw new IllegalStateException("dispatch failed");
+            }
             served.incrementAndGet();
             servedBytes.set(request.body().length);
 
@@ -1314,6 +1318,26 @@ class AppHttpServerIngestGateTest {
     @Test
     void partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered_overHttp3() throws Exception {
         partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered(Protocol.H3);
+    }
+
+    /// What a worker throws is answered, not lost with the worker: the client gets a 500 instead of waiting for nothing.
+    private void aFailureOnThePartLimitWorker_isAnswered500(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        failDispatch = true;
+
+        assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 10)))).isEqualTo(500);
+        failDispatch = false;
+        assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 10)))).as("the worker lives on").isEqualTo(200);
+    }
+
+    @Test
+    void aFailureOnThePartLimitWorker_isAnswered500_overHttp1() throws Exception {
+        aFailureOnThePartLimitWorker_isAnswered500(Protocol.H1);
+    }
+
+    @Test
+    void aFailureOnThePartLimitWorker_isAnswered500_overHttp3() throws Exception {
+        aFailureOnThePartLimitWorker_isAnswered500(Protocol.H3);
     }
 
     /// The default ceiling is 256 MiB until streaming storage (U2); a route declaring more is capped to it.
