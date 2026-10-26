@@ -67,7 +67,7 @@ class ContentStoreTrustedNamespaceRestoreTest {
 
     /// Alternates the two forgery shapes: an enveloped manifest and a legacy text manifest, both naming victim's chunks.
     private Map<String, byte[]> uploadForgeries(byte[] victim, List<String> victimChunks) {
-        var enveloped = ContentManifest.contentManifest("victim", victim.length, victimChunks).toBytes();
+        var enveloped = ContentManifest.contentManifest(4096, victim.length, "ab".repeat(32), victimChunks).toBytes();
         var legacy = (ContentManifest.MAGIC_HEADER + "victim|" + victim.length + "|" + victimChunks.size() + "|"
                       + String.join("|", victimChunks)).getBytes(StandardCharsets.UTF_8);
         var uploads = new HashMap<String, byte[]>();
