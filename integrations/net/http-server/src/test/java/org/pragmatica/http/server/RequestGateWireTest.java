@@ -53,7 +53,9 @@ class RequestGateWireTest {
     private NettyHttpServer server;
     private int port;
 
-    private final RequestClassifier classifier = head -> switch (head.path()) {
+    private final java.util.List<String> classifiedPaths = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    private final RequestClassifier classifier = head -> switch (recorded(head.path())) {
         case "/denied" -> Disposition.reject(writer -> writer.error(HttpStatus.UNAUTHORIZED, "no credentials"));
         case "/big" -> Disposition.aggregate(100L * MIB);
         case "/idle" -> Disposition.aggregate(MIB,
@@ -75,6 +77,12 @@ class RequestGateWireTest {
                                                   releases::incrementAndGet);
         default -> Disposition.aggregate(MIB);
     };
+
+    private String recorded(String path) {
+        classifiedPaths.add(path);
+
+        return path;
+    }
 
     private final BiConsumer<HttpRequest, ResponseWriter> handler = (request, response) -> {
         invocations.incrementAndGet();
@@ -241,6 +249,23 @@ class RequestGateWireTest {
         } finally {
             RequestGate.lingerMillisForTest(RequestGate.LINGER_MILLIS);
         }
+    }
+
+    /// A request target that cannot be percent-decoded is classified by its undecoded path, without its query (the gate must
+    /// not throw on it), and the transport still answers it 400 before any handler runs.
+    @Test
+    void aMalformedTarget_isClassifiedByItsUndecodedPathWithoutItsQuery_andAnswered400() throws IOException {
+        start();
+
+        try (var socket = open()) {
+            socket.setSoTimeout(5_000);
+            send(socket, "GET /bad%zz?a=1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+
+            assertThat(readUntilClosed(socket)).startsWith("HTTP/1.1 400");
+        }
+
+        assertThat(classifiedPaths).as("classified once, by the undecoded path and not the query").containsExactly("/bad%zz");
+        assertThat(invocations.get()).as("never dispatched").isZero();
     }
 
     /// Upload bounds answer 408 and close: a body trickling at 10 B/s is far below the 1000 B/s minimum.
