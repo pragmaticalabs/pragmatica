@@ -2544,8 +2544,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
         // Write-ahead (#2429): the refusal is answered only once the retirement is durable in this node's ledger.
-        bootTokens.retirementDurable(refused)
-                  .onSuccess(_ -> sendIdentityRefused(sender, refused));
+        bootTokens.retirementDurable(refused).onSuccess(_ -> sendIdentityRefused(sender, refused));
     }
 
     @Contract

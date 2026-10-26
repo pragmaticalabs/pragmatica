@@ -580,7 +580,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // serving peers that are already bound.
             bootTokens.admitDurably(hello.sender(),
                                     hello.bootToken())
-                      .onSuccess(admission -> ctx.executor().execute(() -> completeHello(ctx, hello, admission)));
+                      .onSuccess(admission -> ctx.executor()
+                                                 .execute(() -> completeHello(ctx, hello, admission)));
         }
 
         private void completeHello(ChannelHandlerContext ctx,

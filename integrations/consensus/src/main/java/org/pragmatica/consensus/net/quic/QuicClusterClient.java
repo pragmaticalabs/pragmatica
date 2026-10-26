@@ -875,7 +875,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // arrives off this thread, so a stalled ledger writer parks this dial and nothing else.
             bootTokens.admitDurably(peerId,
                                     hello.bootToken())
-                      .onSuccess(admission -> ctx.executor().execute(() -> attachAdmitted(ctx, hello, admission)));
+                      .onSuccess(admission -> ctx.executor()
+                                                 .execute(() -> attachAdmitted(ctx, hello, admission)));
         }
 
         private void attachAdmitted(ChannelHandlerContext ctx,

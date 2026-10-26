@@ -202,8 +202,7 @@ public interface BootTokens {
 
             @Override
             public Promise<Unit> retirementDurable(NodeId peer) {
-                return Option.option(writes.get(peer))
-                             .or(() -> Promise.success(Unit.unit()));
+                return Option.option(writes.get(peer)).or(() -> Promise.success(Unit.unit()));
             }
 
             private Admission announceRetirement(NodeId peer) {
