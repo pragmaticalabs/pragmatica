@@ -118,6 +118,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicLong activationEpoch,
                                     Set<NodeId> abandonedReaps,
                                     Set<NodeId> heldReaps,
+                                    Set<NodeId> directedReaps,
                                     ConcurrentHashMap<NodeId, Long> refusedReaps,
                                     ConcurrentHashMap<NodeId, NodeRole> provisionedRoleIntents,
                                     ConcurrentHashMap<NodeId, RoleMismatch> roleMismatchLedger,
@@ -272,6 +273,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicBoolean(false),
                                                 liveness,
                                                 new AtomicLong(0L),
+                                                ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
@@ -2382,14 +2384,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (reason.isSurplusTrim()) {
             surplusTrimGraceExpired(targetNodeId, reason);
         } else {
-            reapDrainedNode(targetNodeId);
+            reapDrainedNode(targetNodeId, reason);
         }
 
         drainCommandClear.accept(targetNodeId);
     }
 
     @Contract
-    private void reapDrainedNode(NodeId targetNodeId) {
+    private void reapDrainedNode(NodeId targetNodeId, DrainReason drainReason) {
         if (!active.get()) {
             return;
         }
@@ -2397,14 +2399,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         retirementRefusal.get()
                          .apply(targetNodeId)
                          .onPresent(reason -> parkRefusedReap(targetNodeId, reason))
-                         .onEmpty(() -> terminateDrained(targetNodeId));
+                         .onEmpty(() -> terminateDrained(targetNodeId, drainReason));
     }
 
     @Contract
-    private void terminateDrained(NodeId targetNodeId) {
+    private void terminateDrained(NodeId targetNodeId, DrainReason reason) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
         drainGraceChains.add(targetNodeId);
+        markDirected(targetNodeId, reason);
         confirmedReap(targetNodeId, activationEpoch.get(), incarnation(targetNodeId), FAILED_REAP_RETRIES);
+    }
+
+    /// #1038: a retirement an operator or the replacement protocol asked for is a directed reap, not the cluster acting on its own, and is the
+    /// only kind [#confirmedReap] does not hold while auto-heal is disabled. Every other drain reason that reaches the grace backstop
+    /// (`JOIN_GRACE_REAP`, a never-joined zombie; the surplus trims) is the cluster's own decision and is held like a departed node's reap.
+    private void markDirected(NodeId nodeId, DrainReason reason) {
+        if (reason == DrainReason.OPERATOR_COMMAND || reason == DrainReason.REPLACED) {
+            directedReaps.add(nodeId);
+        } else {
+            directedReaps.remove(nodeId);
+        }
     }
 
     /// R1′ — a surplus trim at grace expiry keys on the TARGET first. The membership inputs are read ONCE, so
@@ -2582,10 +2596,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// verdict (a voter is refused only until it is voted out), so a silent return here left the VM running and billing.
     ///
     /// #1038: this is where AUTOMATIC deletion starts (the departed reap and the orphan sweep both pass through it), so a disabled
-    /// auto-heal holds it ([#reapMayProceed]). Operator-requested retirement does not come through here.
+    /// auto-heal holds it at the sink ([#confirmedReap]). Operator-requested retirement does not come through here.
     @Contract
     private void terminateDeparted(NodeId nodeId) {
-        if (!active.get() || !reapMayProceed(nodeId, "reap of the departed node")) {
+        if (!active.get()) {
             return;
         }
 
@@ -2659,6 +2673,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         refusedReaps.remove(nodeId);
         failedReaps.remove(nodeId);
         drainGraceChains.remove(nodeId);
+        directedReaps.remove(nodeId);
         confirmedReap(nodeId, activationEpoch.get(), incarnation(nodeId), FAILED_REAP_RETRIES);
     }
 
@@ -2682,6 +2697,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
+        // #1038: the one place the gate is enforced. Every chain that deletes an instance passes here, first attempt and every retry, so a
+        // disable that lands between two attempts holds the next one. Only a directed reap ([#markDirected]) is exempt.
+        if (!directedReaps.contains(nodeId) && !reapMayProceed(nodeId, reapPath(nodeId))) {
+            return;
+        }
 
         lifecycleManager.sourceOf(nodeId)
                         .fold(() -> lifecycleManager.terminateNode(nodeId),
@@ -2691,6 +2711,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                         // the activation replay read the state they leave.
                         .onSuccess(_ -> reapConfirmed(nodeId))
                         .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+    }
+
+    private String reapPath(NodeId nodeId) {
+        return drainGraceChains.contains(nodeId)
+               ? "drain-grace reap"
+               : "reap of a departed or surplus node";
     }
 
     /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once, and the
@@ -3281,11 +3307,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
-        // #1038: the chain began while auto-heal was enabled; a retry of an automatic reap is still an automatic deletion. A drain-grace chain
-        // was requested by a drain (operator command, join grace, surplus trim), not by the heal, and is not held here.
-        if (!drainGraceChains.contains(nodeId) && !reapMayProceed(nodeId, "retry of a failed reap")) {
-            return;
-        }
 
         confirmedReap(nodeId, epoch, generation, retriesLeft);
     }
@@ -3351,11 +3372,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
-        // #1038: the refusal was parked while auto-heal was enabled; a retry is still an AUTOMATIC deletion, held by the gate.
-        if (!reapMayProceed(nodeId, "retry of a refused reap")) {
-            return;
-        }
-
+        // #1038: a retry of a refusal is an automatic deletion; the sink ([#confirmedReap]) holds it.
         retirementRefusal.get()
                          .apply(nodeId)
                          .onPresent(reason -> continueRefusedReap(nodeId, epoch, retriesLeft, reason))

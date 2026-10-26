@@ -68,6 +68,8 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
     private final AtomicReference<List<InstanceInfo>> listing = new AtomicReference<>(List.of());
     private final AtomicInteger terminates = new AtomicInteger();
     private final AtomicInteger listings = new AtomicInteger();
+    /// The counted core members the surplus-trim verdict reads: empty until a test gives the cluster a node too many.
+    private final AtomicReference<Set<NodeId>> counted = new AtomicReference<>(Set.of());
     private final AtomicBoolean autoHealEnabled = new AtomicBoolean(true);
     /// Run on the first listing, which then fails: the operator's `disable` lands between the first attempt and its retry.
     private final AtomicReference<Runnable> duringFirstListing = new AtomicReference<>(() -> {});
@@ -99,7 +101,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         var config = new TopologyConfig(SELF, 3, timeSpan(60).seconds(), timeSpan(1).seconds(), List.of(self));
         var observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), timeSpan(60).millis()).unwrap();
-        var liveness = MembershipLiveness.membershipLiveness(Set::of,
+        var liveness = MembershipLiveness.membershipLiveness(counted::get,
                                                              Set::of,
                                                              _ -> false,
                                                              _ -> false,
@@ -174,7 +176,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
         settle();
         assertThat(terminates.get()).as("the provider fake was never asked to terminate").isZero();
-        assertThat(warned("instance-reap-held", LOST.id(), "NOT deleted", "reap of the departed node")).as("WARN: " + appender.messages()).isTrue();
+        assertThat(warned("instance-reap-held", LOST.id(), "NOT deleted", "reap of a departed or surplus node")).as("WARN: " + appender.messages()).isTrue();
     }
 
     @Test
@@ -257,7 +259,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         settle();
         assertThat(listings.get()).as("the first attempt ran, so the held event is the retry's").isEqualTo(1);
         assertThat(terminates.get()).as("the retry did not reach the provider").isZero();
-        assertThat(warned("instance-reap-held", LOST.id(), "retry of a failed reap")).as("WARN: " + appender.messages()).isTrue();
+        assertThat(warned("instance-reap-held", LOST.id(), "reap of a departed or surplus node")).as("WARN: " + appender.messages()).isTrue();
     }
 
     @Test
@@ -280,6 +282,123 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
 
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         assertThat(eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD)).as("an operator-requested retirement is not an automatic deletion").isFalse();
+    }
+
+    private final AtomicReference<Option<String>> refusal = new AtomicReference<>(Option.none());
+
+    private void relist() {
+        listing.set(List.of(instance("i-lost-again")));
+    }
+
+    /// Entry: the retry of a refusal. A voter is refused while it votes; auto-heal is disabled before it is voted out; the retry is held.
+    @Test
+    void refusedReapRetry_autoHealDisabledBeforeTheVoterIsVotedOut_terminatesNothing() {
+        ctm.setRetirementRefusal(_ -> refusal.get());
+        refusal.set(Option.some("still an installed voter"));
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> warned("REFUSED"));
+
+        disableAutoHeal();
+        refusal.set(Option.none());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isZero();
+    }
+
+    @Test
+    void refusedReapRetry_autoHealEnabled_terminatesOnceVotedOut() {
+        ctm.setRetirementRefusal(_ -> refusal.get());
+        refusal.set(Option.some("still an installed voter"));
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> warned("REFUSED"));
+
+        refusal.set(Option.none());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+    }
+
+    /// Entry: the drain-grace reap of a never-joined zombie is the cluster's own decision, so it is held like a departed node's reap.
+    @Test
+    void joinGraceReap_autoHealDisabled_terminatesNothing_andIsHeld() {
+        disableAutoHeal();
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isZero();
+        assertThat(warned("instance-reap-held", LOST.id(), "drain-grace reap")).isTrue();
+    }
+
+    @Test
+    void joinGraceReap_autoHealEnabled_terminates() {
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        assertThat(eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD)).isFalse();
+    }
+
+    /// Entry: the surplus-trim grace reap. The cluster decided it had a node too many; with auto-heal disabled that is held.
+    @Test
+    void surplusTrimGraceReap_autoHealDisabled_terminatesNothing() {
+        counted.set(Set.of(SELF, nodeId("node-b").unwrap(), nodeId("node-c").unwrap()));
+        disableAutoHeal();
+
+        ctm.drainNode(LOST, DrainReason.OVERPROVISION_SCALE_DOWN);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isZero();
+    }
+
+    @Test
+    void surplusTrimGraceReap_autoHealEnabled_terminates() {
+        counted.set(Set.of(SELF, nodeId("node-b").unwrap(), nodeId("node-c").unwrap()));
+        ctm.drainNode(LOST, DrainReason.OVERPROVISION_SCALE_DOWN);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+    }
+
+    /// Entry: the replacement protocol's drain is a directed retirement of a node the cluster replaced, not the heal acting: not held.
+    @Test
+    void replacedDrainReap_autoHealDisabled_isNotHeld() {
+        disableAutoHeal();
+
+        ctm.drainNode(LOST, DrainReason.REPLACED);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        assertThat(eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD)).isFalse();
+    }
+
+    /// A directed reap exempts only itself: the same node lost later, on the cluster's own account, is held.
+    @Test
+    void directedReap_doesNotExemptTheSameNodeLostLater() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        relist();
+
+        lost();
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// Nor does it exempt a later automatic drain of the same node.
+    @Test
+    void directedReap_doesNotExemptALaterAutomaticDrainOfTheSameNode() {
+        disableAutoHeal();
+        ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        relist();
+
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> eventSeen(OperatorWarningCode.INSTANCE_REAP_HELD));
+        settle();
+        assertThat(terminates.get()).isEqualTo(1);
     }
 
     /// The re-check of an unconfirmed termination terminates again, so it is an automatic deletion too.

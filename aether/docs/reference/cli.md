@@ -2204,7 +2204,7 @@ Example output:
 
 ### `aether cluster topology auto-heal disable`
 
-Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. The cluster also deletes no instance of a departed node while disabled: its VM is kept for diagnosis and the `instance-reap-held` event names it (#1038). Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
+Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. The cluster also deletes no instance on its own initiative while disabled (a departed node, a surplus trim, a never-joined zombie): its VM is kept for diagnosis and the `instance-reap-held` event names it (#1038). Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal disable
