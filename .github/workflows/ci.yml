@@ -40,6 +40,10 @@ jobs:
         run: python3 -B -m unittest discover -s tools -p test_ember_shard.py
 
       # The heavy-forge nightly's reporting (#2017): what a night reads as (ok, red, unknown) and when the notify job may close the issue.
+      # The same planner for Consensus (#2414), plus a check that the consensus-shard matrix below covers every Consensus test class.
+      - name: Consensus shard planner pins
+        run: python3 -B -m unittest discover -s tools -p test_consensus_shard.py
+
       - name: Heavy-forge workflow pins
         run: python3 -B -m unittest discover -s tools -p test_heavy_forge_workflow.py
 
@@ -78,8 +82,11 @@ jobs:
 
       # Ember's tests run in the ember-shard-N jobs (#1643): they were 53 of this step's 89 minutes, serial, in one module.
       # Ember is still compiled and jarred here, because forge-api, forge-core and dead-surface-gate depend on it.
+      #
+      # Consensus's tests run in the consensus-shard-N jobs (#2414): ~1050 s of the ~2800 s dependency chain
+      # Consensus -> DHT -> Invoke -> Deployment -> Node that sets this step's length. Consensus is still compiled, jarred and installed here.
       - name: Build and test all modules
-        run: mvn install -B -pl '!examples' -Dember.skipTests=true
+        run: mvn install -B -pl '!examples' -Dember.skipTests=true -Dconsensus.skipTests=true
         # 45 -> 60 (2026-09-28): rc4 alone used 42.5 of 45 min, and #1554's Ember tests pushed it over
         # (timed out mid-suite, not a hang). Structural fix (split or parallelize the job) tracked separately.
         # 60 -> 90 (2026-10-05): the last 12 rc4 commits took 57m27s-60m13s; two finished with BUILD SUCCESS
@@ -217,6 +224,63 @@ jobs:
           if-no-files-found: error
           path: |
             aether/ember/target/surefire-reports/*.xml
+          retention-days: 7
+
+  # Consensus's tests (#2414), split by class across runners with the Ember planner. They are serial in one module and
+  # sat on build-and-test's longest dependency chain (~18 of its ~46 min). The shard count is the matrix list's length:
+  # add an entry to go from 2 shards to 3. The required check names are consensus-shard-1 .. consensus-shard-N.
+  consensus-shard:
+    name: consensus-shard-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      SHARDS: ${{ strategy.job-total }}
+      SHARD: ${{ matrix.shard }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+
+      # Prints every shard's predicted total; fails if one is over budget (raise the matrix list) or this shard is empty.
+      - name: Plan this shard
+        id: plan
+        run: |
+          python3 -B -m unittest discover -s tools -p test_consensus_shard.py
+          echo "classes=$(python3 -B tools/ember-shard.py --module consensus --shards "$SHARDS" --index "$SHARD")" >> "$GITHUB_OUTPUT"
+
+      - name: Install Consensus's upstream modules
+        run: mvn install -B -DskipTests -pl integrations/consensus -am
+
+      - name: Run Consensus tests (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
+        run: mvn test -B -pl integrations/consensus -Dtest="${{ steps.plan.outputs.classes }}" -Dsurefire.failIfNoSpecifiedTests=false
+        timeout-minutes: 25
+
+      # The plan-completed gate passes a run with zero tests; this fails one. Every class assigned to this shard must have reported.
+      - name: Verify this shard ran its classes
+        run: python3 -B tools/ember-shard.py --module consensus --shards "$SHARDS" --index "$SHARD" --verify integrations/consensus/target/surefire-reports
+
+      - name: Upload Consensus test results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: consensus-test-results-${{ matrix.shard }}
+          if-no-files-found: error
+          path: |
+            integrations/consensus/target/surefire-reports/*.xml
           retention-days: 7
 
   # The cloud harness stub suites (aether/tests/integration/test/test-*.sh) pin harness decisions such
