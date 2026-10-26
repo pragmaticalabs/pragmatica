@@ -28,6 +28,9 @@ import org.jooq.ResultQuery;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+
 
 final class AsyncJooqConnector implements JooqConnector {
     private final DatabaseConnectorConfig config;
@@ -151,20 +154,46 @@ final class AsyncJooqConnector implements JooqConnector {
         return ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()).fold(_ -> cause.promise());
     }
 
-    static DatabaseConnectorError toConnectorError(Cause cause) {
+    static Cause toConnectorError(Cause cause) {
         if (cause instanceof R2dbcError r2dbcError) {
             return switch (r2dbcError) {
                 case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
                 case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
-                case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());
-                case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());
+                case R2dbcError.ConnectionFailed c -> classified(c.sqlState(),
+                                                                 c.message(),
+                                                                 DatabaseConnectorError.connectionFailed(c.message(),
+                                                                                                         none(),
+                                                                                                         c.sqlState()));
+                case R2dbcError.ConstraintViolation v -> classified(v.sqlState(),
+                                                                    v.constraint(),
+                                                                    DatabaseConnectorError.constraintViolation("unknown",
+                                                                                                               v.constraint(),
+                                                                                                               v.sqlState()));
                 case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
-                case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message());
+                case R2dbcError.QueryFailed q -> classified(q.sqlState(),
+                                                            q.message(),
+                                                            DatabaseConnectorError.queryFailed("",
+                                                                                               q.message(),
+                                                                                               none(),
+                                                                                               q.sqlState()));
                 case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
             };
         }
 
-        return DatabaseConnectorError.databaseFailure(new RuntimeException(cause.message()));
+        return cause;
+    }
+
+    /// One SQLSTATE classification for every connector (`DatabaseConnectorError.fromSqlState`): a server error reads the
+    /// same through JDBC and R2DBC, and `08007`, `08P01` and `57014` are never transient. Without a SQLSTATE the driver
+    /// layer's own classification stands.
+    private static DatabaseConnectorError classified(Option<String> sqlState,
+                                                     String message,
+                                                     DatabaseConnectorError unclassified) {
+        return sqlState.map(state -> DatabaseConnectorError.fromSqlState(some(state),
+                                                                         "",
+                                                                         message,
+                                                                         none()))
+                       .or(unclassified);
     }
 
     private record TransactionalAsyncJooqConnector(DatabaseConnectorConfig config,
@@ -180,6 +209,7 @@ final class AsyncJooqConnector implements JooqConnector {
             return Promise.lift(e -> mapException(e,
                                                   query.getSQL()),
                                 () -> JooqConnector.extractSingleResult(DSL.using(connection, dialect).fetch(query)))
+                          .flatMap(Result::async)
                           .mapError(AsyncJooqConnector::toConnectorError);
         }
 

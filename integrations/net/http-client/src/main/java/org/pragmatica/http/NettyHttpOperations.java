@@ -188,13 +188,15 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         writeHttp1Request(channel, request, host, path);
     }
 
+    /// #2386: `Host` is set exactly once, after the caller's headers, so a caller-supplied `host` (any case) replaces
+    /// the URI's instead of adding a second line, which a server answers 400 (RFC 9112 §3.2).
     private static void writeHttp1Request(Channel channel, HttpRequest request, String host, String path) {
         var method = HttpMethod.valueOf(request.method());
         var nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, method, path, requestBody(request));
 
-        nettyRequest.headers().set("Host", host);
         request.headers().map().forEach((name, values) -> values.forEach(v -> nettyRequest.headers()
                                                                                           .add(name, v)));
+        nettyRequest.headers().set("Host", hostOf(request, host));
         nettyRequest.headers().set("Content-Length",
                                    nettyRequest.content().readableBytes());
         channel.writeAndFlush(nettyRequest);
@@ -311,9 +313,10 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
         headers.method(request.method());
         headers.path(resolvePath(uri));
-        headers.authority(uri.getHost());
+        // #2386: a caller-supplied `host` becomes the authority rather than a second, conflicting field (RFC 9114 §4.3.1)
+        headers.authority(hostOf(request, uri.getHost()));
         headers.scheme(option(uri.getScheme()).or("https"));
-        request.headers().map().forEach((name, values) -> values.forEach(v -> headers.set(name, v)));
+        request.headers().map().forEach((name, values) -> values.forEach(v -> setUnlessHost(headers, name, v)));
         streamChannel.write(new DefaultHttp3HeadersFrame(headers));
         var body = requestBody(request);
 
@@ -327,6 +330,19 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
     }
 
     // --- Shared Helpers ---
+    /// The caller's `host` header when it set one (matched case-insensitively), else the URI's host.
+    private static String hostOf(HttpRequest request, String uriHost) {
+        return request.headers()
+                      .firstValue("host")
+                      .orElse(uriHost);
+    }
+
+    private static void setUnlessHost(DefaultHttp3Headers headers, String name, String value) {
+        if (!"host".equalsIgnoreCase(name)) {
+            headers.set(name, value);
+        }
+    }
+
     private static EventLoopGroup defaultEventLoop() {
         return new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     }

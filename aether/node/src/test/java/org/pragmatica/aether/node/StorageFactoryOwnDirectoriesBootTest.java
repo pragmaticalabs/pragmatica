@@ -88,8 +88,10 @@ class StorageFactoryOwnDirectoriesBootTest {
     /// A path-less instance follows `artifacts` when its disk path is moved, as `content` does. Mutation that reddens
     /// it: derive from the default disk path instead of the resolved `artifacts`.
     @Test
-    void movedArtifacts_movesVaultWithIt() {
+    void movedArtifacts_movesVaultWithIt() throws java.io.IOException {
         var moved = root.resolve("moved");
+        // An operator-written disk_path is never created by the node: the operator mounts it.
+        Files.createDirectories(moved.resolve("storage"));
         var storage = bootedThroughMain("[storage.artifacts]\ndisk_path = \"" + moved.resolve("storage") + "\"\nsnapshot_path = \""
                                         + moved.resolve("metadata-snapshots") + "\"\n[storage.vault]\n",
                                         "vault", "artifacts", "content");

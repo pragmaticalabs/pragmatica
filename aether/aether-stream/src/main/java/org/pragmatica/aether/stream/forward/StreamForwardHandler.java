@@ -45,6 +45,14 @@ public interface StreamForwardHandler {
 
     long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
 
+    /// Whether a publish failure was refused before anything reached the ring, the WAL or a replica, so the publisher may
+    /// retry it. The owner answers a forwarded publish with the retryable response for exactly these causes, and the
+    /// management publish route uses the same predicate for a publish the owner serves itself, so a refusal answers the same
+    /// status whether the publisher is the owner or a forwarder.
+    static boolean isRetryable(Cause cause) {
+        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || cause instanceof StreamError.OwnerNotActivated || cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || ResourceCapacityExhausted.isTransientCapacity(cause);
+    }
+
     static StreamForwardHandler streamForwardHandler(NodeId selfNodeId,
                                                      StreamPartitionManager partitionManager,
                                                      StreamForwardTransport transport) {
@@ -363,7 +371,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         log.warn("Forwarded publish failure correlationId={} (cause chain: {})",
                  request.correlationId(),
                  HttpError.causeChain(cause));
-        if (isRetryable(cause)) {
+        if (StreamForwardHandler.isRetryable(cause)) {
             sendRetryableResponse(request, HttpError.clientMessage(cause));
         } else if (cause instanceof PublishOutcomeUnknown) {
             sendOutcomeUnknownResponse(request, HttpError.clientMessage(cause));
@@ -382,10 +390,6 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  request.partition(),
                  request.correlationId(),
                  errorMessage);
-    }
-
-    private static boolean isRetryable(Cause cause) {
-        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || cause instanceof StreamError.OwnerNotActivated || cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || ResourceCapacityExhausted.isTransientCapacity(cause);
     }
 
     @Contract

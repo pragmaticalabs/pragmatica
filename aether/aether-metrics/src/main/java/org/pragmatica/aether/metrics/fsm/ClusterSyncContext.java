@@ -25,14 +25,21 @@ import org.pragmatica.aether.worker.metrics.SourceMetricsBatch;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.cluster.metrics.ClusterDirectory;
+import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.DirectoryVersion;
 import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
@@ -109,6 +116,13 @@ public final class ClusterSyncContext {
     /// the entry, and a peer that re-joins gets a value no earlier count was recorded against.
     private final Map<NodeId, Long> missedPongEpochs = new ConcurrentHashMap<>();
     private final AtomicLong missedPongEpochSequence = new AtomicLong();
+
+    /// The leader's directory producer; absent until [#setDirectorySources] wires it, so a leader without one attaches nothing.
+    private final AtomicReference<Option<DirectoryProducer>> directoryProducer = new AtomicReference<>(Option.none());
+
+    /// The directory pair each peer last reported in a pong (C-5): the leader attaches its directory to a peer's authority ping until that peer
+    /// reports the current pair. Updated from the collector's pong listener.
+    private final Map<NodeId, DirectoryVersion> acknowledgedDirectory = new ConcurrentHashMap<>();
     private final PeriodicObservationConfig periodicConfig;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
@@ -316,6 +330,7 @@ public final class ClusterSyncContext {
     public void forgetPeer(NodeId peer) {
         observedEpoch.remove(peer);
         missedPongEpochs.remove(peer);
+        acknowledgedDirectory.remove(peer);
     }
 
     /// Start a new missed-pong epoch for `peer` (#1061 R-a): misses counted before this call no
@@ -394,6 +409,7 @@ public final class ClusterSyncContext {
         var localObservations = observations.containsKey(self)
                                 ? Map.of(self, observations.get(self))
                                 : Map.<NodeId, MetricObservation> of();
+        var directory = leaderDirectory(currentEpoch);
         var localPing = buildMetricsPing(localObservations, currentEpoch, rabiaTerm, false, isLeader());
         var corePings = new ArrayList<ClusterSyncPing>();
 
@@ -401,8 +417,46 @@ public final class ClusterSyncContext {
             corePings.add(buildMetricsPing(batches.get(index), currentEpoch, rabiaTerm, true, index == 0 && isLeader()));
         }
 
-        pingRecipients().forEach(peer -> sendScopedPings(peer, corePings, localPing));
+        pingRecipients().forEach(peer -> sendScopedPings(peer, corePings, localPing, directory));
         publishSourceMetrics();
+    }
+
+    /// The directory the leader attaches to its authority pings: produced here, and held by this node under the same acceptance rule as a
+    /// received one so the leader reports its own pair. A non-leader attaches none, so there is no second, unfenced path.
+    private Option<ClusterDirectory> leaderDirectory(Epoch currentEpoch) {
+        return isLeader()
+               ? directoryProducer.get()
+                                  .flatMap(producer -> producer.produce(currentEpoch))
+                                  .map(this::held)
+               : Option.none();
+    }
+
+    private ClusterDirectory held(ClusterDirectory produced) {
+        collector.installProducedDirectory(produced);
+
+        return produced;
+    }
+
+    /// The authority-bearing ping carries the directory to a peer that has not reported the current pair; any other ping is sent as built.
+    private ClusterSyncPing withDirectoryFor(NodeId peer, ClusterSyncPing ping, Option<ClusterDirectory> directory) {
+        return directory.filter(_ -> ping.carriesAuthority())
+                        .filter(produced -> produced.version()
+                                                    .isStrictlyAfter(acknowledgedDirectory.getOrDefault(peer,
+                                                                                                        DirectoryVersion.NONE)))
+                        .map(ping::withDirectory)
+                        .or(ping);
+    }
+
+    /// Wires the leader's directory content: the node list (every addressed core and worker) and the DHT replication. Also starts tracking the
+    /// pair each peer reports, from the collector's pong listener.
+    @Contract
+    public void setDirectorySources(Supplier<List<NodeInfo>> nodes, Supplier<Result<DhtReplication>> dhtReplication) {
+        directoryProducer.set(Option.some(new DirectoryProducer(nodes, dhtReplication)));
+        collector.addPongListener(this::acknowledgeDirectory);
+    }
+
+    private void acknowledgeDirectory(ClusterSyncPong pong) {
+        acknowledgedDirectory.put(pong.sender(), pong.observedDirectoryGeneration());
     }
 
     private ClusterSyncPing buildMetricsPing(Map<NodeId, MetricObservation> observations,
@@ -429,7 +483,9 @@ public final class ClusterSyncContext {
                                    ? dispatchedNodesSupplier.get().get()
                                    : Set.of(),
                                    false,
-                                   carriesAuthority);
+                                   carriesAuthority,
+                                   collector.heldDirectoryVersion(),
+                                   Option.none());
     }
 
     private List<Map<NodeId, MetricObservation>> metricBatches(Map<NodeId, MetricObservation> available) {
@@ -453,15 +509,18 @@ public final class ClusterSyncContext {
                : List.copyOf(batches);
     }
 
-    private void sendScopedPings(NodeId peer, List<ClusterSyncPing> corePings, ClusterSyncPing localPing) {
+    private void sendScopedPings(NodeId peer,
+                                 List<ClusterSyncPing> corePings,
+                                 ClusterSyncPing localPing,
+                                 Option<ClusterDirectory> directory) {
         if (peer.equals(self)) {
             return;
         }
 
         if (metricsRecipient.get().test(peer)) {
-            corePings.forEach(ping -> network.send(peer, ping));
+            corePings.forEach(ping -> network.send(peer, withDirectoryFor(peer, ping, directory)));
         } else {
-            network.send(peer, localPing);
+            network.send(peer, withDirectoryFor(peer, localPing, directory));
         }
     }
 

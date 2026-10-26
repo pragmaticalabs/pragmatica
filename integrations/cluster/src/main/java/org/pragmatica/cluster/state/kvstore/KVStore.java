@@ -1,9 +1,11 @@
 package org.pragmatica.cluster.state.kvstore;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
@@ -18,6 +20,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreLocalIO.Response.FoundEntries
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueGet;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -34,6 +37,8 @@ import org.slf4j.LoggerFactory;
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
     private static final Logger log = LoggerFactory.getLogger(KVStore.class);
+
+    private static final Cause NOT_A_PLAIN_EFFECT = Causes.cause("a replica entry may carry only Put and Remove effects");
 
     /// How often a burst of repeated refusals is summarised in the log.
     private static final long REFUSAL_SUMMARY_INTERVAL_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
@@ -59,6 +64,13 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final MessageRouter router;
+    /// The worker replica feed's commit ring, owned by this store and appended inside the same mutation as the apply. Takes only the tag
+    /// as a parameter and never calls back into the store.
+    private final CommitRing ring;
+    private final ReplicaKeyFilter replicaFilter;
+    private final IncarnationSource incarnation;
+    /// The plain `Put`/`Remove` effects of the committed batch being applied; null outside a committed batch, so uncommitted writes record nothing.
+    private List<KVCommand<?>> batchEffects;
     /// The view that was last DELIVERED to subscribers via [#replayNotifications()]. Used to
     /// compute the DIFF-replay on a mid-life snapshot install (cluster-topology-overhaul §5.8,
     /// AMENDED 2026-06-11): only keys that are new/changed/vanished relative to this view emit a
@@ -72,9 +84,69 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     public KVStore(MessageRouter router, Serializer serializer, Deserializer deserializer) {
+        this(router,
+             serializer,
+             deserializer,
+             ReplicaKeyFilter.includeAll(),
+             IncarnationSource.none(),
+             CommitRing.DEFAULT_BUDGET_BYTES);
+    }
+
+    /// A store that feeds a worker replica: `replicaFilter` is the exclusion set of the ring and the replica snapshot, `incarnation` tells the
+    /// store which committed value is the cluster incarnation, `ringBytes` bounds the commit ring. Values are estimated by the untuned
+    /// [ValueSizeTable] and subscriber closes run on [CommitRing#asyncCloser()].
+    public KVStore(MessageRouter router,
+                   Serializer serializer,
+                   Deserializer deserializer,
+                   ReplicaKeyFilter replicaFilter,
+                   IncarnationSource incarnation,
+                   long ringBytes) {
+        this(router,
+             serializer,
+             deserializer,
+             replicaFilter,
+             incarnation,
+             ringBytes,
+             ValueSizeTable.valueSizeTable(),
+             CommitRing.asyncCloser());
+    }
+
+    /// As above, with the ring's value-size table and the executor that runs a subscriber's transport close after the ring lock is released.
+    /// The writer that decides a close holds `mutationLock` and the store monitor, so a close executor that runs the close on the calling
+    /// thread lets a close listener that reads the KV create a ring-to-store edge; production passes [CommitRing#asyncCloser()].
+    public KVStore(MessageRouter router,
+                   Serializer serializer,
+                   Deserializer deserializer,
+                   ReplicaKeyFilter replicaFilter,
+                   IncarnationSource incarnation,
+                   long ringBytes,
+                   ValueSizeTable valueSizes,
+                   Executor ringCloser) {
+        this(router,
+             serializer,
+             deserializer,
+             replicaFilter,
+             incarnation,
+             CommitRing.commitRing(ringBytes, valueSizes::estimate, ringCloser));
+    }
+
+    /// Test seam: a store over a ring the caller built (a test build wraps the ring lock in a ranked lock, I-W13).
+    KVStore(MessageRouter router,
+            Serializer serializer,
+            Deserializer deserializer,
+            ReplicaKeyFilter replicaFilter,
+            IncarnationSource incarnation,
+            CommitRing ring) {
         this.router = router;
         this.serializer = serializer;
         this.deserializer = deserializer;
+        this.replicaFilter = replicaFilter;
+        this.incarnation = incarnation;
+        this.ring = ring;
+    }
+
+    public CommitRing replicaRing() {
+        return ring;
     }
 
     /// Capture this value and the corresponding view under the same store monitor.
@@ -92,17 +164,175 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @Override
     public <R> List<R> processCommitted(Batch<KVCommand<K>> batch, long nextSlot) {
         return mutate(() -> {
-            List<R> results = processCommands(batch);
+            var before = readTag();
+            var effects = new ArrayList<KVCommand<?>>();
 
-            committedRevision = nextSlot;
+            batchEffects = effects;
+            List<R> results = processCommands(batch);
+            // Advance-only, like the phase hook: a batch below the published revision never moves it back (never regress, I-W4).
+            committedRevision = Math.max(committedRevision, nextSlot);
+            recordBatch(before,
+                        batch.id().id(),
+                        nextSlot - 1,
+                        nextSlot,
+                        effects);
 
             return results;
         });
     }
 
+    /// The engine's phase frontier moved: every slot below `nextSlot` is complete, including a V0 or empty slot that never reached
+    /// [#processCommitted]. Publishes the frontier as this store's revision (advance-only, idempotent with `processCommitted`) and extends the
+    /// ring's open range. Takes only the store monitor and then the ring lock, never `mutationLock`: it emits no notification, and
+    /// `mutationLock` is held while listeners run.
+    @Override
+    public synchronized Unit onPhaseCompleted(long nextSlot) {
+        committedRevision = Math.max(committedRevision, nextSlot);
+        ring.advance(readTag(), nextSlot);
+
+        return Unit.unit();
+    }
+
+    /// The sixth storage writer, and the only write a replica makes besides a snapshot install: applies the plain `Put`/`Remove` effects of one
+    /// ring entry raw, with no fence, no witness and no merge (the core already decided them), publishes the notifications with the old values,
+    /// appends the entry to this store's own ring and sets the revision to `slot + 1`. An empty effect list (a range marker) only advances.
+    /// Entries are network-decoded, so anything other than `Put` and `Remove` refuses the whole entry and changes nothing. An entry with
+    /// `slot < committedRevision` was already applied and is skipped (I-W4): revision, values and ring stay as they are.
+    @SuppressWarnings("unchecked")
+    public Result<Unit> applyEffects(ReplicaEntry entry) {
+        return entry.effects()
+                    .stream()
+                    .allMatch(effect -> effect instanceof Put<?, ?> || effect instanceof Remove<?>)
+               ? mutate(() -> applyUnlessApplied(entry))
+               : NOT_A_PLAIN_EFFECT.result();
+    }
+
+    /// The single enforcer of "never regress" (I-W4): every caller of `applyEffects`, the replica applier included, relies on this skip.
+    private Result<Unit> applyUnlessApplied(ReplicaEntry entry) {
+        return entry.slot() < committedRevision
+               ? Result.unitResult()
+               : applyPlainEffects(entry);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Result<Unit> applyPlainEffects(ReplicaEntry entry) {
+        var before = readTag();
+        var effects = new ArrayList<KVCommand<?>>();
+
+        batchEffects = effects;
+        entry.effects().forEach(effect -> applyPlainEffect((KVCommand<K>) effect));
+        committedRevision = entry.slot() + 1;
+        recordBatch(before, entry.batchId(), entry.slot(), entry.slot() + 1, effects);
+
+        return Result.unitResult();
+    }
+
+    private void applyPlainEffect(KVCommand<K> effect) {
+        switch (effect) {
+            case Put<K, ?> put -> applyPlainPut(put);
+            case Remove<K> remove -> applyPlainRemove(remove);
+            default -> {}
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void applyPlainPut(Put<K, ?> put) {
+        var stored = (V) put.value();
+        var old = Option.option(storage.put(put.key(), stored));
+
+        recordPut(put.key(), stored);
+        publish(new ValuePut<>(new Put<>(put.key(), stored), old));
+    }
+
+    private void applyPlainRemove(Remove<K> remove) {
+        var old = Option.option(storage.remove(remove.key()));
+
+        recordRemove(remove.key());
+        publish(new ValueRemove<>(new Remove<>(remove.key()), old));
+    }
+
+    /// A filtered image of the store taken under ONE store monitor: encoded map, tag, revision and anchor are mutually consistent.
+    public synchronized Result<ReplicaSnapshot> captureReplicaSnapshot(ReplicaKeyFilter filter) {
+        var filtered = new HashMap<K, V>();
+
+        storage.forEach((key, value) -> {
+            if (!filter.excludes(key)) {
+                filtered.put(key, value);
+            }
+        });
+
+        return Result.lift(Causes::fromThrowable,
+                           () -> serializer.canonical()
+                                           .encode(filtered))
+                     .map(bytes -> new ReplicaSnapshot(bytes,
+                                                       readTag(),
+                                                       committedRevision,
+                                                       ring.anchor()));
+    }
+
+    /// The tag as storage holds it now: the store's own key lookup, so it is read under the store monitor by the writer, before the ring lock.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private IncarnationTag readTag() {
+        return incarnation.read(key -> ((Map) storage).get(key));
+    }
+
+    private void recordPut(K key, V stored) {
+        if (batchEffects != null) {
+            batchEffects.add(new Put<>(key, stored));
+        }
+    }
+
+    private void recordRemove(K key) {
+        if (batchEffects != null) {
+            batchEffects.add(new Remove<>(key));
+        }
+    }
+
+    /// End of a committed batch (or an applied entry): a batch that touched an incarnation key, or changed the tag, clears the ring and is NOT
+    /// delivered; otherwise the effects the replica filter lets through are appended, or the frontier just advances.
+    private void recordBatch(IncarnationTag before,
+                             String batchId,
+                             long slot,
+                             long nextSlot,
+                             List<KVCommand<?>> effects) {
+        var after = readTag();
+        var touched = effects.stream().anyMatch(this::touchesIncarnation);
+
+        batchEffects = null;
+        if (touched || !after.equals(before)) {
+            ring.invalidate(after, nextSlot);
+
+            return;
+        }
+
+        ring.append(after,
+                    slot,
+                    batchId,
+                    effects.stream().filter(effect -> !excludedEffect(effect)).toList(),
+                    nextSlot);
+    }
+
+    private boolean touchesIncarnation(KVCommand<?> effect) {
+        return incarnation.isIncarnationKey(keyOf(effect));
+    }
+
+    private boolean excludedEffect(KVCommand<?> effect) {
+        return replicaFilter.excludes(keyOf(effect));
+    }
+
+    private static StructuredKey keyOf(KVCommand<?> effect) {
+        return switch (effect) {
+            case Put<?, ?> put -> put.key();
+            case Remove<?> remove -> remove.key();
+            default -> LeaderKey.INSTANCE;
+        };
+    }
+
     @Override
     public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
-        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot));
+        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot)
+                                           .onSuccess(_ -> ring.invalidate(readTag(),
+                                                                           nextSlot)));
     }
 
     private <T> T mutate(java.util.function.Supplier<T> mutation) {
@@ -155,7 +385,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     @Override
     public <R> List<R> process(Batch<KVCommand<K>> batch) {
-        return mutate(() -> processCommands(batch));
+        return mutate(() -> {
+            batchEffects = null;
+            List<R> results = processCommands(batch);
+
+            ring.invalidate(readTag(), committedRevision);
+
+            return results;
+        });
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -227,8 +464,23 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private void applyMutation(KVCommand.Mutation<K, V> mutation) {
-        mutation.replacement().fold(() -> storage.remove(mutation.key()),
-                                    value -> storage.put(mutation.key(), value));
+        mutation.replacement().fold(() -> removeRecorded(mutation.key()), value -> putRecorded(mutation.key(), value));
+    }
+
+    private V putRecorded(K key, V value) {
+        var old = storage.put(key, value);
+
+        recordPut(key, value);
+
+        return old;
+    }
+
+    private V removeRecorded(K key) {
+        var old = storage.remove(key);
+
+        recordRemove(key);
+
+        return old;
     }
 
     private void notifyMutation(KVCommand.Mutation<K, V> mutation) {
@@ -256,7 +508,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         }
 
         var stored = merged(put.key(), put.value());
-        var oldValue = Option.option(storage.put(put.key(), stored));
+        var oldValue = Option.option(putRecorded(put.key(), stored));
 
         publish(new ValuePut<>(stored == put.value()
                                ? put
@@ -494,7 +746,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             return Option.option(storage.get(remove.key()));
         }
 
-        var oldValue = Option.option(storage.remove(remove.key()));
+        var oldValue = Option.option(removeRecorded(remove.key()));
 
         publish(new ValueRemove<>(remove, oldValue));
 
@@ -576,7 +828,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     @Override
     public Result<Unit> restoreSnapshot(byte[] snapshot) {
-        return mutate(() -> restoreSilently(snapshot));
+        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> ring.invalidate(readTag(), committedRevision)));
     }
 
     @SuppressWarnings("unchecked")
@@ -667,6 +919,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         notifyRemoveAll();
         storage.clear();
         lastReplayedView.clear();
+        ring.invalidate(IncarnationTag.NONE, 0);
 
         return Unit.unit();
     }

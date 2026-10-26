@@ -29,9 +29,9 @@ import org.slf4j.LoggerFactory;
 /// because `DefaultDemotionManager.demote()`, the promotion manager's `promote()` and
 /// `DefaultStorageGarbageCollector.collectGarbage()` self-gate on an internal `active` flag
 /// (`if (!active) return 0;`) — so a tick before the flag is set is simply a no-op read of that flag, not a
-/// correctness hazard. Who sets it differs: GC and `streams` demotion follow the leader through
-/// `DelegatedStorageAdapter`, while demotion and promotion of `artifacts` and `content` are activated on every node
-/// when it reports ready (`StorageFactory#activateNodeMaintenance`).
+/// correctness hazard. Who sets it differs: `streams` demotion follows the leader through
+/// `DelegatedStorageAdapter`, `streams` GC is active from build on every node, and demotion, promotion and GC of
+/// `artifacts` and `content` are activated on every node when it reports ready (`StorageFactory#activateNodeMaintenance`).
 ///
 /// Order within a tick: demote, then promote, then GC. Demotion frees the room that promotion then uses.
 /// Promotion blocks on a read of the source tier per block (a DHT read for the slowest), so it does not run on the

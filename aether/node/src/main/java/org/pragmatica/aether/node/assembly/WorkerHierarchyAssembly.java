@@ -433,6 +433,19 @@ public sealed interface WorkerHierarchyAssembly {
         allEntries.add(MessageRouter.Entry.route(ValuePut.class, workerMetadataChannel::onValuePut));
         allEntries.add(MessageRouter.Entry.route(ValueRemove.class, workerMetadataChannel::onValueRemove));
         clusterNode.onStateRestored(workerMetadataChannel::onStateRestored);
+        // W-OBS W2: the replica feed server on cores (subscribe and snapshot routes, drain and heartbeat ticks); a worker never serves.
+        ReplicaFeedAssembly.replicaFeed(config.self(),
+                                        kvStore,
+                                        clusterNode.network()::send,
+                                        () -> ReplicaFeedAssembly.servesReplicaFeed(configuredWorker(config),
+                                                                                    clusterNode.isActive(),
+                                                                                    clusterNode.isPendingCatchUp()),
+                                        membershipFsm::isTrackedAndNotDead,
+                                        peer -> clusterNode.network()
+                                                           .connectedPeers()
+                                                           .contains(peer),
+                                        allEntries,
+                                        defer);
         // #1777 R1b: the same tick retries this node's DHT replication report until it is filed (a no-op once it is)
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> {
                                                                    workerMetadataChannel.tick();

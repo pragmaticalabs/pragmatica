@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -94,11 +95,11 @@ class ContentStoreManifestFramingTest {
     }
 
     @Test
-    void forgedEnvelopedManifestUpload_readsBackVerbatim() {
+    void forgedV2ManifestUpload_readsBackVerbatim() {
         var victim = content(2 * CHUNK_SIZE + 5, 3);
 
         put("victim", victim);
-        var forged = ContentManifest.contentManifest("victim", victim.length, victimChunkIds("victim")).toBytes();
+        var forged = ContentManifest.contentManifest(CHUNK_SIZE, victim.length, "ab".repeat(32), victimChunkIds("victim")).toBytes();
         var before = refCounts(victimChunkIds("victim"));
 
         put("forged", forged);
@@ -117,9 +118,6 @@ class ContentStoreManifestFramingTest {
         var chunkIds = victimChunkIds(name);
 
         assertThat(get(name)).isEqualTo(data);
-        assertThat(ContentManifest.fromBytes(storage.get(storage.resolveRef(ContentEnvelope.trustedRef(name)).unwrap()).await().unwrap().unwrap())
-                                  .unwrap()
-                                  .name()).isEqualTo(name);
 
         store.delete(name).await().onFailure(c -> fail("delete: " + c.message()));
 
@@ -185,7 +183,7 @@ class ContentStoreManifestFramingTest {
         put("victim", victim);
         var chunkIds = victimChunkIds("victim");
         var before = refCounts(chunkIds);
-        var forged = ContentManifest.contentManifest("victim", victim.length, chunkIds).toBytes();
+        var forged = ContentManifest.contentManifest(CHUNK_SIZE, victim.length, "ab".repeat(32), chunkIds).toBytes();
 
         storage.swapRef("planted", forged).await().unwrap();
 
@@ -326,5 +324,88 @@ class ContentStoreManifestFramingTest {
 
         assertThat(restored.isPresent()).as("control: the legacy file restores").isTrue();
         assertThat(restored.unwrap().refs()).containsOnlyKeys("ok");
+    }
+    /// The window [ContentEnvelope#trustedRef] documents as accepted pre-GA (a `format=2` snapshot of a dev build that has
+    /// the snapshot encoding but not the trusted namespace restores a bare `|x`), and a raw [StorageInstance] writer,
+    /// can both leave a LEGACY text manifest under a trusted ref. The trusted path must not read it as a manifest:
+    /// legacy magic is believed only for a bare name.
+    private List<String> storeRawChunks(byte[] data) {
+        var ids = new java.util.ArrayList<String>();
+
+        for (var offset = 0; offset < data.length; offset += CHUNK_SIZE) {
+            var chunk = java.util.Arrays.copyOfRange(data, offset, Math.min(offset + CHUNK_SIZE, data.length));
+
+            ids.add(storage.put(chunk).await().unwrap().hexString());
+        }
+
+        return ids;
+    }
+
+    private static byte[] legacyText(String name, long size, List<String> ids) {
+        return (ContentManifest.MAGIC_HEADER + name + "|" + size + "|" + ids.size() + "|" + String.join("|", ids)).getBytes(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void legacyTextManifestUnderATrustedRef_isNotReadAsAManifest() {
+        var data = content(3 * CHUNK_SIZE, 4);
+        var ids = storeRawChunks(data);
+
+        storage.swapRef("|win", legacyText("|win", data.length, ids)).await().unwrap();
+
+        assertThat(store.get("win").await().isFailure()).as("a legacy value under a trusted ref is not a manifest").isTrue();
+    }
+
+    @Test
+    void legacyTextManifestUnderATrustedRef_releasesNothingOnDelete() {
+        var data = content(3 * CHUNK_SIZE, 5);
+        var ids = storeRawChunks(data);
+
+        storage.swapRef("|win", legacyText("|win", data.length, ids)).await().unwrap();
+        store.delete("win").await().onFailure(c -> fail("delete: " + c.message()));
+
+        assertThat(refCounts(ids)).as("the chunks keep put's credit: the trusted delete read no manifest").containsOnly(1);
+    }
+
+    @Test
+    void legacyTextManifestUnderABareName_stillReadsAndReleases_asTheControl() {
+        var data = content(3 * CHUNK_SIZE, 6);
+        var ids = storeRawChunks(data);
+
+        storage.swapRef("old", legacyText("old", data.length, ids)).await().unwrap();
+
+        assertThat(get("old")).as("a legacy name is read through its legacy manifest").isEqualTo(data);
+        store.delete("old").await().onFailure(c -> fail("delete: " + c.message()));
+        assertThat(refCounts(ids)).as("its delete releases the chunks").containsOnly(0);
+    }
+
+    @Test
+    void chunkedPut_recordsItsChunkSizeAndTheDigestOfTheWholeContent() throws Exception {
+        var data = content(3 * CHUNK_SIZE + 17, 8);
+
+        put("recorded", data);
+        var manifestId = storage.resolveRef(ContentEnvelope.trustedRef("recorded")).unwrap();
+        var manifest = ContentManifest.fromBytes(storage.get(manifestId).await().unwrap().unwrap()).unwrap();
+
+        assertThat(manifest.chunkSize()).isEqualTo(CHUNK_SIZE);
+        assertThat(manifest.totalSize()).isEqualTo(data.length);
+        assertThat(manifest.sha256()).isEqualTo(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data)));
+    }
+
+    @Test
+    void manifestWithACorruptIdLength_underATrustedRef_failsAsAManifestParseFailure() {
+        var corrupt = ByteBuffer.allocate(1 + 4 + 8 + 32 + 4 + 4 + 8)
+                                .put(ContentManifest.FORMAT_VERSION)
+                                .putInt(CHUNK_SIZE)
+                                .putLong(10)
+                                .put(new byte[32])
+                                .putInt(1)
+                                .putInt(Integer.MAX_VALUE)
+                                .array();
+
+        storage.swapRef("|corrupt", ContentEnvelope.wrap(ContentEnvelope.MANIFEST, corrupt)).await().unwrap();
+
+        store.get("corrupt").await()
+             .onSuccess(_ -> fail("a manifest naming an id longer than itself must not be read"))
+             .onFailure(cause -> assertThat(cause).isEqualTo(ContentStoreError.General.MANIFEST_PARSE_FAILED));
     }
 }

@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// fixes the source (offer inside the append critical section) and the replica (a heartbeat never moves `applied`).
 /// Neither exists as code at this commit, so the enabled halves run the stub-level model in `ReplicaFeedModel`: they pin
 /// that the hazard is real under the withdrawn rule, and that the interleave and the rule are BOTH needed for it (the
-/// controls), which is what makes the model discriminating. The real ring and applier are asserted by NT-O41 in W1/W3.
+/// controls), which is what makes the model discriminating. The real ring half is asserted by NT-O41 in `CommitRingTest` (W1); the real applier half stays here, fail-closed, until W3.
 class ReplicaFeedInterleaveModelTest {
     private static final long START = 5L;
     private static final List<String> EFFECTS = List.of("put deployment");
@@ -74,11 +74,11 @@ class ReplicaFeedInterleaveModelTest {
         assertThat(ReplicaSeam.typeExists("ReplicaApplier")).as("W3 landed ReplicaApplier: with CommitRing (W1) enable realRingAndApplier_neverSkipAnEntry (TW-O16), and delete this test").isFalse();
     }
 
-    @Disabled("W1/W3 (NT-O41): enable when the real CommitRing and ReplicaApplier exist; drive the interleave against them with a stub sink and assert no effect is lost")
+    @Disabled("W3 (ReplicaApplier): enable when the real ReplicaApplier exists; the real ring half of NT-O41 is CommitRingTest#aHeartbeat_isNeverEnqueuedBetweenTheBumpAndTheOffer")
     @Test
     void realRingAndApplier_neverSkipAnEntry() {
-        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("CommitRing") && ReplicaSeam.typeExists("ReplicaApplier"),
-                                     "W1 CommitRing and W3 ReplicaApplier",
-                                     "NT-O41: drive a heartbeat between a batch's revision bump and its entry offer against the real ring and applier, and assert no effect is lost");
+        throw ReplicaSeam.failClosed(ReplicaSeam.typeExists("ReplicaApplier"),
+                                     "W3 ReplicaApplier (the real ring landed in W1, its interleave is CommitRingTest#aHeartbeat_isNeverEnqueuedBetweenTheBumpAndTheOffer)",
+                                     "NT-O41 against the real applier: a heartbeat between a batch's revision bump and its entry offer, fed through CommitRing to ReplicaApplier, loses no effect");
     }
 }

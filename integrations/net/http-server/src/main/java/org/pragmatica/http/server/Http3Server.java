@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
@@ -54,6 +55,7 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
+import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
@@ -269,8 +271,10 @@ final class Http3Server {
             this.streamWriteInterceptor = streamWriteInterceptor;
         }
 
+        /// #2386: the frame-boundary guard goes first, ahead of Netty's frame codec, so it sees the stream's bytes.
         @Override
         protected void initChannel(Channel ch) {
+            ch.pipeline().addFirst(new Http3FrameBoundaryGuard());
             streamWriteInterceptor.onPresent(interceptor -> ch.pipeline()
                                                               .addLast(interceptor.get()));
             ch.pipeline().addLast(Http3RequestHandler.http3RequestHandler(config, handler));
@@ -282,6 +286,9 @@ final class Http3Server {
     /// Accumulates headers and data frames, then dispatches
     /// to the shared request handler when input closes.
     /// Each stream gets its own instance — no @Sharable needed.
+    ///
+    /// A stream that breaks HTTP/3 framing is never dispatched, not even its valid prefix (#2386): see
+    /// [#exceptionCaught] and [#userEventTriggered].
     ///
     /// A body over `maxContentLength` is answered 413 as soon as it crosses the limit and is never dispatched
     /// (I1: it was cut to the limit and dispatched as if complete). The trailer section, when the client sends one, is
@@ -373,6 +380,21 @@ final class Http3Server {
         @Override
         protected void channelInputClosed(ChannelHandlerContext ctx) {
             stopTimers();
+        }
+
+        /// #2386: dispatch waits for [ChannelInputShutdownReadComplete], the event after the input-shutdown one. Netty's
+        /// request-stream validation checks the body against `content-length` only when the input ends, and on a
+        /// mismatch raises the error and withholds this event; dispatching on input shutdown came before that check.
+        @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+            if (evt == ChannelInputShutdownReadComplete.INSTANCE) {
+                inputComplete(ctx);
+            }
+
+            super.userEventTriggered(ctx, evt);
+        }
+
+        private void inputComplete(ChannelHandlerContext ctx) {
             if (headersFrame == null || rejected) {
                 releaseBody();
 
@@ -389,18 +411,44 @@ final class Http3Server {
             releaseBody();
         }
 
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
         private void dispatch(ChannelHandlerContext ctx) {
             var requestId = IdGenerator.generate("req");
             var responseWriter = new Http3ResponseWriter(ctx, requestId);
+            var target = RequestTarget.requestTarget(targetOf(headersFrame.headers()));
+
+            if (target.isFailure()) {
+                rejectMalformedTarget(responseWriter, requestId, target);
+            } else {
+                dispatchRequest(requestId, responseWriter, target.unwrap());
+            }
+        }
+
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
+        private void dispatchRequest(String requestId, Http3ResponseWriter responseWriter, RequestTarget target) {
             // #2310: building the request (headers, request trailers, body) is inside the guard too, so a failure there
             // is answered 500 instead of closing the stream from exceptionCaught
             try {
-                handler.accept(buildRequestContext(requestId), responseWriter);
+                handler.accept(buildRequestContext(requestId, target), responseWriter);
             } catch (Exception e) {
                 log.error("Error handling HTTP/3 request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
+        }
+
+        /// #2419: the request target is decoded by the same function as on HTTP/1.1 (`RequestTarget`), and one whose
+        /// percent-escapes cannot be decoded is answered 400 there too; the buffered body is released unread.
+        private void rejectMalformedTarget(Http3ResponseWriter responseWriter,
+                                           String requestId,
+                                           Result<RequestTarget> target) {
+            target.onFailure(cause -> log.debug("Rejecting HTTP/3 request {} with 400: {}", requestId, cause.message()));
+            releaseBody();
+            responseWriter.error(HttpStatus.BAD_REQUEST, "Malformed request target");
+        }
+
+        private static String targetOf(Http3Headers h3Headers) {
+            return Option.option(h3Headers.path())
+                         .map(CharSequence::toString)
+                         .or("/");
         }
 
         private void appendData(ChannelHandlerContext ctx, ByteBuf content) {
@@ -466,25 +514,19 @@ final class Http3Server {
             }
         }
 
-        private HttpRequest buildRequestContext(String requestId) {
+        private HttpRequest buildRequestContext(String requestId, RequestTarget target) {
             var h3Headers = headersFrame.headers();
             var methodStr = Option.option(h3Headers.method()).map(CharSequence::toString).or("GET");
-            var pathStr = Option.option(h3Headers.path()).map(CharSequence::toString).or("/");
             var method = HttpMethod.httpMethod(methodStr).or(HttpMethod.GET);
-            var pathAndQuery = pathStr.split("\\?", 2);
-            var path = pathAndQuery[0];
-            var queryParams = parseQueryParams(pathAndQuery.length > 1
-                                               ? pathAndQuery[1]
-                                               : "");
             var headerMap = extractHeaders(h3Headers);
             var trailers = Headers.trailers(trailersFrame.map(frame -> extractHeaders(frame.headers())).or(Map.of()));
             var body = extractBody();
 
             return new Http3RequestContext(requestId,
                                            method,
-                                           path,
+                                           target.path(),
                                            Headers.headers(headerMap),
-                                           queryParams,
+                                           target.queryParams(),
                                            body,
                                            trailers);
         }
@@ -514,28 +556,13 @@ final class Http3Server {
             return headerMap;
         }
 
-        private static QueryParams parseQueryParams(String queryString) {
-            if (queryString.isEmpty()) {
-                return QueryParams.empty();
-            }
-
-            var params = new HashMap<String, List<String>>();
-
-            for (var param : queryString.split("&")) {
-                var kv = param.split("=", 2);
-
-                if (kv.length == 2) {
-                    params.computeIfAbsent(kv[0], _ -> new ArrayList<>()).add(kv[1]);
-                } else if (kv.length == 1) {
-                    params.computeIfAbsent(kv[0], _ -> new ArrayList<>()).add("");
-                }
-            }
-
-            return QueryParams.queryParams(params);
-        }
-
+        /// #2386: Netty raises each framing or message error of the stream here, synchronously, before it drops the
+        /// offending frame and so before the stream's input can end. Marking the stream rejected is what keeps its
+        /// valid prefix from being dispatched: closing it is not enough, because when the bad bytes and the `FIN`
+        /// arrive in one read, the transport still delivers the input-shutdown events after the close.
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            rejected = true;
             log.error("Error in HTTP/3 handler", cause);
             ctx.close();
         }
@@ -551,6 +578,15 @@ final class Http3Server {
 
     /// HTTP/3 response writer that sends response as HTTP/3 frames.
     private static class Http3ResponseWriter implements ResponseWriter {
+        /// #2386: RFC 9114 §4.2 — connection-specific fields an HTTP/3 message must not carry (`te` is allowed only in a
+        /// request), lowercase.
+        private static final Set<String> CONNECTION_SPECIFIC = Set.of("connection",
+                                                                      "keep-alive",
+                                                                      "proxy-connection",
+                                                                      "transfer-encoding",
+                                                                      "upgrade",
+                                                                      "te");
+
         private final ChannelHandlerContext ctx;
         private final String requestId;
         // Thread-safe: each Http3ResponseWriter is created per-stream and accessed only from the Netty event loop thread
@@ -566,9 +602,20 @@ final class Http3Server {
 
         /// #2310: HTTP/3 field names are lowercase (RFC 9114 §4.2), and Netty refuses a HEADERS frame with an
         /// uppercase one. A handler's `X-Request-Id` used to fail the whole response, leaving the stream unanswered.
+        ///
+        /// #2386: a connection-specific field (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Transfer-Encoding`,
+        /// `Upgrade`, `TE`, in any case) or a name starting with `:` is dropped (RFC 9114 §4.2): a client refuses a
+        /// response carrying `connection` or an unknown pseudo-header, and the pseudo-header fields are the writer's
+        /// own, so an application `:status` does not replace the real one.
         @Override
         public ResponseWriter header(String name, String value) {
-            pendingHeaders.put(name.toLowerCase(Locale.ROOT), value);
+            var fieldName = name.toLowerCase(Locale.ROOT);
+
+            if (CONNECTION_SPECIFIC.contains(fieldName) || fieldName.startsWith(":")) {
+                log.debug("Dropping response field '{}' for request {}: not allowed in HTTP/3", name, requestId);
+            } else {
+                pendingHeaders.put(fieldName, value);
+            }
 
             return this;
         }
@@ -583,9 +630,8 @@ final class Http3Server {
         /// refuses when the headers are built, such as a null value) is answered `500` with the server's own headers
         /// only. From the HEADERS write on, the response is committed: a failed frame write resets the stream with
         /// `H3_INTERNAL_ERROR`. Each failure is logged once, and the returned promise fails with it, as
-        /// [NettyHttpServer]'s writer fails its flush promise. Not covered: a field the headers container accepts but
-        /// HTTP/3 forbids (a connection-specific field such as `connection`, RFC 9114 §4.2, or a name starting with
-        /// `:`) is written as given, and the client refuses the response; the writer does not filter fields.
+        /// [NettyHttpServer]'s writer fails its flush promise. A field HTTP/3 forbids never gets this far: [#header]
+        /// drops it (#2386).
         @Override
         public Promise<Unit> writeAsync(HttpStatus status, byte[] body, ContentType contentType) {
             if (!written.compareAndSet(false, true)) {

@@ -35,17 +35,16 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.statemachine.Fsm;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// TW-O17 of the worker-replica-feed design (W-OBS): the non-KV items a worker needs (peer directory, endpoint directory, DHT replication)
-/// are meant to ride the existing `ClusterSync` ping and pong as one `ClusterDirectory` payload, and a plain member must install the
-/// leader's directory from a responder's pong (NT-O44).
+/// ride the existing `ClusterSync` ping and pong as one `ClusterDirectory` payload, and a plain member installs the leader's directory from
+/// a responder's pong (NT-O44).
 ///
-/// This class holds the part that lives in `aether-metrics`: ping dispatch is leader-only (`ClusterSyncState.handlePingTick`) and neither
-/// `ClusterSyncPing` nor `ClusterSyncPong` has a directory slot. The part that needs the node's assembly (a plain member is not a ping
+/// This class holds the part that lives in `aether-metrics`: ping dispatch is leader-only (`ClusterSyncState.handlePingTick`, still pinned
+/// here) and, since W2, both messages end in the directory slot. The part that needs the node's assembly (a plain member is not a ping
 /// recipient, `AetherNode`'s `setPingTargetEligibility`) is `MemberPingRecipientTripwireTest` in `aether/node`.
 class ClusterDirectoryTripwireTest {
     private static final NodeId SELF = NodeId.nodeId("leader").unwrap();
@@ -104,21 +103,15 @@ class ClusterDirectoryTripwireTest {
     }
 
     @Test
-    void clusterSyncMessages_haveNoDirectorySlot_today() {
-        assertThat(componentNames(ClusterSyncPing.class)).as("TW-O17: W2 added a directory slot to ClusterSyncPing (the last two components of both messages): enable ClusterDirectoryTripwireTest#aMember_installsTheLeadersDirectory_viaAResponderPong (NT-O44) and MemberPingRecipientTripwireTest#aMember_receivesLeaderContent_throughAGovernorsPong_notThroughALeaderPing, replace their bodies, and re-pin or delete this test").doesNotContain("directory", "observedDirectoryGeneration")
-                                                          .last().isEqualTo("carriesAuthority");
-        assertThat(componentNames(ClusterSyncPong.class)).as("TW-O17: W2 added a directory slot to ClusterSyncPong: enable ClusterDirectoryTripwireTest#aMember_installsTheLeadersDirectory_viaAResponderPong (NT-O44) and MemberPingRecipientTripwireTest#aMember_receivesLeaderContent_throughAGovernorsPong_notThroughALeaderPing, replace their bodies, and re-pin or delete this test").doesNotContain("directory", "observedDirectoryGeneration")
-                                                          .last().isEqualTo("readyCandidate");
+    void clusterSyncMessages_carryTheDirectoryAsTheirLastTwoComponents() {
+        assertThat(componentNames(ClusterSyncPing.class)).as("TW-O17 flipped in W2: the directory pair and payload are the LAST two components of the ping (never mid-record)")
+                                                          .endsWith("carriesAuthority", "observedDirectoryGeneration", "directory");
+        assertThat(componentNames(ClusterSyncPong.class)).as("TW-O17 flipped in W2: the same two components close the pong")
+                                                          .endsWith("readyCandidate", "observedDirectoryGeneration", "directory");
     }
 
-    @Disabled("W2/W4 (ClusterDirectory): enable when ClusterDirectory rides ClusterSyncPing/ClusterSyncPong; replace the body with NT-O44")
-    @Test
-    void aMember_installsTheLeadersDirectory_viaAResponderPong() {
-        var present = componentNames(ClusterSyncPong.class).contains("directory");
-
-        throw new AssertionError((present ? "ClusterSyncPong.directory landed: replace this body with the real check, which is: " : "ClusterSyncPong.directory is not there yet; the property to check once it is: ")
-                                 + "NT-O44: a member that pings its core uplinks installs the leader's ClusterDirectory from a responder's pong, only from a core, the leader or its own governor, and only when strictly newer than the one it holds");
-    }
+    // NT-O44 (a member installs the leader's directory from a responder's pong) is ClusterSyncDirectoryTest, which drives a real collector; the
+    // node-assembly half (a plain member is still not a leader-ping recipient) is MemberPingRecipientTripwireTest in aether/node.
 
     /// Records, per recipient, every `ClusterSyncPing` the context sends.
     private static final class RecordingNetwork implements ClusterNetwork {

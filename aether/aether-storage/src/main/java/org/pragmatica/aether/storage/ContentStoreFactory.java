@@ -34,7 +34,8 @@ public final class ContentStoreFactory implements ResourceFactory<ContentStore, 
     @Override
     public Promise<ContentStore> provision(ContentStoreConfig config, ProvisioningContext context) {
         return context.extension(StorageInstance.class)
-                      .map(instance -> ContentStore.contentStore(instance, config))
+                      .flatMap(instance -> config.validatedAgainst(instance.maxBlockBytes())
+                                                 .map(valid -> ContentStore.contentStore(instance, valid)))
                       .async();
     }
     // No close override, deliberately (#893). A content store owns nothing releasable: the

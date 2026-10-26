@@ -48,6 +48,65 @@ class DelegatedStorageAdapterTest {
             .anyMatch(msg -> msg.contains("demotion boom"));
     }
 
+    /// A0b: the leader-pinned group that cannot start raises ONE operator warning for the group (not one per election), and
+    /// the activation that succeeds closes it.
+    @Test
+    void activate_failingGroup_raisesOneOperatorWarningThenRecoversWhenItStarts() throws InterruptedException {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+        var degrade = org.pragmatica.storage.DegradeReporter.degradeReporter(DelegatedStorageAdapter.REPORT_SUBJECT);
+        var broken = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var demotion = succeedingDemotionManager();
+        var flaky = new DemotionManager() {
+            @Override
+            public int demote() {
+                return 0;
+            }
+
+            @Override
+            public DemotionStats stats() {
+                return new DemotionStats(0, 0, 0);
+            }
+
+            @Override
+            public Result<Unit> activate() {
+                return broken.get() ? Causes.cause("demotion boom").<Unit> result() : demotion.activate();
+            }
+
+            @Override
+            public Result<Unit> deactivate() {
+                return demotion.deactivate();
+            }
+
+            @Override
+            public boolean isActive() {
+                return demotion.isActive();
+            }
+        };
+        var adapter = delegatedStorageAdapter(flaky, succeedingGarbageCollector(), degrade);
+        degrade.bind(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(raised::add));
+
+        adapter.activate().await();
+        adapter.activate().await();
+        awaitRaised(raised, 1);
+        broken.set(false);
+        adapter.activate().await();
+        awaitRaised(raised, 2);
+
+        assertThat(raised).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                          .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_STARTED);
+        assertThat(raised.getFirst().subject()).isEqualTo(DelegatedStorageAdapter.REPORT_SUBJECT);
+    }
+
+    private static void awaitRaised(java.util.List<?> raised, int count) throws InterruptedException {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (raised.size() < count && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(raised).as("operator warnings handed to the sink within 5 s").hasSizeGreaterThanOrEqualTo(count);
+    }
+
     @Test
     void activate_demotionManagerFails_adapterReportsInactive() {
         var adapter = delegatedStorageAdapter(failingDemotionManager("demotion boom"), succeedingGarbageCollector());

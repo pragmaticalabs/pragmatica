@@ -20,6 +20,7 @@ import org.pragmatica.cluster.net.local.LocalNetwork.FaultInjector;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KvstoreCodecs;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
@@ -72,15 +73,32 @@ public final class OlderCheckpointCluster {
     public static final class RecordingStore extends KVStore<StringKey, String> {
         private final List<Applied> applied = new CopyOnWriteArrayList<>();
 
+        /// One cluster identity across both generations: a constant tag, so a restart is a restart under the SAME incarnation (the scenario the
+        /// replica anchor exists for). The replica ring records and serves under it.
+        private static final org.pragmatica.cluster.state.kvstore.IncarnationSource ONE_IDENTITY = new org.pragmatica.cluster.state.kvstore.IncarnationSource() {
+            @Override
+            public org.pragmatica.cluster.state.kvstore.IncarnationTag read(java.util.function.Function<StructuredKey, Object> lookup) {
+                return org.pragmatica.cluster.state.kvstore.IncarnationTag.incarnationTag(1, "one-identity");
+            }
+
+            @Override
+            public boolean isIncarnationKey(StructuredKey key) {
+                return false;
+            }
+        };
+
         RecordingStore(MessageRouter router, SliceCodec codec) {
-            super(router, codec, codec);
+            super(router, codec, codec, org.pragmatica.cluster.state.kvstore.ReplicaKeyFilter.includeAll(), ONE_IDENTITY, org.pragmatica.cluster.state.kvstore.CommitRing.DEFAULT_BUDGET_BYTES);
         }
 
         @Override
         public <R> List<R> processCommitted(Batch<KVCommand<StringKey>> batch, long nextSlot) {
+            var results = super.<R> processCommitted(batch, nextSlot);
+
+            // Recorded after the store (revision, ring) has the batch: the cluster's commit() waits on this list, and callers then read the ring.
             applied.add(new Applied(nextSlot - 1, batch.id().toString(), batch.commands()));
 
-            return super.processCommitted(batch, nextSlot);
+            return results;
         }
 
         public List<Applied> applied() {
